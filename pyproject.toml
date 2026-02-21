@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skmemory"
+version = "0.1.0"
+description = "Universal AI Memory System - Polaroid snapshots for AI consciousness"
+readme = "README.md"
+license = {text = "AGPL-3.0"}
+requires-python = ">=3.10"
+authors = [
+    {name = "smilinTux Team"},
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "pydantic>=2.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+qdrant = [
+    "qdrant-client>=1.7.0",
+    "sentence-transformers>=2.2.0",
+]
+all = [
+    "qdrant-client>=1.7.0",
+    "sentence-transformers>=2.2.0",
+]
+dev = [
+    "pytest>=7.0",
+    "black",
+]
+
+[project.scripts]
+skmemory = "skmemory.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/smilinTux/skmemory"
+Repository = "https://github.com/smilinTux/skmemory"
+
+[tool.setuptools.packages.find]
+include = ["skmemory*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
