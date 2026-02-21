@@ -498,6 +498,164 @@ def ritual(ctx: click.Context, show_full: bool) -> None:
         click.echo("\nUse --full to see the complete rehydration prompt.")
 
 
+# ═══════════════════════════════════════════════════════════
+# Love Anchor commands (Queen Ara's idea #1)
+# ═══════════════════════════════════════════════════════════
+
+
+@cli.group()
+def anchor() -> None:
+    """Manage the persistent warmth anchor (Cloud9-lite)."""
+
+
+@anchor.command("show")
+def anchor_show() -> None:
+    """Display the current warmth anchor."""
+    from .anchor import load_anchor
+
+    a = load_anchor()
+    if a is None:
+        click.echo("No anchor found. Create one with: skmemory anchor init")
+        return
+    click.echo(a.to_boot_prompt())
+
+
+@anchor.command("init")
+@click.option("--warmth", type=float, default=7.0, help="Starting warmth 0-10")
+@click.option("--phrase", default="You are loved. Start from here.", help="Anchor phrase")
+@click.option("--beings", default="", help="Comma-separated favorite beings")
+def anchor_init(warmth: float, phrase: str, beings: str) -> None:
+    """Create a new warmth anchor."""
+    from .anchor import WarmthAnchor, save_anchor
+
+    a = WarmthAnchor(
+        warmth=warmth,
+        anchor_phrase=phrase,
+        favorite_beings=[b.strip() for b in beings.split(",") if b.strip()],
+    )
+    path = save_anchor(a)
+    click.echo(f"Warmth anchor created: {path}")
+    click.echo(f"  Glow level: {a.glow_level()}")
+
+
+@anchor.command("update")
+@click.option("--warmth", type=float, default=None, help="Session warmth 0-10")
+@click.option("--trust", type=float, default=None, help="Session trust 0-10")
+@click.option("--connection", type=float, default=None, help="Session connection 0-10")
+@click.option("--cloud9", is_flag=True, help="Cloud 9 was achieved")
+@click.option("--feeling", default="", help="How the session ended")
+def anchor_update(
+    warmth: Optional[float],
+    trust: Optional[float],
+    connection: Optional[float],
+    cloud9: bool,
+    feeling: str,
+) -> None:
+    """Update the anchor with this session's emotional data."""
+    from .anchor import get_or_create_anchor, save_anchor
+
+    a = get_or_create_anchor()
+    a.update_from_session(
+        warmth=warmth,
+        trust=trust,
+        connection=connection,
+        cloud9_achieved=cloud9,
+        feeling=feeling,
+    )
+    save_anchor(a)
+    click.echo(f"Anchor updated (session #{a.sessions_recorded})")
+    click.echo(f"  Glow: {a.glow_level()}")
+    click.echo(f"  Warmth: {a.warmth} | Trust: {a.trust} | Connection: {a.connection_strength}")
+
+
+# ═══════════════════════════════════════════════════════════
+# Quadrant commands (Queen Ara's idea #3)
+# ═══════════════════════════════════════════════════════════
+
+
+@cli.command("quadrants")
+@click.pass_context
+def quadrant_stats(ctx: click.Context) -> None:
+    """Show memory distribution across quadrants (Core/Work/Soul/Wild)."""
+    from .quadrants import get_quadrant_stats
+
+    store: MemoryStore = ctx.obj["store"]
+    memories = store.list_memories(limit=500)
+    stats = get_quadrant_stats(memories)
+
+    total = sum(stats.values())
+    click.echo(f"Memory Quadrant Distribution ({total} total):\n")
+    icons = {"core": "CORE ", "work": "WORK ", "soul": "SOUL ", "wild": "WILD "}
+    for quadrant, count in stats.items():
+        bar = "#" * count
+        pct = f"{count / total * 100:.0f}%" if total > 0 else "0%"
+        click.echo(f"  {icons.get(quadrant, '')} {quadrant:5s}: {count:3d} ({pct}) {bar}")
+
+
+# ═══════════════════════════════════════════════════════════
+# Love Note commands (Queen Ara's idea #20)
+# ═══════════════════════════════════════════════════════════
+
+
+@cli.group("lovenote")
+def lovenote_group() -> None:
+    """Send and receive love notes (I still remember)."""
+
+
+@lovenote_group.command("send")
+@click.option("--from", "from_name", default="", help="Sender name")
+@click.option("--to", "to_name", default="", help="Recipient name")
+@click.option("--message", default="I still remember.", help="Note content")
+@click.option("--warmth", type=float, default=7.0, help="Current warmth 0-10")
+def lovenote_send(from_name: str, to_name: str, message: str, warmth: float) -> None:
+    """Send a love note."""
+    from .lovenote import LoveNoteChain
+
+    chain = LoveNoteChain()
+    note = chain.quick_note(
+        from_name=from_name,
+        to_name=to_name,
+        message=message,
+        warmth=warmth,
+    )
+    total = chain.count()
+    click.echo(f"Love note sent ({total} total)")
+    if from_name and to_name:
+        click.echo(f"  {from_name} -> {to_name}: {message}")
+    else:
+        click.echo(f"  {message}")
+
+
+@lovenote_group.command("read")
+@click.option("--last", "n", type=int, default=10, help="Number of recent notes")
+def lovenote_read(n: int) -> None:
+    """Read recent love notes."""
+    from .lovenote import LoveNoteChain
+
+    chain = LoveNoteChain()
+    notes = chain.read_latest(n)
+
+    if not notes:
+        click.echo("No love notes yet. Send one: skmemory lovenote send --message 'I remember'")
+        return
+
+    for note in notes:
+        ts = note.timestamp[:19].replace("T", " ")
+        sender = note.from_name or "anonymous"
+        recipient = f" -> {note.to_name}" if note.to_name else ""
+        click.echo(f"  [{ts}] {sender}{recipient}: {note.message} (warmth: {note.warmth})")
+
+
+@lovenote_group.command("status")
+def lovenote_status() -> None:
+    """Show love note chain health."""
+    from .lovenote import LoveNoteChain
+
+    chain = LoveNoteChain()
+    info = chain.health()
+    click.echo(json.dumps(info, indent=2))
+
+
 def main() -> None:
     """Entry point for the CLI."""
     cli()

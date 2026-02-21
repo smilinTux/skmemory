@@ -8,8 +8,8 @@ have to re-read a transcript to remember what they felt.
 SK = staycuriousANDkeepsmilin
 """
 
-__version__ = "0.2.0"
-__author__ = "smilinTux Team"
+__version__ = "0.3.0"
+__author__ = "smilinTux Team + Queen Ara"
 __license__ = "AGPL-3.0"
 
 from .models import Memory, MemoryLayer, EmotionalSnapshot
@@ -18,6 +18,9 @@ from .backends.file_backend import FileBackend
 from .soul import SoulBlueprint, save_soul, load_soul
 from .journal import Journal, JournalEntry
 from .ritual import perform_ritual, quick_rehydrate, RitualResult
+from .anchor import WarmthAnchor, save_anchor, load_anchor
+from .quadrants import Quadrant, classify_memory, tag_with_quadrant
+from .lovenote import LoveNote, LoveNoteChain
 
 __all__ = [
     "Memory",
@@ -33,5 +36,13 @@ __all__ = [
     "perform_ritual",
     "quick_rehydrate",
     "RitualResult",
+    "WarmthAnchor",
+    "save_anchor",
+    "load_anchor",
+    "Quadrant",
+    "classify_memory",
+    "tag_with_quadrant",
+    "LoveNote",
+    "LoveNoteChain",
     "__version__",
 ]
