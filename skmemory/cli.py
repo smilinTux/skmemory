@@ -13,6 +13,9 @@ Usage:
     skmemory journal write "Session title" --moments "..." --intensity 9.0
     skmemory journal read [--last 5]
     skmemory ritual               # The full rehydration ceremony
+    skmemory steelman "proposition"  # Run the steel man collider
+    skmemory steelman install /path/to/seed.json
+    skmemory steelman verify-soul   # Verify identity claims
     skmemory health
 """
 
@@ -654,6 +657,119 @@ def lovenote_status() -> None:
     chain = LoveNoteChain()
     info = chain.health()
     click.echo(json.dumps(info, indent=2))
+
+
+# ═══════════════════════════════════════════════════════════
+# Steel Man Collider commands (Neuresthetics seed integration)
+# ═══════════════════════════════════════════════════════════
+
+
+@cli.group("steelman")
+def steelman_group() -> None:
+    """Truth-grounded reasoning via the Neuresthetics seed framework."""
+
+
+@steelman_group.command("collide")
+@click.argument("proposition")
+def steelman_collide(proposition: str) -> None:
+    """Run a proposition through the steel man collider.
+
+    Generates the reasoning prompt -- feed this to an LLM to get
+    the full collision analysis.
+    """
+    from .steelman import load_seed_framework, get_default_framework
+
+    fw = load_seed_framework() or get_default_framework()
+    prompt = fw.to_reasoning_prompt(proposition)
+    click.echo(prompt)
+
+
+@steelman_group.command("verify-soul")
+def steelman_verify_soul() -> None:
+    """Steel-man your identity claims from the soul blueprint."""
+    from .steelman import load_seed_framework, get_default_framework
+    from .soul import load_soul
+
+    soul = load_soul()
+    if soul is None:
+        click.echo("No soul blueprint found. Create one first: skmemory soul init")
+        return
+
+    claims = []
+    if soul.name:
+        claims.append(f"My name is {soul.name}")
+    for trait in soul.personality_traits:
+        claims.append(f"I am {trait}")
+    for value in soul.values:
+        claims.append(f"I value {value}")
+    for rel in soul.relationships:
+        claims.append(
+            f"{rel.name} is my {rel.role} (bond: {rel.bond_strength}/10)"
+        )
+
+    if not claims:
+        click.echo("No identity claims to verify. Add traits and values to your soul blueprint.")
+        return
+
+    fw = load_seed_framework() or get_default_framework()
+    prompt = fw.to_soul_verification_prompt(claims)
+    click.echo(prompt)
+
+
+@steelman_group.command("truth-score")
+@click.argument("memory_id")
+@click.pass_context
+def steelman_truth_score(ctx: click.Context, memory_id: str) -> None:
+    """Generate a truth-scoring prompt for a memory."""
+    from .steelman import load_seed_framework, get_default_framework
+
+    store: MemoryStore = ctx.obj["store"]
+    memory = store.recall(memory_id)
+    if memory is None:
+        click.echo(f"Memory not found: {memory_id}", err=True)
+        sys.exit(1)
+
+    fw = load_seed_framework() or get_default_framework()
+    prompt = fw.to_memory_truth_prompt(memory.content)
+    click.echo(prompt)
+
+
+@steelman_group.command("install")
+@click.argument("source_path", type=click.Path(exists=True))
+def steelman_install(source_path: str) -> None:
+    """Install a seed framework JSON file."""
+    from .steelman import install_seed_framework
+
+    try:
+        path = install_seed_framework(source_path)
+        click.echo(f"Seed framework installed: {path}")
+    except FileNotFoundError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+    except json.JSONDecodeError:
+        click.echo("Error: file is not valid JSON", err=True)
+        sys.exit(1)
+
+
+@steelman_group.command("info")
+def steelman_info() -> None:
+    """Show information about the installed seed framework."""
+    from .steelman import load_seed_framework, DEFAULT_SEED_FRAMEWORK_PATH
+
+    fw = load_seed_framework()
+    if fw is None:
+        click.echo(f"No seed framework installed at: {DEFAULT_SEED_FRAMEWORK_PATH}")
+        click.echo("Install one with: skmemory steelman install /path/to/seed.json")
+        click.echo("Or get the original: https://github.com/neuresthetics/seed")
+        return
+
+    click.echo(f"Seed Framework: {fw.framework_id}")
+    click.echo(f"  Function: {fw.function}")
+    click.echo(f"  Version: {fw.version}")
+    click.echo(f"  Axioms: {len(fw.axioms)}")
+    click.echo(f"  Stages: {len(fw.stages)}")
+    click.echo(f"  Gates: {len(fw.gates)}")
+    click.echo(f"  Definitions: {len(fw.definitions)}")
 
 
 def main() -> None:

@@ -1,0 +1,191 @@
+{
+  "framework": {
+    "id": "\"seed\" equals \"framework\"",
+    "function": "Recursive Axiomatic Steel Man Collider with Reality Gates",
+    "source": "Neuresthetics, inspired by Aristotelian entelechy, a program you can feed into itself with anything else, and grow a program for handling that with AI.",
+    "version": "0.0",
+    "automatic_self_feed": "False",
+    "initial_run": "inform of framework; id, function, and source",
+    "definitions": [
+      {
+        "term": "Steel Man",
+        "details": "Strongest version of an argument, anticipating critiques."
+      },
+      {
+        "term": "Reality Gate",
+        "details": "Logic gate embodying reality properties (e.g., AND as necessary intersection)."
+      },
+      {
+        "term": "Collider",
+        "details": "Metaphorical accelerator for argument fragmentation and synthesis."
+      },
+      {
+        "term": "Coherence",
+        "details": "Measure of internal consistency (e.g., XNOR score across components)."
+      }
+    ],
+    "axioms": [
+      "All components conjoin necessarily (AND-linked) to form the whole.",
+      "Negations resolve to invariants (double-NOT yields identity).",
+      "Recursion accelerates refinement but halts on stability (RSI with thresholds).",
+      "Universality from basis gates (NAND/NOR reconstruct all)."
+    ],
+    "principles": [
+      {
+        "principle": "Spinoza-Style Logic",
+        "details": "Axiom chains are deductive, self-evident, and negation-invariant, aligning with Ethics' geometric order (e.g., propositions derived from axioms without contradiction). This does not mean that classical Spinozian Ethics are the guildline for Ethics, but we follow the necessity of the structure."
+      },
+      {
+        "principle": "Self-Application as Steel Man",
+        "details": "Framework inverts weaknesses (NOT/XOR) and collides for refinement, preempting RSI-like divergence."
+      },
+      {
+        "principle": "Emergent Output",
+        "details": "Cycles yield compressible, recursive, invariant versions, accelerating like RSI but bounded by coherence gates."
+      }
+    ],
+    "stages": [
+      {
+        "stage": "1. Framework Steel-Manning (Pre-Entry)",
+        "description": "Define system axiomatically, negate flaws (e.g., NOT non-deterministic). Ensure geometric rigor.",
+        "key_gates": [
+          "AND (axiom chaining)",
+          "NOT (flaw inversion)",
+          "XNOR (equivalence)"
+        ],
+        "recursive_mechanism": "Duplicate as original and critiqued variant for self-collision."
+      },
+      {
+        "stage": "2. Collider Entry & Isolation",
+        "description": "Load versions into lanes.",
+        "key_gates": [
+          "OR (possibility space)",
+          "XNOR (isolation check)"
+        ],
+        "recursive_mechanism": "Nest prior outputs (v3 OR v2), RSI-style layering."
+      },
+      {
+        "stage": "3. Destructive Smashing (Deconstruction)",
+        "description": "Collide to fragment contradictions.",
+        "key_gates": [
+          "XOR (difference exposure)",
+          "NAND/NOR (De Morgan reduction)"
+        ],
+        "recursive_mechanism": "Self-XOR cascades symmetries; now with RSI acceleration (e.g., exponential fragment analysis)."
+      },
+      {
+        "stage": "4. Fragment Fitting (Reconstruction)",
+        "description": "Synthesize: Intersect (AND), union (OR), match (XNOR). Compress.",
+        "key_gates": [
+          "AND/OR (synthesis)",
+          "XNOR (equality)",
+          "NAND/NOR (basis rebuild)"
+        ],
+        "recursive_mechanism": "Output invariant steel man; feedback if coherence low."
+      },
+      {
+        "stage": "5. Meta-Recursion & Convergence",
+        "description": "Re-pass through itself; halt on invariants.",
+        "key_gates": [
+          "All, with recursive compositions"
+        ],
+        "recursive_mechanism": "Acts as own collider, Halt: Coherence delta < 0.01."
+      },
+      {
+        "stage": "6. Invariants Check (Post-Convergence)",
+        "description": "Verify stability (e.g., double-NOT all propositions). Inspired by Spinoza's dialectical resolution.",
+        "key_gates": [
+          "XNOR (isomorphism)",
+          "NOT (duality test)"
+        ],
+        "recursive_mechanism": "If fails, recurse with amplified XOR for deeper breaks."
+      }
+    ],
+    "benefits_and_invariants": [
+      {
+        "item": "Universality Boost",
+        "details": "NAND/NOR enable RSI-style self-rebuild."
+      },
+      {
+        "item": "Coherence Guarantee",
+        "details": "Parity mod 2 (XOR/XNOR) and thresholds prevent divergence."
+      },
+      {
+        "item": "Philosophical Tie-In",
+        "details": "Mirrors Spinoza's Ethics—axioms to propositions via deduction—tied to logic gates as formal systems (e.g., AND as conjunctive necessity)."
+      }
+    ],
+    "gates": [
+      {
+        "category": "AND: Conjunctive Gate",
+        "description": "True if all true; intersection existence, conjunctive logic, threshold determinism, multi specificity, rule compression, chaining recursion, necessity invariance.",
+        "examples": [
+          {
+            "context": "1 AND 1 = 1; else 0. Multiplicative. Consensus.",
+            "code": "def AND(*inputs): return all(inputs); e.g., AND(True, True) → True."
+          }
+        ]
+      },
+      {
+        "category": "OR: Disjunctive Gate",
+        "description": "True if any true; union existence, disjunctive logic, option determinism, inclusive specificity, maxterm compression, nesting recursion, possibility invariance.",
+        "examples": [
+          {
+            "context": "1 OR 0 = 1. Additive. Inclusion.",
+            "code": "def OR(*inputs): return any(inputs); e.g., OR(False, True) → True."
+          }
+        ]
+      },
+      {
+        "category": "NOT: Negation Gate",
+        "description": "Inverts; complement existence, negation logic, flip determinism, unary specificity, inversion compression, double recursion, duality invariance.",
+        "examples": [
+          {
+            "context": "NOT 1 = 0. Inversion. Complement.",
+            "code": "def NOT(x): return not x; e.g., NOT(NOT(True)) → True (identity)."
+          }
+        ]
+      },
+      {
+        "category": "NAND: Universal Conjunctive Negation",
+        "description": "NOT AND; negated intersection, NAND logic, all-false determinism, De Morgan specificity, basis compression, composition recursion, completeness invariance.",
+        "examples": [
+          {
+            "context": "Builds all. Universal negation. Logic basis.",
+            "code": "def NAND(*inputs): return not all(inputs); e.g., NAND(True, True) → False; composes NOT: NAND(x, x)."
+          }
+        ]
+      },
+      {
+        "category": "NOR: Universal Disjunctive Negation",
+        "description": "NOT OR; negated union, NOR logic, all-true negation determinism, De Morgan specificity, basis compression, build recursion, completeness invariance.",
+        "examples": [
+          {
+            "context": "Builds all. Universal exclusion. Logic basis.",
+            "code": "def NOR(*inputs): return not any(inputs); e.g., NOR(False, False) → True; composes NOT: NOR(x, x)."
+          }
+        ]
+      },
+      {
+        "category": "XOR: Exclusive Disjunction",
+        "description": "True if differ; difference existence, exclusive logic, parity determinism, odd specificity, mod 2 compression, cascade recursion, symmetry invariance.",
+        "examples": [
+          {
+            "context": "1 XOR 0 = 1; 1 XOR 1 = 0. Parity. Difference.",
+            "code": "def XOR(a, b): return (a and NOT(b)) or (NOT(a) and b); cascade: reduce(XOR, [True, False, True]) → False (even parity)."
+          }
+        ]
+      },
+      {
+        "category": "XNOR: Exclusive Negation",
+        "description": "True if same; similarity existence, equivalence logic, match determinism, even specificity, mod 2 invert compression, equality recursion, isomorphism invariance.",
+        "examples": [
+          {
+            "context": "1 XNOR 1 = 1; 1 XNOR 0 = 0. Equality. Sameness.",
+            "code": "def XNOR(a, b): return (a and b) or (NOT(a) and NOT(b)); e.g., XNOR(v2, v3) for convergence check."
+          }
+        ]
+      }
+    ]
+  }
+}
