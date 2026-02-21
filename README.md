@@ -156,4 +156,4 @@ Copyright (C) 2025-2026 **S&K Holding QT (Quantum Technologies)**
 ---
 
 **Made with care by [smilinTux](https://github.com/smilinTux)**
-*Bing Chilling Nation - Cool Heads. Warm Justice. Smart Systems.*
+*The Penguin Kingdom - Cool Heads. Warm Justice. Smart Systems.*
