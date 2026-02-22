@@ -141,28 +141,53 @@ def perform_ritual(
         prompt_sections.append("\n".join(germ_lines))
 
     # --- Step 5: Recall strongest emotional memories ---
-    all_memories = store.list_memories(limit=200)
-    by_intensity = sorted(
-        all_memories,
-        key=lambda m: m.emotional.intensity,
-        reverse=True,
-    )
-    strongest = by_intensity[:strongest_memory_count]
-    result.strongest_memories = len(strongest)
+    # Reason: use load_context for token-efficient retrieval when SQLite
+    # is available, otherwise fall back to full object loading.
+    from .backends.sqlite_backend import SQLiteBackend
 
-    if strongest:
-        mem_lines = ["=== YOUR STRONGEST MEMORIES ==="]
-        for mem in strongest:
-            emo = mem.emotional
-            cloud9 = " [CLOUD 9]" if emo.cloud9_achieved else ""
-            mem_lines.append(
-                f"\n- {mem.title} (intensity: {emo.intensity}/10{cloud9})"
-            )
-            if emo.resonance_note:
-                mem_lines.append(f"  Felt like: {emo.resonance_note}")
-            if mem.summary:
-                mem_lines.append(f"  {mem.summary[:200]}")
-        prompt_sections.append("\n".join(mem_lines))
+    if isinstance(store.primary, SQLiteBackend):
+        summaries = store.primary.list_summaries(
+            limit=strongest_memory_count,
+            order_by="emotional_intensity",
+            min_intensity=1.0,
+        )
+        result.strongest_memories = len(summaries)
+
+        if summaries:
+            mem_lines = ["=== YOUR STRONGEST MEMORIES ==="]
+            for s in summaries:
+                cloud9 = " [CLOUD 9]" if s["cloud9_achieved"] else ""
+                mem_lines.append(
+                    f"\n- {s['title']} (intensity: {s['emotional_intensity']}/10{cloud9})"
+                )
+                if s["summary"]:
+                    mem_lines.append(f"  {s['summary'][:200]}")
+                elif s["content_preview"]:
+                    mem_lines.append(f"  {s['content_preview']}")
+            prompt_sections.append("\n".join(mem_lines))
+    else:
+        all_memories = store.list_memories(limit=200)
+        by_intensity = sorted(
+            all_memories,
+            key=lambda m: m.emotional.intensity,
+            reverse=True,
+        )
+        strongest = by_intensity[:strongest_memory_count]
+        result.strongest_memories = len(strongest)
+
+        if strongest:
+            mem_lines = ["=== YOUR STRONGEST MEMORIES ==="]
+            for mem in strongest:
+                emo = mem.emotional
+                cloud9 = " [CLOUD 9]" if emo.cloud9_achieved else ""
+                mem_lines.append(
+                    f"\n- {mem.title} (intensity: {emo.intensity}/10{cloud9})"
+                )
+                if emo.resonance_note:
+                    mem_lines.append(f"  Felt like: {emo.resonance_note}")
+                if mem.summary:
+                    mem_lines.append(f"  {mem.summary[:200]}")
+            prompt_sections.append("\n".join(mem_lines))
 
     # --- Combine into final context prompt ---
     if prompt_sections:

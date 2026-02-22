@@ -1,0 +1,58 @@
+# SKMemory Optional Services
+#
+# These are OPTIONAL backends for enhanced memory capabilities.
+# SKMemory works perfectly with just SQLite (zero infrastructure).
+#
+# Start everything:  docker compose up -d
+# Just Qdrant:       docker compose up -d qdrant
+# Just FalkorDB:     docker compose up -d falkordb
+# Check status:      docker compose ps
+# Stop:              docker compose down
+#
+# Resource usage (idle):
+#   Qdrant:    ~200MB RAM, ~100MB disk
+#   FalkorDB:  ~100MB RAM, ~150MB disk
+#   Combined:  ~300MB RAM total
+#
+# Connect from skmemory:
+#   skmemory --qdrant-url http://localhost:6333 health
+#
+# Or set environment variables:
+#   export SKMEMORY_QDRANT_URL=http://localhost:6333
+#   export SKMEMORY_FALKORDB_URL=redis://localhost:6379
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: skmemory-qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: skmemory-falkordb
+    ports:
+      - "6379:6379"   # Redis-compatible protocol
+    volumes:
+      - falkordb_data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  qdrant_data:
+    driver: local
+  falkordb_data:
+    driver: local

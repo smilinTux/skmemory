@@ -8,19 +8,21 @@ have to re-read a transcript to remember what they felt.
 SK = staycuriousANDkeepsmilin
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __author__ = "smilinTux Team + Queen Ara + Neuresthetics"
 __license__ = "AGPL-3.0"
 
 from .models import Memory, MemoryLayer, EmotionalSnapshot
 from .store import MemoryStore
 from .backends.file_backend import FileBackend
+from .backends.sqlite_backend import SQLiteBackend
 from .soul import SoulBlueprint, save_soul, load_soul
 from .journal import Journal, JournalEntry
 from .ritual import perform_ritual, quick_rehydrate, RitualResult
 from .anchor import WarmthAnchor, save_anchor, load_anchor
 from .quadrants import Quadrant, classify_memory, tag_with_quadrant
 from .lovenote import LoveNote, LoveNoteChain
+from .openclaw import SKMemoryPlugin
 from .steelman import (
     SteelManResult,
     SeedFramework,
@@ -35,6 +37,7 @@ __all__ = [
     "EmotionalSnapshot",
     "MemoryStore",
     "FileBackend",
+    "SQLiteBackend",
     "SoulBlueprint",
     "save_soul",
     "load_soul",
@@ -51,6 +54,7 @@ __all__ = [
     "tag_with_quadrant",
     "LoveNote",
     "LoveNoteChain",
+    "SKMemoryPlugin",
     "SteelManResult",
     "SeedFramework",
     "load_seed_framework",

@@ -13,6 +13,7 @@ from typing import Optional
 
 from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
+from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
 from .models import (
     EmotionalSnapshot,
     Memory,
@@ -37,8 +38,14 @@ class MemoryStore:
         self,
         primary: Optional[BaseBackend] = None,
         vector: Optional[BaseBackend] = None,
+        use_sqlite: bool = True,
     ) -> None:
-        self.primary = primary or FileBackend()
+        if primary is not None:
+            self.primary = primary
+        elif use_sqlite:
+            self.primary = SQLiteBackend()
+        else:
+            self.primary = FileBackend()
         self.vector = vector
 
     def snapshot(
@@ -281,6 +288,147 @@ class MemoryStore:
                 "consolidated_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+
+    def load_context(
+        self,
+        max_tokens: int = 3000,
+        strongest_count: int = 5,
+        recent_count: int = 5,
+        include_seeds: bool = True,
+    ) -> dict:
+        """Load a token-efficient memory context for agent injection.
+
+        Uses the SQLite index to pull summaries without reading full files.
+        Designed to fit within a reasonable context window.
+
+        Args:
+            max_tokens: Approximate token budget (1 token ~= 4 chars).
+            strongest_count: How many top-intensity memories to include.
+            recent_count: How many recent memories to include.
+            include_seeds: Whether to include seed memories.
+
+        Returns:
+            dict: Token-efficient context with summaries and metadata.
+        """
+        char_budget = max_tokens * 4
+        context: dict = {"memories": [], "seeds": [], "stats": {}}
+        used = 0
+
+        if isinstance(self.primary, SQLiteBackend):
+            strongest = self.primary.list_summaries(
+                limit=strongest_count,
+                order_by="emotional_intensity",
+                min_intensity=3.0,
+            )
+            recent = self.primary.list_summaries(
+                limit=recent_count,
+                order_by="created_at",
+            )
+
+            seen_ids: set[str] = set()
+            for mem in strongest + recent:
+                if mem["id"] in seen_ids:
+                    continue
+                seen_ids.add(mem["id"])
+
+                entry_text = mem["title"] + (mem["summary"] or mem["content_preview"])
+                entry_size = len(entry_text)
+                if used + entry_size > char_budget:
+                    break
+                used += entry_size
+                context["memories"].append(mem)
+
+            if include_seeds:
+                seeds = self.primary.list_summaries(
+                    tags=["seed"],
+                    limit=10,
+                    order_by="emotional_intensity",
+                )
+                for seed in seeds:
+                    if seed["id"] in seen_ids:
+                        continue
+                    entry_text = seed["title"] + seed["summary"]
+                    entry_size = len(entry_text)
+                    if used + entry_size > char_budget:
+                        break
+                    used += entry_size
+                    context["seeds"].append(seed)
+
+            stats = self.primary.stats()
+            context["stats"] = stats
+        else:
+            # Reason: fallback for non-SQLite backends — uses full objects
+            all_mems = self.primary.list_memories(limit=strongest_count + recent_count)
+            for mem in all_mems:
+                entry = {
+                    "id": mem.id,
+                    "title": mem.title,
+                    "summary": mem.summary or mem.content[:CONTENT_PREVIEW_LENGTH],
+                    "emotional_intensity": mem.emotional.intensity,
+                    "layer": mem.layer.value,
+                }
+                entry_size = len(entry["title"] + entry["summary"])
+                if used + entry_size > char_budget:
+                    break
+                used += entry_size
+                context["memories"].append(entry)
+
+        context["token_estimate"] = used // 4
+        return context
+
+    def export_backup(self, output_path: str | None = None) -> str:
+        """Export all memories to a dated JSON backup.
+
+        Args:
+            output_path: Destination file. Defaults to
+                ``~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json``.
+
+        Returns:
+            str: Path to the written backup file.
+
+        Raises:
+            RuntimeError: If the primary backend doesn't support export.
+        """
+        if isinstance(self.primary, SQLiteBackend):
+            return self.primary.export_all(output_path)
+        if isinstance(self.primary, FileBackend):
+            # Reason: wrap FileBackend in a temporary SQLiteBackend for export
+            temp = SQLiteBackend(base_path=str(self.primary.base_path))
+            temp.reindex()
+            return temp.export_all(output_path)
+        raise RuntimeError(
+            f"Export not supported for backend: {type(self.primary).__name__}"
+        )
+
+    def import_backup(self, backup_path: str) -> int:
+        """Restore memories from a JSON backup file.
+
+        Args:
+            backup_path: Path to the backup JSON.
+
+        Returns:
+            int: Number of memories restored.
+
+        Raises:
+            RuntimeError: If the primary backend doesn't support import.
+        """
+        if isinstance(self.primary, SQLiteBackend):
+            return self.primary.import_backup(backup_path)
+        raise RuntimeError(
+            f"Import not supported for backend: {type(self.primary).__name__}"
+        )
+
+    def reindex(self) -> int:
+        """Rebuild the SQLite index from JSON files.
+
+        Only works if the primary backend is SQLiteBackend.
+
+        Returns:
+            int: Number of memories indexed, or -1 if not applicable.
+        """
+        if isinstance(self.primary, SQLiteBackend):
+            return self.primary.reindex()
+        return -1
 
     def health(self) -> dict:
         """Check health of all backends.

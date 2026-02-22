@@ -1,0 +1,59 @@
+{
+  "name": "skmemory-openclaw-plugin",
+  "version": "0.5.0",
+  "description": "OpenClaw plugin for SKMemory - Universal AI Memory System",
+  "main": "src/index.js",
+  "type": "module",
+  "openclaw": {
+    "plugin": {
+      "name": "skmemory",
+      "version": "0.5.0",
+      "displayName": "🧠 SKMemory",
+      "description": "Universal AI memory with emotional context and token-optimized loading",
+      "author": "smilinTux Team",
+      "license": "AGPL-3.0",
+      "category": "memory",
+      "permissions": ["read", "write"],
+      "commands": [
+        "skmemory:context",
+        "skmemory:snapshot",
+        "skmemory:search",
+        "skmemory:ritual",
+        "skmemory:export",
+        "skmemory:import",
+        "skmemory:health",
+        "skmemory:config"
+      ],
+      "events": [
+        "session:start",
+        "session:compaction",
+        "session:resume"
+      ],
+      "dashboard": {
+        "widgets": [
+          {
+            "id": "skmemory-status",
+            "name": "🧠 SKMemory",
+            "category": "memory",
+            "position": "bottom",
+            "size": "small"
+          }
+        ]
+      }
+    }
+  },
+  "peerDependencies": {
+    "openclaw": ">=1.0.0"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "skmemory",
+    "memory",
+    "ai",
+    "emotional-context",
+    "penguin-kingdom"
+  ],
+  "author": "smilinTux Team",
+  "license": "AGPL-3.0"
+}

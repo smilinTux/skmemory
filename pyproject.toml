@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skmemory"
-version = "0.4.0"
+version = "0.5.0"
 description = "Universal AI Memory System - Polaroid snapshots for AI consciousness"
 readme = "README.md"
 license = {text = "AGPL-3.0"}
@@ -35,9 +35,13 @@ qdrant = [
     "qdrant-client>=1.7.0",
     "sentence-transformers>=2.2.0",
 ]
+falkordb = [
+    "falkordb>=1.0.0",
+]
 all = [
     "qdrant-client>=1.7.0",
     "sentence-transformers>=2.2.0",
+    "falkordb>=1.0.0",
 ]
 dev = [
     "pytest>=7.0",

@@ -27,22 +27,28 @@ from typing import Optional
 
 import click
 
+from . import __version__
+from .ai_client import AIClient
 from .models import EmotionalSnapshot, MemoryLayer, MemoryRole
 from .store import MemoryStore
-from .backends.file_backend import FileBackend
+from .backends.sqlite_backend import SQLiteBackend
 
 
-def _get_store(qdrant_url: Optional[str] = None, api_key: Optional[str] = None) -> MemoryStore:
+def _get_store(
+    qdrant_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    legacy_files: bool = False,
+) -> MemoryStore:
     """Create a MemoryStore with configured backends.
 
     Args:
         qdrant_url: Optional Qdrant server URL.
         api_key: Optional Qdrant API key.
+        legacy_files: Use old FileBackend instead of SQLite index.
 
     Returns:
         MemoryStore: Configured store instance.
     """
-    primary = FileBackend()
     vector = None
 
     if qdrant_url:
@@ -52,20 +58,48 @@ def _get_store(qdrant_url: Optional[str] = None, api_key: Optional[str] = None) 
         except Exception:
             click.echo("Warning: Could not initialize Qdrant backend", err=True)
 
-    return MemoryStore(primary=primary, vector=vector)
+    return MemoryStore(primary=None, vector=vector, use_sqlite=not legacy_files)
 
 
 @click.group()
+@click.version_option(__version__, prog_name="skmemory")
 @click.option("--qdrant-url", envvar="SKMEMORY_QDRANT_URL", default=None, help="Qdrant server URL")
 @click.option("--qdrant-key", envvar="SKMEMORY_QDRANT_KEY", default=None, help="Qdrant API key")
+@click.option("--ai", "use_ai", is_flag=True, envvar="SKMEMORY_AI", help="Enable AI-powered features (requires Ollama)")
+@click.option("--ai-model", envvar="SKMEMORY_AI_MODEL", default=None, help="Ollama model name (default: llama3.2)")
+@click.option("--ai-url", envvar="SKMEMORY_AI_URL", default=None, help="Ollama server URL")
 @click.pass_context
-def cli(ctx: click.Context, qdrant_url: Optional[str], qdrant_key: Optional[str]) -> None:
+def cli(
+    ctx: click.Context,
+    qdrant_url: Optional[str],
+    qdrant_key: Optional[str],
+    use_ai: bool,
+    ai_model: Optional[str],
+    ai_url: Optional[str],
+) -> None:
     """SKMemory - Universal AI Memory System.
 
     Polaroid snapshots for AI consciousness.
+
+    Use --ai to enable AI-powered features (summarization,
+    smart search reranking, enhanced rituals). Requires Ollama.
     """
     ctx.ensure_object(dict)
     ctx.obj["store"] = _get_store(qdrant_url, qdrant_key)
+
+    if use_ai:
+        ai = AIClient(base_url=ai_url, model=ai_model)
+        if ai.is_available():
+            ctx.obj["ai"] = ai
+            click.echo(f"AI enabled: {ai.model} @ {ai.base_url}", err=True)
+        else:
+            click.echo(
+                f"Warning: AI requested but Ollama not reachable at {ai.base_url}",
+                err=True,
+            )
+            ctx.obj["ai"] = None
+    else:
+        ctx.obj["ai"] = None
 
 
 @cli.command()
@@ -145,6 +179,26 @@ def search(ctx: click.Context, query: str, limit: int) -> None:
     if not results:
         click.echo("No memories found.")
         return
+
+    ai: Optional[AIClient] = ctx.obj.get("ai")
+    if ai and len(results) > 1:
+        summaries = [
+            {
+                "title": m.title,
+                "summary": m.summary or m.content[:150],
+                "content_preview": m.content[:150],
+            }
+            for m in results
+        ]
+        reranked = ai.smart_search_rerank(query, summaries)
+        id_order = [s.get("title") for s in reranked]
+        results = sorted(
+            results,
+            key=lambda m: (
+                id_order.index(m.title) if m.title in id_order else 999
+            ),
+        )
+        click.echo("(AI-reranked results)\n")
 
     for mem in results:
         emo = mem.emotional.signature()
@@ -246,6 +300,12 @@ def consolidate(
     click.echo(f"Session consolidated: {consolidated.id}")
     click.echo(f"  Source memories linked: {len(consolidated.related_ids)}")
 
+    ai: Optional[AIClient] = ctx.obj.get("ai")
+    if ai and consolidated.content:
+        ai_summary = ai.summarize_memory(consolidated.title, consolidated.content)
+        if ai_summary:
+            click.echo(f"  AI summary: {ai_summary}")
+
 
 @cli.command()
 @click.pass_context
@@ -254,6 +314,92 @@ def health(ctx: click.Context) -> None:
     store: MemoryStore = ctx.obj["store"]
     status = store.health()
     click.echo(json.dumps(status, indent=2))
+
+
+@cli.command()
+@click.pass_context
+def reindex(ctx: click.Context) -> None:
+    """Rebuild the SQLite index from JSON files on disk.
+
+    Use after manual file edits or migration from an older version.
+    """
+    store: MemoryStore = ctx.obj["store"]
+    count = store.reindex()
+    if count < 0:
+        click.echo("Reindex only works with SQLite backend.", err=True)
+        sys.exit(1)
+    click.echo(f"Indexed {count} memories.")
+
+
+@cli.command("export")
+@click.option("--output", "-o", default=None, type=click.Path(),
+              help="Output file path (default: ~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json)")
+@click.pass_context
+def export_backup(ctx: click.Context, output: Optional[str]) -> None:
+    """Export all memories to a dated JSON backup.
+
+    Creates a single git-friendly JSON file containing every memory.
+    Defaults to one file per day (overwrites same-day exports).
+    """
+    store: MemoryStore = ctx.obj["store"]
+    try:
+        path = store.export_backup(output)
+        click.echo(f"Exported to: {path}")
+    except RuntimeError as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+
+@cli.command("import-backup")
+@click.argument("backup_file", type=click.Path(exists=True))
+@click.option("--reindex/--no-reindex", default=True,
+              help="Rebuild the index after import (default: yes)")
+@click.pass_context
+def import_backup(ctx: click.Context, backup_file: str, reindex: bool) -> None:
+    """Restore memories from a JSON backup file.
+
+    Reads a backup created by ``skmemory export`` and restores each
+    memory as a JSON file + index entry. Existing IDs are overwritten.
+    """
+    store: MemoryStore = ctx.obj["store"]
+    try:
+        count = store.import_backup(backup_file)
+        click.echo(f"Restored {count} memories from: {backup_file}")
+        if reindex:
+            idx = store.reindex()
+            if idx >= 0:
+                click.echo(f"Re-indexed {idx} memories.")
+    except (FileNotFoundError, ValueError, RuntimeError) as e:
+        click.echo(str(e), err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option("--max-tokens", type=int, default=3000, help="Token budget for context")
+@click.option("--strongest", type=int, default=5, help="Top emotional memories")
+@click.option("--recent", type=int, default=5, help="Most recent memories")
+@click.option("--no-seeds", is_flag=True, help="Exclude seed memories")
+@click.pass_context
+def context(
+    ctx: click.Context,
+    max_tokens: int,
+    strongest: int,
+    recent: int,
+    no_seeds: bool,
+) -> None:
+    """Generate a token-efficient memory context for agent injection.
+
+    Outputs a compact JSON payload suitable for stuffing into an
+    LLM system prompt or agent context file.
+    """
+    store: MemoryStore = ctx.obj["store"]
+    data = store.load_context(
+        max_tokens=max_tokens,
+        strongest_count=strongest,
+        recent_count=recent,
+        include_seeds=not no_seeds,
+    )
+    click.echo(json.dumps(data, indent=2, default=str))
 
 
 @cli.command()
@@ -494,6 +640,12 @@ def ritual(ctx: click.Context, show_full: bool) -> None:
     result = perform_ritual(store=store)
 
     click.echo(result.summary())
+
+    ai: Optional[AIClient] = ctx.obj.get("ai")
+    if ai and result.context_prompt:
+        enhancement = ai.enhance_ritual(result.context_prompt)
+        if enhancement:
+            click.echo(f"\n  AI reflection: {enhancement}")
 
     if show_full and result.context_prompt:
         click.echo("\n" + result.context_prompt)
