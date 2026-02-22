@@ -886,6 +886,77 @@ def steelman_truth_score(ctx: click.Context, memory_id: str) -> None:
     click.echo(prompt)
 
 
+# ═══════════════════════════════════════════════════════════
+# Telegram / Chat Import commands
+# ═══════════════════════════════════════════════════════════
+
+
+@cli.command("import-telegram")
+@click.argument("export_path", type=click.Path(exists=True))
+@click.option(
+    "--mode",
+    type=click.Choice(["daily", "message"]),
+    default="daily",
+    help="'daily' consolidates per day (recommended), 'message' imports each message",
+)
+@click.option("--min-length", type=int, default=30, help="Skip messages shorter than N chars")
+@click.option("--chat-name", default=None, help="Override chat name from export")
+@click.option("--tags", default="", help="Extra comma-separated tags")
+@click.pass_context
+def import_telegram_cmd(
+    ctx: click.Context,
+    export_path: str,
+    mode: str,
+    min_length: int,
+    chat_name: Optional[str],
+    tags: str,
+) -> None:
+    """Import a Telegram Desktop chat export into memories.
+
+    Point to the export directory (containing result.json) or
+    directly to the JSON file.
+
+    \b
+    Examples:
+        skmemory import-telegram ~/Downloads/telegram-export/
+        skmemory import-telegram ~/chats/result.json --mode message
+        skmemory import-telegram ./export --chat-name "Lumina & Chef"
+    """
+    from .importers.telegram import import_telegram
+
+    store: MemoryStore = ctx.obj["store"]
+    extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+    click.echo(f"Importing Telegram export: {export_path}")
+    click.echo(f"  Mode: {mode} | Min length: {min_length}")
+
+    try:
+        stats = import_telegram(
+            store,
+            export_path,
+            mode=mode,
+            min_message_length=min_length,
+            chat_name=chat_name,
+            tags=extra_tags or None,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"\nImport complete for: {stats.get('chat_name', 'unknown')}")
+    if mode == "daily":
+        click.echo(f"  Days processed: {stats.get('days_processed', 0)}")
+        click.echo(f"  Messages imported: {stats.get('messages_imported', 0)}")
+    else:
+        click.echo(f"  Imported: {stats.get('imported', 0)}")
+        click.echo(f"  Skipped: {stats.get('skipped', 0)}")
+    click.echo(f"  Total messages scanned: {stats.get('total_messages', 0)}")
+
+    ai: Optional[AIClient] = ctx.obj.get("ai")
+    if ai:
+        click.echo("\nTip: Run 'skmemory search --ai \"<topic>\"' to semantically search your imported chats.")
+
+
 @steelman_group.command("install")
 @click.argument("source_path", type=click.Path(exists=True))
 def steelman_install(source_path: str) -> None:

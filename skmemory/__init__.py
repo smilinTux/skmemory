@@ -23,6 +23,7 @@ from .anchor import WarmthAnchor, save_anchor, load_anchor
 from .quadrants import Quadrant, classify_memory, tag_with_quadrant
 from .lovenote import LoveNote, LoveNoteChain
 from .openclaw import SKMemoryPlugin
+from .importers.telegram import import_telegram
 from .steelman import (
     SteelManResult,
     SeedFramework,
@@ -60,5 +61,6 @@ __all__ = [
     "load_seed_framework",
     "install_seed_framework",
     "get_default_framework",
+    "import_telegram",
     "__version__",
 ]
