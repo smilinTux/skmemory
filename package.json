@@ -1,0 +1,28 @@
+{
+  "name": "@smilintux/skmemory",
+  "version": "0.5.0",
+  "description": "SKMemory - Universal AI memory system with git-based multi-layer memory and vector search.",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "bin": {
+    "skmemory-js": "bin/cli.js"
+  },
+  "keywords": [
+    "skmemory",
+    "ai-memory",
+    "vector-search",
+    "git-based",
+    "sovereign",
+    "agent-memory"
+  ],
+  "author": "smilinTux <chefboyrdave2.1@gmail.com>",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smilinTux/skmemory.git"
+  },
+  "homepage": "https://github.com/smilinTux/skmemory",
+  "bugs": {
+    "url": "https://github.com/smilinTux/skmemory/issues"
+  }
+}
