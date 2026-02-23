@@ -12,12 +12,13 @@ const VERSION = "0.5.0";
 const PYTHON_PACKAGE = "skmemory";
 
 function checkInstalled() {
-  try {
-    execSync(`python3 -c "import skmemory"`, { stdio: "pipe" });
-    return true;
-  } catch {
-    return false;
+  for (const py of ["python3", "python"]) {
+    try {
+      execSync(`${py} -c "import skmemory"`, { stdio: "pipe" });
+      return true;
+    } catch {}
   }
+  return false;
 }
 
 function run(args) {
