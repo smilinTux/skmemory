@@ -145,6 +145,14 @@ pytest tests/ -v
 | [SKForge](https://github.com/smilinTux/SKyForge) | AI-Native Software Blueprints |
 | [SKStacks](https://skgit.skstack01.douno.it/smilinTux/SKStacks) | Zero-Trust Infrastructure Framework |
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Developer Quickstart](../docs/QUICKSTART.md) | Install + first sovereign agent in 5 minutes |
+| [API Reference](../docs/API.md) | Full API docs for SKMemory and all core packages |
+| [PMA Integration](../docs/PMA_INTEGRATION.md) | Legal sovereignty layer (Fiducia Communitatis) |
+
 ## License
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.

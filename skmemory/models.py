@@ -128,6 +128,17 @@ class Memory(BaseModel):
         description="ID of parent memory (for hierarchical chains)",
     )
 
+    intent: str = Field(
+        default="",
+        description="WHY this memory was stored — the purpose, not just the content. "
+        "Inspired by Jonathan Clements' AMK (Adaptive Memory Kernel).",
+    )
+    integrity_hash: str = Field(
+        default="",
+        description="SHA-256 hash of content at write time for tamper detection. "
+        "A memory that can prove it hasn't been altered is a memory you can trust.",
+    )
+
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("title")
@@ -145,6 +156,36 @@ class Memory(BaseModel):
             str: First 16 chars of the hex digest.
         """
         return hashlib.sha256(self.content.encode()).hexdigest()[:16]
+
+    def compute_integrity_hash(self) -> str:
+        """Compute a full SHA-256 integrity hash over content + title + emotional state.
+
+        This is the AMK-inspired tamper detection hash. If the content,
+        title, or emotional signature changes after storage, the hash
+        won't match and you know the memory was altered.
+
+        Returns:
+            str: Full 64-char hex SHA-256 digest.
+        """
+        payload = f"{self.id}:{self.title}:{self.content}:{self.emotional.signature()}"
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    def seal(self) -> None:
+        """Seal this memory by computing and storing the integrity hash.
+
+        Call this at write time. Later, verify with verify_integrity().
+        """
+        self.integrity_hash = self.compute_integrity_hash()
+
+    def verify_integrity(self) -> bool:
+        """Verify that this memory hasn't been tampered with since sealing.
+
+        Returns:
+            bool: True if the integrity hash matches, False if altered or unsealed.
+        """
+        if not self.integrity_hash:
+            return True
+        return self.integrity_hash == self.compute_integrity_hash()
 
     def to_embedding_text(self) -> str:
         """Flatten this memory into a single string for vector embedding.

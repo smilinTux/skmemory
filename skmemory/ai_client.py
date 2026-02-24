@@ -93,6 +93,46 @@ class AIClient:
         except Exception:
             return ""
 
+    def embed(self, text: str, model: Optional[str] = None) -> list[float]:
+        """Generate an embedding vector using Ollama's embed API.
+
+        Args:
+            text: The text to embed.
+            model: Override embedding model (default: nomic-embed-text).
+
+        Returns:
+            list[float]: Embedding vector, or empty list on failure.
+        """
+        embed_model = model or os.environ.get(
+            "SKMEMORY_EMBED_MODEL", "nomic-embed-text"
+        )
+        payload = {"model": embed_model, "input": text}
+
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                f"{self.base_url}/api/embed",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                embeddings = result.get("embeddings", [])
+                if embeddings and isinstance(embeddings[0], list):
+                    return embeddings[0]
+                return embeddings
+        except Exception:
+            return []
+
+    def embed_available(self) -> bool:
+        """Check if the embedding endpoint is reachable.
+
+        Returns:
+            bool: True if Ollama embed API responds.
+        """
+        return bool(self.embed("test"))
+
     def summarize_memory(self, title: str, content: str) -> str:
         """Generate a concise summary for a memory.
 

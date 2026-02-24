@@ -95,6 +95,8 @@ class MemoryStore:
             metadata=metadata or {},
         )
 
+        memory.seal()
+
         self.primary.save(memory)
 
         if self.vector:
@@ -106,7 +108,11 @@ class MemoryStore:
         return memory
 
     def recall(self, memory_id: str) -> Optional[Memory]:
-        """Retrieve a specific memory by ID.
+        """Retrieve a specific memory by ID with integrity verification.
+
+        Automatically checks the integrity hash on recall. If the
+        memory has been tampered with, a warning is logged and the
+        memory's metadata is flagged with 'integrity_warning'.
 
         Args:
             memory_id: The memory's unique identifier.
@@ -114,7 +120,25 @@ class MemoryStore:
         Returns:
             Optional[Memory]: The memory if found.
         """
-        return self.primary.load(memory_id)
+        import logging
+        logger = logging.getLogger("skmemory.store")
+
+        memory = self.primary.load(memory_id)
+        if memory is None:
+            return None
+
+        if memory.integrity_hash and not memory.verify_integrity():
+            logger.warning(
+                "TAMPER ALERT: Memory %s failed integrity check! "
+                "Content may have been modified since storage.",
+                memory_id,
+            )
+            memory.metadata["integrity_warning"] = (
+                f"Integrity check failed at {datetime.now(timezone.utc).isoformat()}. "
+                "This memory may have been tampered with."
+            )
+
+        return memory
 
     def search(self, query: str, limit: int = 10) -> list[Memory]:
         """Search memories by text.
