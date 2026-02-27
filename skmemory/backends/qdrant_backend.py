@@ -28,6 +28,26 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 VECTOR_DIM = 384
 
 
+def _extract_status_code(exc: Exception, unexpected_cls: type | None) -> int | None:
+    """Pull an HTTP status code from a qdrant-client exception.
+
+    Works across qdrant-client versions: checks ``status_code`` attr first,
+    then falls back to the string representation for patterns like ``401``.
+    """
+    code = getattr(exc, "status_code", None)
+    if code is not None:
+        return int(code)
+    if unexpected_cls is not None and isinstance(exc, unexpected_cls):
+        code = getattr(exc, "status_code", None)
+        if code is not None:
+            return int(code)
+    text = str(exc)
+    for candidate in (401, 403):
+        if str(candidate) in text:
+            return candidate
+    return None
+
+
 class QdrantBackend(BaseBackend):
     """Qdrant-powered semantic memory search.
 
@@ -55,6 +75,7 @@ class QdrantBackend(BaseBackend):
         self._client = None
         self._embedder = None
         self._initialized = False
+        self._last_error: str | None = None
 
     def _ensure_initialized(self) -> bool:
         """Lazy-initialize Qdrant client and embedding model.
@@ -82,6 +103,15 @@ class QdrantBackend(BaseBackend):
             return False
 
         try:
+            from qdrant_client.http.exceptions import (
+                ResponseHandlingException,
+                UnexpectedResponse,
+            )
+        except ImportError:
+            UnexpectedResponse = None
+            ResponseHandlingException = None
+
+        try:
             self._client = QdrantClient(url=self.url, api_key=self.api_key)
             collections = [c.name for c in self._client.get_collections().collections]
 
@@ -100,7 +130,20 @@ class QdrantBackend(BaseBackend):
             return True
 
         except Exception as e:
-            logger.warning("Qdrant initialization failed: %s", e)
+            status = _extract_status_code(e, UnexpectedResponse)
+            if status in (401, 403):
+                hint = (
+                    "Qdrant authentication failed (HTTP %d). "
+                    "Check your API key:\n"
+                    "  - CLI:  --qdrant-key YOUR_KEY\n"
+                    "  - Env:  SKMEMORY_QDRANT_KEY=YOUR_KEY\n"
+                    "  - Code: QdrantBackend(url=..., api_key='YOUR_KEY')"
+                )
+                logger.error(hint, status)
+                self._last_error = hint % status
+            else:
+                logger.warning("Qdrant initialization failed: %s", e)
+                self._last_error = str(e)
             return False
 
     def _embed(self, text: str) -> list[float]:
@@ -340,10 +383,13 @@ class QdrantBackend(BaseBackend):
             dict: Status with connection and collection info.
         """
         if not self._ensure_initialized():
+            error_msg = self._last_error or (
+                "Not initialized (missing dependencies or connection failed)"
+            )
             return {
                 "ok": False,
                 "backend": "QdrantBackend",
-                "error": "Not initialized (missing dependencies or connection failed)",
+                "error": error_msg,
             }
 
         try:

@@ -16,6 +16,7 @@ from skmemory.backends.qdrant_backend import (
     COLLECTION_NAME,
     VECTOR_DIM,
     QdrantBackend,
+    _extract_status_code,
 )
 from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
 
@@ -240,6 +241,60 @@ class TestHealth:
         health = backend.health_check()
         assert health["ok"] is False
         assert "timeout" in health["error"]
+
+    def test_health_surfaces_auth_error(self):
+        """Health check surfaces 401 auth error with actionable hint."""
+        qb = QdrantBackend(url="https://cloud.qdrant.io", api_key="bad-key")
+        qb._last_error = (
+            "Qdrant authentication failed (HTTP 401). "
+            "Check your API key:\n"
+            "  - CLI:  --qdrant-key YOUR_KEY\n"
+            "  - Env:  SKMEMORY_QDRANT_KEY=YOUR_KEY\n"
+            "  - Code: QdrantBackend(url=..., api_key='YOUR_KEY')"
+        )
+        with patch.object(qb, "_ensure_initialized", return_value=False):
+            health = qb.health_check()
+        assert health["ok"] is False
+        assert "401" in health["error"]
+        assert "API key" in health["error"]
+
+    def test_health_generic_error_without_last_error(self):
+        """Health check falls back to generic message when no _last_error."""
+        qb = QdrantBackend()
+        with patch.object(qb, "_ensure_initialized", return_value=False):
+            health = qb.health_check()
+        assert health["ok"] is False
+        assert "Not initialized" in health["error"]
+
+
+# ═══════════════════════════════════════════════════════════
+# Auth / Status Code Extraction
+# ═══════════════════════════════════════════════════════════
+
+
+class TestExtractStatusCode:
+    """Test HTTP status code extraction from exceptions."""
+
+    def test_status_code_attribute(self):
+        exc = Exception("Unauthorized")
+        exc.status_code = 401
+        assert _extract_status_code(exc, None) == 401
+
+    def test_status_code_from_string(self):
+        exc = Exception("Unexpected Response: 401 (Unauthorized)")
+        assert _extract_status_code(exc, None) == 401
+
+    def test_forbidden_from_string(self):
+        exc = Exception("HTTP 403 Forbidden")
+        assert _extract_status_code(exc, None) == 403
+
+    def test_no_status_code(self):
+        exc = Exception("Connection refused")
+        assert _extract_status_code(exc, None) is None
+
+    def test_other_status_code_not_matched(self):
+        exc = Exception("HTTP 500 Internal Server Error")
+        assert _extract_status_code(exc, None) is None
 
 
 # ═══════════════════════════════════════════════════════════
