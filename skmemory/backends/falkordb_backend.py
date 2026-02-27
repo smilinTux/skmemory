@@ -277,6 +277,76 @@ class FalkorDBBackend:
             logger.warning("FalkorDB cluster query failed: %s", e)
             return []
 
+    def remove_memory(self, memory_id: str) -> bool:
+        """Remove a memory node and all its relationships from the graph.
+
+        Args:
+            memory_id: The memory ID to remove.
+
+        Returns:
+            bool: True if removed successfully.
+        """
+        if not self._ensure_initialized():
+            return False
+
+        try:
+            self._graph.query(
+                "MATCH (m:Memory {id: $id}) DETACH DELETE m",
+                {"id": memory_id},
+            )
+            return True
+        except Exception as e:
+            logger.warning("FalkorDB remove failed: %s", e)
+            return False
+
+    def search_by_tags(self, tags: list[str], limit: int = 20) -> list[dict]:
+        """Find memories that share the given tags via graph edges.
+
+        Args:
+            tags: Tag names to search for (OR logic — any match).
+            limit: Maximum results.
+
+        Returns:
+            list[dict]: Matching memory nodes with tag overlap count.
+        """
+        if not self._ensure_initialized():
+            return []
+
+        if not tags:
+            return []
+
+        try:
+            result = self._graph.query(
+                """
+                MATCH (m:Memory)-[:TAGGED]->(t:Tag)
+                WHERE t.name IN $tags
+                WITH m, collect(DISTINCT t.name) AS matched_tags
+                RETURN m.id AS id,
+                       m.title AS title,
+                       m.layer AS layer,
+                       m.intensity AS intensity,
+                       matched_tags,
+                       size(matched_tags) AS tag_overlap
+                ORDER BY tag_overlap DESC, m.intensity DESC
+                LIMIT $limit
+                """,
+                {"tags": tags, "limit": limit},
+            )
+            return [
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "layer": row[2],
+                    "intensity": row[3],
+                    "matched_tags": row[4],
+                    "tag_overlap": row[5],
+                }
+                for row in result.result_set
+            ]
+        except Exception as e:
+            logger.warning("FalkorDB tag search failed: %s", e)
+            return []
+
     def health_check(self) -> dict:
         """Check FalkorDB backend health.
 

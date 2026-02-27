@@ -28,16 +28,19 @@ class MemoryStore:
 
     Delegates to one or more backends. The primary backend handles
     all CRUD. A vector backend (optional) handles semantic search.
+    A graph backend (optional) indexes relationships for traversal.
 
     Args:
         primary: The primary storage backend (default: FileBackend).
         vector: Optional vector search backend (e.g., QdrantBackend).
+        graph: Optional graph backend (e.g., FalkorDBBackend) for relationship indexing.
     """
 
     def __init__(
         self,
         primary: Optional[BaseBackend] = None,
         vector: Optional[BaseBackend] = None,
+        graph: Optional["FalkorDBBackend"] = None,
         use_sqlite: bool = True,
     ) -> None:
         if primary is not None:
@@ -47,6 +50,7 @@ class MemoryStore:
         else:
             self.primary = FileBackend()
         self.vector = vector
+        self.graph = graph
 
     def snapshot(
         self,
@@ -104,6 +108,12 @@ class MemoryStore:
                 self.vector.save(memory)
             except Exception:
                 pass  # Reason: vector indexing is best-effort, don't fail the write
+
+        if self.graph:
+            try:
+                self.graph.index_memory(memory)
+            except Exception:
+                pass  # Reason: graph indexing is best-effort, don't fail the write
 
         return memory
 
@@ -177,6 +187,11 @@ class MemoryStore:
                 self.vector.delete(memory_id)
             except Exception:
                 pass
+        if self.graph:
+            try:
+                self.graph.remove_memory(memory_id)
+            except Exception:
+                pass
         return deleted
 
     def list_memories(
@@ -229,6 +244,12 @@ class MemoryStore:
             except Exception:
                 pass
 
+        if self.graph:
+            try:
+                self.graph.index_memory(promoted)
+            except Exception:
+                pass
+
         return promoted
 
     def ingest_seed(self, seed: SeedMemory) -> Memory:
@@ -250,6 +271,12 @@ class MemoryStore:
         if self.vector:
             try:
                 self.vector.save(memory)
+            except Exception:
+                pass
+
+        if self.graph:
+            try:
+                self.graph.index_memory(memory)
             except Exception:
                 pass
 
@@ -466,4 +493,9 @@ class MemoryStore:
                 status["vector"] = self.vector.health_check()
             except Exception as e:
                 status["vector"] = {"ok": False, "error": str(e)}
+        if self.graph:
+            try:
+                status["graph"] = self.graph.health_check()
+            except Exception as e:
+                status["graph"] = {"ok": False, "error": str(e)}
         return status
