@@ -157,7 +157,7 @@ pytest tests/ -v
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
-Copyright (C) 2025-2026 **S&K Holding QT (Quantum Technologies)**
+Copyright (C) 2025-2026 **smilinTux**
 
 > **SK** = *staycuriousANDkeepsmilin*
 
