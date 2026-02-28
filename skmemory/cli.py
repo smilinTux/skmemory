@@ -34,12 +34,19 @@ from .store import MemoryStore
 from .backends.sqlite_backend import SQLiteBackend
 
 
+_active_selector = None  # Module-level reference for routing commands
+
+
 def _get_store(
     qdrant_url: Optional[str] = None,
     api_key: Optional[str] = None,
     legacy_files: bool = False,
 ) -> MemoryStore:
     """Create a MemoryStore with configured backends.
+
+    Resolves backend URLs with precedence: CLI args > env vars > config file.
+    When multi-endpoint config is present, uses EndpointSelector to pick
+    the best URLs.  Falls back to single-URL behavior otherwise.
 
     Args:
         qdrant_url: Optional Qdrant server URL.
@@ -49,16 +56,72 @@ def _get_store(
     Returns:
         MemoryStore: Configured store instance.
     """
-    vector = None
+    global _active_selector
 
-    if qdrant_url:
+    from .config import merge_env_and_config, load_config, build_endpoint_list
+
+    final_qdrant_url, final_qdrant_key, final_falkordb_url = merge_env_and_config(
+        cli_qdrant_url=qdrant_url,
+        cli_qdrant_key=api_key,
+    )
+
+    # Try endpoint selector when multi-endpoint config exists
+    cfg = load_config()
+    qdrant_eps = build_endpoint_list(
+        final_qdrant_url,
+        cfg.qdrant_endpoints if cfg else [],
+    )
+    falkordb_eps = build_endpoint_list(
+        final_falkordb_url,
+        cfg.falkordb_endpoints if cfg else [],
+    )
+
+    if len(qdrant_eps) > 1 or len(falkordb_eps) > 1 or (cfg and cfg.heartbeat_discovery):
+        try:
+            from .endpoint_selector import EndpointSelector, RoutingConfig
+
+            routing_strategy = cfg.routing_strategy if cfg else "failover"
+            selector = EndpointSelector(
+                qdrant_endpoints=qdrant_eps,
+                falkordb_endpoints=falkordb_eps,
+                config=RoutingConfig(strategy=routing_strategy),
+            )
+
+            if cfg and cfg.heartbeat_discovery:
+                selector.discover_from_heartbeats()
+
+            _active_selector = selector
+
+            best_qdrant = selector.select_qdrant()
+            if best_qdrant:
+                final_qdrant_url = best_qdrant.url
+
+            best_falkordb = selector.select_falkordb()
+            if best_falkordb:
+                final_falkordb_url = best_falkordb.url
+        except Exception:
+            click.echo("Warning: EndpointSelector failed, using single URLs", err=True)
+
+    vector = None
+    graph = None
+
+    if final_qdrant_url:
         try:
             from .backends.qdrant_backend import QdrantBackend
-            vector = QdrantBackend(url=qdrant_url, api_key=api_key)
+            vector = QdrantBackend(url=final_qdrant_url, api_key=final_qdrant_key)
         except Exception:
             click.echo("Warning: Could not initialize Qdrant backend", err=True)
 
-    return MemoryStore(primary=None, vector=vector, use_sqlite=not legacy_files)
+    if final_falkordb_url:
+        try:
+            from .backends.falkordb_backend import FalkorDBBackend
+            graph = FalkorDBBackend(url=final_falkordb_url)
+        except Exception:
+            click.echo("Warning: Could not initialize FalkorDB backend", err=True)
+
+    return MemoryStore(
+        primary=None, vector=vector, graph=graph, use_sqlite=not legacy_files
+    )
 
 
 @click.group()
@@ -314,6 +377,70 @@ def health(ctx: click.Context) -> None:
     store: MemoryStore = ctx.obj["store"]
     status = store.health()
     click.echo(json.dumps(status, indent=2))
+
+
+# ═══════════════════════════════════════════════════════════
+# Routing commands (HA endpoint selection)
+# ═══════════════════════════════════════════════════════════
+
+
+@cli.group()
+def routing() -> None:
+    """Manage HA endpoint routing for Qdrant and FalkorDB backends."""
+
+
+@routing.command("status")
+def routing_status() -> None:
+    """Show endpoint rankings, latency, and health for each backend."""
+    if _active_selector is None:
+        click.echo("No endpoint selector active (single-URL mode).")
+        click.echo("Configure multiple endpoints in ~/.skmemory/config.yaml to enable routing.")
+        return
+
+    info = _active_selector.status()
+    click.echo(f"Strategy: {info['strategy']}")
+    click.echo(f"Probe interval: {info['probe_interval_seconds']}s")
+    age = info["last_probe_age_seconds"]
+    click.echo(f"Last probe: {age}s ago" if age >= 0 else "Last probe: never")
+
+    for backend in ("qdrant", "falkordb"):
+        eps = info.get(f"{backend}_endpoints", [])
+        if not eps:
+            continue
+        click.echo(f"\n{backend.upper()} endpoints:")
+        for ep in eps:
+            health_icon = "OK" if ep["healthy"] else "DOWN"
+            latency = f"{ep['latency_ms']:.1f}ms" if ep["latency_ms"] >= 0 else "n/a"
+            click.echo(
+                f"  [{health_icon}] {ep['url']}  "
+                f"role={ep['role']}  latency={latency}  "
+                f"fails={ep['fail_count']}"
+            )
+
+
+@routing.command("probe")
+def routing_probe() -> None:
+    """Force re-probe all endpoints and display results."""
+    if _active_selector is None:
+        click.echo("No endpoint selector active (single-URL mode).")
+        return
+
+    click.echo("Probing all endpoints...")
+    results = _active_selector.probe_all()
+
+    for backend, endpoints in results.items():
+        if not endpoints:
+            continue
+        click.echo(f"\n{backend.upper()}:")
+        for ep in endpoints:
+            health_icon = "OK" if ep.healthy else "DOWN"
+            latency = f"{ep.latency_ms:.1f}ms" if ep.latency_ms >= 0 else "timeout"
+            click.echo(
+                f"  [{health_icon}] {ep.url}  "
+                f"latency={latency}  fails={ep.fail_count}"
+            )
+
+    click.echo("\nProbe complete.")
 
 
 @cli.command()
@@ -721,6 +848,224 @@ def anchor_update(
     click.echo(f"Anchor updated (session #{a.sessions_recorded})")
     click.echo(f"  Glow: {a.glow_level()}")
     click.echo(f"  Warmth: {a.warmth} | Trust: {a.trust} | Connection: {a.connection_strength}")
+
+
+# ═══════════════════════════════════════════════════════════
+# Setup commands — Docker orchestration for backends
+# ═══════════════════════════════════════════════════════════
+
+
+@cli.group()
+def setup() -> None:
+    """Deploy and manage Qdrant & FalkorDB Docker containers."""
+
+
+@setup.command("wizard")
+@click.option("--qdrant/--no-qdrant", default=True, help="Enable Qdrant (vector search)")
+@click.option("--falkordb/--no-falkordb", default=True, help="Enable FalkorDB (graph)")
+@click.option("--skip-deps", is_flag=True, help="Skip Python dependency installation")
+@click.option("--yes", "-y", "non_interactive", is_flag=True, help="Non-interactive mode")
+def setup_wizard(
+    qdrant: bool,
+    falkordb: bool,
+    skip_deps: bool,
+    non_interactive: bool,
+) -> None:
+    """Interactive wizard — deploy Docker containers, install deps, save config."""
+    from .setup_wizard import run_setup_wizard
+
+    result = run_setup_wizard(
+        enable_qdrant=qdrant,
+        enable_falkordb=falkordb,
+        skip_deps=skip_deps,
+        non_interactive=non_interactive,
+        echo=click.echo,
+    )
+    if not result["success"]:
+        sys.exit(1)
+
+
+@setup.command("status")
+def setup_status() -> None:
+    """Show Docker container state and backend connectivity."""
+    from .setup_wizard import (
+        check_falkordb_health,
+        check_qdrant_health,
+        compose_ps,
+        detect_platform,
+        find_compose_file,
+    )
+    from .config import load_config
+
+    cfg = load_config()
+    if cfg is None:
+        click.echo("No setup config found. Run: skmemory setup wizard")
+        return
+
+    click.echo("SKMemory Backend Status")
+    click.echo("=" * 40)
+
+    if cfg.setup_completed_at:
+        click.echo(f"Setup completed: {cfg.setup_completed_at}")
+    click.echo(f"Backends enabled: {', '.join(cfg.backends_enabled) or 'none'}")
+    click.echo("")
+
+    # Container status
+    plat = detect_platform()
+    if plat.compose_available:
+        compose_file = None
+        if cfg.docker_compose_file:
+            from pathlib import Path
+            compose_file = Path(cfg.docker_compose_file)
+        ps = compose_ps(compose_file=compose_file, use_legacy=plat.compose_legacy)
+        click.echo("Containers:")
+        if ps.stdout.strip():
+            click.echo(ps.stdout)
+        else:
+            click.echo("  No containers running")
+    click.echo("")
+
+    # Connectivity
+    click.echo("Connectivity:")
+    if cfg.qdrant_url:
+        healthy = check_qdrant_health(url=cfg.qdrant_url, timeout=5)
+        status = "healthy" if healthy else "unreachable"
+        click.echo(f"  Qdrant ({cfg.qdrant_url}): {status}")
+
+    if cfg.falkordb_url:
+        healthy = check_falkordb_health(timeout=5)
+        status = "healthy" if healthy else "unreachable"
+        click.echo(f"  FalkorDB ({cfg.falkordb_url}): {status}")
+
+
+@setup.command("start")
+@click.option(
+    "--service",
+    type=click.Choice(["qdrant", "falkordb", "all"]),
+    default="all",
+    help="Which service to start",
+)
+def setup_start(service: str) -> None:
+    """Start previously configured containers."""
+    from .setup_wizard import compose_up, detect_platform, find_compose_file
+    from .config import load_config
+
+    cfg = load_config()
+    plat = detect_platform()
+    if not plat.compose_available:
+        click.echo("Docker Compose not available.", err=True)
+        sys.exit(1)
+
+    compose_file = None
+    if cfg and cfg.docker_compose_file:
+        from pathlib import Path
+        compose_file = Path(cfg.docker_compose_file)
+
+    services = None
+    if service != "all":
+        services = [service]
+    elif cfg and cfg.backends_enabled:
+        services = cfg.backends_enabled
+
+    result = compose_up(
+        services=services,
+        compose_file=compose_file,
+        use_legacy=plat.compose_legacy,
+    )
+    if result.returncode == 0:
+        click.echo(f"Started: {service}")
+    else:
+        click.echo(f"Failed: {result.stderr.strip()}", err=True)
+        sys.exit(1)
+
+
+@setup.command("stop")
+@click.option(
+    "--service",
+    type=click.Choice(["qdrant", "falkordb", "all"]),
+    default="all",
+    help="Which service to stop",
+)
+def setup_stop(service: str) -> None:
+    """Stop containers (preserves data)."""
+    from .setup_wizard import detect_platform
+    from .config import load_config
+    import subprocess
+
+    cfg = load_config()
+    plat = detect_platform()
+    if not plat.compose_available:
+        click.echo("Docker Compose not available.", err=True)
+        sys.exit(1)
+
+    if service == "all":
+        from .setup_wizard import compose_down
+
+        compose_file = None
+        if cfg and cfg.docker_compose_file:
+            from pathlib import Path
+            compose_file = Path(cfg.docker_compose_file)
+
+        result = compose_down(
+            compose_file=compose_file,
+            use_legacy=plat.compose_legacy,
+        )
+        if result.returncode == 0:
+            click.echo("All containers stopped.")
+        else:
+            click.echo(f"Failed: {result.stderr.strip()}", err=True)
+            sys.exit(1)
+    else:
+        # Stop individual container
+        container = f"skmemory-{service}"
+        result = subprocess.run(
+            ["docker", "stop", container],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            click.echo(f"Stopped: {container}")
+        else:
+            click.echo(f"Failed to stop {container}: {result.stderr.strip()}", err=True)
+            sys.exit(1)
+
+
+@setup.command("reset")
+@click.option("--remove-data", is_flag=True, help="Also delete data volumes")
+@click.confirmation_option(prompt="This will remove containers. Continue?")
+def setup_reset(remove_data: bool) -> None:
+    """Remove containers, optionally delete data volumes."""
+    from .setup_wizard import compose_down, detect_platform
+    from .config import load_config, CONFIG_PATH
+
+    cfg = load_config()
+    plat = detect_platform()
+    if not plat.compose_available:
+        click.echo("Docker Compose not available.", err=True)
+        sys.exit(1)
+
+    compose_file = None
+    if cfg and cfg.docker_compose_file:
+        from pathlib import Path
+        compose_file = Path(cfg.docker_compose_file)
+
+    result = compose_down(
+        compose_file=compose_file,
+        remove_volumes=remove_data,
+        use_legacy=plat.compose_legacy,
+    )
+    if result.returncode == 0:
+        vol_msg = " and data volumes" if remove_data else ""
+        click.echo(f"Containers{vol_msg} removed.")
+
+        # Remove config
+        if CONFIG_PATH.exists():
+            CONFIG_PATH.unlink()
+            click.echo(f"Config removed: {CONFIG_PATH}")
+    else:
+        click.echo(f"Failed: {result.stderr.strip()}", err=True)
+        sys.exit(1)
 
 
 # ═══════════════════════════════════════════════════════════

@@ -100,6 +100,45 @@ export SKMEMORY_FALKORDB_URL=redis://your-host:6379
 
 Resource cost: ~100MB RAM, ~150MB disk idle.
 
+### Level 3: High Availability & Routing (optional)
+
+**Multiple backend endpoints. Automatic failover. Latency-aware routing.**
+
+When Qdrant or FalkorDB run on multiple nodes (e.g. home server + VPS via
+Tailscale), the **EndpointSelector** discovers all endpoints, probes their
+latency, and routes to the best one. If a node goes down, traffic shifts
+to the next healthy endpoint automatically.
+
+```
+┌──────────────────────────────────────────────┐
+│              EndpointSelector                 │
+│    (sits between config and backends)        │
+├──────────────┬───────────────────────────────┤
+│   Qdrant     │     FalkorDB                  │
+│   Endpoints  │     Endpoints                 │
+│              │                               │
+│ ● home:6333  │  ● home:6379                  │
+│   (2ms)      │    (1ms)                      │
+│ ● vps:6333   │  ● vps:6379                   │
+│   (12ms)     │    (15ms)                     │
+├──────────────┴───────────────────────────────┤
+│  Strategies: failover | latency |            │
+│  local-first | read-local-write-primary      │
+├──────────────────────────────────────────────┤
+│  Discovery: config.yaml + heartbeat mesh     │
+└──────────────────────────────────────────────┘
+```
+
+Key properties:
+- On-demand TCP probing (no background threads)
+- Heartbeat mesh auto-discovers new endpoints
+- Config endpoints take precedence over discovery
+- Backward compatible — single-URL configs work unchanged
+- No new pip dependencies (stdlib `socket`)
+
+See **[skmemory/HA.md](skmemory/HA.md)** for full documentation, Mermaid
+diagrams, configuration examples, and scaling considerations.
+
 ## Token-Optimized Agent Loading
 
 The key problem: an AI agent has limited context. Loading 1000 full memories
