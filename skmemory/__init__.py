@@ -14,6 +14,7 @@ __license__ = "AGPL-3.0"
 
 from .models import Memory, MemoryLayer, EmotionalSnapshot
 from .store import MemoryStore
+from .fortress import FortifiedMemoryStore, AuditLog, TamperAlert
 from .backends.file_backend import FileBackend
 from .backends.sqlite_backend import SQLiteBackend
 from .soul import SoulBlueprint, save_soul, load_soul
@@ -37,6 +38,9 @@ __all__ = [
     "MemoryLayer",
     "EmotionalSnapshot",
     "MemoryStore",
+    "FortifiedMemoryStore",
+    "AuditLog",
+    "TamperAlert",
     "FileBackend",
     "SQLiteBackend",
     "SoulBlueprint",
