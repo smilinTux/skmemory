@@ -25,8 +25,8 @@ SKMemory stores **polaroid snapshots** -- memories that capture not just content
 - **Cloud 9 seed integration**: Import seeds from the Cloud 9 protocol as long-term memories
 - **Pluggable backends**:
   - Level 1: **File** (JSON on disk, zero infrastructure, works today)
-  - Level 2: **Qdrant** (vector search, semantic memory recall)
-  - Level 3: **FalkorDB** (graph relationships, coming soon)
+  - Level 2: **SKVector** (powered by Qdrant) (vector search, semantic memory recall)
+  - Level 3: **SKGraph** (powered by FalkorDB) (graph relationships, coming soon)
 - **Session consolidation**: Compress session snapshots into mid-term summaries
 - **Memory promotion**: Promote important memories up the persistence ladder
 - **Full CLI**: `skmemory snapshot`, `recall`, `search`, `import-seeds`, and more
@@ -39,9 +39,9 @@ SKMemory stores **polaroid snapshots** -- memories that capture not just content
 pip install -e .
 ```
 
-With Qdrant support:
+With SKVector support:
 ```bash
-pip install -e ".[qdrant]"
+pip install -e ".[skvector]"
 ```
 
 ### Take a Snapshot
@@ -126,8 +126,8 @@ Every memory is a **polaroid** with:
 | Level | Backend | Infrastructure | Use Case |
 |-------|---------|---------------|----------|
 | 1 | File (JSON) | None | Works everywhere, today |
-| 2 | Qdrant | Free SaaS or self-hosted | Semantic search ("find memories about love") |
-| 3 | FalkorDB | Free SaaS or self-hosted | Graph relationships between memories |
+| 2 | SKVector | Free SaaS or self-hosted | Semantic search ("find memories about love") |
+| 3 | SKGraph | Free SaaS or self-hosted | Graph relationships between memories |
 
 ## Testing
 

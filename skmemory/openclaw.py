@@ -42,21 +42,21 @@ class SKMemoryPlugin:
 
     Args:
         base_path: Override the memory storage directory.
-        qdrant_url: Optional Qdrant server for semantic search.
-        qdrant_key: Optional Qdrant API key.
+        skvector_url: Optional SKVector server for semantic search.
+        skvector_key: Optional SKVector API key.
     """
 
     def __init__(
         self,
         base_path: Optional[str] = None,
-        qdrant_url: Optional[str] = None,
-        qdrant_key: Optional[str] = None,
+        skvector_url: Optional[str] = None,
+        skvector_key: Optional[str] = None,
     ) -> None:
         vector = None
-        if qdrant_url:
+        if skvector_url:
             try:
-                from .backends.qdrant_backend import QdrantBackend
-                vector = QdrantBackend(url=qdrant_url, api_key=qdrant_key)
+                from .backends.skvector_backend import SKVectorBackend
+                vector = SKVectorBackend(url=skvector_url, api_key=skvector_key)
             except Exception:
                 pass
 

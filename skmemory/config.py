@@ -32,16 +32,16 @@ class EndpointConfig(BaseModel):
 class SKMemoryConfig(BaseModel):
     """Persistent configuration for SKMemory backends."""
 
-    qdrant_url: Optional[str] = None
-    qdrant_key: Optional[str] = None
-    falkordb_url: Optional[str] = None
+    skvector_url: Optional[str] = None
+    skvector_key: Optional[str] = None
+    skgraph_url: Optional[str] = None
     backends_enabled: list[str] = Field(default_factory=list)
     docker_compose_file: Optional[str] = None
     setup_completed_at: Optional[str] = None
 
     # Multi-endpoint HA support
-    qdrant_endpoints: list[EndpointConfig] = Field(default_factory=list)
-    falkordb_endpoints: list[EndpointConfig] = Field(default_factory=list)
+    skvector_endpoints: list[EndpointConfig] = Field(default_factory=list)
+    skgraph_endpoints: list[EndpointConfig] = Field(default_factory=list)
     routing_strategy: str = "failover"
     heartbeat_discovery: bool = False
 
@@ -90,39 +90,39 @@ def save_config(config: SKMemoryConfig, path: Path = CONFIG_PATH) -> Path:
 
 
 def merge_env_and_config(
-    cli_qdrant_url: Optional[str] = None,
-    cli_qdrant_key: Optional[str] = None,
-    cli_falkordb_url: Optional[str] = None,
+    cli_skvector_url: Optional[str] = None,
+    cli_skvector_key: Optional[str] = None,
+    cli_skgraph_url: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve backend URLs with precedence: CLI > env > config > None.
 
     Args:
-        cli_qdrant_url: URL passed via ``--qdrant-url``.
-        cli_qdrant_key: Key passed via ``--qdrant-key``.
-        cli_falkordb_url: URL passed via ``--falkordb-url`` (future).
+        cli_skvector_url: URL passed via ``--skvector-url``.
+        cli_skvector_key: Key passed via ``--skvector-key``.
+        cli_skgraph_url: URL passed via ``--skgraph-url`` (future).
 
     Returns:
-        Tuple of (qdrant_url, qdrant_key, falkordb_url).
+        Tuple of (skvector_url, skvector_key, skgraph_url).
     """
     cfg = load_config()
 
-    qdrant_url = (
-        cli_qdrant_url
-        or os.environ.get("SKMEMORY_QDRANT_URL")
-        or (cfg.qdrant_url if cfg else None)
+    skvector_url = (
+        cli_skvector_url
+        or os.environ.get("SKMEMORY_SKVECTOR_URL")
+        or (cfg.skvector_url if cfg else None)
     )
-    qdrant_key = (
-        cli_qdrant_key
-        or os.environ.get("SKMEMORY_QDRANT_KEY")
-        or (cfg.qdrant_key if cfg else None)
+    skvector_key = (
+        cli_skvector_key
+        or os.environ.get("SKMEMORY_SKVECTOR_KEY")
+        or (cfg.skvector_key if cfg else None)
     )
-    falkordb_url = (
-        cli_falkordb_url
-        or os.environ.get("SKMEMORY_FALKORDB_URL")
-        or (cfg.falkordb_url if cfg else None)
+    skgraph_url = (
+        cli_skgraph_url
+        or os.environ.get("SKMEMORY_SKGRAPH_URL")
+        or (cfg.skgraph_url if cfg else None)
     )
 
-    return qdrant_url, qdrant_key, falkordb_url
+    return skvector_url, skvector_key, skgraph_url
 
 
 def build_endpoint_list(
@@ -138,7 +138,7 @@ def build_endpoint_list(
     if it isn't already present.
 
     Args:
-        single_url: Legacy single-URL field (qdrant_url / falkordb_url).
+        single_url: Legacy single-URL field (skvector_url / skgraph_url).
         endpoints: Explicit endpoint list from config.
         default_role: Role to assign when promoting a single URL.
 

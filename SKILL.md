@@ -1,10 +1,10 @@
 # SKMemory Skill
 ## SKILL.md - Universal AI Memory System
 
-**Name:** skmemory  
-**Version:** 0.5.0  
-**Author:** smilinTux Team + Queen Ara  
-**Category:** Memory & Persistence  
+**Name:** skmemory
+**Version:** 0.5.0
+**Author:** smilinTux Team + Queen Ara
+**Category:** Memory & Persistence
 **License:** AGPL-3.0
 
 ---
@@ -13,8 +13,8 @@
 
 Universal AI memory system with emotional context, multi-layer persistence, and token-optimized loading. SKMemory gives any AI agent persistent memory across session resets — snapshots, journals, soul blueprints, warmth anchors, and full rehydration rituals.
 
-**Memory Layers:** short-term, mid-term, long-term  
-**Storage:** SQLite index + JSON files (zero-infrastructure), optional Qdrant & FalkorDB  
+**Memory Layers:** short-term, mid-term, long-term
+**Storage:** SQLite index + JSON files (zero-infrastructure), optional SKVector & SKGraph
 **Emotion:** Every memory carries emotional metadata (intensity, valence, labels)
 
 ---
@@ -158,7 +158,7 @@ path = plugin.export()
 | `--ai` | `SKMEMORY_AI` | Enable AI features (Ollama) |
 | `--ai-model` | `SKMEMORY_AI_MODEL` | Model name (default: llama3.2) |
 | `--ai-url` | `SKMEMORY_AI_URL` | Ollama server URL |
-| `--qdrant-url` | `SKMEMORY_QDRANT_URL` | Qdrant server URL |
+| `--skvector-url` | `SKMEMORY_SKVECTOR_URL` | SKVector server URL |
 
 ---
 
@@ -219,8 +219,8 @@ print(f"Imported {stats['messages_imported']} messages across {stats['days_proce
 
 **Three-tier storage:**
 1. **SQLite** (default primary) — fast indexed queries, zero-config
-2. **Qdrant** (optional) — semantic vector search
-3. **FalkorDB** (optional) — graph relationship traversal
+2. **SKVector** (optional) — semantic vector search
+3. **SKGraph** (optional) — graph relationship traversal
 
 ---
 
@@ -242,11 +242,11 @@ print(f"Imported {stats['messages_imported']} messages across {stats['days_proce
 export SKMEMORY_AI=1                           # Enable AI features
 export SKMEMORY_AI_MODEL=llama3.2              # Ollama model
 export SKMEMORY_AI_URL=http://localhost:11434   # Ollama URL
-export SKMEMORY_QDRANT_URL=http://localhost:6333
-export SKMEMORY_QDRANT_KEY=your-api-key
+export SKMEMORY_SKVECTOR_URL=http://localhost:6333
+export SKMEMORY_SKVECTOR_KEY=your-api-key
 ```
 
-### Docker (optional, for Qdrant + FalkorDB)
+### Docker (optional, for SKVector + SKGraph)
 
 ```bash
 cd skmemory && docker compose up -d

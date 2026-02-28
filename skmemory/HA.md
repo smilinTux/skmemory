@@ -1,11 +1,11 @@
-# SKMemory High Availability & Routing
+# SKMemory High Availability & Routing for SKVector and SKGraph Backends
 
-> Self-contained endpoint routing for Qdrant and FalkorDB backends.
+> Self-contained endpoint routing for SKVector and SKGraph backends.
 > No external load balancer. No new dependencies. Backward compatible.
 
 ## Overview
 
-SKMemory's Qdrant and FalkorDB backends can run on multiple nodes across a
+SKMemory's SKVector and SKGraph backends can run on multiple nodes across a
 Tailscale mesh (or any network). The **EndpointSelector** sits between config
 resolution and backend construction: it discovers endpoints, probes their
 latency, selects the fastest healthy one, and fails over automatically.
@@ -14,7 +14,7 @@ Key properties:
 - **On-demand probing** with TTL cache (no background threads)
 - **Config endpoints take precedence** over heartbeat discovery
 - **Graceful degradation** — missing heartbeats, Tailscale, or config all fail silently
-- **Backward compatible** — single `qdrant_url` configs work unchanged
+- **Backward compatible** — single `skvector_url` configs work unchanged
 
 ## Architecture
 
@@ -23,14 +23,14 @@ Key properties:
 ```mermaid
 graph TB
     CLI[skmemory CLI / Agent] --> ES[EndpointSelector]
-    ES --> |probe| EP1[Qdrant @ home:6333]
-    ES --> |probe| EP2[Qdrant @ vps:6333]
-    ES --> |probe| EP3[FalkorDB @ home:6379]
-    ES --> |probe| EP4[FalkorDB @ cloud:6379]
+    ES --> |probe| EP1[SKVector @ home:6333]
+    ES --> |probe| EP2[SKVector @ vps:6333]
+    ES --> |probe| EP3[SKGraph @ home:6379]
+    ES --> |probe| EP4[SKGraph @ cloud:6379]
     ES --> |select best| MS[MemoryStore]
     MS --> SQLite[SQLite Primary]
-    MS --> QdrantBackend[QdrantBackend]
-    MS --> FalkorDBBackend[FalkorDBBackend]
+    MS --> SKVectorBackend[SKVectorBackend]
+    MS --> SKGraphBackend[SKGraphBackend]
     HB[Heartbeat Mesh] -.->|discover| ES
 
     style ES fill:#f9f,stroke:#333
@@ -66,10 +66,10 @@ flowchart TD
 sequenceDiagram
     participant CLI as skmemory CLI
     participant ES as EndpointSelector
-    participant A as Qdrant @ home:6333
-    participant B as Qdrant @ vps:6333
+    participant A as SKVector @ home:6333
+    participant B as SKVector @ vps:6333
 
-    CLI->>ES: select_qdrant()
+    CLI->>ES: select_skvector()
     ES->>A: TCP probe (port 6333)
     A--xES: Connection refused
     Note over ES: fail_count++ (1/3)
@@ -78,7 +78,7 @@ sequenceDiagram
     ES-->>CLI: vps:6333 (healthy)
 
     Note over CLI: Later, home comes back...
-    CLI->>ES: select_qdrant()
+    CLI->>ES: select_skvector()
     ES->>A: TCP probe (port 6333)
     A-->>ES: Connected (2ms)
     Note over ES: fail_count reset to 0
@@ -94,7 +94,7 @@ sequenceDiagram
     participant Local as Local Agent
     participant ES as EndpointSelector
 
-    Peer->>FS: heartbeat.json<br/>{services: [{name: "qdrant", port: 6333}],<br/>tailscale_ip: "100.64.0.5"}
+    Peer->>FS: heartbeat.json<br/>{services: [{name: "skvector", port: 6333}],<br/>tailscale_ip: "100.64.0.5"}
     FS->>Local: Sync heartbeat file
     Local->>ES: discover_from_heartbeats()
     ES->>ES: Parse services from heartbeat
@@ -152,28 +152,28 @@ No changes needed. Old configs work as before:
 
 ```yaml
 # ~/.skmemory/config.yaml
-qdrant_url: http://localhost:6333
-falkordb_url: redis://localhost:6379
+skvector_url: http://localhost:6333
+skgraph_url: redis://localhost:6379
 ```
 
 Or via environment variables:
 ```bash
-export SKMEMORY_QDRANT_URL=http://localhost:6333
-export SKMEMORY_FALKORDB_URL=redis://localhost:6379
+export SKMEMORY_SKVECTOR_URL=http://localhost:6333
+export SKMEMORY_SKGRAPH_URL=redis://localhost:6379
 ```
 
 ### Multi-Node (Tailscale mesh)
 
 ```yaml
 # ~/.skmemory/config.yaml
-qdrant_endpoints:
+skvector_endpoints:
   - url: http://localhost:6333
     role: primary
   - url: http://100.64.0.5:6333
     role: replica
     tailscale_ip: "100.64.0.5"
 
-falkordb_endpoints:
+skgraph_endpoints:
   - url: redis://localhost:6379
     role: primary
   - url: redis://100.64.0.5:6379
@@ -186,7 +186,7 @@ routing_strategy: local-first
 
 ```yaml
 # ~/.skmemory/config.yaml
-qdrant_endpoints:
+skvector_endpoints:
   - url: https://us-east.qdrant.example.com:6333
     role: primary
   - url: https://eu-west.qdrant.example.com:6333
@@ -203,13 +203,13 @@ Let agents find each other's backends via the heartbeat mesh:
 
 ```yaml
 # ~/.skmemory/config.yaml
-qdrant_url: http://localhost:6333
+skvector_url: http://localhost:6333
 routing_strategy: latency
 heartbeat_discovery: true
 ```
 
 Agents that run `skcapstone heartbeat pulse` will advertise any locally
-detected services (Qdrant on 6333, FalkorDB on 6379). Other agents read
+detected services (SKVector on 6333, SKGraph on 6379). Other agents read
 these heartbeats and add the endpoints automatically.
 
 ## CLI Commands
@@ -224,10 +224,10 @@ skmemory routing probe
 
 ## What We Built This For (Ideal Use Case)
 
-A sovereign agent running on a home server with Qdrant and FalkorDB in Docker.
+A sovereign agent running on a home server with SKVector and SKGraph in Docker.
 A second instance runs on a VPS. Both are connected via Tailscale. When the
 home server goes down for maintenance, the agent on the VPS automatically
-routes to its local Qdrant instance (or another VPS peer). When the home
+routes to its local SKVector instance (or another VPS peer). When the home
 server comes back, agents detect the lower latency and route back.
 
 No ops team. No service mesh. No external load balancer. Just config and
@@ -258,7 +258,7 @@ heartbeats.
 
 ### What This Doesn't Solve
 
-- **Cross-region write replication** — Use Qdrant's distributed mode or external replication
+- **Cross-region write replication** — Use Qdrant distributed mode or external replication
 - **Strong consistency** — This is eventual consistency; fine for AI memory, not for transactions
 - **Automatic replica provisioning** — You still deploy Qdrant/FalkorDB manually; routing just finds them
 

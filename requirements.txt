@@ -2,11 +2,11 @@ pydantic>=2.0
 click>=8.0
 pyyaml>=6.0
 
-# Optional: Level 2 - Vector search via Qdrant
+# Optional: Level 1 - SKVector (semantic vector search, powered by Qdrant)
 # qdrant-client>=1.7.0
 # sentence-transformers>=2.2.0
 
-# Optional: Level 3 - Graph relationships via FalkorDB
+# Optional: Level 2 - SKGraph (graph relationships, powered by FalkorDB)
 # falkordb>=1.0.0
 
 # Testing

@@ -32,15 +32,15 @@ class MemoryStore:
 
     Args:
         primary: The primary storage backend (default: FileBackend).
-        vector: Optional vector search backend (e.g., QdrantBackend).
-        graph: Optional graph backend (e.g., FalkorDBBackend) for relationship indexing.
+        vector: Optional vector search backend (e.g., SKVectorBackend).
+        graph: Optional graph backend (e.g., SKGraphBackend) for relationship indexing.
     """
 
     def __init__(
         self,
         primary: Optional[BaseBackend] = None,
         vector: Optional[BaseBackend] = None,
-        graph: Optional["FalkorDBBackend"] = None,
+        graph: Optional["SKGraphBackend"] = None,
         use_sqlite: bool = True,
     ) -> None:
         if primary is not None:

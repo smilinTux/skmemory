@@ -4,32 +4,32 @@
 # SKMemory works perfectly with just SQLite (zero infrastructure).
 #
 # Start everything:  docker compose up -d
-# Just Qdrant:       docker compose up -d qdrant
-# Just FalkorDB:     docker compose up -d falkordb
+# Just SKVector:     docker compose up -d skvector
+# Just SKGraph:      docker compose up -d skgraph
 # Check status:      docker compose ps
 # Stop:              docker compose down
 #
 # Resource usage (idle):
-#   Qdrant:    ~200MB RAM, ~100MB disk
-#   FalkorDB:  ~100MB RAM, ~150MB disk
+#   SKVector:  ~200MB RAM, ~100MB disk
+#   SKGraph:   ~100MB RAM, ~150MB disk
 #   Combined:  ~300MB RAM total
 #
 # Connect from skmemory:
-#   skmemory --qdrant-url http://localhost:6333 health
+#   skmemory --skvector-url http://localhost:6333 health
 #
 # Or set environment variables:
-#   export SKMEMORY_QDRANT_URL=http://localhost:6333
-#   export SKMEMORY_FALKORDB_URL=redis://localhost:6379
+#   export SKMEMORY_SKVECTOR_URL=http://localhost:6333
+#   export SKMEMORY_SKGRAPH_URL=redis://localhost:6379
 
 services:
-  qdrant:
+  skvector:
     image: qdrant/qdrant:latest
-    container_name: skmemory-qdrant
+    container_name: skmemory-skvector
     ports:
       - "6333:6333"   # REST API
       - "6334:6334"   # gRPC
     volumes:
-      - qdrant_data:/qdrant/storage
+      - skvector_data:/qdrant/storage
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
     restart: unless-stopped
@@ -38,13 +38,13 @@ services:
         limits:
           memory: 512M
 
-  falkordb:
+  skgraph:
     image: falkordb/falkordb:latest
-    container_name: skmemory-falkordb
+    container_name: skmemory-skgraph
     ports:
       - "6379:6379"   # Redis-compatible protocol
     volumes:
-      - falkordb_data:/data
+      - skgraph_data:/data
     restart: unless-stopped
     deploy:
       resources:
@@ -52,7 +52,7 @@ services:
           memory: 256M
 
 volumes:
-  qdrant_data:
+  skvector_data:
     driver: local
-  falkordb_data:
+  skgraph_data:
     driver: local

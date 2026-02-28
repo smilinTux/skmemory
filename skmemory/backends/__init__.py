@@ -1,12 +1,13 @@
 """
 Storage backends for SKMemory.
 
-Level 1 (file)   - JSON files on disk, zero infrastructure.
-Level 2 (qdrant) - Vector search via Qdrant for semantic recall.
-Level 3 (graph)  - FalkorDB graph relationships between memories.
+Level 0 (sqlite)   - SQLite index, zero infrastructure.
+Level 1 (skvector) - Semantic vector search (powered by Qdrant).
+Level 2 (skgraph)  - Graph relationship traversal (powered by FalkorDB).
 """
 
 from .base import BaseBackend
+from .skgraph_backend import SKGraphBackend
 from .file_backend import FileBackend
 
-__all__ = ["BaseBackend", "FileBackend"]
+__all__ = ["BaseBackend", "SKGraphBackend", "FileBackend"]

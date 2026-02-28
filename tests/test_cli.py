@@ -54,12 +54,12 @@ class TestCLIHelp:
 class TestCLIGlobalOptions:
     """Global option tests."""
 
-    def test_qdrant_url_option_exists(self, runner):
-        """--qdrant-url option is accepted."""
+    def test_skvector_url_option_exists(self, runner):
+        """--skvector-url option is accepted."""
         result = runner.invoke(cli, ["--help"])
-        assert "--qdrant-url" in result.output
+        assert "--skvector-url" in result.output
 
-    def test_qdrant_key_option_exists(self, runner):
-        """--qdrant-key option is accepted."""
+    def test_skvector_key_option_exists(self, runner):
+        """--skvector-key option is accepted."""
         result = runner.invoke(cli, ["--help"])
-        assert "--qdrant-key" in result.output
+        assert "--skvector-key" in result.output

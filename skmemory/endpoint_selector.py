@@ -1,5 +1,5 @@
 """
-SKMemory Endpoint Selector — HA routing for Qdrant and FalkorDB backends.
+SKMemory Endpoint Selector — HA routing for SKVector and SKGraph backends.
 
 Discovers multiple backend endpoints (via config or heartbeat mesh),
 probes their latency, selects the fastest healthy one, and fails over
@@ -69,20 +69,20 @@ class EndpointSelector:
     best URL, then the caller creates backends normally with that URL.
 
     Args:
-        qdrant_endpoints: List of Qdrant endpoint dicts or Endpoint objects.
-        falkordb_endpoints: List of FalkorDB endpoint dicts or Endpoint objects.
+        skvector_endpoints: List of SKVector endpoint dicts or Endpoint objects.
+        skgraph_endpoints: List of SKGraph endpoint dicts or Endpoint objects.
         config: Routing configuration.
     """
 
     def __init__(
         self,
-        qdrant_endpoints: Optional[list[dict | Endpoint]] = None,
-        falkordb_endpoints: Optional[list[dict | Endpoint]] = None,
+        skvector_endpoints: Optional[list[dict | Endpoint]] = None,
+        skgraph_endpoints: Optional[list[dict | Endpoint]] = None,
         config: Optional[RoutingConfig] = None,
     ) -> None:
         self._config = config or RoutingConfig()
-        self._qdrant: list[Endpoint] = self._normalize(qdrant_endpoints or [])
-        self._falkordb: list[Endpoint] = self._normalize(falkordb_endpoints or [])
+        self._skvector: list[Endpoint] = self._normalize(skvector_endpoints or [])
+        self._skgraph: list[Endpoint] = self._normalize(skgraph_endpoints or [])
         self._last_probe_time: float = 0.0
 
     @staticmethod
@@ -110,8 +110,8 @@ class EndpointSelector:
     # Core selection
     # -------------------------------------------------------------------
 
-    def select_qdrant(self, for_write: bool = False) -> Optional[Endpoint]:
-        """Select the best Qdrant endpoint.
+    def select_skvector(self, for_write: bool = False) -> Optional[Endpoint]:
+        """Select the best SKVector endpoint.
 
         Args:
             for_write: If True and strategy is read-local-write-primary,
@@ -121,10 +121,10 @@ class EndpointSelector:
             Best Endpoint or None if all unhealthy.
         """
         self._maybe_probe()
-        return self._select(self._qdrant, for_write)
+        return self._select(self._skvector, for_write)
 
-    def select_falkordb(self, for_write: bool = False) -> Optional[Endpoint]:
-        """Select the best FalkorDB endpoint.
+    def select_skgraph(self, for_write: bool = False) -> Optional[Endpoint]:
+        """Select the best SKGraph endpoint.
 
         Args:
             for_write: If True and strategy is read-local-write-primary,
@@ -134,7 +134,7 @@ class EndpointSelector:
             Best Endpoint or None if all unhealthy.
         """
         self._maybe_probe()
-        return self._select(self._falkordb, for_write)
+        return self._select(self._skgraph, for_write)
 
     def _select(self, endpoints: list[Endpoint], for_write: bool) -> Optional[Endpoint]:
         """Apply the routing strategy to pick the best endpoint."""
@@ -204,11 +204,11 @@ class EndpointSelector:
         """Probe all endpoints and return results summary.
 
         Returns:
-            Dict with qdrant and falkordb probe results.
+            Dict with skvector and skgraph probe results.
         """
         results = {
-            "qdrant": [self.probe_endpoint(ep) for ep in self._qdrant],
-            "falkordb": [self.probe_endpoint(ep) for ep in self._falkordb],
+            "skvector": [self.probe_endpoint(ep) for ep in self._skvector],
+            "skgraph": [self.probe_endpoint(ep) for ep in self._skgraph],
         }
         self._last_probe_time = time.monotonic()
         return results
@@ -267,7 +267,7 @@ class EndpointSelector:
         Args:
             url: The URL of the endpoint to mark.
         """
-        for ep in self._qdrant + self._falkordb:
+        for ep in self._skvector + self._skgraph:
             if ep.url == url:
                 ep.fail_count = self._config.max_fail_count
                 ep.healthy = False
@@ -295,8 +295,8 @@ class EndpointSelector:
             logger.debug("Heartbeat directory not found: %s", heartbeat_dir)
             return
 
-        existing_qdrant_urls = {ep.url for ep in self._qdrant}
-        existing_falkordb_urls = {ep.url for ep in self._falkordb}
+        existing_skvector_urls = {ep.url for ep in self._skvector}
+        existing_skgraph_urls = {ep.url for ep in self._skgraph}
 
         for f in sorted(heartbeat_dir.glob("*.json")):
             if f.name.endswith(".tmp"):
@@ -328,23 +328,23 @@ class EndpointSelector:
 
                 url = f"{protocol}://{host}:{port}"
 
-                if name == "qdrant" and url not in existing_qdrant_urls:
-                    self._qdrant.append(Endpoint(
+                if name == "skvector" and url not in existing_skvector_urls:
+                    self._skvector.append(Endpoint(
                         url=url,
                         role="replica",
                         tailscale_ip=tailscale_ip,
                     ))
-                    existing_qdrant_urls.add(url)
-                    logger.info("Discovered Qdrant endpoint: %s", url)
+                    existing_skvector_urls.add(url)
+                    logger.info("Discovered SKVector endpoint: %s", url)
 
-                elif name == "falkordb" and url not in existing_falkordb_urls:
-                    self._falkordb.append(Endpoint(
+                elif name == "skgraph" and url not in existing_skgraph_urls:
+                    self._skgraph.append(Endpoint(
                         url=url,
                         role="replica",
                         tailscale_ip=tailscale_ip,
                     ))
-                    existing_falkordb_urls.add(url)
-                    logger.info("Discovered FalkorDB endpoint: %s", url)
+                    existing_skgraph_urls.add(url)
+                    logger.info("Discovered SKGraph endpoint: %s", url)
 
     # -------------------------------------------------------------------
     # Status reporting
@@ -363,19 +363,19 @@ class EndpointSelector:
             "strategy": self._config.strategy,
             "probe_interval_seconds": self._config.probe_interval_seconds,
             "last_probe_age_seconds": round(stale_seconds, 1),
-            "qdrant_endpoints": [ep.model_dump() for ep in self._qdrant],
-            "falkordb_endpoints": [ep.model_dump() for ep in self._falkordb],
+            "skvector_endpoints": [ep.model_dump() for ep in self._skvector],
+            "skgraph_endpoints": [ep.model_dump() for ep in self._skgraph],
         }
 
     @property
-    def qdrant_endpoints(self) -> list[Endpoint]:
-        """Access the Qdrant endpoint list."""
-        return self._qdrant
+    def skvector_endpoints(self) -> list[Endpoint]:
+        """Access the SKVector endpoint list."""
+        return self._skvector
 
     @property
-    def falkordb_endpoints(self) -> list[Endpoint]:
-        """Access the FalkorDB endpoint list."""
-        return self._falkordb
+    def skgraph_endpoints(self) -> list[Endpoint]:
+        """Access the SKGraph endpoint list."""
+        return self._skgraph
 
     @property
     def config(self) -> RoutingConfig:

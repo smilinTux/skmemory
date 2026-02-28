@@ -1,12 +1,12 @@
 """
-Qdrant vector search backend (Level 2).
+SKVector — semantic vector search backend (Level 1).
 
-Enables semantic memory recall: instead of exact text matching,
-find memories by *meaning*. "That conversation where we felt connected"
-finds the right memory even if those exact words aren't in it.
+Powered by Qdrant. Enables semantic memory recall: instead of exact text
+matching, find memories by *meaning*. "That conversation where we felt
+connected" finds the right memory even if those exact words aren't in it.
 
 Requires:
-    pip install qdrant-client sentence-transformers
+    pip install skmemory[skvector]
 
 Qdrant free tier: 1GB storage, 256MB RAM -- enough for thousands of memories.
 SaaS endpoint: https://cloud.qdrant.io (free cluster available).
@@ -48,15 +48,16 @@ def _extract_status_code(exc: Exception, unexpected_cls: type | None) -> int | N
     return None
 
 
-class QdrantBackend(BaseBackend):
-    """Qdrant-powered semantic memory search.
+class SKVectorBackend(BaseBackend):
+    """SKVector — semantic memory search (powered by Qdrant).
 
-    Stores memory embeddings in Qdrant for vector similarity search.
-    Falls back gracefully if Qdrant or the embedding model is unavailable.
+    Stores memory embeddings for vector similarity search.
+    Falls back gracefully if the vector engine or the embedding model
+    is unavailable.
 
     Args:
-        url: Qdrant server URL (default: localhost:6333).
-        api_key: API key for Qdrant Cloud.
+        url: SKVector server URL (default: localhost:6333).
+        api_key: API key for cloud-hosted SKVector.
         collection: Collection name (default: 'skmemory').
         embedding_model: Sentence-transformers model name.
     """
@@ -90,7 +91,7 @@ class QdrantBackend(BaseBackend):
             from qdrant_client import QdrantClient
             from qdrant_client.models import Distance, VectorParams
         except ImportError:
-            logger.warning("qdrant-client not installed: pip install qdrant-client")
+            logger.warning("qdrant-client not installed: pip install skmemory[skvector]")
             return False
 
         try:
@@ -98,7 +99,7 @@ class QdrantBackend(BaseBackend):
         except ImportError:
             logger.warning(
                 "sentence-transformers not installed: "
-                "pip install sentence-transformers"
+                "pip install skmemory[skvector]"
             )
             return False
 
@@ -133,16 +134,16 @@ class QdrantBackend(BaseBackend):
             status = _extract_status_code(e, UnexpectedResponse)
             if status in (401, 403):
                 hint = (
-                    "Qdrant authentication failed (HTTP %d). "
+                    "SKVector authentication failed (HTTP %d). "
                     "Check your API key:\n"
-                    "  - CLI:  --qdrant-key YOUR_KEY\n"
-                    "  - Env:  SKMEMORY_QDRANT_KEY=YOUR_KEY\n"
-                    "  - Code: QdrantBackend(url=..., api_key='YOUR_KEY')"
+                    "  - CLI:  --skvector-key YOUR_KEY\n"
+                    "  - Env:  SKMEMORY_SKVECTOR_KEY=YOUR_KEY\n"
+                    "  - Code: SKVectorBackend(url=..., api_key='YOUR_KEY')"
                 )
                 logger.error(hint, status)
                 self._last_error = hint % status
             else:
-                logger.warning("Qdrant initialization failed: %s", e)
+                logger.warning("SKVector initialization failed: %s", e)
                 self._last_error = str(e)
             return False
 
@@ -388,7 +389,7 @@ class QdrantBackend(BaseBackend):
             )
             return {
                 "ok": False,
-                "backend": "QdrantBackend",
+                "backend": "SKVectorBackend",
                 "error": error_msg,
             }
 
@@ -396,7 +397,7 @@ class QdrantBackend(BaseBackend):
             info = self._client.get_collection(self.collection)
             return {
                 "ok": True,
-                "backend": "QdrantBackend",
+                "backend": "SKVectorBackend",
                 "url": self.url,
                 "collection": self.collection,
                 "points_count": info.points_count,
@@ -405,6 +406,6 @@ class QdrantBackend(BaseBackend):
         except Exception as e:
             return {
                 "ok": False,
-                "backend": "QdrantBackend",
+                "backend": "SKVectorBackend",
                 "error": str(e),
             }

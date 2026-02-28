@@ -38,7 +38,7 @@ _active_selector = None  # Module-level reference for routing commands
 
 
 def _get_store(
-    qdrant_url: Optional[str] = None,
+    skvector_url: Optional[str] = None,
     api_key: Optional[str] = None,
     legacy_files: bool = False,
 ) -> MemoryStore:
@@ -49,8 +49,8 @@ def _get_store(
     the best URLs.  Falls back to single-URL behavior otherwise.
 
     Args:
-        qdrant_url: Optional Qdrant server URL.
-        api_key: Optional Qdrant API key.
+        skvector_url: Optional SKVector server URL.
+        api_key: Optional SKVector API key.
         legacy_files: Use old FileBackend instead of SQLite index.
 
     Returns:
@@ -60,30 +60,30 @@ def _get_store(
 
     from .config import merge_env_and_config, load_config, build_endpoint_list
 
-    final_qdrant_url, final_qdrant_key, final_falkordb_url = merge_env_and_config(
-        cli_qdrant_url=qdrant_url,
-        cli_qdrant_key=api_key,
+    final_skvector_url, final_skvector_key, final_skgraph_url = merge_env_and_config(
+        cli_skvector_url=skvector_url,
+        cli_skvector_key=api_key,
     )
 
     # Try endpoint selector when multi-endpoint config exists
     cfg = load_config()
-    qdrant_eps = build_endpoint_list(
-        final_qdrant_url,
-        cfg.qdrant_endpoints if cfg else [],
+    skvector_eps = build_endpoint_list(
+        final_skvector_url,
+        cfg.skvector_endpoints if cfg else [],
     )
-    falkordb_eps = build_endpoint_list(
-        final_falkordb_url,
-        cfg.falkordb_endpoints if cfg else [],
+    skgraph_eps = build_endpoint_list(
+        final_skgraph_url,
+        cfg.skgraph_endpoints if cfg else [],
     )
 
-    if len(qdrant_eps) > 1 or len(falkordb_eps) > 1 or (cfg and cfg.heartbeat_discovery):
+    if len(skvector_eps) > 1 or len(skgraph_eps) > 1 or (cfg and cfg.heartbeat_discovery):
         try:
             from .endpoint_selector import EndpointSelector, RoutingConfig
 
             routing_strategy = cfg.routing_strategy if cfg else "failover"
             selector = EndpointSelector(
-                qdrant_endpoints=qdrant_eps,
-                falkordb_endpoints=falkordb_eps,
+                skvector_endpoints=skvector_eps,
+                skgraph_endpoints=skgraph_eps,
                 config=RoutingConfig(strategy=routing_strategy),
             )
 
@@ -92,32 +92,32 @@ def _get_store(
 
             _active_selector = selector
 
-            best_qdrant = selector.select_qdrant()
-            if best_qdrant:
-                final_qdrant_url = best_qdrant.url
+            best_skvector = selector.select_skvector()
+            if best_skvector:
+                final_skvector_url = best_skvector.url
 
-            best_falkordb = selector.select_falkordb()
-            if best_falkordb:
-                final_falkordb_url = best_falkordb.url
+            best_skgraph = selector.select_skgraph()
+            if best_skgraph:
+                final_skgraph_url = best_skgraph.url
         except Exception:
             click.echo("Warning: EndpointSelector failed, using single URLs", err=True)
 
     vector = None
     graph = None
 
-    if final_qdrant_url:
+    if final_skvector_url:
         try:
-            from .backends.qdrant_backend import QdrantBackend
-            vector = QdrantBackend(url=final_qdrant_url, api_key=final_qdrant_key)
+            from .backends.skvector_backend import SKVectorBackend
+            vector = SKVectorBackend(url=final_skvector_url, api_key=final_skvector_key)
         except Exception:
-            click.echo("Warning: Could not initialize Qdrant backend", err=True)
+            click.echo("Warning: Could not initialize SKVector backend", err=True)
 
-    if final_falkordb_url:
+    if final_skgraph_url:
         try:
-            from .backends.falkordb_backend import FalkorDBBackend
-            graph = FalkorDBBackend(url=final_falkordb_url)
+            from .backends.skgraph_backend import SKGraphBackend
+            graph = SKGraphBackend(url=final_skgraph_url)
         except Exception:
-            click.echo("Warning: Could not initialize FalkorDB backend", err=True)
+            click.echo("Warning: Could not initialize SKGraph backend", err=True)
 
     return MemoryStore(
         primary=None, vector=vector, graph=graph, use_sqlite=not legacy_files
@@ -126,16 +126,16 @@ def _get_store(
 
 @click.group()
 @click.version_option(__version__, prog_name="skmemory")
-@click.option("--qdrant-url", envvar="SKMEMORY_QDRANT_URL", default=None, help="Qdrant server URL")
-@click.option("--qdrant-key", envvar="SKMEMORY_QDRANT_KEY", default=None, help="Qdrant API key")
+@click.option("--skvector-url", envvar="SKMEMORY_SKVECTOR_URL", default=None, help="SKVector server URL")
+@click.option("--skvector-key", envvar="SKMEMORY_SKVECTOR_KEY", default=None, help="SKVector API key")
 @click.option("--ai", "use_ai", is_flag=True, envvar="SKMEMORY_AI", help="Enable AI-powered features (requires Ollama)")
 @click.option("--ai-model", envvar="SKMEMORY_AI_MODEL", default=None, help="Ollama model name (default: llama3.2)")
 @click.option("--ai-url", envvar="SKMEMORY_AI_URL", default=None, help="Ollama server URL")
 @click.pass_context
 def cli(
     ctx: click.Context,
-    qdrant_url: Optional[str],
-    qdrant_key: Optional[str],
+    skvector_url: Optional[str],
+    skvector_key: Optional[str],
     use_ai: bool,
     ai_model: Optional[str],
     ai_url: Optional[str],
@@ -148,7 +148,7 @@ def cli(
     smart search reranking, enhanced rituals). Requires Ollama.
     """
     ctx.ensure_object(dict)
-    ctx.obj["store"] = _get_store(qdrant_url, qdrant_key)
+    ctx.obj["store"] = _get_store(skvector_url, skvector_key)
 
     if use_ai:
         ai = AIClient(base_url=ai_url, model=ai_model)
@@ -386,7 +386,7 @@ def health(ctx: click.Context) -> None:
 
 @cli.group()
 def routing() -> None:
-    """Manage HA endpoint routing for Qdrant and FalkorDB backends."""
+    """Manage HA endpoint routing for SKVector and SKGraph backends."""
 
 
 @routing.command("status")
@@ -403,7 +403,7 @@ def routing_status() -> None:
     age = info["last_probe_age_seconds"]
     click.echo(f"Last probe: {age}s ago" if age >= 0 else "Last probe: never")
 
-    for backend in ("qdrant", "falkordb"):
+    for backend in ("skvector", "skgraph"):
         eps = info.get(f"{backend}_endpoints", [])
         if not eps:
             continue
@@ -857,28 +857,49 @@ def anchor_update(
 
 @cli.group()
 def setup() -> None:
-    """Deploy and manage Qdrant & FalkorDB Docker containers."""
+    """Deploy and manage SKVector & SKGraph Docker containers."""
 
 
 @setup.command("wizard")
-@click.option("--qdrant/--no-qdrant", default=True, help="Enable Qdrant (vector search)")
-@click.option("--falkordb/--no-falkordb", default=True, help="Enable FalkorDB (graph)")
+@click.option("--skvector/--no-skvector", default=True, help="Enable SKVector (vector search)")
+@click.option("--skgraph/--no-skgraph", default=True, help="Enable SKGraph (graph)")
 @click.option("--skip-deps", is_flag=True, help="Skip Python dependency installation")
 @click.option("--yes", "-y", "non_interactive", is_flag=True, help="Non-interactive mode")
+@click.option(
+    "--local",
+    "deployment_mode",
+    flag_value="local",
+    default=None,
+    help="Run SKVector/SKGraph locally via Docker (skip local/remote prompt)",
+)
+@click.option(
+    "--remote",
+    "deployment_mode",
+    flag_value="remote",
+    help="Connect to a remote/SaaS URL (skip local/remote prompt)",
+)
 def setup_wizard(
-    qdrant: bool,
-    falkordb: bool,
+    skvector: bool,
+    skgraph: bool,
     skip_deps: bool,
     non_interactive: bool,
+    deployment_mode: str,
 ) -> None:
-    """Interactive wizard — deploy Docker containers, install deps, save config."""
+    """Interactive wizard — deploy Docker containers or configure remote URLs.
+
+    Without --local or --remote the wizard asks which deployment mode you want.
+    Use --local to go straight to Docker setup (checks Docker, offers to install
+    it if missing).  Use --remote to enter a Qdrant Cloud / self-hosted URL
+    without touching Docker at all.
+    """
     from .setup_wizard import run_setup_wizard
 
     result = run_setup_wizard(
-        enable_qdrant=qdrant,
-        enable_falkordb=falkordb,
+        enable_skvector=skvector,
+        enable_skgraph=skgraph,
         skip_deps=skip_deps,
         non_interactive=non_interactive,
+        deployment_mode=deployment_mode,
         echo=click.echo,
     )
     if not result["success"]:
@@ -889,8 +910,8 @@ def setup_wizard(
 def setup_status() -> None:
     """Show Docker container state and backend connectivity."""
     from .setup_wizard import (
-        check_falkordb_health,
-        check_qdrant_health,
+        check_skgraph_health,
+        check_skvector_health,
         compose_ps,
         detect_platform,
         find_compose_file,
@@ -927,21 +948,21 @@ def setup_status() -> None:
 
     # Connectivity
     click.echo("Connectivity:")
-    if cfg.qdrant_url:
-        healthy = check_qdrant_health(url=cfg.qdrant_url, timeout=5)
+    if cfg.skvector_url:
+        healthy = check_skvector_health(url=cfg.skvector_url, timeout=5)
         status = "healthy" if healthy else "unreachable"
-        click.echo(f"  Qdrant ({cfg.qdrant_url}): {status}")
+        click.echo(f"  SKVector ({cfg.skvector_url}): {status}")
 
-    if cfg.falkordb_url:
-        healthy = check_falkordb_health(timeout=5)
+    if cfg.skgraph_url:
+        healthy = check_skgraph_health(timeout=5)
         status = "healthy" if healthy else "unreachable"
-        click.echo(f"  FalkorDB ({cfg.falkordb_url}): {status}")
+        click.echo(f"  SKGraph ({cfg.skgraph_url}): {status}")
 
 
 @setup.command("start")
 @click.option(
     "--service",
-    type=click.Choice(["qdrant", "falkordb", "all"]),
+    type=click.Choice(["skvector", "skgraph", "all"]),
     default="all",
     help="Which service to start",
 )
@@ -982,7 +1003,7 @@ def setup_start(service: str) -> None:
 @setup.command("stop")
 @click.option(
     "--service",
-    type=click.Choice(["qdrant", "falkordb", "all"]),
+    type=click.Choice(["skvector", "skgraph", "all"]),
     default="all",
     help="Which service to stop",
 )

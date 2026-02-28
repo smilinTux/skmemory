@@ -1,4 +1,4 @@
-"""Tests for the Qdrant vector search backend.
+"""Tests for the SKVector (Qdrant) vector search backend.
 
 Mocks the Qdrant client and sentence-transformers to test
 logic without requiring infrastructure. Verifies save, search,
@@ -12,10 +12,10 @@ from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
 
-from skmemory.backends.qdrant_backend import (
+from skmemory.backends.skvector_backend import (
     COLLECTION_NAME,
     VECTOR_DIM,
-    QdrantBackend,
+    SKVectorBackend,
     _extract_status_code,
 )
 from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
@@ -56,8 +56,8 @@ def mock_embedder():
 
 @pytest.fixture
 def backend(mock_qdrant_client, mock_embedder):
-    """Provide a QdrantBackend with mocked dependencies."""
-    qb = QdrantBackend(url="http://mock:6333")
+    """Provide a SKVectorBackend with mocked dependencies."""
+    qb = SKVectorBackend(url="http://mock:6333")
     qb._client = mock_qdrant_client
     qb._embedder = mock_embedder
     qb._initialized = True
@@ -87,12 +87,12 @@ class TestInitialization:
 
     def test_not_initialized_by_default(self):
         """Backend starts uninitialized."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         assert qb._initialized is False
 
     def test_init_fails_without_qdrant(self):
         """Fails gracefully without qdrant-client."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         with patch("builtins.__import__", side_effect=ImportError):
             assert qb._ensure_initialized() is False
 
@@ -122,7 +122,7 @@ class TestSave:
 
     def test_save_not_initialized(self, sample_memory):
         """save() returns id gracefully when not initialized."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         result = qb.save(sample_memory)
         assert result == sample_memory.id
 
@@ -162,7 +162,7 @@ class TestSearch:
 
     def test_search_not_initialized(self):
         """search_text returns empty when not initialized."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         assert qb.search_text("anything") == []
 
 
@@ -187,7 +187,7 @@ class TestList:
 
     def test_list_not_initialized(self):
         """list_memories returns empty when not initialized."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         assert qb.list_memories() == []
 
 
@@ -206,7 +206,7 @@ class TestDelete:
 
     def test_delete_not_initialized(self):
         """delete returns False when not initialized."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         assert qb.delete("any") is False
 
 
@@ -231,7 +231,7 @@ class TestHealth:
 
     def test_health_not_initialized(self):
         """Uninitialized backend returns ok=False."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         health = qb.health_check()
         assert health["ok"] is False
 
@@ -244,13 +244,13 @@ class TestHealth:
 
     def test_health_surfaces_auth_error(self):
         """Health check surfaces 401 auth error with actionable hint."""
-        qb = QdrantBackend(url="https://cloud.qdrant.io", api_key="bad-key")
+        qb = SKVectorBackend(url="https://cloud.qdrant.io", api_key="bad-key")
         qb._last_error = (
-            "Qdrant authentication failed (HTTP 401). "
+            "SKVector authentication failed (HTTP 401). "
             "Check your API key:\n"
-            "  - CLI:  --qdrant-key YOUR_KEY\n"
-            "  - Env:  SKMEMORY_QDRANT_KEY=YOUR_KEY\n"
-            "  - Code: QdrantBackend(url=..., api_key='YOUR_KEY')"
+            "  - CLI:  --skvector-key YOUR_KEY\n"
+            "  - Env:  SKMEMORY_SKVECTOR_KEY=YOUR_KEY\n"
+            "  - Code: SKVectorBackend(url=..., api_key='YOUR_KEY')"
         )
         with patch.object(qb, "_ensure_initialized", return_value=False):
             health = qb.health_check()
@@ -260,7 +260,7 @@ class TestHealth:
 
     def test_health_generic_error_without_last_error(self):
         """Health check falls back to generic message when no _last_error."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         with patch.object(qb, "_ensure_initialized", return_value=False):
             health = qb.health_check()
         assert health["ok"] is False
@@ -313,7 +313,7 @@ class TestEmbedding:
 
     def test_embed_without_embedder(self):
         """_embed returns empty when no embedder available."""
-        qb = QdrantBackend()
+        qb = SKVectorBackend()
         qb._embedder = None
         assert qb._embed("test") == []
 

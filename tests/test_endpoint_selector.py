@@ -88,7 +88,7 @@ class TestLatencyProbing:
     def test_probe_success(self) -> None:
         """Successful probe updates latency and marks healthy."""
         ep = Endpoint(url="http://localhost:6333")
-        selector = EndpointSelector(qdrant_endpoints=[ep])
+        selector = EndpointSelector(skvector_endpoints=[ep])
 
         mock_sock = MagicMock()
         with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock):
@@ -103,7 +103,7 @@ class TestLatencyProbing:
     def test_probe_timeout(self) -> None:
         """Timeout increments fail_count but keeps healthy until max."""
         ep = Endpoint(url="http://localhost:6333")
-        selector = EndpointSelector(qdrant_endpoints=[ep])
+        selector = EndpointSelector(skvector_endpoints=[ep])
 
         with patch(
             "skmemory.endpoint_selector.socket.create_connection",
@@ -118,7 +118,7 @@ class TestLatencyProbing:
     def test_probe_connection_refused(self) -> None:
         """Connection refused increments fail_count."""
         ep = Endpoint(url="http://localhost:6333")
-        selector = EndpointSelector(qdrant_endpoints=[ep])
+        selector = EndpointSelector(skvector_endpoints=[ep])
 
         with patch(
             "skmemory.endpoint_selector.socket.create_connection",
@@ -133,7 +133,7 @@ class TestLatencyProbing:
         """Endpoint marked unhealthy after max_fail_count failures."""
         ep = Endpoint(url="http://localhost:6333", fail_count=2)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep],
+            skvector_endpoints=[ep],
             config=RoutingConfig(max_fail_count=3),
         )
 
@@ -149,7 +149,7 @@ class TestLatencyProbing:
     def test_probe_recovery(self) -> None:
         """Unhealthy endpoint recovers when probe succeeds."""
         ep = Endpoint(url="http://localhost:6333", healthy=False, fail_count=5)
-        selector = EndpointSelector(qdrant_endpoints=[ep])
+        selector = EndpointSelector(skvector_endpoints=[ep])
 
         mock_sock = MagicMock()
         with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock):
@@ -163,20 +163,20 @@ class TestLatencyProbing:
         """probe_all updates the last probe time."""
         ep1 = Endpoint(url="http://host1:6333")
         ep2 = Endpoint(url="redis://host2:6379")
-        selector = EndpointSelector(qdrant_endpoints=[ep1], falkordb_endpoints=[ep2])
+        selector = EndpointSelector(skvector_endpoints=[ep1], skgraph_endpoints=[ep2])
 
         mock_sock = MagicMock()
         with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock):
             results = selector.probe_all()
 
-        assert len(results["qdrant"]) == 1
-        assert len(results["falkordb"]) == 1
+        assert len(results["skvector"]) == 1
+        assert len(results["skgraph"]) == 1
         assert selector._last_probe_time > 0
 
     def test_probe_infers_redis_port(self) -> None:
         """Probe infers port 6379 for redis:// scheme."""
         ep = Endpoint(url="redis://myhost")
-        selector = EndpointSelector(falkordb_endpoints=[ep])
+        selector = EndpointSelector(skgraph_endpoints=[ep])
 
         mock_sock = MagicMock()
         with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock) as mock_connect:
@@ -188,7 +188,7 @@ class TestLatencyProbing:
     def test_probe_infers_https_port(self) -> None:
         """Probe infers port 443 for https:// scheme."""
         ep = Endpoint(url="https://secure.qdrant.io")
-        selector = EndpointSelector(qdrant_endpoints=[ep])
+        selector = EndpointSelector(skvector_endpoints=[ep])
 
         mock_sock = MagicMock()
         with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock) as mock_connect:
@@ -211,12 +211,12 @@ class TestFailoverStrategy:
         ep1 = Endpoint(url="http://a:6333", latency_ms=50)
         ep2 = Endpoint(url="http://b:6333", latency_ms=10)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="failover", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://a:6333"
 
@@ -225,12 +225,12 @@ class TestFailoverStrategy:
         ep1 = Endpoint(url="http://a:6333", healthy=False)
         ep2 = Endpoint(url="http://b:6333", healthy=True)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="failover", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://b:6333"
 
@@ -239,12 +239,12 @@ class TestFailoverStrategy:
         ep1 = Endpoint(url="http://a:6333", healthy=False)
         ep2 = Endpoint(url="http://b:6333", healthy=False)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="failover", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        assert selector.select_qdrant() is None
+        assert selector.select_skvector() is None
 
 
 class TestLatencyStrategy:
@@ -256,12 +256,12 @@ class TestLatencyStrategy:
         ep2 = Endpoint(url="http://b:6333", latency_ms=10)
         ep3 = Endpoint(url="http://c:6333", latency_ms=30)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2, ep3],
+            skvector_endpoints=[ep1, ep2, ep3],
             config=RoutingConfig(strategy="latency", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://b:6333"
 
@@ -270,12 +270,12 @@ class TestLatencyStrategy:
         ep1 = Endpoint(url="http://a:6333")  # latency_ms=-1
         ep2 = Endpoint(url="http://b:6333")
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="latency", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://a:6333"
 
@@ -284,12 +284,12 @@ class TestLatencyStrategy:
         ep1 = Endpoint(url="http://a:6333", latency_ms=5, healthy=False)
         ep2 = Endpoint(url="http://b:6333", latency_ms=50)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="latency", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://b:6333"
 
@@ -302,12 +302,12 @@ class TestLocalFirstStrategy:
         ep1 = Endpoint(url="http://remote:6333", latency_ms=5)
         ep2 = Endpoint(url="http://localhost:6333", latency_ms=15)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="local-first", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://localhost:6333"
 
@@ -316,12 +316,12 @@ class TestLocalFirstStrategy:
         ep1 = Endpoint(url="http://remote:6333", latency_ms=5)
         ep2 = Endpoint(url="http://127.0.0.1:6333", latency_ms=15)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="local-first", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://127.0.0.1:6333"
 
@@ -330,12 +330,12 @@ class TestLocalFirstStrategy:
         ep1 = Endpoint(url="http://remote-a:6333", latency_ms=50)
         ep2 = Endpoint(url="http://remote-b:6333", latency_ms=10)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="local-first", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://remote-b:6333"
 
@@ -344,12 +344,12 @@ class TestLocalFirstStrategy:
         ep1 = Endpoint(url="http://localhost:6333", healthy=False)
         ep2 = Endpoint(url="http://remote:6333", latency_ms=10)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="local-first", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://remote:6333"
 
@@ -362,12 +362,12 @@ class TestReadLocalWritePrimaryStrategy:
         ep1 = Endpoint(url="http://localhost:6333", role="replica", latency_ms=2)
         ep2 = Endpoint(url="http://primary:6333", role="primary", latency_ms=20)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="read-local-write-primary", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant(for_write=True)
+        result = selector.select_skvector(for_write=True)
         assert result is not None
         assert result.url == "http://primary:6333"
 
@@ -376,12 +376,12 @@ class TestReadLocalWritePrimaryStrategy:
         ep1 = Endpoint(url="http://primary:6333", role="primary", latency_ms=20)
         ep2 = Endpoint(url="http://localhost:6333", role="replica", latency_ms=2)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="read-local-write-primary", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant(for_write=False)
+        result = selector.select_skvector(for_write=False)
         assert result is not None
         assert result.url == "http://localhost:6333"
 
@@ -390,12 +390,12 @@ class TestReadLocalWritePrimaryStrategy:
         ep1 = Endpoint(url="http://localhost:6333", role="replica")
         ep2 = Endpoint(url="http://remote:6333", role="replica")
         selector = EndpointSelector(
-            qdrant_endpoints=[ep1, ep2],
+            skvector_endpoints=[ep1, ep2],
             config=RoutingConfig(strategy="read-local-write-primary", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        assert selector.select_qdrant(for_write=True) is None
+        assert selector.select_skvector(for_write=True) is None
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +410,7 @@ class TestFailover:
         """Endpoint transitions from healthy to unhealthy after max failures."""
         ep = Endpoint(url="http://host:6333")
         selector = EndpointSelector(
-            qdrant_endpoints=[ep],
+            skvector_endpoints=[ep],
             config=RoutingConfig(max_fail_count=2),
         )
 
@@ -428,7 +428,7 @@ class TestFailover:
         """mark_unhealthy marks the correct endpoint."""
         ep1 = Endpoint(url="http://a:6333")
         ep2 = Endpoint(url="http://b:6333")
-        selector = EndpointSelector(qdrant_endpoints=[ep1, ep2])
+        selector = EndpointSelector(skvector_endpoints=[ep1, ep2])
 
         selector.mark_unhealthy("http://a:6333")
         assert ep1.healthy is False
@@ -437,7 +437,7 @@ class TestFailover:
     def test_mark_unhealthy_nonexistent_url(self) -> None:
         """mark_unhealthy does nothing for unknown URLs."""
         ep = Endpoint(url="http://a:6333")
-        selector = EndpointSelector(qdrant_endpoints=[ep])
+        selector = EndpointSelector(skvector_endpoints=[ep])
 
         selector.mark_unhealthy("http://unknown:6333")
         assert ep.healthy is True
@@ -445,7 +445,7 @@ class TestFailover:
     def test_recovery_after_failure(self) -> None:
         """Endpoint recovers when probing succeeds again."""
         ep = Endpoint(url="http://host:6333", healthy=False, fail_count=5)
-        selector = EndpointSelector(qdrant_endpoints=[ep])
+        selector = EndpointSelector(skvector_endpoints=[ep])
 
         mock_sock = MagicMock()
         with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock):
@@ -472,16 +472,16 @@ class TestHeartbeatDiscovery:
             "hostname": "peer-host",
             "tailscale_ip": "100.64.0.5",
             "services": [
-                {"name": "qdrant", "port": 6333, "protocol": "http"},
+                {"name": "skvector", "port": 6333, "protocol": "http"},
             ],
         }), encoding="utf-8")
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
 
-        assert len(selector.qdrant_endpoints) == 1
-        assert selector.qdrant_endpoints[0].url == "http://100.64.0.5:6333"
-        assert selector.qdrant_endpoints[0].role == "replica"
+        assert len(selector.skvector_endpoints) == 1
+        assert selector.skvector_endpoints[0].url == "http://100.64.0.5:6333"
+        assert selector.skvector_endpoints[0].role == "replica"
 
     def test_discover_falkordb_from_heartbeat(self, tmp_path: Path) -> None:
         """Discovers FalkorDB endpoint from heartbeat file."""
@@ -491,15 +491,15 @@ class TestHeartbeatDiscovery:
             "agent_name": "peer",
             "hostname": "peer-host",
             "services": [
-                {"name": "falkordb", "port": 6379, "protocol": "redis"},
+                {"name": "skgraph", "port": 6379, "protocol": "redis"},
             ],
         }), encoding="utf-8")
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
 
-        assert len(selector.falkordb_endpoints) == 1
-        assert selector.falkordb_endpoints[0].url == "redis://peer-host:6379"
+        assert len(selector.skgraph_endpoints) == 1
+        assert selector.skgraph_endpoints[0].url == "redis://peer-host:6379"
 
     def test_discover_uses_tailscale_ip_over_hostname(self, tmp_path: Path) -> None:
         """Tailscale IP is preferred over hostname for URL construction."""
@@ -510,14 +510,14 @@ class TestHeartbeatDiscovery:
             "hostname": "peer-host",
             "tailscale_ip": "100.64.0.10",
             "services": [
-                {"name": "qdrant", "port": 6333, "protocol": "http"},
+                {"name": "skvector", "port": 6333, "protocol": "http"},
             ],
         }), encoding="utf-8")
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
 
-        assert selector.qdrant_endpoints[0].url == "http://100.64.0.10:6333"
+        assert selector.skvector_endpoints[0].url == "http://100.64.0.10:6333"
 
     def test_discover_skips_existing_urls(self, tmp_path: Path) -> None:
         """Discovery doesn't duplicate existing config endpoints."""
@@ -528,15 +528,15 @@ class TestHeartbeatDiscovery:
             "hostname": "peer-host",
             "tailscale_ip": "100.64.0.5",
             "services": [
-                {"name": "qdrant", "port": 6333, "protocol": "http"},
+                {"name": "skvector", "port": 6333, "protocol": "http"},
             ],
         }), encoding="utf-8")
 
         existing = Endpoint(url="http://100.64.0.5:6333")
-        selector = EndpointSelector(qdrant_endpoints=[existing])
+        selector = EndpointSelector(skvector_endpoints=[existing])
         selector.discover_from_heartbeats(hb_dir)
 
-        assert len(selector.qdrant_endpoints) == 1
+        assert len(selector.skvector_endpoints) == 1
 
     def test_discover_empty_dir(self, tmp_path: Path) -> None:
         """Empty heartbeat dir adds no endpoints."""
@@ -546,15 +546,15 @@ class TestHeartbeatDiscovery:
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
 
-        assert len(selector.qdrant_endpoints) == 0
-        assert len(selector.falkordb_endpoints) == 0
+        assert len(selector.skvector_endpoints) == 0
+        assert len(selector.skgraph_endpoints) == 0
 
     def test_discover_missing_dir(self, tmp_path: Path) -> None:
         """Missing heartbeat dir doesn't raise."""
         selector = EndpointSelector()
         selector.discover_from_heartbeats(tmp_path / "nonexistent")
 
-        assert len(selector.qdrant_endpoints) == 0
+        assert len(selector.skvector_endpoints) == 0
 
     def test_discover_skips_invalid_json(self, tmp_path: Path) -> None:
         """Invalid JSON in heartbeat files is skipped gracefully."""
@@ -565,7 +565,7 @@ class TestHeartbeatDiscovery:
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
 
-        assert len(selector.qdrant_endpoints) == 0
+        assert len(selector.skvector_endpoints) == 0
 
     def test_discover_skips_no_host(self, tmp_path: Path) -> None:
         """Heartbeat without hostname or tailscale_ip is skipped."""
@@ -574,14 +574,14 @@ class TestHeartbeatDiscovery:
         (hb_dir / "peer.json").write_text(json.dumps({
             "agent_name": "peer",
             "services": [
-                {"name": "qdrant", "port": 6333},
+                {"name": "skvector", "port": 6333},
             ],
         }), encoding="utf-8")
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
 
-        assert len(selector.qdrant_endpoints) == 0
+        assert len(selector.skvector_endpoints) == 0
 
     def test_discover_multiple_services(self, tmp_path: Path) -> None:
         """Discovers both Qdrant and FalkorDB from one heartbeat."""
@@ -591,16 +591,16 @@ class TestHeartbeatDiscovery:
             "agent_name": "peer",
             "hostname": "peer-host",
             "services": [
-                {"name": "qdrant", "port": 6333, "protocol": "http"},
-                {"name": "falkordb", "port": 6379, "protocol": "redis"},
+                {"name": "skvector", "port": 6333, "protocol": "http"},
+                {"name": "skgraph", "port": 6379, "protocol": "redis"},
             ],
         }), encoding="utf-8")
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
 
-        assert len(selector.qdrant_endpoints) == 1
-        assert len(selector.falkordb_endpoints) == 1
+        assert len(selector.skvector_endpoints) == 1
+        assert len(selector.skgraph_endpoints) == 1
 
     def test_discover_skips_tmp_files(self, tmp_path: Path) -> None:
         """Files ending in .tmp are skipped."""
@@ -609,13 +609,13 @@ class TestHeartbeatDiscovery:
         (hb_dir / "peer.json.tmp").write_text(json.dumps({
             "agent_name": "peer",
             "hostname": "peer-host",
-            "services": [{"name": "qdrant", "port": 6333}],
+            "services": [{"name": "skvector", "port": 6333}],
         }), encoding="utf-8")
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
 
-        assert len(selector.qdrant_endpoints) == 0
+        assert len(selector.skvector_endpoints) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -633,50 +633,50 @@ class TestBackwardCompatibility:
         )
         selector._last_probe_time = time.monotonic()
 
-        assert selector.select_qdrant() is None
-        assert selector.select_falkordb() is None
+        assert selector.select_skvector() is None
+        assert selector.select_skgraph() is None
 
     def test_single_endpoint(self) -> None:
         """Single endpoint is selected regardless of strategy."""
         ep = Endpoint(url="http://localhost:6333")
         selector = EndpointSelector(
-            qdrant_endpoints=[ep],
+            skvector_endpoints=[ep],
             config=RoutingConfig(strategy="latency", probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_qdrant()
+        result = selector.select_skvector()
         assert result is not None
         assert result.url == "http://localhost:6333"
 
     def test_normalize_from_dict(self) -> None:
         """Endpoints can be passed as dicts."""
         selector = EndpointSelector(
-            qdrant_endpoints=[{"url": "http://host:6333", "role": "replica"}],
+            skvector_endpoints=[{"url": "http://host:6333", "role": "replica"}],
         )
-        assert len(selector.qdrant_endpoints) == 1
-        assert selector.qdrant_endpoints[0].role == "replica"
+        assert len(selector.skvector_endpoints) == 1
+        assert selector.skvector_endpoints[0].role == "replica"
 
     def test_normalize_from_endpoint_config(self) -> None:
         """Endpoints can be passed as EndpointConfig-like objects."""
         from skmemory.config import EndpointConfig
 
         ec = EndpointConfig(url="http://host:6333", role="replica")
-        selector = EndpointSelector(qdrant_endpoints=[ec])
+        selector = EndpointSelector(skvector_endpoints=[ec])
 
-        assert len(selector.qdrant_endpoints) == 1
-        assert selector.qdrant_endpoints[0].url == "http://host:6333"
+        assert len(selector.skvector_endpoints) == 1
+        assert selector.skvector_endpoints[0].url == "http://host:6333"
 
     def test_falkordb_selection(self) -> None:
         """FalkorDB endpoints work the same as Qdrant."""
         ep = Endpoint(url="redis://localhost:6379")
         selector = EndpointSelector(
-            falkordb_endpoints=[ep],
+            skgraph_endpoints=[ep],
             config=RoutingConfig(probe_interval_seconds=9999),
         )
         selector._last_probe_time = time.monotonic()
 
-        result = selector.select_falkordb()
+        result = selector.select_skgraph()
         assert result is not None
         assert result.url == "redis://localhost:6379"
 
@@ -693,7 +693,7 @@ class TestEndpointSelectorStatus:
         """Status returns expected keys and format."""
         ep = Endpoint(url="http://host:6333", latency_ms=12.5)
         selector = EndpointSelector(
-            qdrant_endpoints=[ep],
+            skvector_endpoints=[ep],
             config=RoutingConfig(strategy="latency"),
         )
 
@@ -701,17 +701,17 @@ class TestEndpointSelectorStatus:
         assert info["strategy"] == "latency"
         assert "probe_interval_seconds" in info
         assert "last_probe_age_seconds" in info
-        assert "qdrant_endpoints" in info
-        assert "falkordb_endpoints" in info
-        assert len(info["qdrant_endpoints"]) == 1
-        assert info["qdrant_endpoints"][0]["url"] == "http://host:6333"
+        assert "skvector_endpoints" in info
+        assert "skgraph_endpoints" in info
+        assert len(info["skvector_endpoints"]) == 1
+        assert info["skvector_endpoints"][0]["url"] == "http://host:6333"
 
     def test_status_empty(self) -> None:
         """Status works with no endpoints."""
         selector = EndpointSelector()
         info = selector.status()
-        assert info["qdrant_endpoints"] == []
-        assert info["falkordb_endpoints"] == []
+        assert info["skvector_endpoints"] == []
+        assert info["skgraph_endpoints"] == []
 
     def test_status_probe_age(self) -> None:
         """Status reflects probe age correctly."""
@@ -732,13 +732,13 @@ class TestMaybeProbe:
         """First select triggers a probe."""
         ep = Endpoint(url="http://host:6333")
         selector = EndpointSelector(
-            qdrant_endpoints=[ep],
+            skvector_endpoints=[ep],
             config=RoutingConfig(probe_interval_seconds=30),
         )
 
         mock_sock = MagicMock()
         with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock) as mock_conn:
-            selector.select_qdrant()
+            selector.select_skvector()
 
         mock_conn.assert_called_once()
 
@@ -746,14 +746,14 @@ class TestMaybeProbe:
         """Second select within interval does not re-probe."""
         ep = Endpoint(url="http://host:6333")
         selector = EndpointSelector(
-            qdrant_endpoints=[ep],
+            skvector_endpoints=[ep],
             config=RoutingConfig(probe_interval_seconds=30),
         )
 
         mock_sock = MagicMock()
         with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock) as mock_conn:
-            selector.select_qdrant()
-            selector.select_qdrant()
+            selector.select_skvector()
+            selector.select_skvector()
 
         # Should only probe once (first call)
         assert mock_conn.call_count == 1

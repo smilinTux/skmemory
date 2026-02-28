@@ -13,7 +13,7 @@
 │         (facade — delegates to backends)             │
 ├──────────┬──────────────┬───────────────────────────┤
 │ Level 0  │   Level 1    │       Level 2             │
-│ SQLite   │   Qdrant     │       FalkorDB            │
+│ SQLite   │   SKVector   │       SKGraph             │
 │ (always) │   (optional) │       (optional)           │
 │          │              │                           │
 │ Index +  │  Semantic    │  Graph traversal           │
@@ -24,6 +24,19 @@
 │ Ships    │ cloud.       │  managed                  │
 │ w/Python │ qdrant.io    │  service                  │
 └──────────┴──────────────┴───────────────────────────┘
+```
+
+```mermaid
+graph TB
+    Agent["Agent / CLI"] --> MS["MemoryStore"]
+    MS --> L0["Level 0: SQLite\nAlways on, zero deps"]
+    MS --> L1["Level 1: SKVector\nSemantic search\nPowered by Qdrant"]
+    MS --> L2["Level 2: SKGraph\nGraph traversal\nPowered by FalkorDB"]
+    MS --> L3["Level 3: HA Routing\nEndpointSelector"]
+    style L0 fill:#bfb,stroke:#333
+    style L1 fill:#bbf,stroke:#333
+    style L2 fill:#fbf,stroke:#333
+    style L3 fill:#fbb,stroke:#333
 ```
 
 ### Level 0: SQLite Index (always on)
@@ -56,32 +69,32 @@ The JSON files remain the source of truth. The index is rebuildable:
 skmemory reindex
 ```
 
-### Level 1: Qdrant (optional — semantic search)
+### Level 1: SKVector (powered by Qdrant) (optional — semantic search)
 
 **"Find the memory about that feeling we had" — even if those words aren't in it.**
 
 Uses sentence-transformers (all-MiniLM-L6-v2) to embed memories as vectors.
-Qdrant stores the embeddings and enables cosine similarity search.
+SKVector stores the embeddings and enables cosine similarity search.
 
 Install:
 ```bash
-pip install skmemory[qdrant]
+pip install skmemory[skvector]
 
 # Local Docker:
-docker compose up -d qdrant
+docker compose up -d skvector
 
 # Or use Qdrant Cloud (free tier: 1GB):
-export SKMEMORY_QDRANT_URL=https://your-cluster.qdrant.io
-export SKMEMORY_QDRANT_KEY=your-api-key
+export SKMEMORY_SKVECTOR_URL=https://your-cluster.qdrant.io
+export SKMEMORY_SKVECTOR_KEY=your-api-key
 ```
 
 Resource cost: ~200MB RAM, ~100MB disk idle.
 
-### Level 2: FalkorDB (optional — graph relationships)
+### Level 2: SKGraph (powered by FalkorDB) (optional — graph relationships)
 
 **"What memories connect to this person?" — traverse the relationship web.**
 
-FalkorDB (Cypher over Redis protocol) stores memory-to-memory edges:
+SKGraph (Cypher over Redis protocol) stores memory-to-memory edges:
 - `RELATED_TO` — explicit relationship links
 - `PROMOTED_FROM` — promotion lineage chains
 - `TAGGED` — tag-based clustering
@@ -89,13 +102,13 @@ FalkorDB (Cypher over Redis protocol) stores memory-to-memory edges:
 
 Install:
 ```bash
-pip install skmemory[falkordb]
+pip install skmemory[skgraph]
 
 # Local Docker:
-docker compose up -d falkordb
+docker compose up -d skgraph
 
 # Or point to external:
-export SKMEMORY_FALKORDB_URL=redis://your-host:6379
+export SKMEMORY_SKGRAPH_URL=redis://your-host:6379
 ```
 
 Resource cost: ~100MB RAM, ~150MB disk idle.
@@ -104,7 +117,7 @@ Resource cost: ~100MB RAM, ~150MB disk idle.
 
 **Multiple backend endpoints. Automatic failover. Latency-aware routing.**
 
-When Qdrant or FalkorDB run on multiple nodes (e.g. home server + VPS via
+When SKVector or SKGraph run on multiple nodes (e.g. home server + VPS via
 Tailscale), the **EndpointSelector** discovers all endpoints, probes their
 latency, and routes to the best one. If a node goes down, traffic shifts
 to the next healthy endpoint automatically.
@@ -114,7 +127,7 @@ to the next healthy endpoint automatically.
 │              EndpointSelector                 │
 │    (sits between config and backends)        │
 ├──────────────┬───────────────────────────────┤
-│   Qdrant     │     FalkorDB                  │
+│   SKVector   │     SKGraph                   │
 │   Endpoints  │     Endpoints                 │
 │              │                               │
 │ ● home:6333  │  ● home:6379                  │
@@ -143,6 +156,25 @@ diagrams, configuration examples, and scaling considerations.
 
 The key problem: an AI agent has limited context. Loading 1000 full memories
 would blow the context window. SKMemory solves this with tiered loading.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant MS as MemoryStore
+    participant SQ as SQLite
+    participant SV as SKVector
+    participant SG as SKGraph
+    A->>MS: snapshot(title, content, emotion)
+    MS->>SQ: save(memory) — primary
+    MS->>SV: save(memory) — embed + index
+    MS->>SG: index_memory(memory) — graph edges
+    A->>MS: search("connected feeling")
+    MS->>SV: search_text(query) — semantic
+    SV-->>MS: ranked results
+    A->>MS: traverse(memory_id)
+    MS->>SG: get_related(id, depth=2)
+    SG-->>MS: connected nodes
+```
 
 ### The `skmemory context` Command
 
@@ -176,6 +208,17 @@ What this does:
 3. Prioritizes: strongest emotions first, then most recent
 4. Stays within the token budget
 5. Includes stats so the agent knows how much memory exists
+
+```mermaid
+flowchart LR
+    A["skmemory context\n--max-tokens 3000"] --> B["SQLite Index"]
+    B --> C["Rank by\nemotion + recency"]
+    C --> D{"Within\ntoken budget?"}
+    D -->|Yes| E["Add summary\n+ preview"]
+    D -->|No| F["Stop"]
+    E --> D
+    F --> G["Compact JSON\nfor agent context"]
+```
 
 ### The Ritual (Boot Ceremony)
 
@@ -220,13 +263,13 @@ ctx = store.load_context(max_tokens=3000)
 
 ```bash
 cd skmemory/
-docker compose up -d          # Start Qdrant + FalkorDB
+docker compose up -d          # Start SKVector + SKGraph
 docker compose ps             # Check status
 docker compose down           # Stop
 
 # Resource usage:
-#   Qdrant:    ~200MB RAM, port 6333
-#   FalkorDB:  ~100MB RAM, port 6379
+#   SKVector:  ~200MB RAM, port 6333 (qdrant/qdrant)
+#   SKGraph:   ~100MB RAM, port 6379 (falkordb/falkordb)
 #   Combined:  ~300MB RAM total
 ```
 
@@ -236,14 +279,14 @@ All services are optional. SKMemory works perfectly with just Level 0 (SQLite).
 
 Environment variables:
 ```bash
-SKMEMORY_QDRANT_URL=http://localhost:6333    # Qdrant endpoint
-SKMEMORY_QDRANT_KEY=                          # Qdrant API key
-SKMEMORY_FALKORDB_URL=redis://localhost:6379  # FalkorDB endpoint
+SKMEMORY_SKVECTOR_URL=http://localhost:6333    # SKVector endpoint
+SKMEMORY_SKVECTOR_KEY=                          # SKVector API key
+SKMEMORY_SKGRAPH_URL=redis://localhost:6379    # SKGraph endpoint
 ```
 
 CLI global options:
 ```bash
-skmemory --qdrant-url http://remote:6333 search "that moment"
+skmemory --skvector-url http://remote:6333 search "that moment"
 ```
 
 ## Migration from FileBackend
