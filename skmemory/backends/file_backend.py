@@ -23,10 +23,11 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from ..config import SKMEMORY_HOME
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
 
-DEFAULT_BASE_PATH = os.path.expanduser("~/.skmemory/memories")
+DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memories")
 
 
 class FileBackend(BaseBackend):

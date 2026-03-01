@@ -29,9 +29,11 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from .config import SKMEMORY_HOME
+
 logger = logging.getLogger("skmemory.predictive")
 
-DEFAULT_ACCESS_LOG = Path("~/.skmemory/access_log.json").expanduser()
+DEFAULT_ACCESS_LOG = SKMEMORY_HOME / "access_log.json"
 
 
 class AccessEvent(BaseModel):

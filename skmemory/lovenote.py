@@ -23,7 +23,9 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-DEFAULT_NOTES_PATH = os.path.expanduser("~/.skmemory/lovenotes.jsonl")
+from .config import SKMEMORY_HOME
+
+DEFAULT_NOTES_PATH = str(SKMEMORY_HOME / "lovenotes.jsonl")
 
 
 class LoveNote(BaseModel):

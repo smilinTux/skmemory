@@ -22,7 +22,9 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-DEFAULT_ANCHOR_PATH = os.path.expanduser("~/.skmemory/anchor.json")
+from .config import SKMEMORY_HOME
+
+DEFAULT_ANCHOR_PATH = str(SKMEMORY_HOME / "anchor.json")
 
 
 class WarmthAnchor(BaseModel):

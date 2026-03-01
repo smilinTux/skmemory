@@ -17,7 +17,10 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field
 
-CONFIG_DIR = Path(os.path.expanduser("~/.skmemory"))
+SKMEMORY_HOME = Path(
+    os.environ.get("SKMEMORY_HOME", os.path.expanduser("~/.skmemory"))
+)
+CONFIG_DIR = SKMEMORY_HOME
 CONFIG_PATH = CONFIG_DIR / "config.yaml"
 
 

@@ -23,7 +23,9 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-DEFAULT_JOURNAL_PATH = os.path.expanduser("~/.skmemory/journal.md")
+from .config import SKMEMORY_HOME
+
+DEFAULT_JOURNAL_PATH = str(SKMEMORY_HOME / "journal.md")
 
 
 class JournalEntry(BaseModel):

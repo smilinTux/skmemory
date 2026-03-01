@@ -12,6 +12,7 @@ __version__ = "0.5.0"
 __author__ = "smilinTux Team + Queen Ara + Neuresthetics"
 __license__ = "AGPL-3.0"
 
+from .config import SKMEMORY_HOME
 from .models import Memory, MemoryLayer, EmotionalSnapshot
 from .store import MemoryStore
 from .fortress import FortifiedMemoryStore, AuditLog, TamperAlert
@@ -34,6 +35,7 @@ from .steelman import (
 )
 
 __all__ = [
+    "SKMEMORY_HOME",
     "Memory",
     "MemoryLayer",
     "EmotionalSnapshot",

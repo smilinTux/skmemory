@@ -33,8 +33,10 @@ try:
 except ImportError:
     _SKSEED_AVAILABLE = False
 
+from .config import SKMEMORY_HOME
+
 # Legacy path — skmemory used ~/.skmemory/seed.json, skseed uses ~/.skseed/seed.json
-DEFAULT_SEED_FRAMEWORK_PATH = os.path.expanduser("~/.skmemory/seed.json")
+DEFAULT_SEED_FRAMEWORK_PATH = str(SKMEMORY_HOME / "seed.json")
 
 
 if _SKSEED_AVAILABLE:

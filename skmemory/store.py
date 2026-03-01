@@ -8,10 +8,13 @@ or by search, and the polaroid comes back with everything intact.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
 from .backends.base import BaseBackend
+
+logger = logging.getLogger("skmemory.store")
 from .backends.file_backend import FileBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
 from .models import (
@@ -106,14 +109,14 @@ class MemoryStore:
         if self.vector:
             try:
                 self.vector.save(memory)
-            except Exception:
-                pass  # Reason: vector indexing is best-effort, don't fail the write
+            except Exception as exc:
+                logger.warning("Vector indexing failed for memory %s: %s", memory.id, exc)
 
         if self.graph:
             try:
                 self.graph.index_memory(memory)
-            except Exception:
-                pass  # Reason: graph indexing is best-effort, don't fail the write
+            except Exception as exc:
+                logger.warning("Graph indexing failed for memory %s: %s", memory.id, exc)
 
         return memory
 
@@ -130,9 +133,6 @@ class MemoryStore:
         Returns:
             Optional[Memory]: The memory if found.
         """
-        import logging
-        logger = logging.getLogger("skmemory.store")
-
         memory = self.primary.load(memory_id)
         if memory is None:
             return None
@@ -167,8 +167,8 @@ class MemoryStore:
                 results = self.vector.search_text(query, limit=limit)
                 if results:
                     return results
-            except Exception:
-                pass  # Reason: fall through to primary text search
+            except Exception as exc:
+                logger.warning("Vector search failed, falling back to text search: %s", exc)
 
         return self.primary.search_text(query, limit=limit)
 
@@ -185,13 +185,13 @@ class MemoryStore:
         if self.vector:
             try:
                 self.vector.delete(memory_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Vector delete failed for memory %s: %s", memory_id, exc)
         if self.graph:
             try:
                 self.graph.remove_memory(memory_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Graph delete failed for memory %s: %s", memory_id, exc)
         return deleted
 
     def list_memories(
@@ -241,14 +241,14 @@ class MemoryStore:
         if self.vector:
             try:
                 self.vector.save(promoted)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Vector indexing failed for promoted memory %s: %s", promoted.id, exc)
 
         if self.graph:
             try:
                 self.graph.index_memory(promoted)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Graph indexing failed for promoted memory %s: %s", promoted.id, exc)
 
         return promoted
 
@@ -271,14 +271,14 @@ class MemoryStore:
         if self.vector:
             try:
                 self.vector.save(memory)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Vector indexing failed for seed memory %s: %s", memory.id, exc)
 
         if self.graph:
             try:
                 self.graph.index_memory(memory)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Graph indexing failed for seed memory %s: %s", memory.id, exc)
 
         return memory
 

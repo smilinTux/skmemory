@@ -25,13 +25,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .config import SKMEMORY_HOME
 from .models import EmotionalSnapshot, Memory, MemoryLayer, MemoryRole
 from .store import MemoryStore
 
 logger = logging.getLogger("skmemory.fortress")
 
-DEFAULT_AUDIT_PATH = Path("~/.skmemory/audit.jsonl").expanduser()
-DEFAULT_ENCRYPTED_PATH = Path("~/.skmemory/encrypted").expanduser()
+DEFAULT_AUDIT_PATH = SKMEMORY_HOME / "audit.jsonl"
+DEFAULT_ENCRYPTED_PATH = SKMEMORY_HOME / "encrypted"
 
 
 # ---------------------------------------------------------------------------

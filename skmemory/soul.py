@@ -26,7 +26,9 @@ from typing import Any, Optional
 import yaml
 from pydantic import BaseModel, Field
 
-DEFAULT_SOUL_PATH = os.path.expanduser("~/.skmemory/soul.yaml")
+from .config import SKMEMORY_HOME
+
+DEFAULT_SOUL_PATH = str(SKMEMORY_HOME / "soul.yaml")
 
 
 class Relationship(BaseModel):

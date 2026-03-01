@@ -3,11 +3,19 @@ click>=8.0
 pyyaml>=6.0
 
 # Optional: Level 1 - SKVector (semantic vector search, powered by Qdrant)
+# Install with: pip install skmemory[skvector]
 # qdrant-client>=1.7.0
 # sentence-transformers>=2.2.0
 
 # Optional: Level 2 - SKGraph (graph relationships, powered by FalkorDB)
+# Install with: pip install skmemory[skgraph]
 # falkordb>=1.0.0
+
+# Note: optional dependencies are managed in pyproject.toml [project.optional-dependencies].
+# Install them with:
+#   pip install skmemory[skvector]   # Vector search
+#   pip install skmemory[skgraph]    # Graph backend
+#   pip install skmemory[all]        # Everything
 
 # Testing
 pytest>=7.0
