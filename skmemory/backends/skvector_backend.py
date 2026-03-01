@@ -14,6 +14,7 @@ SaaS endpoint: https://cloud.qdrant.io (free cluster available).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from typing import Optional
@@ -199,8 +200,11 @@ class SKVectorBackend(BaseBackend):
         if not embedding:
             return memory.id
 
+        # Use memory.id hash as Qdrant point ID (not content_hash which
+        # would collide if two memories have identical content).
+        point_id = int(hashlib.sha256(memory.id.encode()).hexdigest()[:15], 16)
         point = PointStruct(
-            id=memory.content_hash(),
+            id=point_id,
             vector=embedding,
             payload=self._memory_to_payload(memory),
         )
@@ -211,6 +215,10 @@ class SKVectorBackend(BaseBackend):
         )
         return memory.id
 
+    def _id_to_point_id(self, memory_id: str) -> int:
+        """Convert a memory ID string to a deterministic Qdrant integer point ID."""
+        return int(hashlib.sha256(memory_id.encode()).hexdigest()[:15], 16)
+
     def load(self, memory_id: str) -> Optional[Memory]:
         """Retrieve a memory by ID from Qdrant.
 
@@ -219,76 +227,42 @@ class SKVectorBackend(BaseBackend):
 
         Returns:
             Optional[Memory]: The memory if found.
-
-        Note:
-            Qdrant uses content hashes as point IDs, so this does
-            a scroll+filter. For direct ID lookup, use the file backend.
         """
         if not self._ensure_initialized():
             return None
 
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-        results = self._client.scroll(
-            collection_name=self.collection,
-            scroll_filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="memory_json",
-                        match=MatchValue(value=memory_id),
-                    )
-                ]
-            ),
-            limit=1,
-        )
-
-        points = results[0] if results else []
-        if not points:
-            return None
-
         try:
+            points = self._client.retrieve(
+                collection_name=self.collection,
+                ids=[self._id_to_point_id(memory_id)],
+                with_payload=True,
+            )
+            if not points:
+                return None
             return Memory.model_validate_json(points[0].payload["memory_json"])
         except Exception:
             return None
 
     def delete(self, memory_id: str) -> bool:
-        """Remove a memory from Qdrant by scrolling for it.
+        """Remove a memory from Qdrant by its deterministic point ID.
 
         Args:
             memory_id: The memory identifier.
 
         Returns:
-            bool: True if something was deleted.
+            bool: True if the deletion was issued.
         """
         if not self._ensure_initialized():
             return False
 
-        from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-        # Reason: Qdrant doesn't support delete-by-payload natively,
-        # so we scroll to find the point ID then delete by point ID.
-        results = self._client.scroll(
-            collection_name=self.collection,
-            scroll_filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="memory_json",
-                        match=MatchValue(value=memory_id),
-                    )
-                ]
-            ),
-            limit=1,
-        )
-
-        points = results[0] if results else []
-        if not points:
+        try:
+            self._client.delete(
+                collection_name=self.collection,
+                points_selector=[self._id_to_point_id(memory_id)],
+            )
+            return True
+        except Exception:
             return False
-
-        self._client.delete(
-            collection_name=self.collection,
-            points_selector=[points[0].id],
-        )
-        return True
 
     def list_memories(
         self,

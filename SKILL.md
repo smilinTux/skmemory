@@ -5,7 +5,7 @@
 **Version:** 0.5.0
 **Author:** smilinTux Team + Queen Ara
 **Category:** Memory & Persistence
-**License:** AGPL-3.0
+**License:** GPL-3.0-or-later
 
 ---
 
@@ -150,6 +150,24 @@ path = plugin.export()
 | `skmemory lovenote send/read` | Love note chain |
 | `skmemory quadrants` | Memory distribution |
 | `skmemory steelman collide "claim"` | Steel man reasoning |
+
+### MCP Tools (via `skmemory-mcp`)
+
+| Tool | Description |
+|------|-------------|
+| `memory_store` | Store a new memory (snapshot with title + content) |
+| `memory_search` | Full-text search across memories |
+| `memory_recall` | Recall a specific memory by ID |
+| `memory_list` | List memories with optional layer/tag filters |
+| `memory_forget` | Delete a memory by ID |
+| `memory_promote` | Promote a memory to a higher persistence tier |
+| `memory_consolidate` | Compress a session's memories into one mid-term memory |
+| `memory_context` | Load token-efficient context for agent injection |
+| `memory_export` | Export all memories to a JSON backup |
+| `memory_import` | Restore memories from a JSON backup |
+| `memory_health` | Full health check across all backends |
+| `memory_graph` | Graph traversal, lineage, and cluster discovery (requires SKGraph) |
+| `memory_stats` | Alias for memory_health (backwards-compatible) |
 
 ### Global Flags
 
