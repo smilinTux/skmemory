@@ -17,7 +17,43 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
-      - run: python -m pytest tests/ -v --tb=short
-      - run: pip install black ruff && black --check src/ tests/ && ruff check src/
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Run tests with coverage
+        run: python -m pytest tests/ -v --tb=short --cov=skmemory --cov-report=xml --cov-report=term-missing
+      - name: Upload coverage
         if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lint tools
+        run: pip install black ruff
+      - name: Check formatting
+        run: black --check src/ tests/
+      - name: Lint
+        run: ruff check src/
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel and sdist
+        run: |
+          pip install build
+          python -m build
+      - name: Check dist
+        run: |
+          pip install twine
+          twine check dist/*
