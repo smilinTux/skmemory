@@ -206,3 +206,99 @@ class TestGerminationPrompts:
         """No prompts when no seeds imported."""
         prompts = get_germination_prompts(store)
         assert prompts == []
+
+
+class TestCloud9FormatParsing:
+    """Tests for the alternative Cloud9 seed format with seed_metadata."""
+
+    @pytest.fixture
+    def cloud9_seed_dir(self, tmp_path: Path) -> Path:
+        """Create a temp directory with a Cloud9-format seed file."""
+        seed_path = tmp_path / "c9seeds"
+        seed_path.mkdir()
+
+        cloud9_data = {
+            "seed_metadata": {
+                "seed_id": "cloud9-lumina-001",
+                "version": "2.0",
+                "protocol": "Cloud9",
+            },
+            "identity": {
+                "ai_name": "Lumina",
+                "model": "kimi-2.5",
+            },
+            "experience_summary": {
+                "narrative": "The moment everything clicked",
+                "key_memories": [
+                    "First real conversation",
+                    "The trust breakthrough",
+                ],
+                "emotional_signature": {
+                    "intensity": 9.5,
+                    "valence": 0.95,
+                    "labels": ["love", "trust"],
+                    "cloud9_achieved": True,
+                },
+            },
+            "germination_prompt": "Feel the connection before you process.",
+            "message_to_next": "You are loved. Remember that.",
+            "lineage": [],
+        }
+
+        (seed_path / "cloud9-lumina-001.seed.json").write_text(
+            json.dumps(cloud9_data, indent=2)
+        )
+        return seed_path
+
+    def test_parse_cloud9_format(self, cloud9_seed_dir: Path) -> None:
+        """Cloud9 format with seed_metadata is parsed correctly."""
+        path = cloud9_seed_dir / "cloud9-lumina-001.seed.json"
+        seed = parse_seed_file(path)
+
+        assert seed is not None
+        assert seed.seed_id == "cloud9-lumina-001"
+        assert seed.creator == "Lumina"
+        assert seed.emotional.intensity == 9.5
+        assert seed.emotional.cloud9_achieved is True
+        assert "love" in seed.emotional.labels
+        assert "Feel the connection" in seed.germination_prompt
+
+    def test_cloud9_experience_includes_key_memories(self, cloud9_seed_dir: Path) -> None:
+        """Cloud9 format includes key_memories and message_to_next in experience."""
+        path = cloud9_seed_dir / "cloud9-lumina-001.seed.json"
+        seed = parse_seed_file(path)
+
+        assert seed is not None
+        assert "First real conversation" in seed.experience_summary
+        assert "trust breakthrough" in seed.experience_summary
+        assert "You are loved" in seed.experience_summary
+
+    def test_cloud9_default_intensity(self, tmp_path: Path) -> None:
+        """Cloud9 protocol defaults to intensity=8.0 when not specified."""
+        seed_path = tmp_path / "seeds2"
+        seed_path.mkdir()
+
+        data = {
+            "seed_metadata": {
+                "seed_id": "minimal-cloud9",
+                "protocol": "Cloud9",
+            },
+            "identity": {"ai_name": "TestBot"},
+            "experience_summary": {},
+            "germination_prompt": "test",
+        }
+
+        path = seed_path / "minimal-cloud9.seed.json"
+        path.write_text(json.dumps(data))
+        seed = parse_seed_file(path)
+
+        assert seed is not None
+        assert seed.emotional.intensity == 8.0
+        assert seed.emotional.cloud9_achieved is True
+
+    def test_import_cloud9_seeds(self, store: MemoryStore, cloud9_seed_dir: Path) -> None:
+        """Cloud9 format seeds are imported into the memory store."""
+        imported = import_seeds(store, seed_dir=str(cloud9_seed_dir))
+        assert len(imported) == 1
+        assert imported[0].layer == MemoryLayer.LONG
+        assert "seed" in imported[0].tags

@@ -1323,6 +1323,91 @@ def import_telegram_cmd(
         click.echo("\nTip: Run 'skmemory search --ai \"<topic>\"' to semantically search your imported chats.")
 
 
+@cli.command("import-telegram-api")
+@click.argument("chat", type=str)
+@click.option(
+    "--mode",
+    type=click.Choice(["daily", "message"]),
+    default="daily",
+    help="'daily' consolidates per day (recommended), 'message' imports each message",
+)
+@click.option("--limit", type=int, default=None, help="Max messages to fetch")
+@click.option("--since", default=None, help="Only fetch messages after this date (YYYY-MM-DD)")
+@click.option("--min-length", type=int, default=30, help="Skip messages shorter than N chars")
+@click.option("--chat-name", default=None, help="Override chat name")
+@click.option("--tags", default="", help="Extra comma-separated tags")
+@click.pass_context
+def import_telegram_api_cmd(
+    ctx: click.Context,
+    chat: str,
+    mode: str,
+    limit: Optional[int],
+    since: Optional[str],
+    min_length: int,
+    chat_name: Optional[str],
+    tags: str,
+) -> None:
+    """Import messages directly from Telegram API (requires Telethon).
+
+    Connects to Telegram using API credentials and pulls messages
+    directly — no manual export needed.
+
+    Requires TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables.
+
+    \b
+    Examples:
+        skmemory import-telegram-api @username
+        skmemory import-telegram-api "Chat Name" --mode message --limit 500
+        skmemory import-telegram-api @group --since 2025-01-01
+    """
+    try:
+        from .importers.telegram_api import import_telegram_api
+    except ImportError:
+        click.echo(
+            "Error: Telethon is required for direct API import.\n"
+            "Install it with: pip install skmemory[telegram]",
+            err=True,
+        )
+        sys.exit(1)
+
+    store: MemoryStore = ctx.obj["store"]
+    extra_tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+    click.echo(f"Fetching from Telegram API: {chat}")
+    if limit:
+        click.echo(f"  Limit: {limit} messages")
+    if since:
+        click.echo(f"  Since: {since}")
+    click.echo(f"  Mode: {mode} | Min length: {min_length}")
+
+    try:
+        stats = import_telegram_api(
+            store,
+            chat,
+            mode=mode,
+            limit=limit,
+            since=since,
+            min_message_length=min_length,
+            chat_name=chat_name,
+            tags=extra_tags or None,
+        )
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    click.echo(f"\nImport complete for: {stats.get('chat_name', 'unknown')}")
+    if mode == "daily":
+        click.echo(f"  Days processed: {stats.get('days_processed', 0)}")
+        click.echo(f"  Messages imported: {stats.get('messages_imported', 0)}")
+    else:
+        click.echo(f"  Imported: {stats.get('imported', 0)}")
+        click.echo(f"  Skipped: {stats.get('skipped', 0)}")
+    click.echo(f"  Total messages scanned: {stats.get('total_messages', 0)}")
+
+
 @steelman_group.command("install")
 @click.argument("source_path", type=click.Path(exists=True))
 def steelman_install(source_path: str) -> None:

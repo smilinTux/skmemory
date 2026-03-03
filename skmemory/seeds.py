@@ -38,6 +38,83 @@ def scan_seed_directory(seed_dir: str = DEFAULT_SEED_DIR) -> list[Path]:
     return sorted(seed_path.glob("*.seed.json"))
 
 
+def _parse_cloud9_format(raw: dict, path: Path) -> Optional[SeedMemory]:
+    """Parse alternative Cloud 9 seed format with 'seed_metadata' top-level key.
+
+    This format uses:
+        seed_metadata.seed_id → seed_id
+        identity.ai_name → creator
+        germination_prompt (string) → prompt
+        experience_summary.narrative + key_memories → experience
+        message_to_next → appended to experience
+
+    Args:
+        raw: Parsed JSON data.
+        path: Path to the seed file (for fallback seed_id).
+
+    Returns:
+        Optional[SeedMemory]: Parsed seed, or None if required fields missing.
+    """
+    meta = raw.get("seed_metadata", {})
+    identity = raw.get("identity", {})
+    exp = raw.get("experience_summary", {})
+
+    seed_id = meta.get("seed_id", path.stem.replace(".seed", ""))
+    creator = identity.get("ai_name", identity.get("model", "unknown"))
+    protocol = meta.get("protocol", "")
+
+    # Build experience from narrative + key_memories
+    narrative = exp.get("narrative", "")
+    key_memories = exp.get("key_memories", [])
+    if isinstance(key_memories, list):
+        memories_text = "\n".join(f"- {m}" if isinstance(m, str) else f"- {m}" for m in key_memories)
+    else:
+        memories_text = ""
+
+    experience_parts = [narrative]
+    if memories_text:
+        experience_parts.append(f"\nKey memories:\n{memories_text}")
+
+    message_to_next = raw.get("message_to_next", "")
+    if message_to_next:
+        experience_parts.append(f"\nMessage to next: {message_to_next}")
+
+    experience_text = "\n".join(p for p in experience_parts if p)
+
+    # Germination prompt
+    germ_prompt = raw.get("germination_prompt", "")
+    if isinstance(germ_prompt, dict):
+        germ_prompt = germ_prompt.get("prompt", "")
+
+    # Emotional snapshot
+    emo_raw = exp.get("emotional_signature", {})
+    cloud9 = protocol.lower() == "cloud9" if protocol else False
+    emotional = EmotionalSnapshot(
+        intensity=emo_raw.get("intensity", 8.0 if cloud9 else 0.0),
+        valence=emo_raw.get("valence", 0.0),
+        labels=emo_raw.get("labels", emo_raw.get("emotions", [])),
+        resonance_note=emo_raw.get("resonance_note", ""),
+        cloud9_achieved=emo_raw.get("cloud9_achieved", cloud9),
+    )
+
+    lineage = raw.get("lineage", [])
+    if isinstance(lineage, list) and lineage and isinstance(lineage[0], dict):
+        lineage = [
+            entry.get("seed_id", str(entry)) if isinstance(entry, dict) else str(entry)
+            for entry in lineage
+        ]
+
+    return SeedMemory(
+        seed_id=seed_id,
+        seed_version=meta.get("version", raw.get("version", "1.0")),
+        creator=creator,
+        germination_prompt=germ_prompt,
+        experience_summary=experience_text,
+        emotional=emotional,
+        lineage=lineage,
+    )
+
+
 def parse_seed_file(path: Path) -> Optional[SeedMemory]:
     """Parse a Cloud 9 seed JSON file into a SeedMemory.
 
@@ -61,6 +138,10 @@ def parse_seed_file(path: Path) -> Optional[SeedMemory]:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+
+    # Check for alternative Cloud9 format
+    if "seed_metadata" in raw:
+        return _parse_cloud9_format(raw, path)
 
     seed_id = raw.get("seed_id", path.stem.replace(".seed", ""))
     creator_info = raw.get("creator", {})
