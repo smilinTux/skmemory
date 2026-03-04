@@ -9,13 +9,21 @@ Promotion generates a compressed summary for the new tier while
 keeping the original intact as the detailed version.
 
 Usage:
+    # One-shot sweep
     engine = PromotionEngine(store)
-    result = engine.sweep()  # evaluate and promote all qualifying memories
+    result = engine.sweep()
+
+    # Background scheduler (runs every 6 hours by default)
+    scheduler = PromotionScheduler(store)
+    scheduler.start()
+    ...
+    scheduler.stop()
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -178,11 +186,19 @@ class PromotionEngine:
         promoted = self._store.promote(memory.id, target, summary=summary)
 
         if promoted:
+            now_iso = datetime.now(timezone.utc).isoformat()
             promoted.tags = list(set(promoted.tags + ["auto-promoted"]))
             promoted.metadata["promoted_from"] = memory.layer.value
-            promoted.metadata["promoted_at"] = datetime.now(timezone.utc).isoformat()
+            promoted.metadata["promoted_at"] = now_iso
             promoted.metadata["promotion_reason"] = self._promotion_reason(memory)
             self._store.primary.save(promoted)
+
+            # Mark the source so it won't be re-promoted on the next sweep
+            memory.tags = list(set(memory.tags + ["promoted"]))
+            memory.metadata["promoted_to"] = target.value
+            memory.metadata["promoted_at"] = now_iso
+            memory.metadata["promoted_id"] = promoted.id
+            self._store.primary.save(memory)
 
         return promoted
 
@@ -243,6 +259,10 @@ class PromotionEngine:
         Returns:
             bool: True if it meets any promotion criterion.
         """
+        # Skip already-promoted memories to prevent duplicate promotions
+        if memory.metadata.get("promoted_to"):
+            return False
+
         c = self._criteria
 
         if memory.emotional.intensity >= c.short_to_mid_intensity:
@@ -268,6 +288,10 @@ class PromotionEngine:
         Returns:
             bool: True if it meets any promotion criterion.
         """
+        # Skip already-promoted memories to prevent duplicate promotions
+        if memory.metadata.get("promoted_to"):
+            return False
+
         c = self._criteria
 
         if memory.emotional.intensity >= c.mid_to_long_intensity:
@@ -347,3 +371,154 @@ class PromotionEngine:
             reasons.append(f"tagged: {', '.join(matching)}")
 
         return "; ".join(reasons) if reasons else "criteria met"
+
+
+class PromotionScheduler:
+    """Runs promotion sweeps on a background daemon thread at a fixed interval.
+
+    Designed for long-running processes (daemons, MCP servers) that want
+    automatic memory consolidation without manual intervention.
+
+    The scheduler runs at the configured interval *after* each sweep
+    completes, so a slow sweep doesn't cause overlapping runs.
+
+    Args:
+        store: The MemoryStore to sweep.
+        criteria: Promotion thresholds (uses defaults if not provided).
+        interval_seconds: How often to run a sweep (default: 6 hours).
+
+    Example::
+
+        scheduler = PromotionScheduler(store, interval_seconds=3600)
+        scheduler.start()
+        # ... runs in the background ...
+        scheduler.stop()
+    """
+
+    DEFAULT_INTERVAL_SECONDS: float = 6.0 * 3600  # 6 hours
+
+    def __init__(
+        self,
+        store: MemoryStore,
+        criteria: Optional[PromotionCriteria] = None,
+        interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+    ) -> None:
+        self._engine = PromotionEngine(store, criteria)
+        self._interval = interval_seconds
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._last_result: Optional[PromotionResult] = None
+        self._sweep_count: int = 0
+
+    # ── public API ──────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """Start the background sweep thread.
+
+        No-op if already running.
+        """
+        if self._thread and self._thread.is_alive():
+            logger.debug("Promotion scheduler already running.")
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="skmemory-promotion",
+            daemon=True,
+        )
+        self._thread.start()
+        logger.info(
+            "Promotion scheduler started (interval: %.1fh).",
+            self._interval / 3600,
+        )
+
+    def stop(self, timeout: float = 5.0) -> None:
+        """Stop the background sweep thread.
+
+        Signals the thread to exit and waits up to *timeout* seconds.
+
+        Args:
+            timeout: Maximum seconds to wait for graceful shutdown.
+        """
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+        logger.info("Promotion scheduler stopped.")
+
+    def run_once(self) -> PromotionResult:
+        """Run a single sweep immediately (synchronous, on the calling thread).
+
+        Returns:
+            PromotionResult: The sweep result.
+        """
+        result = self._engine.sweep()
+        self._last_result = result
+        self._sweep_count += 1
+        return result
+
+    def is_running(self) -> bool:
+        """Return True if the background thread is alive."""
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def last_result(self) -> Optional[PromotionResult]:
+        """The result from the most recent completed sweep, or None."""
+        return self._last_result
+
+    @property
+    def sweep_count(self) -> int:
+        """Total number of sweeps completed since this scheduler was created."""
+        return self._sweep_count
+
+    @property
+    def interval_hours(self) -> float:
+        """The configured sweep interval in hours."""
+        return self._interval / 3600
+
+    def status(self) -> dict:
+        """Return a dict summary suitable for health checks or CLI display.
+
+        Returns:
+            dict: Keys: running, sweep_count, interval_hours, last_sweep,
+                  last_promoted, last_skipped, last_errors.
+        """
+        lr = self._last_result
+        return {
+            "running": self.is_running(),
+            "sweep_count": self._sweep_count,
+            "interval_hours": self.interval_hours,
+            "last_sweep": lr.timestamp.isoformat() if lr else None,
+            "last_promoted": lr.total_promoted if lr else None,
+            "last_skipped": lr.skipped if lr else None,
+            "last_errors": lr.errors if lr else None,
+        }
+
+    # ── internal ─────────────────────────────────────────────────────────
+
+    def _run(self) -> None:
+        """Background thread: sweep, wait interval, repeat until stopped."""
+        while not self._stop_event.is_set():
+            try:
+                result = self._engine.sweep()
+                self._last_result = result
+                self._sweep_count += 1
+                if result.total_promoted > 0:
+                    logger.info(
+                        "Promotion sweep #%d: %s",
+                        self._sweep_count,
+                        result.summary(),
+                    )
+                else:
+                    logger.debug(
+                        "Promotion sweep #%d: nothing to promote.",
+                        self._sweep_count,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Promotion sweep failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+
+            # Wait for the interval or until stop() is called
+            self._stop_event.wait(timeout=self._interval)

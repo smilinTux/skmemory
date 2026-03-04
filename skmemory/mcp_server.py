@@ -301,6 +301,37 @@ async def list_tools() -> list[Tool]:
                 "required": ["action"],
             },
         ),
+        Tool(
+            name="memory_verify",
+            description=(
+                "Verify integrity hashes for all stored memories. "
+                "Returns a report of passed, tampered, and unsealed memories. "
+                "Tampered memories are flagged with CRITICAL severity."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        ),
+        Tool(
+            name="memory_audit",
+            description=(
+                "Show the most recent audit trail entries. "
+                "The audit trail is a chain-hashed JSONL log of every "
+                "store/recall/delete/tamper operation."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "last": {
+                        "type": "integer",
+                        "description": "Number of recent entries to return (default: 20).",
+                    },
+                },
+                "required": [],
+            },
+        ),
     ]
 
 
@@ -429,6 +460,27 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "memory_stats":
             health = store.health()
             return _json_response(health)
+
+        elif name == "memory_verify":
+            from .fortress import FortifiedMemoryStore
+            from .config import SKMEMORY_HOME
+
+            fortress = FortifiedMemoryStore(
+                primary=store.primary,
+                use_sqlite=False,
+                audit_path=SKMEMORY_HOME / "audit.jsonl",
+            )
+            result = fortress.verify_all()
+            return _json_response(result)
+
+        elif name == "memory_audit":
+            from .fortress import AuditLog
+            from .config import SKMEMORY_HOME
+
+            n = int(arguments.get("last", 20))
+            audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
+            records = audit.tail(n)
+            return _json_response(records)
 
         else:
             return _error_response(f"Unknown tool: {name}")

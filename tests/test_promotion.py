@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
-from skmemory.promotion import PromotionCriteria, PromotionEngine, PromotionResult
+from skmemory.promotion import PromotionCriteria, PromotionEngine, PromotionResult, PromotionScheduler
 from skmemory.store import MemoryStore
 
 
@@ -238,3 +239,102 @@ class TestPromotionResult:
         """total_promoted sums both transitions."""
         r = PromotionResult(short_to_mid=3, mid_to_long=2)
         assert r.total_promoted == 5
+
+
+class TestRePromotionGuard:
+    """Ensure already-promoted memories are not promoted again."""
+
+    def test_source_marked_after_promotion(
+        self, engine: PromotionEngine, store: MemoryStore
+    ) -> None:
+        """After promotion, the source memory has 'promoted_to' in metadata."""
+        short_mems = store.list_memories(layer=MemoryLayer.SHORT)
+        intense = next(m for m in short_mems if m.emotional.intensity >= 5.0)
+
+        engine.promote_memory(intense, MemoryLayer.MID)
+
+        # Reload from store to confirm mutation was persisted
+        reloaded = store.recall(intense.id)
+        assert reloaded is not None
+        assert reloaded.metadata.get("promoted_to") == MemoryLayer.MID.value
+        assert "promoted" in reloaded.tags
+
+    def test_promoted_memory_not_re_promoted(
+        self, engine: PromotionEngine, store: MemoryStore
+    ) -> None:
+        """Running sweep twice doesn't double-promote the same memory."""
+        result1 = engine.sweep()
+        result2 = engine.sweep()
+
+        # Second sweep should find nothing new to promote
+        assert result2.total_promoted == 0
+
+    def test_evaluate_skips_already_promoted(self, engine: PromotionEngine) -> None:
+        """evaluate() returns None for a memory already marked as promoted."""
+        m = Memory(
+            title="Already done",
+            content="This was already promoted",
+            layer=MemoryLayer.SHORT,
+            emotional=EmotionalSnapshot(intensity=9.0),
+            metadata={"promoted_to": "mid-term"},
+        )
+        assert engine.evaluate(m) is None
+
+
+class TestPromotionScheduler:
+    """Tests for the background PromotionScheduler."""
+
+    def test_run_once_returns_result(self, store: MemoryStore) -> None:
+        """run_once() returns a PromotionResult synchronously."""
+        scheduler = PromotionScheduler(store, interval_seconds=9999)
+        result = scheduler.run_once()
+        assert isinstance(result, PromotionResult)
+        assert scheduler.sweep_count == 1
+        assert scheduler.last_result is result
+
+    def test_start_stop(self, store: MemoryStore) -> None:
+        """Scheduler starts and stops the background thread cleanly."""
+        scheduler = PromotionScheduler(store, interval_seconds=9999)
+        assert not scheduler.is_running()
+
+        scheduler.start()
+        assert scheduler.is_running()
+
+        scheduler.stop(timeout=2.0)
+        assert not scheduler.is_running()
+
+    def test_start_idempotent(self, store: MemoryStore) -> None:
+        """Calling start() twice doesn't spawn a second thread."""
+        scheduler = PromotionScheduler(store, interval_seconds=9999)
+        scheduler.start()
+        thread_id = scheduler._thread.ident
+
+        scheduler.start()  # second call should be a no-op
+        assert scheduler._thread.ident == thread_id
+
+        scheduler.stop(timeout=2.0)
+
+    def test_background_sweep_executes(self, store: MemoryStore) -> None:
+        """Background thread runs at least one sweep in the first few seconds."""
+        # Very short interval so the first sweep fires immediately in _run()
+        scheduler = PromotionScheduler(store, interval_seconds=0.01)
+        scheduler.start()
+        time.sleep(0.2)
+        scheduler.stop(timeout=2.0)
+
+        assert scheduler.sweep_count >= 1
+
+    def test_status_dict(self, store: MemoryStore) -> None:
+        """status() returns expected keys."""
+        scheduler = PromotionScheduler(store, interval_seconds=3600)
+        s = scheduler.status()
+        assert "running" in s
+        assert "sweep_count" in s
+        assert "interval_hours" in s
+        assert s["interval_hours"] == pytest.approx(1.0)
+        assert s["last_sweep"] is None  # nothing run yet
+
+    def test_interval_hours_property(self, store: MemoryStore) -> None:
+        """interval_hours converts correctly from seconds."""
+        scheduler = PromotionScheduler(store, interval_seconds=7200)
+        assert scheduler.interval_hours == pytest.approx(2.0)

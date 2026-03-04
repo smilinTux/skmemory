@@ -486,21 +486,80 @@ class SQLiteBackend(BaseBackend):
 
         return results
 
+    def list_backups(self, backup_dir: Optional[str] = None) -> list[dict]:
+        """List all skmemory backup files, sorted newest first.
+
+        Args:
+            backup_dir: Directory to scan. Defaults to
+                ``<base_path>/../backups/``.
+
+        Returns:
+            list[dict]: Backup entries, newest first. Each entry has:
+                ``path``, ``name``, ``size_bytes``, ``date``.
+        """
+        if backup_dir is None:
+            bdir = self.base_path.parent / "backups"
+        else:
+            bdir = Path(backup_dir)
+
+        if not bdir.exists():
+            return []
+
+        entries = []
+        for f in sorted(bdir.glob("skmemory-backup-*.json"), reverse=True):
+            entries.append(
+                {
+                    "path": str(f),
+                    "name": f.name,
+                    "size_bytes": f.stat().st_size,
+                    "date": f.stem.replace("skmemory-backup-", ""),
+                }
+            )
+        return entries
+
+    def prune_backups(
+        self, keep: int = 7, backup_dir: Optional[str] = None
+    ) -> list[str]:
+        """Delete oldest backups, retaining only the N most recent.
+
+        Args:
+            keep: Number of most-recent backups to keep (default: 7).
+            backup_dir: Directory to prune. Defaults to
+                ``<base_path>/../backups/``.
+
+        Returns:
+            list[str]: Paths of the deleted backup files.
+        """
+        backups = self.list_backups(backup_dir)
+        to_delete = backups[keep:]  # list is already newest-first
+        deleted: list[str] = []
+        for entry in to_delete:
+            try:
+                Path(entry["path"]).unlink()
+                deleted.append(entry["path"])
+            except OSError:
+                pass
+        return deleted
+
     def export_all(self, output_path: Optional[str] = None) -> str:
         """Export all memories as a single JSON file for backup.
 
         Reads every JSON file on disk and bundles them into one
         git-friendly backup. One file per day by default (overwrites
-        same-day exports).
+        same-day exports). When using the default backup directory,
+        automatically prunes to keep the last 7 daily backups.
 
         Args:
             output_path: Where to write the backup. If None, uses
-                ``~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json``.
+                ``~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json``
+                and triggers automatic rotation (keep last 7).
 
         Returns:
             str: Path to the written backup file.
         """
         from datetime import date as _date
+
+        _auto_rotate = output_path is None
 
         if output_path is None:
             backup_dir = self.base_path.parent / "backups"
@@ -535,6 +594,10 @@ class SQLiteBackend(BaseBackend):
         Path(output_path).write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
         )
+
+        if _auto_rotate:
+            self.prune_backups(keep=7)
+
         return output_path
 
     def import_backup(self, backup_path: str) -> int:

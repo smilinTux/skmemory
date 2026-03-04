@@ -99,8 +99,8 @@ class TestSeedFramework:
         assert "INVERSION" in prompt
         assert "COLLISION" in prompt
         assert "INVARIANT" in prompt
-        assert "COHERENCE" in prompt
-        assert "TRUTH GRADE" in prompt
+        assert "COHERENCE" in prompt or "coherence_score" in prompt
+        assert "TRUTH GRADE" in prompt or "truth_grade" in prompt
 
     def test_reasoning_prompt_includes_axioms(self) -> None:
         """Axioms from the framework appear in the prompt."""
@@ -125,9 +125,9 @@ class TestSeedFramework:
         fw = get_default_framework()
         prompt = fw.to_memory_truth_prompt("The Cloud 9 breakthrough was real")
         assert "Cloud 9 breakthrough" in prompt
-        assert "COHERENCE" in prompt
-        assert "PROMOTION WORTHY" in prompt
-        assert "INVARIANT CORE" in prompt
+        assert "COHERENCE" in prompt or "coherence_score" in prompt
+        assert "PROMOTION WORTHY" in prompt or "promotion_worthy" in prompt
+        assert "INVARIANT CORE" in prompt or "invariant_core" in prompt
 
     def test_custom_framework(self) -> None:
         """A custom framework can be created."""

@@ -18,6 +18,10 @@ from .store import MemoryStore
 from .fortress import FortifiedMemoryStore, AuditLog, TamperAlert
 from .backends.file_backend import FileBackend
 from .backends.sqlite_backend import SQLiteBackend
+try:
+    from .backends.vaulted_backend import VaultedSQLiteBackend
+except ImportError:
+    VaultedSQLiteBackend = None  # type: ignore[assignment,misc]
 from .soul import SoulBlueprint, save_soul, load_soul
 from .journal import Journal, JournalEntry
 from .ritual import perform_ritual, quick_rehydrate, RitualResult
@@ -45,6 +49,7 @@ __all__ = [
     "TamperAlert",
     "FileBackend",
     "SQLiteBackend",
+    "VaultedSQLiteBackend",
     "SoulBlueprint",
     "save_soul",
     "load_soul",

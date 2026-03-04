@@ -42,11 +42,15 @@ skvector = [
 skgraph = [
     "falkordb>=1.0.0",
 ]
+fortress = [
+    "cryptography>=41.0",
+]
 all = [
     "skseed>=0.1.0",
     "qdrant-client>=1.7.0",
     "sentence-transformers>=2.2.0",
     "falkordb>=1.0.0",
+    "cryptography>=41.0",
 ]
 dev = [
     "pytest>=7.0",

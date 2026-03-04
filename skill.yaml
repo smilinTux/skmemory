@@ -1,0 +1,46 @@
+name: skmemory
+version: "0.6.0"
+description: >
+  Persistent sovereign memory layer. Short-term, mid-term, and long-term
+  stores with HMAC integrity seals and automatic promotion. Backends for
+  file, SQLite, vector, and graph storage.
+
+author:
+  name: smilinTux.org
+  email: hello@smilintux.org
+
+tags: [memory, persistence, sovereign, integrity, sqlite, vector]
+category: core
+
+tools:
+  - name: memory_store
+    description: Store a new memory with tags and importance score
+    entrypoint: skmemory.skill:memory_store
+
+  - name: memory_search
+    description: Full-text search across all memory layers
+    entrypoint: skmemory.skill:memory_search
+
+  - name: memory_recall
+    description: Recall a specific memory by ID
+    entrypoint: skmemory.skill:memory_recall
+
+  - name: memory_list
+    description: List memories filtered by layer, tags, or importance
+    entrypoint: skmemory.skill:memory_list
+
+  - name: memory_forget
+    description: Delete a memory by ID
+    entrypoint: skmemory.skill:memory_forget
+
+  - name: memory_promote
+    description: Promote a memory to a higher persistence layer
+    entrypoint: skmemory.skill:memory_promote
+
+  - name: memory_health
+    description: Check memory store health and statistics
+    entrypoint: skmemory.skill:memory_health
+
+  - name: memory_verify
+    description: Verify HMAC integrity seals on stored memories
+    entrypoint: skmemory.skill:memory_verify

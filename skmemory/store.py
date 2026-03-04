@@ -469,6 +469,38 @@ class MemoryStore:
             f"Import not supported for backend: {type(self.primary).__name__}"
         )
 
+    def list_backups(self, backup_dir: str | None = None) -> list[dict]:
+        """List all skmemory backup files, sorted newest first.
+
+        Args:
+            backup_dir: Directory to scan. Defaults to
+                ``~/.skmemory/backups/``.
+
+        Returns:
+            list[dict]: Backup entries with ``path``, ``name``,
+                ``size_bytes``, and ``date`` keys.
+        """
+        if isinstance(self.primary, SQLiteBackend):
+            return self.primary.list_backups(backup_dir)
+        return []
+
+    def prune_backups(
+        self, keep: int = 7, backup_dir: str | None = None
+    ) -> list[str]:
+        """Delete oldest backups, keeping only the N most recent.
+
+        Args:
+            keep: Number of backups to retain (default: 7).
+            backup_dir: Directory to prune. Defaults to
+                ``~/.skmemory/backups/``.
+
+        Returns:
+            list[str]: Paths of deleted backup files.
+        """
+        if isinstance(self.primary, SQLiteBackend):
+            return self.primary.prune_backups(keep=keep, backup_dir=backup_dir)
+        return []
+
     def reindex(self) -> int:
         """Rebuild the SQLite index from JSON files.
 

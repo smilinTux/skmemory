@@ -327,37 +327,58 @@ class FortifiedMemoryStore(MemoryStore):
     3. **Tamper alerts** — failed integrity checks trigger registered callbacks
        and are logged as CRITICAL audit events.
 
-    At-rest encryption is opt-in via ``encryption_key_fingerprint``.
+    At-rest encryption is opt-in via ``vault_passphrase`` (AES-256-GCM,
+    recommended) or ``encryption_key_fingerprint`` (PGP, requires GPG).
 
     Args:
         audit_path: Path to the audit JSONL log.
-        encryption_key_fingerprint: If set, encrypt JSON files at rest.
-        gnupg_home: GPG home directory (for encryption).
+        vault_passphrase: If set, use AES-256-GCM at-rest encryption via
+            :class:`~skmemory.backends.vaulted_backend.VaultedSQLiteBackend`.
+            Requires the ``cryptography`` package.
+        encryption_key_fingerprint: If set, encrypt JSON files at rest with
+            PGP (requires ``python-gnupg`` and GPG keyring).
+        gnupg_home: GPG home directory (for PGP encryption).
         alert_callbacks: Functions to call when tamper is detected.
         **store_kwargs: Passed through to ``MemoryStore``.
 
     Example::
 
+        # AES-256-GCM passphrase encryption (recommended)
         store = FortifiedMemoryStore(
-            encryption_key_fingerprint="9B3AB00F411B064646879B92D10E637B4F8367DA",
+            vault_passphrase="my-sovereign-key",
             alert_callbacks=[lambda alert: send_to_slack(alert.to_dict())],
         )
         memory = store.snapshot("title", "content")
-        recalled = store.recall(memory.id)
+        recalled = store.recall(memory.id)  # hash verified + decrypted
     """
 
     def __init__(
         self,
         audit_path: Optional[Path] = None,
+        vault_passphrase: Optional[str] = None,
         encryption_key_fingerprint: Optional[str] = None,
         gnupg_home: Optional[str] = None,
         alert_callbacks: Optional[list[Callable[[TamperAlert], None]]] = None,
         **store_kwargs: Any,
     ) -> None:
+        # Wire in VaultedSQLiteBackend as primary when vault_passphrase is set
+        # and the caller has not supplied their own primary backend.
+        if vault_passphrase and "primary" not in store_kwargs:
+            from .backends.vaulted_backend import VaultedSQLiteBackend
+
+            vault_base_path = store_kwargs.pop("base_path", None)
+            vaulted_kwargs: dict = {"passphrase": vault_passphrase}
+            if vault_base_path is not None:
+                vaulted_kwargs["base_path"] = str(vault_base_path)
+            store_kwargs["primary"] = VaultedSQLiteBackend(**vaulted_kwargs)
+            store_kwargs.setdefault("use_sqlite", False)
+            logger.info("Memory Fortress: AES-256-GCM vault encryption active")
+
         super().__init__(**store_kwargs)
         self.audit = AuditLog(path=audit_path or DEFAULT_AUDIT_PATH)
         self.alert_callbacks: list[Callable[[TamperAlert], None]] = alert_callbacks or []
         self._encryption: Optional[EncryptedFileBackend] = None
+        self._vault_passphrase: Optional[str] = vault_passphrase
 
         if encryption_key_fingerprint:
             self._encryption = EncryptedFileBackend(
@@ -365,7 +386,7 @@ class FortifiedMemoryStore(MemoryStore):
                 gnupg_home=gnupg_home,
             )
             logger.info(
-                "Memory Fortress: at-rest encryption active for key %s",
+                "Memory Fortress: PGP encryption active for key %s",
                 encryption_key_fingerprint[:8],
             )
 
@@ -572,8 +593,72 @@ class FortifiedMemoryStore(MemoryStore):
 
     @property
     def encryption_active(self) -> bool:
-        """Return True if at-rest encryption is configured."""
+        """Return True if PGP at-rest encryption is configured."""
         return self._encryption is not None
+
+    @property
+    def vault_active(self) -> bool:
+        """Return True if AES-256-GCM vault encryption is configured."""
+        return self._vault_passphrase is not None
+
+    def vault_status(self) -> dict:
+        """Return encryption coverage stats for the memory store.
+
+        Only available when vault_passphrase was supplied.
+
+        Returns:
+            dict: ``{total, encrypted, plaintext, coverage_pct}``
+
+        Raises:
+            RuntimeError: If vault encryption is not configured.
+        """
+        from .backends.vaulted_backend import VaultedSQLiteBackend
+
+        if not isinstance(self.primary, VaultedSQLiteBackend):
+            raise RuntimeError(
+                "vault_status() requires vault_passphrase to be set."
+            )
+        return self.primary.vault_status()
+
+    def seal_vault(self) -> int:
+        """Encrypt all plaintext memory files using the configured vault.
+
+        Safe to call multiple times — already-encrypted files are skipped.
+
+        Returns:
+            int: Number of files newly encrypted.
+
+        Raises:
+            RuntimeError: If vault encryption is not configured.
+        """
+        from .backends.vaulted_backend import VaultedSQLiteBackend
+
+        if not isinstance(self.primary, VaultedSQLiteBackend):
+            raise RuntimeError(
+                "seal_vault() requires vault_passphrase to be set."
+            )
+        count = self.primary.seal_all()
+        self.audit.append("vault_seal", "ALL", ok=True, files_sealed=count)
+        return count
+
+    def unseal_vault(self) -> int:
+        """Decrypt all vault-encrypted memory files.
+
+        Returns:
+            int: Number of files decrypted.
+
+        Raises:
+            RuntimeError: If vault encryption is not configured.
+        """
+        from .backends.vaulted_backend import VaultedSQLiteBackend
+
+        if not isinstance(self.primary, VaultedSQLiteBackend):
+            raise RuntimeError(
+                "unseal_vault() requires vault_passphrase to be set."
+            )
+        count = self.primary.unseal_all()
+        self.audit.append("vault_unseal", "ALL", ok=True, files_decrypted=count)
+        return count
 
     # ------------------------------------------------------------------
     # Internal

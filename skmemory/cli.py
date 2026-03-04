@@ -8,6 +8,9 @@ Usage:
     skmemory list --layer long-term --tags seed
     skmemory import-seeds [--seed-dir ~/.openclaw/feb/seeds]
     skmemory promote <memory-id> --to mid-term --summary "..."
+    skmemory sweep                # Auto-promote all qualifying memories
+    skmemory sweep --dry-run      # Preview what would be promoted
+    skmemory sweep --daemon       # Run continuously every 6 hours
     skmemory consolidate <session-id> --summary "..."
     skmemory soul show | soul set-name "Lumina" | soul add-relationship ...
     skmemory journal write "Session title" --moments "..." --intensity 9.0
@@ -148,7 +151,8 @@ def cli(
     smart search reranking, enhanced rituals). Requires Ollama.
     """
     ctx.ensure_object(dict)
-    ctx.obj["store"] = _get_store(skvector_url, skvector_key)
+    if "store" not in ctx.obj:
+        ctx.obj["store"] = _get_store(skvector_url, skvector_key)
 
     if use_ai:
         ai = AIClient(base_url=ai_url, model=ai_model)
@@ -338,6 +342,140 @@ def promote(ctx: click.Context, memory_id: str, target: str, summary: str) -> No
     click.echo(f"  Linked to original: {memory_id}")
 
 
+@cli.command("sweep")
+@click.option("--dry-run", is_flag=True, help="Show what would be promoted without making changes")
+@click.option("--daemon", is_flag=True, help="Run continuously at the configured interval")
+@click.option(
+    "--interval",
+    type=float,
+    default=6.0,
+    metavar="HOURS",
+    help="Sweep interval in hours (daemon mode only, default: 6)",
+)
+@click.option("--max-promotions", type=int, default=50, help="Max promotions per sweep")
+@click.option("--json", "as_json", is_flag=True, help="Output results as JSON")
+@click.pass_context
+def sweep_cmd(
+    ctx: click.Context,
+    dry_run: bool,
+    daemon: bool,
+    interval: float,
+    max_promotions: int,
+    as_json: bool,
+) -> None:
+    """Run the auto-promotion engine.
+
+    Evaluates all memories and promotes qualifying ones to the next tier:
+
+    \b
+      short-term -> mid-term: high emotional intensity, frequently accessed,
+                               or sufficiently old with multiple accesses
+      mid-term   -> long-term: very high intensity, key tags (milestone,
+                               breakthrough, cloud9:achieved), or Cloud 9
+
+    By default runs a single sweep and exits. Use --daemon to keep running.
+    """
+    from .promotion import PromotionCriteria, PromotionEngine, PromotionScheduler
+
+    store: MemoryStore = ctx.obj["store"]
+    criteria = PromotionCriteria(max_promotions_per_sweep=max_promotions)
+
+    if dry_run:
+        # Inspect without modifying anything
+        engine = PromotionEngine(store, criteria)
+        short_mems = store.list_memories(layer=MemoryLayer.SHORT, limit=criteria.max_promotions_per_sweep * 2)
+        mid_mems = store.list_memories(layer=MemoryLayer.MID, limit=criteria.max_promotions_per_sweep * 2)
+
+        would_promote: list[dict] = []
+        for mem in short_mems:
+            target = engine.evaluate(mem)
+            if target is not None:
+                would_promote.append({
+                    "id": mem.id,
+                    "title": mem.title,
+                    "from": mem.layer.value,
+                    "to": target.value,
+                    "reason": engine._promotion_reason(mem),
+                })
+        for mem in mid_mems:
+            target = engine.evaluate(mem)
+            if target is not None:
+                would_promote.append({
+                    "id": mem.id,
+                    "title": mem.title,
+                    "from": mem.layer.value,
+                    "to": target.value,
+                    "reason": engine._promotion_reason(mem),
+                })
+
+        if as_json:
+            click.echo(json.dumps({"dry_run": True, "would_promote": would_promote}, indent=2))
+        else:
+            if not would_promote:
+                click.echo("[dry-run] Nothing qualifies for promotion right now.")
+            else:
+                click.echo(f"[dry-run] {len(would_promote)} memory/memories would be promoted:")
+                for entry in would_promote:
+                    click.echo(
+                        f"  {entry['id'][:12]}  {entry['from']} -> {entry['to']}"
+                        f"  [{entry['title'][:50]}]  reason: {entry['reason']}"
+                    )
+
+    elif daemon:
+        import signal
+        import time
+
+        scheduler = PromotionScheduler(
+            store,
+            criteria=criteria,
+            interval_seconds=interval * 3600,
+        )
+
+        def _handle_signal(signum: int, frame: object) -> None:
+            click.echo("\nShutting down promotion scheduler...", err=True)
+            scheduler.stop(timeout=10.0)
+            sys.exit(0)
+
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
+
+        click.echo(
+            f"Promotion scheduler running (interval: {interval:.1f}h). "
+            "Press Ctrl+C to stop.",
+            err=True,
+        )
+
+        # Run first sweep immediately, then hand off to background thread
+        result = scheduler.run_once()
+        if as_json:
+            click.echo(json.dumps(result.model_dump(), indent=2, default=str))
+        else:
+            click.echo(result.summary())
+
+        scheduler.start()
+
+        # Keep the main thread alive so signal handlers fire
+        while scheduler.is_running():
+            time.sleep(1)
+
+    else:
+        # Single one-shot sweep
+        engine = PromotionEngine(store, criteria)
+        result = engine.sweep()
+
+        if as_json:
+            click.echo(json.dumps(result.model_dump(), indent=2, default=str))
+        else:
+            click.echo(result.summary())
+            if result.short_evaluated or result.mid_evaluated:
+                click.echo(f"  Evaluated: {result.short_evaluated} short-term, {result.mid_evaluated} mid-term")
+            if result.promoted_ids:
+                ids_preview = ", ".join(p[:12] for p in result.promoted_ids[:5])
+                if len(result.promoted_ids) > 5:
+                    ids_preview += f" (+{len(result.promoted_ids) - 5} more)"
+                click.echo(f"  Promoted: {ids_preview}")
+
+
 @cli.command()
 @click.argument("session_id")
 @click.option("--summary", required=True, help="Summary of the session")
@@ -499,6 +637,80 @@ def import_backup(ctx: click.Context, backup_file: str, reindex: bool) -> None:
     except (FileNotFoundError, ValueError, RuntimeError) as e:
         click.echo(str(e), err=True)
         sys.exit(1)
+
+
+@cli.command("backup")
+@click.option("--list", "do_list", is_flag=True,
+              help="Show all backups with date and size.")
+@click.option("--prune", "prune_n", type=int, default=None, metavar="N",
+              help="Keep only the N most recent backups, delete older ones.")
+@click.option("--restore", "restore_file", type=click.Path(), default=None,
+              metavar="FILE", help="Restore memories from backup (alias for import-backup).")
+@click.option("--reindex/--no-reindex", default=True,
+              help="Rebuild index after --restore (default: yes).")
+@click.pass_context
+def backup_cmd(
+    ctx: click.Context,
+    do_list: bool,
+    prune_n: Optional[int],
+    restore_file: Optional[str],
+    reindex: bool,
+) -> None:
+    """Manage memory backups: list, prune old ones, or restore.
+
+    \b
+    Examples:
+      skmemory backup --list
+      skmemory backup --prune 7
+      skmemory backup --restore ~/.skmemory/backups/skmemory-backup-2026-03-01.json
+    """
+    store: MemoryStore = ctx.obj["store"]
+
+    if do_list:
+        backups = store.list_backups()
+        if not backups:
+            click.echo("No backups found.")
+            return
+        click.echo(f"{'Date':<12}  {'Size':>10}  Path")
+        click.echo("-" * 60)
+        for b in backups:
+            size_kb = b["size_bytes"] / 1024
+            click.echo(f"{b['date']:<12}  {size_kb:>8.1f} KB  {b['path']}")
+        return
+
+    if prune_n is not None:
+        if prune_n < 0:
+            click.echo("Error: N must be >= 0", err=True)
+            sys.exit(1)
+        deleted = store.prune_backups(keep=prune_n)
+        if deleted:
+            for p in deleted:
+                click.echo(f"Deleted: {p}")
+            click.echo(
+                f"Pruned {len(deleted)} backup(s), kept {prune_n} most recent."
+            )
+        else:
+            click.echo("Nothing to prune.")
+        return
+
+    if restore_file is not None:
+        from pathlib import Path as _Path
+        if not _Path(restore_file).exists():
+            click.echo(f"Error: backup file not found: {restore_file}", err=True)
+            sys.exit(1)
+        try:
+            count = store.import_backup(restore_file)
+            click.echo(f"Restored {count} memories from: {restore_file}")
+            if reindex:
+                idx = store.reindex()
+                if idx >= 0:
+                    click.echo(f"Re-indexed {idx} memories.")
+        except (FileNotFoundError, ValueError, RuntimeError) as e:
+            click.echo(str(e), err=True)
+            sys.exit(1)
+        return
+
+    click.echo(ctx.get_help())
 
 
 @cli.command()
@@ -1359,6 +1571,285 @@ def steelman_info() -> None:
     click.echo(f"  Stages: {len(fw.stages)}")
     click.echo(f"  Gates: {len(fw.gates)}")
     click.echo(f"  Definitions: {len(fw.definitions)}")
+
+
+# ---------------------------------------------------------------------------
+# Fortress commands — integrity verification and audit trail
+# ---------------------------------------------------------------------------
+
+
+@cli.group("fortress")
+def fortress_group() -> None:
+    """Memory Fortress — integrity verification, tamper alerts, and audit trail."""
+
+
+@fortress_group.command("verify")
+@click.option("--json", "as_json", is_flag=True, help="Output result as JSON")
+@click.pass_context
+def fortress_verify(ctx: click.Context, as_json: bool) -> None:
+    """Verify integrity hashes for all stored memories.
+
+    Loads every memory and checks its SHA-256 integrity hash.
+    Tampered memories are reported with CRITICAL severity.
+    """
+    from .fortress import FortifiedMemoryStore
+    from .config import SKMEMORY_HOME
+    from .backends.sqlite_backend import SQLiteBackend
+
+    store = ctx.obj.get("store")
+    audit_path = SKMEMORY_HOME / "audit.jsonl"
+
+    fortress = FortifiedMemoryStore(
+        primary=store.primary,
+        use_sqlite=False,
+        audit_path=audit_path,
+    )
+    result = fortress.verify_all()
+
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+        return
+
+    total = result["total"]
+    passed = result["passed"]
+    tampered = result["tampered"]
+    unsealed = result["unsealed"]
+
+    click.echo(f"Fortress Integrity Report")
+    click.echo(f"  Total memories : {total}")
+    click.echo(f"  Passed         : {passed}")
+    click.echo(f"  Tampered       : {len(tampered)}")
+    click.echo(f"  Unsealed       : {len(unsealed)}")
+
+    if tampered:
+        click.echo("\nTAMPERED MEMORIES (CRITICAL):")
+        for mid in tampered:
+            click.echo(f"  !! {mid}")
+        sys.exit(2)
+    elif total == 0:
+        click.echo("\nNo memories found.")
+    else:
+        click.echo("\nAll memories passed integrity check.")
+
+
+@fortress_group.command("audit")
+@click.option("--last", "n", type=int, default=20, help="Number of recent entries to show")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def fortress_audit(n: int, as_json: bool) -> None:
+    """Show the most recent audit trail entries.
+
+    The audit trail is a chain-hashed JSONL log of every store/recall/delete
+    operation. Each entry is cryptographically chained so tampering is detectable.
+    """
+    from .fortress import AuditLog
+    from .config import SKMEMORY_HOME
+
+    audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
+    records = audit.tail(n)
+
+    if as_json:
+        click.echo(json.dumps(records, indent=2))
+        return
+
+    if not records:
+        click.echo("No audit records found.")
+        return
+
+    click.echo(f"Audit Trail — last {len(records)} entries:")
+    for r in records:
+        ok_flag = "OK" if r.get("ok") else "FAIL"
+        op = r.get("op", "?").upper()
+        mid = r.get("id", "?")[:12]
+        ts = r.get("ts", "?")[:19]
+        extra = {k: v for k, v in r.items() if k not in ("ts", "op", "id", "ok", "chain_hash")}
+        extras = ", ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
+        line = f"  [{ts}] {op:8s} {ok_flag:4s} id={mid}"
+        if extras:
+            line += f" | {extras}"
+        click.echo(line)
+
+
+@fortress_group.command("verify-chain")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def fortress_verify_chain(as_json: bool) -> None:
+    """Verify the cryptographic chain of the audit log itself.
+
+    Each audit log entry contains a chain hash linking it to the previous entry.
+    A broken chain indicates the audit log was tampered with.
+    """
+    from .fortress import AuditLog
+    from .config import SKMEMORY_HOME
+
+    audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
+    ok, errors = audit.verify_chain()
+
+    if as_json:
+        click.echo(json.dumps({"ok": ok, "errors": errors}))
+        return
+
+    if ok:
+        click.echo("Audit chain is VALID — log integrity confirmed.")
+    else:
+        click.echo("Audit chain BROKEN — log may have been tampered!")
+        for err in errors:
+            click.echo(f"  !! {err}")
+        sys.exit(2)
+
+
+# ---------------------------------------------------------------------------
+# Vault commands — at-rest encryption management
+# ---------------------------------------------------------------------------
+
+
+@cli.group("vault")
+def vault_group() -> None:
+    """Memory Vault — AES-256-GCM at-rest encryption for memory files."""
+
+
+@vault_group.command("seal")
+@click.option(
+    "--passphrase",
+    envvar="SKMEMORY_VAULT_PASSPHRASE",
+    required=True,
+    help="Encryption passphrase (or set SKMEMORY_VAULT_PASSPHRASE env var)",
+    prompt="Vault passphrase",
+    hide_input=True,
+    confirmation_prompt=True,
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def vault_seal(ctx: click.Context, passphrase: str, yes: bool) -> None:
+    """Encrypt all plaintext memory files with AES-256-GCM.
+
+    Already-encrypted files are skipped. Safe to run multiple times.
+    Requires the 'cryptography' package: pip install skmemory[fortress]
+    """
+    from .backends.vaulted_backend import VaultedSQLiteBackend
+    from .config import SKMEMORY_HOME
+    from .fortress import AuditLog
+
+    store = ctx.obj.get("store")
+    memories_path = store.primary.base_path if hasattr(store.primary, "base_path") else (
+        SKMEMORY_HOME / "memories"
+    )
+
+    if not yes:
+        click.confirm(
+            f"This will encrypt all memory files in {memories_path}. Continue?",
+            abort=True,
+        )
+
+    backend = VaultedSQLiteBackend(passphrase=passphrase, base_path=str(memories_path))
+    count = backend.seal_all()
+
+    audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
+    audit.append("vault_seal", "ALL", ok=True, files_sealed=count)
+
+    click.echo(f"Vault sealed: {count} file(s) encrypted.")
+    if count == 0:
+        click.echo("(All files were already encrypted or no memories exist.)")
+
+
+@vault_group.command("unseal")
+@click.option(
+    "--passphrase",
+    envvar="SKMEMORY_VAULT_PASSPHRASE",
+    required=True,
+    help="Decryption passphrase",
+    prompt="Vault passphrase",
+    hide_input=True,
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def vault_unseal(ctx: click.Context, passphrase: str, yes: bool) -> None:
+    """Decrypt all vault-encrypted memory files back to plaintext.
+
+    Use this to migrate away from encryption or to inspect raw files.
+    """
+    from .backends.vaulted_backend import VaultedSQLiteBackend
+    from .config import SKMEMORY_HOME
+    from .fortress import AuditLog
+
+    store = ctx.obj.get("store")
+    memories_path = store.primary.base_path if hasattr(store.primary, "base_path") else (
+        SKMEMORY_HOME / "memories"
+    )
+
+    if not yes:
+        click.confirm(
+            f"This will decrypt all vault files in {memories_path}. Continue?",
+            abort=True,
+        )
+
+    backend = VaultedSQLiteBackend(passphrase=passphrase, base_path=str(memories_path))
+    count = backend.unseal_all()
+
+    audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
+    audit.append("vault_unseal", "ALL", ok=True, files_decrypted=count)
+
+    click.echo(f"Vault unsealed: {count} file(s) decrypted.")
+
+
+@vault_group.command("status")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+@click.pass_context
+def vault_status_cmd(ctx: click.Context, as_json: bool) -> None:
+    """Show encryption coverage for memory files.
+
+    Reports how many memory files are encrypted vs. plaintext.
+    Does not require a passphrase — only checks file headers.
+    """
+    from .config import SKMEMORY_HOME
+    from .vault import VAULT_HEADER
+    from .models import MemoryLayer
+
+    store = ctx.obj.get("store")
+    memories_path = store.primary.base_path if hasattr(store.primary, "base_path") else (
+        SKMEMORY_HOME / "memories"
+    )
+
+    total = encrypted = 0
+    header_len = len(VAULT_HEADER)
+    for layer in MemoryLayer:
+        layer_dir = memories_path / layer.value
+        if not layer_dir.exists():
+            continue
+        for json_file in layer_dir.glob("*.json"):
+            total += 1
+            try:
+                with json_file.open("rb") as fh:
+                    header = fh.read(header_len)
+                if header == VAULT_HEADER:
+                    encrypted += 1
+            except OSError:
+                pass
+
+    plaintext = total - encrypted
+    pct = (encrypted / total * 100) if total else 100.0
+    result = {
+        "total": total,
+        "encrypted": encrypted,
+        "plaintext": plaintext,
+        "coverage_pct": round(pct, 1),
+    }
+
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+        return
+
+    click.echo(f"Vault Status — {memories_path}")
+    click.echo(f"  Total files   : {total}")
+    click.echo(f"  Encrypted     : {encrypted}")
+    click.echo(f"  Plaintext     : {plaintext}")
+    click.echo(f"  Coverage      : {pct:.1f}%")
+    if total == 0:
+        click.echo("\n  (No memory files found.)")
+    elif pct == 100.0:
+        click.echo("\n  All memories are encrypted.")
+    elif pct == 0.0:
+        click.echo("\n  No memories are encrypted. Run: skmemory vault seal")
+    else:
+        click.echo(f"\n  Partial encryption! Run: skmemory vault seal --yes")
 
 
 def main() -> None:

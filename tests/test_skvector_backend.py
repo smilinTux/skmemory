@@ -201,7 +201,7 @@ class TestDelete:
 
     def test_delete_not_found(self, backend, mock_qdrant_client):
         """delete returns False when memory not in Qdrant."""
-        mock_qdrant_client.scroll.return_value = ([], None)
+        mock_qdrant_client.retrieve.return_value = []
         assert backend.delete("nonexistent") is False
 
     def test_delete_not_initialized(self):

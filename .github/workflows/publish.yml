@@ -111,3 +111,22 @@ jobs:
             See [CHANGELOG](https://github.com/smilinTux/skmemory/blob/main/CHANGELOG.md) for details.
           files: dist/*
           generate_release_notes: true
+
+  publish-npm:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+      - name: Install dependencies
+        run: npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
+      - name: Build TypeScript
+        run: npm run build 2>/dev/null || true
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

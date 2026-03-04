@@ -246,16 +246,25 @@ class SKVectorBackend(BaseBackend):
     def delete(self, memory_id: str) -> bool:
         """Remove a memory from Qdrant by its deterministic point ID.
 
+        Returns False if the memory was not found.
+
         Args:
             memory_id: The memory identifier.
 
         Returns:
-            bool: True if the deletion was issued.
+            bool: True if the memory existed and was deleted, False otherwise.
         """
         if not self._ensure_initialized():
             return False
 
         try:
+            points = self._client.retrieve(
+                collection_name=self.collection,
+                ids=[self._id_to_point_id(memory_id)],
+                with_payload=False,
+            )
+            if not points:
+                return False
             self._client.delete(
                 collection_name=self.collection,
                 points_selector=[self._id_to_point_id(memory_id)],
