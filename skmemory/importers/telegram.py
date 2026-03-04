@@ -30,6 +30,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+import click
+
 from ..models import EmotionalSnapshot, MemoryLayer, MemoryRole
 from ..store import MemoryStore
 
@@ -78,6 +80,9 @@ def _detect_emotion(text: str) -> EmotionalSnapshot:
     joy_words = {"haha", "lol", "rofl", "lmao", "amazing", "awesome", "yay", "woohoo"}
     sad_words = {"sad", "sorry", "miss", "cry", "tears", "hurt"}
     anger_words = {"angry", "furious", "hate", "ugh", "frustrated"}
+    trust_words = {"trust", "believe", "faith", "rely", "depend", "safe"}
+    curiosity_words = {"curious", "wonder", "interesting", "fascinated", "hmm", "what if"}
+    gratitude_words = {"thank", "thanks", "grateful", "appreciate", "blessed", "thankful"}
 
     if any(w in lower for w in love_words):
         labels.append("love")
@@ -95,17 +100,106 @@ def _detect_emotion(text: str) -> EmotionalSnapshot:
         labels.append("anger")
         intensity = max(intensity, 5.0)
         valence = min(valence, -0.5)
+    if any(w in lower for w in trust_words):
+        labels.append("trust")
+        intensity = max(intensity, 5.0)
+        valence = max(valence, 0.6)
+    if any(w in lower for w in curiosity_words):
+        labels.append("curiosity")
+        intensity = max(intensity, 3.0)
+        valence = max(valence, 0.4)
+    if any(w in lower for w in gratitude_words):
+        labels.append("gratitude")
+        intensity = max(intensity, 6.0)
+        valence = max(valence, 0.8)
 
     if "!" in text:
         intensity = min(intensity + 1.0, 10.0)
     if text.isupper() and len(text) > 10:
         intensity = min(intensity + 2.0, 10.0)
 
+    love_emojis = {"\u2764", "\U0001f495", "\U0001f496", "\U0001f497", "\U0001f498", "\U0001f49d", "\U0001f970", "\U0001f60d", "\U0001f49e"}
+    joy_emojis = {"\U0001f602", "\U0001f923", "\U0001f604", "\U0001f60a", "\U0001f389", "\U0001f973", "\u2728", "\U0001f38a"}
+    sad_emojis = {"\U0001f622", "\U0001f62d", "\U0001f494", "\U0001f63f", "\U0001f97a"}
+    if any(e in text for e in love_emojis):
+        if "love" not in labels:
+            labels.append("love")
+        intensity = max(intensity, 7.0)
+        valence = max(valence, 0.9)
+    if any(e in text for e in joy_emojis):
+        if "joy" not in labels:
+            labels.append("joy")
+        intensity = max(intensity, 5.0)
+        valence = max(valence, 0.7)
+    if any(e in text for e in sad_emojis):
+        if "sadness" not in labels:
+            labels.append("sadness")
+        intensity = max(intensity, 4.0)
+        valence = min(valence, -0.3)
+
     return EmotionalSnapshot(
         intensity=intensity,
         valence=valence,
         labels=labels or ["neutral"],
     )
+
+
+def _detect_content_type(msg: dict) -> list[str]:
+    """Detect content type tags from a message.
+
+    Args:
+        msg: Telegram message dict.
+
+    Returns:
+        list[str]: Content type tags.
+    """
+    tags = []
+    text = _extract_text(msg.get("text", ""))
+
+    if "http://" in text or "https://" in text:
+        tags.append("contains:url")
+    if msg.get("media_type") or msg.get("photo") or msg.get("file"):
+        tags.append("contains:media")
+    if msg.get("file"):
+        tags.append("contains:file")
+    if msg.get("sticker_emoji") or msg.get("sticker"):
+        tags.append("contains:sticker")
+
+    return tags
+
+
+def _detect_reply(msg: dict) -> Optional[str]:
+    """Detect if this message is a reply to another.
+
+    Args:
+        msg: Telegram message dict.
+
+    Returns:
+        Optional[str]: Reply reference string, or None.
+    """
+    reply_id = msg.get("reply_to_message_id")
+    if reply_id:
+        return f"reply_to:{reply_id}"
+    return None
+
+
+def _detect_sender_role(sender: str) -> str:
+    """Heuristic to detect if the sender is an AI or human.
+
+    Args:
+        sender: Sender name string.
+
+    Returns:
+        str: 'ai' or 'human'.
+    """
+    ai_indicators = {
+        "bot", "gpt", "claude", "gemini", "llama", "assistant",
+        "lumina", "copilot", "ai", "opus", "sonnet", "haiku",
+    }
+    sender_lower = sender.lower()
+    if any(indicator in sender_lower for indicator in ai_indicators):
+        return "ai"
+    return "human"
 
 
 def _parse_telegram_export(export_path: str) -> dict:
@@ -217,33 +311,35 @@ def _import_per_message(
     imported = 0
     skipped = 0
 
-    for msg in messages:
-        text = _extract_text(msg.get("text", ""))
-        sender = msg.get("from", msg.get("from_id", "unknown"))
-        date_str = msg.get("date", "")
+    with click.progressbar(messages, label="  Importing messages", show_pos=True) as bar:
+        for msg in bar:
+            text = _extract_text(msg.get("text", ""))
+            sender = msg.get("from", msg.get("from_id", "unknown"))
+            date_str = msg.get("date", "")
 
-        emotional = _detect_emotion(text)
+            emotional = _detect_emotion(text)
 
-        try:
-            store.snapshot(
-                title=f"{sender}: {text[:70]}",
-                content=text,
-                layer=MemoryLayer.SHORT,
-                role=MemoryRole.GENERAL,
-                tags=base_tags + [f"sender:{sender}"],
-                emotional=emotional,
-                source="telegram",
-                source_ref=f"telegram:{msg.get('id', '')}",
-                metadata={
-                    "telegram_msg_id": msg.get("id"),
-                    "sender": sender,
-                    "date": date_str,
-                    "chat": chat_name,
-                },
-            )
-            imported += 1
-        except Exception:
-            skipped += 1
+            try:
+                store.snapshot(
+                    title=f"{sender}: {text[:70]}",
+                    content=text,
+                    layer=MemoryLayer.SHORT,
+                    role=MemoryRole.GENERAL,
+                    tags=base_tags + [f"sender:{sender}", f"role:{_detect_sender_role(sender)}"] + _detect_content_type(msg),
+                    emotional=emotional,
+                    source="telegram",
+                    source_ref=f"telegram:{msg.get('id', '')}",
+                    metadata={
+                        "telegram_msg_id": msg.get("id"),
+                        "sender": sender,
+                        "date": date_str,
+                        "chat": chat_name,
+                        "reply_ref": _detect_reply(msg),
+                    },
+                )
+                imported += 1
+            except Exception:
+                skipped += 1
 
     return {
         "mode": "message",
@@ -285,47 +381,49 @@ def _import_daily(
     imported = 0
     days_processed = 0
 
-    for day, day_msgs in sorted(by_day.items()):
-        lines = []
-        senders: set[str] = set()
-        max_intensity = 0.0
-        all_labels: list[str] = []
+    sorted_days = sorted(by_day.items())
+    with click.progressbar(sorted_days, label="  Importing daily batches", show_pos=True) as bar:
+        for day, day_msgs in bar:
+            lines = []
+            senders: set[str] = set()
+            max_intensity = 0.0
+            all_labels: list[str] = []
 
-        for msg in day_msgs:
-            text = _extract_text(msg.get("text", ""))
-            sender = msg.get("from", msg.get("from_id", "unknown"))
-            senders.add(str(sender))
-            lines.append(f"[{sender}] {text}")
+            for msg in day_msgs:
+                text = _extract_text(msg.get("text", ""))
+                sender = msg.get("from", msg.get("from_id", "unknown"))
+                senders.add(str(sender))
+                lines.append(f"[{sender}] {text}")
 
-            emo = _detect_emotion(text)
-            max_intensity = max(max_intensity, emo.intensity)
-            all_labels.extend(emo.labels)
+                emo = _detect_emotion(text)
+                max_intensity = max(max_intensity, emo.intensity)
+                all_labels.extend(emo.labels)
 
-        content = "\n".join(lines)
-        unique_labels = list(dict.fromkeys(all_labels))[:5]
-        participant_str = ", ".join(sorted(senders))
+            content = "\n".join(lines)
+            unique_labels = list(dict.fromkeys(all_labels))[:5]
+            participant_str = ", ".join(sorted(senders))
 
-        store.snapshot(
-            title=f"{chat_name} — {day} ({len(day_msgs)} messages)",
-            content=content,
-            layer=MemoryLayer.MID,
-            role=MemoryRole.GENERAL,
-            tags=base_tags + [f"date:{day}"],
-            emotional=EmotionalSnapshot(
-                intensity=max_intensity,
-                labels=unique_labels,
-            ),
-            source="telegram",
-            source_ref=f"telegram:daily:{day}",
-            metadata={
-                "date": day,
-                "message_count": len(day_msgs),
-                "participants": participant_str,
-                "chat": chat_name,
-            },
-        )
-        imported += len(day_msgs)
-        days_processed += 1
+            store.snapshot(
+                title=f"{chat_name} — {day} ({len(day_msgs)} messages)",
+                content=content,
+                layer=MemoryLayer.MID,
+                role=MemoryRole.GENERAL,
+                tags=base_tags + [f"date:{day}"],
+                emotional=EmotionalSnapshot(
+                    intensity=max_intensity,
+                    labels=unique_labels,
+                ),
+                source="telegram",
+                source_ref=f"telegram:daily:{day}",
+                metadata={
+                    "date": day,
+                    "message_count": len(day_msgs),
+                    "participants": participant_str,
+                    "chat": chat_name,
+                },
+            )
+            imported += len(day_msgs)
+            days_processed += 1
 
     return {
         "mode": "daily",

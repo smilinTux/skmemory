@@ -26,9 +26,10 @@ from typing import Any, Optional
 import yaml
 from pydantic import BaseModel, Field
 
-from .config import SKMEMORY_HOME
-
-DEFAULT_SOUL_PATH = str(SKMEMORY_HOME / "soul.yaml")
+DEFAULT_SOUL_PATH = os.environ.get(
+    "SKMEMORY_SOUL_PATH",
+    os.path.expanduser("~/.skcapstone/soul/base.json"),
+)
 
 
 class Relationship(BaseModel):
@@ -205,11 +206,11 @@ def save_soul(
     soul: SoulBlueprint,
     path: str = DEFAULT_SOUL_PATH,
 ) -> str:
-    """Save a soul blueprint to YAML.
+    """Save a soul blueprint to JSON or YAML (based on extension).
 
     Args:
         soul: The blueprint to save.
-        path: File path (default: ~/.skmemory/soul.yaml).
+        path: File path (default: ~/.skcapstone/soul/base.json).
 
     Returns:
         str: The path where it was saved.
@@ -218,39 +219,71 @@ def save_soul(
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
     data = soul.model_dump()
-    with open(filepath, "w", encoding="utf-8") as f:
-        yaml.dump(
-            data,
-            f,
-            default_flow_style=False,
-            allow_unicode=True,
-            sort_keys=False,
-            width=120,
-        )
+
+    if filepath.suffix == ".json":
+        import json
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+    else:
+        with open(filepath, "w", encoding="utf-8") as f:
+            yaml.dump(
+                data,
+                f,
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+                width=120,
+            )
 
     return str(filepath)
 
 
 def load_soul(path: str = DEFAULT_SOUL_PATH) -> Optional[SoulBlueprint]:
-    """Load a soul blueprint from YAML.
+    """Load a soul blueprint from JSON or YAML.
+
+    Tries the given path first (supports both .json and .yaml/.yml),
+    then falls back to the legacy ~/.skmemory/soul.yaml location.
 
     Args:
-        path: File path (default: ~/.skmemory/soul.yaml).
+        path: File path (default: ~/.skcapstone/soul/base.json).
 
     Returns:
         Optional[SoulBlueprint]: The blueprint if found, None otherwise.
     """
     filepath = Path(path)
-    if not filepath.exists():
-        return None
 
+    # Try primary path
+    if filepath.exists():
+        return _load_soul_file(filepath)
+
+    # Fall back to legacy location
+    legacy_path = Path(os.path.expanduser("~/.skmemory/soul.yaml"))
+    if legacy_path.exists():
+        return _load_soul_file(legacy_path)
+
+    return None
+
+
+def _load_soul_file(filepath: Path) -> Optional[SoulBlueprint]:
+    """Load a soul blueprint from a specific file.
+
+    Args:
+        filepath: Path to the soul file (.json or .yaml/.yml).
+
+    Returns:
+        Optional[SoulBlueprint]: The blueprint if valid, None otherwise.
+    """
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        raw = filepath.read_text(encoding="utf-8")
+        if filepath.suffix == ".json":
+            import json
+            data = json.loads(raw)
+        else:
+            data = yaml.safe_load(raw)
         if data is None:
             return None
         return SoulBlueprint(**data)
-    except (yaml.YAMLError, Exception):
+    except Exception:
         return None
 
 
