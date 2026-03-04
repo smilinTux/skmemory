@@ -235,6 +235,11 @@ def register_mcp(
         "opencode": home / ".opencode" / "mcp.json",
     }
 
+    # OpenClaw: register in openclaw.json (top-level mcpServers key)
+    openclaw_config = home / ".openclaw" / "openclaw.json"
+    if openclaw_config.is_file():
+        env_to_path["openclaw"] = openclaw_config
+
     # mcporter: find first existing file
     mcporter_candidates = [
         home / "clawd" / "config" / "mcporter.json",
