@@ -1577,7 +1577,12 @@ def import_telegram_api_cmd(
     except ImportError:
         click.echo(
             "Error: Telethon is required for direct API import.\n"
-            "Install it with: pip install skmemory[telegram]",
+            "\n"
+            "Install it:\n"
+            "  pipx inject skmemory telethon\n"
+            "  # or: pip install skmemory[telegram]\n"
+            "\n"
+            "Then run: skmemory telegram-setup  (to verify full setup)",
             err=True,
         )
         sys.exit(1)
@@ -1618,6 +1623,53 @@ def import_telegram_api_cmd(
         click.echo(f"  Imported: {stats.get('imported', 0)}")
         click.echo(f"  Skipped: {stats.get('skipped', 0)}")
     click.echo(f"  Total messages scanned: {stats.get('total_messages', 0)}")
+
+
+@cli.command("telegram-setup")
+def telegram_setup_cmd() -> None:
+    """Check Telegram API import setup and show next steps.
+
+    Verifies that Telethon is installed, API credentials are set,
+    and a session file exists. Prints actionable instructions for
+    anything that's missing.
+
+    \b
+    Example:
+        skmemory telegram-setup
+    """
+    try:
+        from .importers.telegram_api import check_setup
+    except ImportError:
+        click.echo("Telethon is not installed.", err=True)
+        click.echo("")
+        click.echo("To fix, run one of:")
+        click.echo("  pipx inject skmemory telethon")
+        click.echo("  pip install skmemory[telegram]")
+        sys.exit(1)
+
+    status = check_setup()
+
+    click.echo("Telegram API Import Setup")
+    click.echo("=" * 40)
+    click.echo(f"  Telethon installed:  {'yes' if status['telethon'] else 'NO'}")
+    click.echo(f"  API credentials:     {'yes' if status['credentials'] else 'NO'}")
+    click.echo(f"  Session file:        {'yes' if status['session'] else 'not yet (created on first auth)'}")
+    click.echo("")
+
+    if status["ready"]:
+        click.echo("Ready to import! Run:")
+        click.echo('  skmemory import-telegram-api @username')
+        click.echo('  skmemory import-telegram-api "Group Name" --mode daily')
+        if not status["session"]:
+            click.echo("")
+            click.echo("First run will prompt for phone number + verification code.")
+            click.echo("Session is saved at ~/.skmemory/telegram.session for future use.")
+    else:
+        click.echo("Setup incomplete. Fix these issues:")
+        click.echo("")
+        for msg in status["messages"]:
+            click.echo(f"  - {msg}")
+        sys.exit(1)
 
 
 @steelman_group.command("install")
@@ -1935,6 +1987,61 @@ def vault_status_cmd(ctx: click.Context, as_json: bool) -> None:
         click.echo("\n  No memories are encrypted. Run: skmemory vault seal")
     else:
         click.echo(f"\n  Partial encryption! Run: skmemory vault seal --yes")
+
+
+@cli.command("register")
+@click.option("--workspace", default=None, type=click.Path(),
+              help="Workspace root directory (default: ~/clawd/).")
+@click.option("--env", "target_env", default=None,
+              help="Target a specific environment.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Show what would be done without making changes.")
+def register_cmd(workspace, target_env, dry_run):
+    """Register skmemory skill and MCP server in detected environments.
+
+    Auto-detects development environments (Claude Code, Cursor, VS Code,
+    OpenClaw, OpenCode, mcporter) and ensures skmemory SKILL.md and MCP
+    server entries are properly configured.
+
+    Examples:
+
+      skmemory register                  # auto-detect and register
+      skmemory register --dry-run        # preview what would happen
+      skmemory register --env claude-code # target Claude Code only
+    """
+    from pathlib import Path as _Path
+    from .register import detect_environments, register_package
+
+    workspace_path = _Path(workspace).expanduser() if workspace else None
+    environments = [target_env] if target_env else None
+
+    detected = detect_environments()
+    click.echo("Detected environments: " + ", ".join(detected) if detected else "  (none)")
+
+    if dry_run:
+        click.echo("Dry run — no changes will be made.")
+
+    skill_md = _Path(__file__).parent.parent / "SKILL.md"
+    if not skill_md.exists():
+        skill_md = _Path(__file__).parent / "SKILL.md"
+
+    result = register_package(
+        name="skmemory",
+        skill_md_path=skill_md,
+        mcp_command="skmemory-mcp",
+        mcp_args=[],
+        workspace=workspace_path,
+        environments=environments,
+        dry_run=dry_run,
+    )
+
+    click.echo(f"Skill: {result.get('skill', {}).get('action', '—')}")
+    mcp = result.get("mcp", {})
+    if mcp:
+        for env_name, action in mcp.items():
+            click.echo(f"MCP ({env_name}): {action}")
+    else:
+        click.echo("MCP: no environments matched")
 
 
 def main() -> None:
