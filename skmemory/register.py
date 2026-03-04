@@ -1,8 +1,8 @@
-"""SK* skill and MCP server auto-registration.
+"""SK* skill, MCP server, and OpenClaw plugin auto-registration.
 
 Detects the user's development environments (OpenClaw, Claude Code, Cursor,
-VS Code, OpenCode CLI, mcporter) and registers SKILL.md symlinks and MCP
-server entries so everything works out-of-the-box.
+VS Code, OpenCode CLI, mcporter) and registers SKILL.md symlinks, MCP
+server entries, and OpenClaw plugin manifests so everything works out-of-the-box.
 
 This module is the shared engine — individual packages call it, and
 skcapstone orchestrates registration for the whole suite.
@@ -15,6 +15,7 @@ Usage (from any SK* package):
         skill_md_path=Path(__file__).parent / "SKILL.md",
         mcp_command="skmemory-mcp",
         mcp_args=[],
+        openclaw_plugin_path=Path(__file__).parent.parent / "openclaw-plugin" / "src" / "index.ts",
     )
 """
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -235,10 +237,8 @@ def register_mcp(
         "opencode": home / ".opencode" / "mcp.json",
     }
 
-    # OpenClaw: register in openclaw.json (top-level mcpServers key)
-    openclaw_config = home / ".openclaw" / "openclaw.json"
-    if openclaw_config.is_file():
-        env_to_path["openclaw"] = openclaw_config
+    # OpenClaw: uses mcporter for MCP — no native mcpServers key in
+    # openclaw.json. MCP registration for OpenClaw happens via mcporter.
 
     # mcporter: find first existing file
     mcporter_candidates = [
@@ -263,6 +263,130 @@ def register_mcp(
     return results
 
 
+# ── OpenClaw plugin registration ─────────────────────────────────────────────
+
+
+def _get_openclaw_json_path() -> Path:
+    """Return path to ~/.openclaw/openclaw.json."""
+    return Path.home() / ".openclaw" / "openclaw.json"
+
+
+def _is_openclaw_plugin_registered(plugin_path: Path) -> bool:
+    """Check if plugin_path is already in openclaw.json plugins.load.paths."""
+    oc_json = _get_openclaw_json_path()
+    if not oc_json.is_file():
+        return False
+    data = _read_json(oc_json)
+    paths = data.get("plugins", {}).get("load", {}).get("paths", [])
+    resolved = str(plugin_path.resolve())
+    return any(str(Path(p).resolve()) == resolved for p in paths)
+
+
+def _upsert_openclaw_plugin_path(plugin_id: str, plugin_path: Path) -> None:
+    """Add plugin to plugins.load.paths and plugins.installs in openclaw.json."""
+    oc_json = _get_openclaw_json_path()
+    data = _read_json(oc_json)
+
+    plugins = data.setdefault("plugins", {})
+    load = plugins.setdefault("load", {})
+    paths = load.setdefault("paths", [])
+
+    resolved = str(plugin_path.resolve())
+    if resolved not in paths:
+        paths.append(resolved)
+
+    installs = plugins.setdefault("installs", {})
+    # Point to the plugin directory (parent of src/index.ts)
+    plugin_dir = str(plugin_path.resolve().parent.parent)
+    installs[plugin_id] = {"path": plugin_dir, "linked": True}
+
+    _write_json(oc_json, data)
+
+
+def _ensure_openclaw_plugin_enabled(plugin_id: str) -> None:
+    """Set plugins.entries.<plugin_id>.enabled = true (idempotent)."""
+    oc_json = _get_openclaw_json_path()
+    data = _read_json(oc_json)
+
+    entries = data.setdefault("plugins", {}).setdefault("entries", {})
+    entry = entries.setdefault(plugin_id, {})
+
+    if entry.get("enabled") is True:
+        return
+
+    entry["enabled"] = True
+    _write_json(oc_json, data)
+
+
+def _detect_plugin_id(plugin_path: Path, fallback: str) -> str:
+    """Read plugin id from openclaw.plugin.json manifest."""
+    manifest = plugin_path.parent / "openclaw.plugin.json"
+    if manifest.is_file():
+        try:
+            data = json.loads(manifest.read_text())
+            return data.get("id", fallback)
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return fallback
+
+
+def register_openclaw_plugin(
+    plugin_id: str,
+    plugin_path: Path,
+    dry_run: bool = False,
+) -> str:
+    """Register an OpenClaw plugin. Returns 'exists', 'created', or 'error:...'.
+
+    1. Check _is_openclaw_plugin_registered() -> skip if already registered
+    2. Try `openclaw plugins install --link <path>` via subprocess
+    3. Fallback: write openclaw.json directly if CLI fails
+    4. _ensure_openclaw_plugin_enabled()
+
+    Args:
+        plugin_id: Plugin identifier (e.g. "skmemory").
+        plugin_path: Path to the plugin entry point (e.g. src/index.ts).
+        dry_run: If True, only report what would be done.
+
+    Returns:
+        Action taken: "exists", "created", "dry-run", or "error:...".
+    """
+    if dry_run:
+        return "dry-run"
+
+    if not plugin_path.exists():
+        return f"error: plugin not found: {plugin_path}"
+
+    # Detect actual plugin ID from manifest
+    actual_id = _detect_plugin_id(plugin_path, plugin_id)
+
+    if _is_openclaw_plugin_registered(plugin_path):
+        _ensure_openclaw_plugin_enabled(actual_id)
+        return "exists"
+
+    # Try CLI first
+    plugin_dir = str(plugin_path.resolve().parent.parent)
+    try:
+        subprocess.run(
+            ["openclaw", "plugins", "install", "--link", plugin_dir],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if _is_openclaw_plugin_registered(plugin_path):
+            _ensure_openclaw_plugin_enabled(actual_id)
+            return "created"
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    # Fallback: write directly
+    try:
+        _upsert_openclaw_plugin_path(actual_id, plugin_path)
+        _ensure_openclaw_plugin_enabled(actual_id)
+        return "created"
+    except Exception as exc:
+        return f"error: {exc}"
+
+
 # ── High-level package registration ──────────────────────────────────────────
 
 
@@ -272,11 +396,12 @@ def register_package(
     mcp_command: Optional[str] = None,
     mcp_args: Optional[list] = None,
     mcp_env: Optional[dict] = None,
+    openclaw_plugin_path: Optional[Path] = None,
     workspace: Optional[Path] = None,
     environments: Optional[list[str]] = None,
     dry_run: bool = False,
 ) -> dict:
-    """Register a skill and its MCP server in all detected environments.
+    """Register a skill, MCP server, and OpenClaw plugin in all detected environments.
 
     Args:
         name: Package/skill name.
@@ -284,12 +409,13 @@ def register_package(
         mcp_command: MCP server command (None to skip MCP registration).
         mcp_args: MCP server arguments.
         mcp_env: MCP server environment variables.
+        openclaw_plugin_path: Path to OpenClaw plugin entry (e.g. src/index.ts).
         workspace: Workspace root for skill symlinks.
         environments: Target environments (auto-detect if None).
         dry_run: If True, only report what would be done.
 
     Returns:
-        Dict with 'skill' and 'mcp' results.
+        Dict with 'skill', 'mcp', and 'openclaw_plugin' results.
     """
     if environments is None:
         environments = detect_environments()
@@ -302,6 +428,8 @@ def register_package(
         )}
         if mcp_command:
             result["mcp"] = {env: "dry-run" for env in environments}
+        if openclaw_plugin_path and "openclaw" in environments:
+            result["openclaw_plugin"] = "dry-run"
         return result
 
     # Register skill
@@ -315,6 +443,12 @@ def register_package(
             mcp_args or [],
             env=mcp_env,
             environments=environments,
+        )
+
+    # Register OpenClaw plugin
+    if openclaw_plugin_path is not None and "openclaw" in environments:
+        result["openclaw_plugin"] = register_openclaw_plugin(
+            name, openclaw_plugin_path, dry_run=dry_run,
         )
 
     return result
