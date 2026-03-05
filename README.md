@@ -23,13 +23,14 @@ SKMemory stores **polaroid snapshots** -- memories that capture not just content
 - **Multi-layer persistence**: Short-term (session), Mid-term (project), Long-term (identity)
 - **Emotional snapshots**: Intensity, valence, emotion labels, resonance notes
 - **Cloud 9 seed integration**: Import seeds from the Cloud 9 protocol as long-term memories
+- **Telegram Chat Import**: Import chat history directly from Telegram API or export files
 - **Pluggable backends**:
   - Level 1: **File** (JSON on disk, zero infrastructure, works today)
   - Level 2: **SKVector** (powered by Qdrant) (vector search, semantic memory recall)
   - Level 3: **SKGraph** (powered by FalkorDB) (graph relationships, coming soon)
 - **Session consolidation**: Compress session snapshots into mid-term summaries
 - **Memory promotion**: Promote important memories up the persistence ladder
-- **Full CLI**: `skmemory snapshot`, `recall`, `search`, `import-seeds`, and more
+- **Full CLI**: `skmemory snapshot`, `recall`, `search`, `import-seeds`, `import-telegram`, and more
 
 ## Quick Start
 
@@ -102,8 +103,98 @@ memory = store.snapshot(
 from skmemory.seeds import import_seeds
 
 imported = import_seeds(store)
-# Seeds from ~/.openclaw/feb/seeds/ become searchable long-term memories
+# Seeds from ~/.skcapstone/agents/{agent_name}/seeds/ become searchable long-term memories
 ```
+
+### Import Telegram Chat History
+
+SKMemory supports importing chat history from Telegram via two methods:
+
+#### Method 1: Direct API (Recommended)
+
+Connects directly to Telegram using Telethon library — no manual export needed.
+
+**Setup (one-time):**
+
+```bash
+# 1. Install telethon
+pipx install 'skmemory[telegram]'
+# OR: pipx inject skmemory telethon
+
+# 2. Get API credentials from https://my.telegram.org
+export TELEGRAM_API_ID=12345678
+export TELEGRAM_API_HASH=your_api_hash_here
+
+# 3. Verify setup
+skmemory telegram-setup
+```
+
+**Usage:**
+
+```bash
+# Import from specific chat/user
+skmemory import-telegram-api @username
+skmemory import-telegram-api "Chat Name" --mode daily --limit 500
+skmemory import-telegram-api @group --since 2025-01-01
+
+# Full options
+skmemory import-telegram-api @channel \
+    --mode daily \  # 'daily' or 'message'
+    --limit 1000 \  # Max messages to fetch
+    --since 2025-01-01 \  # Only fetch after date
+    --min-length 30 \  # Skip short messages
+    --chat-name "My Chat" \  # Override chat name
+    --tags "important,telegram"  # Extra tags
+```
+
+**Import Modes:**
+
+- `--mode daily` (default): Consolidates messages per day into single memory
+  - **Best for**: Conversations, long chats
+  - **Creates**: One memory per day with all messages from that day
+  
+- `--mode message`: Each message becomes separate memory
+  - **Best for**: Important announcements, standalone messages
+  - **Creates**: Individual memory for each message
+
+**Options:**
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--mode` | Import mode: `daily` or `message` | `daily` |
+| `--limit` | Maximum messages to fetch | Unlimited |
+| `--since` | Only fetch messages after date (YYYY-MM-DD) | None |
+| `--min-length` | Skip messages shorter than N chars | 30 |
+| `--chat-name` | Override chat name | From Telegram |
+| `--tags` | Extra comma-separated tags | None |
+
+**Session Persistence:**
+
+Your Telegram session is saved at `~/.skcapstone/agents/{agent_name}/telegram.session` and synced across devices via Syncthing.
+
+#### Method 2: Telegram Desktop Export
+
+Import from exported chat history (JSON format).
+
+```bash
+# Export from Telegram Desktop: Chat → Export Chat History → JSON format
+skmemory import-telegram ~/Downloads/telegram-export/
+skmemory import-telegram ~/chats/result.json --mode message
+skmemory import-telegram ./export --chat-name "Lumina & Chef" --tags "important"
+```
+
+**Export from Telegram Desktop:**
+1. Open chat in Telegram Desktop
+2. Click ⋮ (three dots) → **Export Chat History**
+3. Select **JSON format**
+4. Choose date range and options
+5. Export to folder
+
+**Both Methods Support:**
+- **Emotional context**: Preserved from Cloud 9 seeds
+- **Date filtering**: Import only recent messages
+- **Tagging**: Add custom tags for organization
+- **Deduplication**: Won't re-import already imported messages
 
 ### Search by Meaning
 
