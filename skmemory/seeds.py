@@ -6,7 +6,7 @@ parses seed JSON files, and imports them as long-term memories so that
 seeds planted by one AI instance become searchable and retrievable
 by the next.
 
-Seed files now live at ~/.skcapstone/agents/{agent_name}/seeds/
+Seed files now live at ~/.skcapstone/agent/{agent_name}/seeds/
 for cross-device sync via Syncthing.
 """
 
@@ -22,7 +22,7 @@ from .models import EmotionalSnapshot, Memory, SeedMemory
 from .store import MemoryStore
 
 # Dynamic seed directory based on active agent
-# Resolves to ~/.skcapstone/agents/{agent_name}/seeds/
+# Resolves to ~/.skcapstone/agent/{agent_name}/seeds/
 default_paths = get_agent_paths()
 DEFAULT_SEED_DIR = str(default_paths["seeds"])
 

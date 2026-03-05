@@ -6,7 +6,7 @@ Usage:
     skmemory recall <memory-id>
     skmemory search "that moment we connected"
     skmemory list --layer long-term --tags seed
-    skmemory import-seeds [--seed-dir ~/.skcapstone/agents/{agent}/seeds]
+    skmemory import-seeds [--seed-dir ~/.skcapstone/agent/{agent}/seeds]
     skmemory promote <memory-id> --to mid-term --summary "..."
     skmemory sweep                # Auto-promote all qualifying memories
     skmemory sweep --dry-run      # Preview what would be promoted

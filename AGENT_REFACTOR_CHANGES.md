@@ -7,7 +7,7 @@
 ## Overview
 
 Updated SKMemory to support **dynamic multi-agent architecture** where:
-- Agents are discovered from `~/.skcapstone/agents/`
+- Agents are discovered from `~/.skcapstone/agent/`
 - Template agent (`lumina-template`) is ignored by default
 - Any agent can be created by copying the template
 - All paths are agent-aware and use the active agent
@@ -25,7 +25,7 @@ Updated SKMemory to support **dynamic multi-agent architecture** where:
 
 **Agent Directory Structure**:
 ```
-~/.skcapstone/agents/
+~/.skcapstone/agent/
 ├── lumina-template/     # Template (ignored)
 │   ├── config/skmemory.yaml
 │   ├── seeds/
@@ -98,7 +98,7 @@ SESSION_PATH = os.path.expanduser("~/.skmemory/telegram.session")
 from ..agents import get_agent_paths
 default_paths = get_agent_paths()
 SESSION_PATH = str(default_paths["base"] / "telegram.session")
-# "Session is saved at ~/.skcapstone/agents/{agent}/telegram.session..."
+# "Session is saved at ~/.skcapstone/agent/{agent}/telegram.session..."
 ```
 
 ## Configuration
@@ -113,10 +113,10 @@ If not set, uses first non-template agent found.
 ### Creating New Agents
 ```bash
 # Copy template to create new agent
-cp -a ~/.skcapstone/agents/lumina-template ~/.skcapstone/agents/john
+cp -a ~/.skcapstone/agent/lumina-template ~/.skcapstone/agent/john
 
 # Edit config to customize
-vim ~/.skcapstone/agents/john/config/skmemory.yaml
+vim ~/.skcapstone/agent/john/config/skmemory.yaml
 # Change: agent.name: john
 
 # Agent automatically discovered on next run
@@ -141,7 +141,7 @@ print(f"Active agent: {active}")
 # Get all paths for agent
 paths = get_agent_paths("lumina")
 print(f"Seeds: {paths['seeds']}")
-# Output: ~/.skcapstone/agents/lumina/seeds
+# Output: ~/.skcapstone/agent/lumina/seeds
 ```
 
 ### Agent-Aware Commands
@@ -157,13 +157,13 @@ SKMEMORY_AGENT=john skmemory list-seeds
 ## Migration Notes
 
 ### For Existing Users
-No changes needed! Existing `~/.skcapstone/agents/lumina/` continues to work:
+No changes needed! Existing `~/.skcapstone/agent/lumina/` continues to work:
 - Paths automatically resolved
 - All data preserved
 - Backward compatible
 
 ### For New Agents
-1. Copy template: `cp -a ~/.skcapstone/agents/lumina-template ~/.skcapstone/agents/{name}`
+1. Copy template: `cp -a ~/.skcapstone/agent/lumina-template ~/.skcapstone/agent/{name}`
 2. Edit config: Update `agent.name` in `config/skmemory.yaml`
 3. Use agent: Set `SKMEMORY_AGENT={name}` or use first agent
 

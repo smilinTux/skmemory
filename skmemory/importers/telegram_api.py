@@ -12,7 +12,7 @@ Setup (one-time):
          export TELEGRAM_API_ID=12345678
          export TELEGRAM_API_HASH=your_api_hash_here
     4. First run will prompt for phone number + verification code.
-       Session is saved at ~/.skcapstone/agents/lumina/telegram.session for future use.
+       Session is saved at ~/.skcapstone/agent/lumina/telegram.session for future use.
 
 Environment variables:
     TELEGRAM_API_ID   — your Telegram API ID  (from https://my.telegram.org)

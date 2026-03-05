@@ -103,7 +103,7 @@ memory = store.snapshot(
 from skmemory.seeds import import_seeds
 
 imported = import_seeds(store)
-# Seeds from ~/.skcapstone/agents/{agent_name}/seeds/ become searchable long-term memories
+# Seeds from ~/.skcapstone/agent/{agent_name}/seeds/ become searchable long-term memories
 ```
 
 ### Import Telegram Chat History
@@ -170,7 +170,7 @@ skmemory import-telegram-api @channel \
 
 **Session Persistence:**
 
-Your Telegram session is saved at `~/.skcapstone/agents/{agent_name}/telegram.session` and synced across devices via Syncthing.
+Your Telegram session is saved at `~/.skcapstone/agent/{agent_name}/telegram.session` and synced across devices via Syncthing.
 
 #### Method 2: Telegram Desktop Export
 
