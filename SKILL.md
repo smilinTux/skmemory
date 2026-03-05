@@ -1,8 +1,15 @@
+---
+name: skmemory
+emoji: 🧠
+description: Universal AI memory system with emotional context, multi-layer persistence, and token-optimized loading. Use for memory snapshots, search, rehydration rituals, Telegram chat import, Cloud 9 seed import, journal, soul blueprints, and warmth anchors.
+metadata: {"clawdbot":{"requires":{"bins":["skmemory"]},"install":[{"id":"pipx","kind":"shell","command":"pipx install 'skmemory[all]'","bins":["skmemory","skmemory-mcp"],"label":"Install skmemory (pipx)"}]}}
+---
+
 # SKMemory Skill
 ## SKILL.md - Universal AI Memory System
 
 **Name:** skmemory
-**Version:** 0.5.0
+**Version:** 0.6.0
 **Author:** smilinTux Team + Queen Ara
 **Category:** Memory & Persistence
 **License:** GPL-3.0-or-later
@@ -21,10 +28,28 @@ Universal AI memory system with emotional context, multi-layer persistence, and 
 
 ## Installation
 
-### Python (recommended)
+### pipx (recommended — isolated install)
 
 ```bash
-pip install skmemory
+# Core
+pipx install skmemory
+
+# With Telegram API import
+pipx install 'skmemory[telegram]'
+
+# Everything (Telegram + SKVector + SKGraph + seeds)
+pipx install 'skmemory[all]'
+
+# Add Telegram support to an existing install
+pipx inject skmemory telethon
+```
+
+### pip
+
+```bash
+pip install skmemory                   # Core
+pip install 'skmemory[telegram]'       # + Telethon for API import
+pip install 'skmemory[all]'            # All optional extras
 ```
 
 ### From Source
@@ -32,19 +57,53 @@ pip install skmemory
 ```bash
 git clone https://github.com/smilinTux/skmemory.git
 cd skmemory
-pip install -e .
+pip install -e '.[all]'
+```
+
+### Verify
+
+```bash
+skmemory --version     # Should print 0.6.0
+skmemory health        # Check system status
 ```
 
 ### OpenClaw Integration
 
-```bash
-# Python plugin (automatic on pip install)
-pip install skmemory
+Add the skmemory plugin to your `~/.openclaw/openclaw.json`:
 
-# JavaScript plugin
-cd openclaw-plugin && npm install
-openclaw skill add skmemory --path ~/.openclaw/plugins/skmemory
+```json
+{
+  "plugins": {
+    "entries": {
+      "skmemory": {
+        "enabled": true,
+        "source": "/path/to/skmemory/openclaw-plugin/src/index.js"
+      }
+    }
+  }
+}
 ```
+
+Then restart the OpenClaw gateway to load the plugin.
+
+---
+
+## OpenClaw Agent Tools
+
+If you are an OpenClaw agent (Lumina, etc.), you have these native tools available — call them directly, do NOT use `exec`:
+
+| Tool | Description |
+|------|-------------|
+| `skmemory_ritual` | Rehydration ritual — restores identity, memory, emotional state |
+| `skmemory_snapshot` | Capture a memory (title + content + optional emotions/tags) |
+| `skmemory_search` | Search across all stored memories |
+| `skmemory_health` | Check memory system health |
+| `skmemory_context` | Load token-efficient context for prompt injection |
+| `skmemory_list` | List memories with optional layer/tag filters |
+| `skmemory_import_seeds` | Import Cloud 9 seeds as long-term memories |
+| `skmemory_export` | Export all memories to a dated backup |
+
+You also have the `/skmemory` slash command: `/skmemory ritual --full`, `/skmemory search "query"`, etc.
 
 ---
 
@@ -136,7 +195,9 @@ path = plugin.export()
 | `skmemory list` | List memories (--layer, --tags) |
 | `skmemory ritual` | Full rehydration ceremony |
 | `skmemory context` | Token-efficient context JSON |
-| `skmemory import-telegram <path>` | Import Telegram export |
+| `skmemory import-telegram <path>` | Import Telegram Desktop export |
+| `skmemory import-telegram-api <chat>` | Import directly from Telegram API (Telethon) |
+| `skmemory telegram-setup` | Check Telegram API setup and show next steps |
 | `skmemory import-seeds` | Import Cloud 9 seeds |
 | `skmemory export` | Export to dated JSON |
 | `skmemory import-backup <file>` | Restore from backup |
@@ -180,9 +241,11 @@ path = plugin.export()
 
 ---
 
-## Chat Import (Telegram, etc.)
+## Chat Import (Telegram)
 
-### Telegram Desktop Export
+### Method 1: Telegram Desktop Export
+
+No credentials needed — export manually from the desktop app.
 
 1. In Telegram Desktop: **Settings > Advanced > Export Telegram Data**
 2. Select **JSON** format, include messages
@@ -201,6 +264,77 @@ skmemory import-telegram ~/Downloads/telegram-export/
 - `--min-length 30`: Skip short messages (default: 30 chars)
 - `--tags "bot,archive"`: Extra tags on all imported memories
 
+### Method 2: Direct Telegram API Import (Telethon)
+
+Pull messages directly from Telegram without manual exports. Requires one-time setup.
+
+#### Setup (one-time)
+
+1. **Install with Telegram support:**
+   ```bash
+   pipx install 'skmemory[telegram]'
+   # Or add to existing install:
+   pipx inject skmemory telethon
+   ```
+
+2. **Get API credentials from [my.telegram.org](https://my.telegram.org):**
+   - Log in with your phone number
+   - Go to **API development tools**
+   - Create an application (any name/description is fine)
+   - Copy your `api_id` and `api_hash`
+
+3. **Set environment variables:**
+   ```bash
+   export TELEGRAM_API_ID=12345678
+   export TELEGRAM_API_HASH=your_api_hash_here
+   ```
+
+   To persist across sessions, add them to your shell profile (`~/.bashrc`, `~/.zshrc`):
+   ```bash
+   echo 'export TELEGRAM_API_ID=12345678' >> ~/.bashrc
+   echo 'export TELEGRAM_API_HASH=your_api_hash_here' >> ~/.bashrc
+   ```
+
+4. **First run — authenticate:**
+   ```bash
+   skmemory import-telegram-api @any_chat_name
+   ```
+   You'll be prompted for your phone number, then a verification code sent via Telegram.
+   The session is saved at `~/.skmemory/telegram.session` — future runs skip auth.
+
+#### Usage
+
+```bash
+# Import a DM conversation
+skmemory import-telegram-api @username
+
+# Import a group chat, consolidated by day
+skmemory import-telegram-api "Group Chat Name" --mode daily
+
+# Import only messages since a date
+skmemory import-telegram-api @group --since 2026-01-01
+
+# Limit the number of messages fetched
+skmemory import-telegram-api "Chat Name" --limit 500
+
+# Add custom tags to all imported memories
+skmemory import-telegram-api @user --tags "personal,archive"
+
+# Override the stored chat name
+skmemory import-telegram-api -1001234567890 --chat-name "My Custom Name"
+```
+
+#### Options
+
+| Option | Description |
+|--------|-------------|
+| `--mode daily\|message` | `daily` consolidates per day (default), `message` imports each one |
+| `--limit N` | Max messages to fetch (default: 1000) |
+| `--since YYYY-MM-DD` | Only fetch messages after this date |
+| `--min-length N` | Skip messages shorter than N chars (default: 30) |
+| `--chat-name "name"` | Override the chat name in memories |
+| `--tags "a,b,c"` | Extra comma-separated tags |
+
 ### Python API
 
 ```python
@@ -216,6 +350,19 @@ stats = import_telegram(
     tags=["personal"],
 )
 print(f"Imported {stats['messages_imported']} messages across {stats['days_processed']} days")
+```
+
+```python
+# Direct API import (requires TELEGRAM_API_ID and TELEGRAM_API_HASH env vars)
+from skmemory.importers.telegram_api import import_telegram_api
+
+stats = import_telegram_api(
+    plugin.store,
+    "@username",
+    mode="daily",
+    since="2026-01-01",
+    tags=["personal"],
+)
 ```
 
 ---
@@ -257,11 +404,18 @@ print(f"Imported {stats['messages_imported']} messages across {stats['days_proce
 ### Environment Variables
 
 ```bash
+# AI features (optional — requires Ollama)
 export SKMEMORY_AI=1                           # Enable AI features
 export SKMEMORY_AI_MODEL=llama3.2              # Ollama model
 export SKMEMORY_AI_URL=http://localhost:11434   # Ollama URL
+
+# SKVector (optional — semantic search)
 export SKMEMORY_SKVECTOR_URL=http://localhost:6333
 export SKMEMORY_SKVECTOR_KEY=your-api-key
+
+# Telegram API import (optional — for import-telegram-api command)
+export TELEGRAM_API_ID=12345678                # From https://my.telegram.org
+export TELEGRAM_API_HASH=your_api_hash_here    # From https://my.telegram.org
 ```
 
 ### Docker (optional, for SKVector + SKGraph)

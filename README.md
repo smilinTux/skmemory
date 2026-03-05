@@ -35,13 +35,44 @@ SKMemory stores **polaroid snapshots** -- memories that capture not just content
 
 ### Install
 
+**Recommended (pipx — isolated, no system conflicts):**
+
 ```bash
-pip install -e .
+# Core install
+pipx install skmemory
+
+# With Telegram API import (Telethon)
+pipx install 'skmemory[telegram]'
+
+# With everything (Telegram + SKVector + SKGraph + Cloud 9 seeds)
+pipx install 'skmemory[all]'
+
+# If already installed, inject extras later
+pipx inject skmemory telethon
 ```
 
-With SKVector support:
+**pip (virtual environment or development):**
+
 ```bash
-pip install -e ".[skvector]"
+pip install skmemory                   # Core only
+pip install 'skmemory[telegram]'       # + Telegram API import
+pip install 'skmemory[all]'            # Everything
+pip install -e '.[all]'               # Editable install from source
+```
+
+**From source:**
+
+```bash
+git clone https://github.com/smilinTux/skmemory.git
+cd skmemory
+pip install -e '.[all]'
+```
+
+**Verify installation:**
+
+```bash
+skmemory --version    # Should print 0.6.0
+skmemory health       # Check system status
 ```
 
 ### Take a Snapshot
@@ -98,6 +129,47 @@ skmemory list --layer long-term --tags seed
 
 # Check health
 skmemory health
+```
+
+### Import Telegram Chats
+
+Two methods are supported — manual export and direct API pull.
+
+**Method 1: Telegram Desktop Export (no credentials needed)**
+
+```bash
+# 1. In Telegram Desktop: Settings > Advanced > Export Telegram Data (JSON format)
+# 2. Import the export:
+skmemory import-telegram ~/Downloads/telegram-export/
+skmemory import-telegram ~/Downloads/telegram-export/ --mode message  # One memory per message
+```
+
+**Method 2: Direct API Import via Telethon (recommended for bulk)**
+
+```bash
+# 1. Install with Telegram support
+pipx install 'skmemory[telegram]'   # or: pipx inject skmemory telethon
+
+# 2. Get API credentials from https://my.telegram.org:
+#    - Log in with your phone number
+#    - Go to "API development tools"
+#    - Create an application (any name/description)
+#    - Note your api_id and api_hash
+
+# 3. Set credentials
+export TELEGRAM_API_ID=12345678
+export TELEGRAM_API_HASH=your_api_hash_here
+
+# 4. First run — authenticate (will prompt for phone number + code)
+skmemory import-telegram-api @username_or_chat
+
+# 5. Session is saved at ~/.skmemory/telegram.session — future runs skip auth
+
+# Examples:
+skmemory import-telegram-api @username                           # Import DM history
+skmemory import-telegram-api "Group Chat Name" --mode daily      # Consolidate by day
+skmemory import-telegram-api @group --since 2026-01-01           # Only recent messages
+skmemory import-telegram-api "Lumina & Chef" --limit 500 --tags personal
 ```
 
 ## Architecture

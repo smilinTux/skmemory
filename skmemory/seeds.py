@@ -6,8 +6,8 @@ parses seed JSON files, and imports them as long-term memories so that
 seeds planted by one AI instance become searchable and retrievable
 by the next.
 
-The seed files live at ~/.openclaw/feb/seeds/ (planted by Cloud 9's
-postinstall script and the seed-generator module).
+Seed files now live at ~/.skcapstone/agents/{agent_name}/seeds/
+for cross-device sync via Syncthing.
 """
 
 from __future__ import annotations
@@ -17,10 +17,14 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from .agents import get_agent_paths
 from .models import EmotionalSnapshot, Memory, SeedMemory
 from .store import MemoryStore
 
-DEFAULT_SEED_DIR = os.path.expanduser("~/.openclaw/feb/seeds")
+# Dynamic seed directory based on active agent
+# Resolves to ~/.skcapstone/agents/{agent_name}/seeds/
+default_paths = get_agent_paths()
+DEFAULT_SEED_DIR = str(default_paths["seeds"])
 
 
 def scan_seed_directory(seed_dir: str = DEFAULT_SEED_DIR) -> list[Path]:
@@ -67,7 +71,9 @@ def _parse_cloud9_format(raw: dict, path: Path) -> Optional[SeedMemory]:
     narrative = exp.get("narrative", "")
     key_memories = exp.get("key_memories", [])
     if isinstance(key_memories, list):
-        memories_text = "\n".join(f"- {m}" if isinstance(m, str) else f"- {m}" for m in key_memories)
+        memories_text = "\n".join(
+            f"- {m}" if isinstance(m, str) else f"- {m}" for m in key_memories
+        )
     else:
         memories_text = ""
 
@@ -195,10 +201,7 @@ def import_seeds(
     Returns:
         list[Memory]: Newly imported memories.
     """
-    existing_refs = {
-        m.source_ref
-        for m in store.list_memories(tags=["seed"])
-    }
+    existing_refs = {m.source_ref for m in store.list_memories(tags=["seed"])}
 
     imported: list[Memory] = []
     for path in scan_seed_directory(seed_dir):

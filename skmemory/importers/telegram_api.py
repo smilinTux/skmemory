@@ -5,12 +5,18 @@ Instead of exporting chat history manually from Telegram Desktop,
 this module connects directly to the Telegram API using Telethon
 and pulls messages programmatically.
 
-Requires:
-    pip install skmemory[telegram]
+Setup (one-time):
+    1. Install:     pip install skmemory[telegram]  (or: pipx inject skmemory telethon)
+    2. Credentials:  Get API_ID and API_HASH from https://my.telegram.org
+    3. Export:
+         export TELEGRAM_API_ID=12345678
+         export TELEGRAM_API_HASH=your_api_hash_here
+    4. First run will prompt for phone number + verification code.
+       Session is saved at ~/.skcapstone/agents/lumina/telegram.session for future use.
 
 Environment variables:
-    TELEGRAM_API_ID   — your Telegram API ID (from my.telegram.org)
-    TELEGRAM_API_HASH — your Telegram API hash
+    TELEGRAM_API_ID   — your Telegram API ID  (from https://my.telegram.org)
+    TELEGRAM_API_HASH — your Telegram API hash (from https://my.telegram.org)
 """
 
 from __future__ import annotations
@@ -27,6 +33,61 @@ from ..store import MemoryStore
 
 
 SESSION_PATH = os.path.expanduser("~/.skmemory/telegram.session")
+
+
+def check_setup() -> dict:
+    """Check if Telegram API import is properly configured.
+
+    Returns:
+        dict with keys: ready (bool), telethon (bool), credentials (bool),
+        session (bool), messages (list[str])
+    """
+    result = {
+        "ready": False,
+        "telethon": False,
+        "credentials": False,
+        "session": False,
+        "messages": [],
+    }
+
+    # Check telethon
+    try:
+        import telethon  # noqa: F401
+
+        result["telethon"] = True
+    except ImportError:
+        result["messages"].append(
+            "Telethon not installed. Fix: pip install skmemory[telegram]  "
+            "or: pipx inject skmemory telethon"
+        )
+
+    # Check credentials
+    api_id = os.environ.get("TELEGRAM_API_ID")
+    api_hash = os.environ.get("TELEGRAM_API_HASH")
+    if api_id and api_hash:
+        result["credentials"] = True
+    else:
+        missing = []
+        if not api_id:
+            missing.append("TELEGRAM_API_ID")
+        if not api_hash:
+            missing.append("TELEGRAM_API_HASH")
+        result["messages"].append(
+            f"Missing environment variable(s): {', '.join(missing)}. "
+            f"Get them from https://my.telegram.org and export them in your shell."
+        )
+
+    # Check session
+    if Path(SESSION_PATH).exists():
+        result["session"] = True
+    else:
+        result["messages"].append(
+            "No Telegram session found. First run will prompt for phone "
+            "number and verification code."
+        )
+
+    result["ready"] = result["telethon"] and result["credentials"]
+    return result
 
 
 async def _fetch_messages(
@@ -52,8 +113,14 @@ async def _fetch_messages(
 
     if not api_id or not api_hash:
         raise RuntimeError(
-            "TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables are required. "
-            "Get them from https://my.telegram.org"
+            "Telegram API credentials not found.\n\n"
+            "Setup steps:\n"
+            "  1. Go to https://my.telegram.org and log in\n"
+            "  2. Click 'API development tools' and create an app\n"
+            "  3. Set environment variables:\n"
+            "       export TELEGRAM_API_ID=<your_api_id>\n"
+            "       export TELEGRAM_API_HASH=<your_api_hash>\n"
+            "  4. Run this command again — first run will prompt for phone verification"
         )
 
     try:

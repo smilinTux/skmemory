@@ -1,0 +1,10 @@
+{
+  "id": "skmemory",
+  "name": "SKMemory",
+  "description": "Universal AI memory system — snapshots, search, rehydration rituals, import, and health checks via the skmemory CLI.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

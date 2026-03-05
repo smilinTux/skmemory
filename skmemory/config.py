@@ -1,10 +1,13 @@
 """
 SKMemory configuration persistence.
 
-Manages ``~/.skmemory/config.yaml`` so backend URLs and setup state
-persist across CLI invocations.  Resolution order:
+Manages ``~/.skcapstone/agents/{agent_name}/config/skmemory.yaml``
+so backend URLs and setup state persist across CLI invocations.
 
-    CLI args  >  env vars  >  config file  >  None
+Resolution order:
+CLI args > env vars > config file > None
+
+Now supports multiple agents via ~/.skcapstone/agents/{agent_name}/
 """
 
 from __future__ import annotations
@@ -17,19 +20,29 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field
 
-SKMEMORY_HOME = Path(
-    os.environ.get("SKMEMORY_HOME", os.path.expanduser("~/.skmemory"))
-)
-CONFIG_DIR = SKMEMORY_HOME
-CONFIG_PATH = CONFIG_DIR / "config.yaml"
+from .agents import get_agent_paths
+
+# Dynamic agent-aware paths
+# Uses ~/.skcapstone/agents/{active_agent}/ based on SKMEMORY_AGENT env var
+# Falls back to first non-template agent, or creates from template
+try:
+    default_paths = get_agent_paths()
+    SKMEMORY_HOME = default_paths["base"]
+    CONFIG_DIR = default_paths["config"]
+    CONFIG_PATH = default_paths["config_yaml"]
+except ValueError:
+    # Fallback if no agents exist
+    SKMEMORY_HOME = Path.home() / ".skcapstone" / "agents" / "lumina-template"
+    CONFIG_DIR = SKMEMORY_HOME / "config"
+    CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
 
 
 class EndpointConfig(BaseModel):
     """A single backend endpoint with role and optional Tailscale IP."""
 
     url: str
-    role: str = "primary"       # primary | replica
-    tailscale_ip: str = ""      # optional, for display
+    role: str = "primary"  # primary | replica
+    tailscale_ip: str = ""  # optional, for display
 
 
 class SKMemoryConfig(BaseModel):

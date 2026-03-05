@@ -38,32 +38,60 @@ DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memories")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    layer TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'general',
-    tags TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL DEFAULT 'manual',
-    source_ref TEXT NOT NULL DEFAULT '',
-    summary TEXT NOT NULL DEFAULT '',
-    content_preview TEXT NOT NULL DEFAULT '',
-    emotional_intensity REAL NOT NULL DEFAULT 0.0,
-    emotional_valence REAL NOT NULL DEFAULT 0.0,
-    emotional_labels TEXT NOT NULL DEFAULT '',
-    cloud9_achieved INTEGER NOT NULL DEFAULT 0,
-    parent_id TEXT,
-    related_ids TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    file_path TEXT NOT NULL,
-    content_hash TEXT NOT NULL DEFAULT ''
+id TEXT PRIMARY KEY,
+title TEXT NOT NULL,
+layer TEXT NOT NULL,
+role TEXT NOT NULL DEFAULT 'general',
+tags TEXT NOT NULL DEFAULT '',
+source TEXT NOT NULL DEFAULT 'manual',
+source_ref TEXT NOT NULL DEFAULT '',
+summary TEXT NOT NULL DEFAULT '',
+content_preview TEXT NOT NULL DEFAULT '',
+emotional_intensity REAL NOT NULL DEFAULT 0.0,
+emotional_valence REAL NOT NULL DEFAULT 0.0,
+emotional_labels TEXT NOT NULL DEFAULT '',
+cloud9_achieved INTEGER NOT NULL DEFAULT 0,
+importance REAL NOT NULL DEFAULT 0.5,  -- NEW: For prioritization (0.0-1.0)
+access_count INTEGER NOT NULL DEFAULT 0,  -- NEW: LRU tracking
+last_accessed TEXT,  -- NEW: For expiration/promotion decisions
+parent_id TEXT,
+related_ids TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL,
+updated_at TEXT NOT NULL,
+file_path TEXT NOT NULL,
+content_hash TEXT NOT NULL DEFAULT ''
 );
 
+-- Core indexes
 CREATE INDEX IF NOT EXISTS idx_layer ON memories(layer);
 CREATE INDEX IF NOT EXISTS idx_created ON memories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_intensity ON memories(emotional_intensity DESC);
 CREATE INDEX IF NOT EXISTS idx_source ON memories(source);
 CREATE INDEX IF NOT EXISTS idx_parent ON memories(parent_id);
+
+-- NEW: Date-based indexes for lazy loading
+CREATE INDEX IF NOT EXISTS idx_date_layer ON memories(DATE(created_at), layer);
+CREATE INDEX IF NOT EXISTS idx_importance ON memories(importance DESC);
+CREATE INDEX IF NOT EXISTS idx_accessed ON memories(last_accessed DESC);
+CREATE INDEX IF NOT EXISTS idx_access_count ON memories(access_count DESC);
+
+-- NEW: View for active context (today + recent summaries)
+CREATE VIEW IF NOT EXISTS active_memories AS
+SELECT 
+    id, title, summary, content_preview, tags, layer, created_at,
+    importance, access_count,
+    CASE 
+        WHEN DATE(created_at) = CURRENT_DATE THEN 'today'
+        WHEN DATE(created_at) = DATE('now', '-1 day') THEN 'yesterday'
+        WHEN DATE(created_at) >= DATE('now', '-7 days') THEN 'week'
+        ELSE 'historical'
+    END as context_tier
+FROM memories
+WHERE created_at >= DATE('now', '-30 days')
+ORDER BY 
+    context_tier,
+    importance DESC,
+    access_count DESC;
 """
 
 # Reason: 150 chars is enough for an agent to decide if it needs the full memory.
@@ -132,9 +160,7 @@ class SQLiteBackend(BaseBackend):
             Optional[Path]: Path to the file if found.
         """
         conn = self._get_conn()
-        row = conn.execute(
-            "SELECT file_path FROM memories WHERE id = ?", (memory_id,)
-        ).fetchone()
+        row = conn.execute("SELECT file_path FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row:
             path = Path(row["file_path"])
             if path.exists():
@@ -212,9 +238,7 @@ class SQLiteBackend(BaseBackend):
             "content_preview": row["content_preview"],
             "emotional_intensity": row["emotional_intensity"],
             "emotional_valence": row["emotional_valence"],
-            "emotional_labels": [
-                l for l in row["emotional_labels"].split(",") if l
-            ],
+            "emotional_labels": [l for l in row["emotional_labels"].split(",") if l],
             "cloud9_achieved": bool(row["cloud9_achieved"]),
             "created_at": row["created_at"],
             "parent_id": row["parent_id"],
@@ -329,8 +353,7 @@ class SQLiteBackend(BaseBackend):
         params.append(limit)
 
         rows = conn.execute(
-            f"SELECT * FROM memories WHERE {where} "
-            f"ORDER BY created_at DESC LIMIT ?",
+            f"SELECT * FROM memories WHERE {where} ORDER BY created_at DESC LIMIT ?",
             params,
         ).fetchall()
 
@@ -447,9 +470,7 @@ class SQLiteBackend(BaseBackend):
         results: list[dict] = []
 
         # Reason: seed the frontier from the starting node's relationships
-        row = conn.execute(
-            "SELECT * FROM memories WHERE id = ?", (memory_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         if row is None:
             return results
 
@@ -465,20 +486,14 @@ class SQLiteBackend(BaseBackend):
                     continue
                 visited.add(mid)
 
-                neighbor = conn.execute(
-                    "SELECT * FROM memories WHERE id = ?", (mid,)
-                ).fetchone()
+                neighbor = conn.execute("SELECT * FROM memories WHERE id = ?", (mid,)).fetchone()
                 if neighbor is None:
                     continue
 
                 results.append(self._row_to_memory_summary(neighbor))
 
-                child_related = [
-                    r for r in neighbor["related_ids"].split(",") if r
-                ]
-                next_frontier.extend(
-                    r for r in child_related if r not in visited
-                )
+                child_related = [r for r in neighbor["related_ids"].split(",") if r]
+                next_frontier.extend(r for r in child_related if r not in visited)
                 if neighbor["parent_id"] and neighbor["parent_id"] not in visited:
                     next_frontier.append(neighbor["parent_id"])
 
@@ -517,9 +532,7 @@ class SQLiteBackend(BaseBackend):
             )
         return entries
 
-    def prune_backups(
-        self, keep: int = 7, backup_dir: Optional[str] = None
-    ) -> list[str]:
+    def prune_backups(self, keep: int = 7, backup_dir: Optional[str] = None) -> list[str]:
         """Delete oldest backups, retaining only the N most recent.
 
         Args:
@@ -564,9 +577,7 @@ class SQLiteBackend(BaseBackend):
         if output_path is None:
             backup_dir = self.base_path.parent / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
-            output_path = str(
-                backup_dir / f"skmemory-backup-{_date.today().isoformat()}.json"
-            )
+            output_path = str(backup_dir / f"skmemory-backup-{_date.today().isoformat()}.json")
 
         memories: list[dict] = []
         for layer in MemoryLayer:
@@ -591,9 +602,7 @@ class SQLiteBackend(BaseBackend):
             "memories": memories,
         }
 
-        Path(output_path).write_text(
-            json.dumps(payload, indent=2, default=str), encoding="utf-8"
-        )
+        Path(output_path).write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
         if _auto_rotate:
             self.prune_backups(keep=7)
@@ -623,9 +632,7 @@ class SQLiteBackend(BaseBackend):
         data = json.loads(path.read_text(encoding="utf-8"))
 
         if "memories" not in data or not isinstance(data["memories"], list):
-            raise ValueError(
-                "Invalid backup file: missing 'memories' array"
-            )
+            raise ValueError("Invalid backup file: missing 'memories' array")
 
         count = 0
         for mem_data in data["memories"]:

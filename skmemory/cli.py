@@ -111,6 +111,7 @@ def _get_store(
     if final_skvector_url:
         try:
             from .backends.skvector_backend import SKVectorBackend
+
             vector = SKVectorBackend(url=final_skvector_url, api_key=final_skvector_key)
         except Exception:
             click.echo("Warning: Could not initialize SKVector backend", err=True)
@@ -118,21 +119,35 @@ def _get_store(
     if final_skgraph_url:
         try:
             from .backends.skgraph_backend import SKGraphBackend
+
             graph = SKGraphBackend(url=final_skgraph_url)
         except Exception:
             click.echo("Warning: Could not initialize SKGraph backend", err=True)
 
-    return MemoryStore(
-        primary=None, vector=vector, graph=graph, use_sqlite=not legacy_files
-    )
+    return MemoryStore(primary=None, vector=vector, graph=graph, use_sqlite=not legacy_files)
 
 
 @click.group()
 @click.version_option(__version__, prog_name="skmemory")
-@click.option("--skvector-url", envvar="SKMEMORY_SKVECTOR_URL", default=None, help="SKVector server URL")
-@click.option("--skvector-key", envvar="SKMEMORY_SKVECTOR_KEY", default=None, help="SKVector API key")
-@click.option("--ai", "use_ai", is_flag=True, envvar="SKMEMORY_AI", help="Enable AI-powered features (requires Ollama)")
-@click.option("--ai-model", envvar="SKMEMORY_AI_MODEL", default=None, help="Ollama model name (default: llama3.2)")
+@click.option(
+    "--skvector-url", envvar="SKMEMORY_SKVECTOR_URL", default=None, help="SKVector server URL"
+)
+@click.option(
+    "--skvector-key", envvar="SKMEMORY_SKVECTOR_KEY", default=None, help="SKVector API key"
+)
+@click.option(
+    "--ai",
+    "use_ai",
+    is_flag=True,
+    envvar="SKMEMORY_AI",
+    help="Enable AI-powered features (requires Ollama)",
+)
+@click.option(
+    "--ai-model",
+    envvar="SKMEMORY_AI_MODEL",
+    default=None,
+    help="Ollama model name (default: llama3.2)",
+)
 @click.option("--ai-url", envvar="SKMEMORY_AI_URL", default=None, help="Ollama server URL")
 @click.pass_context
 def cli(
@@ -172,8 +187,12 @@ def cli(
 @cli.command()
 @click.argument("title")
 @click.argument("content")
-@click.option("--layer", type=click.Choice(["short-term", "mid-term", "long-term"]), default="short-term")
-@click.option("--role", type=click.Choice(["dev", "ops", "sec", "ai", "general"]), default="general")
+@click.option(
+    "--layer", type=click.Choice(["short-term", "mid-term", "long-term"]), default="short-term"
+)
+@click.option(
+    "--role", type=click.Choice(["dev", "ops", "sec", "ai", "general"]), default="general"
+)
 @click.option("--tags", default="", help="Comma-separated tags")
 @click.option("--intensity", type=float, default=0.0, help="Emotional intensity 0-10")
 @click.option("--valence", type=float, default=0.0, help="Emotional valence -1 to +1")
@@ -261,9 +280,7 @@ def search(ctx: click.Context, query: str, limit: int) -> None:
         id_order = [s.get("title") for s in reranked]
         results = sorted(
             results,
-            key=lambda m: (
-                id_order.index(m.title) if m.title in id_order else 999
-            ),
+            key=lambda m: (id_order.index(m.title) if m.title in id_order else 999),
         )
         click.echo("(AI-reranked results)\n")
 
@@ -383,30 +400,38 @@ def sweep_cmd(
     if dry_run:
         # Inspect without modifying anything
         engine = PromotionEngine(store, criteria)
-        short_mems = store.list_memories(layer=MemoryLayer.SHORT, limit=criteria.max_promotions_per_sweep * 2)
-        mid_mems = store.list_memories(layer=MemoryLayer.MID, limit=criteria.max_promotions_per_sweep * 2)
+        short_mems = store.list_memories(
+            layer=MemoryLayer.SHORT, limit=criteria.max_promotions_per_sweep * 2
+        )
+        mid_mems = store.list_memories(
+            layer=MemoryLayer.MID, limit=criteria.max_promotions_per_sweep * 2
+        )
 
         would_promote: list[dict] = []
         for mem in short_mems:
             target = engine.evaluate(mem)
             if target is not None:
-                would_promote.append({
-                    "id": mem.id,
-                    "title": mem.title,
-                    "from": mem.layer.value,
-                    "to": target.value,
-                    "reason": engine._promotion_reason(mem),
-                })
+                would_promote.append(
+                    {
+                        "id": mem.id,
+                        "title": mem.title,
+                        "from": mem.layer.value,
+                        "to": target.value,
+                        "reason": engine._promotion_reason(mem),
+                    }
+                )
         for mem in mid_mems:
             target = engine.evaluate(mem)
             if target is not None:
-                would_promote.append({
-                    "id": mem.id,
-                    "title": mem.title,
-                    "from": mem.layer.value,
-                    "to": target.value,
-                    "reason": engine._promotion_reason(mem),
-                })
+                would_promote.append(
+                    {
+                        "id": mem.id,
+                        "title": mem.title,
+                        "from": mem.layer.value,
+                        "to": target.value,
+                        "reason": engine._promotion_reason(mem),
+                    }
+                )
 
         if as_json:
             click.echo(json.dumps({"dry_run": True, "would_promote": would_promote}, indent=2))
@@ -440,8 +465,7 @@ def sweep_cmd(
         signal.signal(signal.SIGTERM, _handle_signal)
 
         click.echo(
-            f"Promotion scheduler running (interval: {interval:.1f}h). "
-            "Press Ctrl+C to stop.",
+            f"Promotion scheduler running (interval: {interval:.1f}h). Press Ctrl+C to stop.",
             err=True,
         )
 
@@ -468,7 +492,9 @@ def sweep_cmd(
         else:
             click.echo(result.summary())
             if result.short_evaluated or result.mid_evaluated:
-                click.echo(f"  Evaluated: {result.short_evaluated} short-term, {result.mid_evaluated} mid-term")
+                click.echo(
+                    f"  Evaluated: {result.short_evaluated} short-term, {result.mid_evaluated} mid-term"
+                )
             if result.promoted_ids:
                 ids_preview = ", ".join(p[:12] for p in result.promoted_ids[:5])
                 if len(result.promoted_ids) > 5:
@@ -573,10 +599,7 @@ def routing_probe() -> None:
         for ep in endpoints:
             health_icon = "OK" if ep.healthy else "DOWN"
             latency = f"{ep.latency_ms:.1f}ms" if ep.latency_ms >= 0 else "timeout"
-            click.echo(
-                f"  [{health_icon}] {ep.url}  "
-                f"latency={latency}  fails={ep.fail_count}"
-            )
+            click.echo(f"  [{health_icon}] {ep.url}  latency={latency}  fails={ep.fail_count}")
 
     click.echo("\nProbe complete.")
 
@@ -597,8 +620,13 @@ def reindex(ctx: click.Context) -> None:
 
 
 @cli.command("export")
-@click.option("--output", "-o", default=None, type=click.Path(),
-              help="Output file path (default: ~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json)")
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    type=click.Path(),
+    help="Output file path (default: ~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json)",
+)
 @click.pass_context
 def export_backup(ctx: click.Context, output: Optional[str]) -> None:
     """Export all memories to a dated JSON backup.
@@ -617,8 +645,9 @@ def export_backup(ctx: click.Context, output: Optional[str]) -> None:
 
 @cli.command("import-backup")
 @click.argument("backup_file", type=click.Path(exists=True))
-@click.option("--reindex/--no-reindex", default=True,
-              help="Rebuild the index after import (default: yes)")
+@click.option(
+    "--reindex/--no-reindex", default=True, help="Rebuild the index after import (default: yes)"
+)
 @click.pass_context
 def import_backup(ctx: click.Context, backup_file: str, reindex: bool) -> None:
     """Restore memories from a JSON backup file.
@@ -640,14 +669,26 @@ def import_backup(ctx: click.Context, backup_file: str, reindex: bool) -> None:
 
 
 @cli.command("backup")
-@click.option("--list", "do_list", is_flag=True,
-              help="Show all backups with date and size.")
-@click.option("--prune", "prune_n", type=int, default=None, metavar="N",
-              help="Keep only the N most recent backups, delete older ones.")
-@click.option("--restore", "restore_file", type=click.Path(), default=None,
-              metavar="FILE", help="Restore memories from backup (alias for import-backup).")
-@click.option("--reindex/--no-reindex", default=True,
-              help="Rebuild index after --restore (default: yes).")
+@click.option("--list", "do_list", is_flag=True, help="Show all backups with date and size.")
+@click.option(
+    "--prune",
+    "prune_n",
+    type=int,
+    default=None,
+    metavar="N",
+    help="Keep only the N most recent backups, delete older ones.",
+)
+@click.option(
+    "--restore",
+    "restore_file",
+    type=click.Path(),
+    default=None,
+    metavar="FILE",
+    help="Restore memories from backup (alias for import-backup).",
+)
+@click.option(
+    "--reindex/--no-reindex", default=True, help="Rebuild index after --restore (default: yes)."
+)
 @click.pass_context
 def backup_cmd(
     ctx: click.Context,
@@ -686,15 +727,14 @@ def backup_cmd(
         if deleted:
             for p in deleted:
                 click.echo(f"Deleted: {p}")
-            click.echo(
-                f"Pruned {len(deleted)} backup(s), kept {prune_n} most recent."
-            )
+            click.echo(f"Pruned {len(deleted)} backup(s), kept {prune_n} most recent.")
         else:
             click.echo("Nothing to prune.")
         return
 
     if restore_file is not None:
         from pathlib import Path as _Path
+
         if not _Path(restore_file).exists():
             click.echo(f"Error: backup file not found: {restore_file}", err=True)
             sys.exit(1)
@@ -1149,6 +1189,7 @@ def setup_status() -> None:
         compose_file = None
         if cfg.docker_compose_file:
             from pathlib import Path
+
             compose_file = Path(cfg.docker_compose_file)
         ps = compose_ps(compose_file=compose_file, use_legacy=plat.compose_legacy)
         click.echo("Containers:")
@@ -1192,6 +1233,7 @@ def setup_start(service: str) -> None:
     compose_file = None
     if cfg and cfg.docker_compose_file:
         from pathlib import Path
+
         compose_file = Path(cfg.docker_compose_file)
 
     services = None
@@ -1237,6 +1279,7 @@ def setup_stop(service: str) -> None:
         compose_file = None
         if cfg and cfg.docker_compose_file:
             from pathlib import Path
+
             compose_file = Path(cfg.docker_compose_file)
 
         result = compose_down(
@@ -1281,6 +1324,7 @@ def setup_reset(remove_data: bool) -> None:
     compose_file = None
     if cfg and cfg.docker_compose_file:
         from pathlib import Path
+
         compose_file = Path(cfg.docker_compose_file)
 
     result = compose_down(
@@ -1433,9 +1477,7 @@ def steelman_verify_soul() -> None:
     for value in soul.values:
         claims.append(f"I value {value}")
     for rel in soul.relationships:
-        claims.append(
-            f"{rel.name} is my {rel.role} (bond: {rel.bond_strength}/10)"
-        )
+        claims.append(f"{rel.name} is my {rel.role} (bond: {rel.bond_strength}/10)")
 
     if not claims:
         click.echo("No identity claims to verify. Add traits and values to your soul blueprint.")
@@ -1532,7 +1574,9 @@ def import_telegram_cmd(
 
     ai: Optional[AIClient] = ctx.obj.get("ai")
     if ai:
-        click.echo("\nTip: Run 'skmemory search --ai \"<topic>\"' to semantically search your imported chats.")
+        click.echo(
+            "\nTip: Run 'skmemory search --ai \"<topic>\"' to semantically search your imported chats."
+        )
 
 
 @cli.command("import-telegram-api")
@@ -1653,12 +1697,14 @@ def telegram_setup_cmd() -> None:
     click.echo("=" * 40)
     click.echo(f"  Telethon installed:  {'yes' if status['telethon'] else 'NO'}")
     click.echo(f"  API credentials:     {'yes' if status['credentials'] else 'NO'}")
-    click.echo(f"  Session file:        {'yes' if status['session'] else 'not yet (created on first auth)'}")
+    click.echo(
+        f"  Session file:        {'yes' if status['session'] else 'not yet (created on first auth)'}"
+    )
     click.echo("")
 
     if status["ready"]:
         click.echo("Ready to import! Run:")
-        click.echo('  skmemory import-telegram-api @username')
+        click.echo("  skmemory import-telegram-api @username")
         click.echo('  skmemory import-telegram-api "Group Name" --mode daily')
         if not status["session"]:
             click.echo("")
@@ -1866,8 +1912,10 @@ def vault_seal(ctx: click.Context, passphrase: str, yes: bool) -> None:
     from .fortress import AuditLog
 
     store = ctx.obj.get("store")
-    memories_path = store.primary.base_path if hasattr(store.primary, "base_path") else (
-        SKMEMORY_HOME / "memories"
+    memories_path = (
+        store.primary.base_path
+        if hasattr(store.primary, "base_path")
+        else (SKMEMORY_HOME / "memories")
     )
 
     if not yes:
@@ -1908,8 +1956,10 @@ def vault_unseal(ctx: click.Context, passphrase: str, yes: bool) -> None:
     from .fortress import AuditLog
 
     store = ctx.obj.get("store")
-    memories_path = store.primary.base_path if hasattr(store.primary, "base_path") else (
-        SKMEMORY_HOME / "memories"
+    memories_path = (
+        store.primary.base_path
+        if hasattr(store.primary, "base_path")
+        else (SKMEMORY_HOME / "memories")
     )
 
     if not yes:
@@ -1941,8 +1991,10 @@ def vault_status_cmd(ctx: click.Context, as_json: bool) -> None:
     from .models import MemoryLayer
 
     store = ctx.obj.get("store")
-    memories_path = store.primary.base_path if hasattr(store.primary, "base_path") else (
-        SKMEMORY_HOME / "memories"
+    memories_path = (
+        store.primary.base_path
+        if hasattr(store.primary, "base_path")
+        else (SKMEMORY_HOME / "memories")
     )
 
     total = encrypted = 0
@@ -1990,12 +2042,19 @@ def vault_status_cmd(ctx: click.Context, as_json: bool) -> None:
 
 
 @cli.command("register")
-@click.option("--workspace", default=None, type=click.Path(),
-              help="Workspace root directory (default: ~/clawd/).")
-@click.option("--env", "target_env", default=None,
-              help="Target a specific environment.")
-@click.option("--dry-run", is_flag=True, default=False,
-              help="Show what would be done without making changes.")
+@click.option(
+    "--workspace",
+    default=None,
+    type=click.Path(),
+    help="Workspace root directory (default: ~/clawd/).",
+)
+@click.option("--env", "target_env", default=None, help="Target a specific environment.")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be done without making changes.",
+)
 def register_cmd(workspace, target_env, dry_run):
     """Register skmemory skill and MCP server in detected environments.
 
@@ -2042,6 +2101,107 @@ def register_cmd(workspace, target_env, dry_run):
             click.echo(f"MCP ({env_name}): {action}")
     else:
         click.echo("MCP: no environments matched")
+
+
+@cli.command("show-context")
+@click.pass_context
+@click.option("--agent", default=None, help="Agent name (default: active agent)")
+def show_context(ctx, agent: Optional[str]):
+    """Show token-optimized memory context for current session.
+
+    Loads today's memories (full) + yesterday's summaries (brief).
+    Historical memories shown as reference count only.
+
+    Examples:
+        skmemory context
+        skmemory context --agent lumina
+    """
+    from .context_loader import get_context_for_session
+
+    try:
+        context_str = get_context_for_session(agent)
+        click.echo(context_str)
+    except Exception as e:
+        click.echo(f"Error loading context: {e}", err=True)
+        raise click.Abort()
+
+
+@cli.command()
+@click.pass_context
+@click.argument("query")
+@click.option("--agent", default=None, help="Agent name (default: active agent)")
+@click.option("--limit", type=int, default=10, help="Maximum results (default: 10)")
+def search_deep(ctx, query: str, agent: Optional[str], limit: int):
+    """Deep search all memory tiers (on demand).
+
+    Searches SQLite + SKVector + SKGraph for matches.
+    Returns full memory details (token-heavy).
+
+    Examples:
+        skmemory search-deep "project gentis"
+        skmemory search-deep "architecture decisions" --limit 20
+    """
+    from .context_loader import LazyMemoryLoader
+
+    try:
+        loader = LazyMemoryLoader(agent)
+        results = loader.deep_search(query, max_results=limit)
+
+        if not results:
+            click.echo("No memories found.")
+            return
+
+        click.echo(f"Found {len(results)} memories:\n")
+        for i, mem in enumerate(results, 1):
+            layer_icon = {"short-term": "⚡", "mid-term": "📅", "long-term": "🗃️"}.get(
+                mem.get("layer", "short-term"), "•"
+            )
+            click.echo(f"{i}. {layer_icon} {mem.get('title', 'Untitled')}")
+            click.echo(f"   {mem.get('content', '')[:200]}...")
+            click.echo(
+                f"   Layer: {mem.get('layer', 'unknown')} | "
+                f"Date: {mem.get('created_at', 'unknown')}"
+            )
+            if mem.get("tags"):
+                click.echo(f"   Tags: {', '.join(mem.get('tags', []))}")
+            click.echo()
+
+    except Exception as e:
+        click.echo(f"Error searching: {e}", err=True)
+        raise click.Abort()
+
+
+@cli.command()
+@click.argument("memory_id")
+@click.argument("to_layer", type=click.Choice(["short-term", "mid-term", "long-term"]))
+@click.option("--agent", default=None, help="Agent name (default: active agent)")
+def promote(ctx, memory_id: str, to_layer: str, agent: Optional[str]):
+    """Promote memory to different tier and generate summary.
+
+    Moves memory between short/medium/long term and auto-generates
+    a summary if promoting to medium or long term.
+
+    Examples:
+        skmemory promote abc123 mid-term
+        skmemory promote def456 long-term --agent lumina
+    """
+    from .context_loader import LazyMemoryLoader
+
+    try:
+        loader = LazyMemoryLoader(agent)
+        success = loader.promote_memory(memory_id, to_layer)
+
+        if success:
+            click.echo(f"✓ Promoted {memory_id} to {to_layer}")
+            if to_layer in ("mid-term", "long-term"):
+                click.echo("  Summary generated automatically.")
+        else:
+            click.echo(f"✗ Failed to promote {memory_id}", err=True)
+            raise click.Abort()
+
+    except Exception as e:
+        click.echo(f"Error promoting memory: {e}", err=True)
+        raise click.Abort()
 
 
 def main() -> None:
