@@ -34,7 +34,7 @@ from ..config import SKMEMORY_HOME
 from ..models import EmotionalSnapshot, Memory, MemoryLayer
 from .base import BaseBackend
 
-DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memories")
+DEFAULT_BASE_PATH = str(SKMEMORY_HOME)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (

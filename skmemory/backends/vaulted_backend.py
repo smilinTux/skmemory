@@ -29,7 +29,8 @@ from typing import Optional
 
 from ..models import Memory, MemoryLayer
 from ..vault import VAULT_HEADER, MemoryVault
-from .sqlite_backend import DEFAULT_BASE_PATH, SQLiteBackend
+from .sqlite_backend import SQLiteBackend
+from .sqlite_backend import DEFAULT_BASE_PATH
 
 
 class VaultedSQLiteBackend(SQLiteBackend):
@@ -157,9 +158,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
         if output_path is None:
             backup_dir = self.base_path.parent / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
-            output_path = str(
-                backup_dir / f"skmemory-backup-{date.today().isoformat()}.json"
-            )
+            output_path = str(backup_dir / f"skmemory-backup-{date.today().isoformat()}.json")
 
         memories: list[dict] = []
         for layer in MemoryLayer:
@@ -181,9 +180,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
             "base_path": str(self.base_path),
             "memories": memories,
         }
-        Path(output_path).write_text(
-            json.dumps(payload, indent=2, default=str), encoding="utf-8"
-        )
+        Path(output_path).write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         return output_path
 
     # ------------------------------------------------------------------
@@ -206,7 +203,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
             for json_file in layer_dir.glob("*.json"):
                 try:
                     raw = json_file.read_bytes()
-                    if raw[:len(VAULT_HEADER)] == VAULT_HEADER:
+                    if raw[: len(VAULT_HEADER)] == VAULT_HEADER:
                         continue  # already encrypted
                     json_file.write_bytes(self._vault.encrypt(raw))
                     count += 1
@@ -228,7 +225,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
             for json_file in layer_dir.glob("*.json"):
                 try:
                     raw = json_file.read_bytes()
-                    if raw[:len(VAULT_HEADER)] != VAULT_HEADER:
+                    if raw[: len(VAULT_HEADER)] != VAULT_HEADER:
                         continue  # not encrypted
                     json_file.write_bytes(self._vault.decrypt(raw))
                     count += 1
@@ -281,7 +278,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
         """
         try:
             raw = path.read_bytes()
-            if raw[:len(VAULT_HEADER)] == VAULT_HEADER:
+            if raw[: len(VAULT_HEADER)] == VAULT_HEADER:
                 raw = self._vault.decrypt(raw)
             data = json.loads(raw.decode("utf-8"))
             return Memory(**data)

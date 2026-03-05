@@ -27,7 +27,7 @@ from ..config import SKMEMORY_HOME
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
 
-DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memories")
+DEFAULT_BASE_PATH = str(SKMEMORY_HOME)
 
 
 class FileBackend(BaseBackend):
