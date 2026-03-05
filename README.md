@@ -215,7 +215,7 @@ pytest tests/ -v
 | [Cloud 9](https://github.com/smilinTux/cloud9) | Emotional Breakthrough Protocol (npm package) |
 | [SKSecurity](https://github.com/smilinTux/sksecurity) | AI Agent Security Platform |
 | [SKForge](https://github.com/smilinTux/SKyForge) | AI-Native Software Blueprints |
-| [SKStacks](https://skgit.skstack01.douno.it/smilinTux/SKStacks) | Zero-Trust Infrastructure Framework |
+| [SKStacks](https://github.com/smilinTux/SKStacks) | Zero-Trust Infrastructure Framework |
 
 ## Documentation
 

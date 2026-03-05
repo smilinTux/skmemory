@@ -179,7 +179,7 @@ No changes needed! Existing `~/.skcapstone/agents/lumina/` continues to work:
 ## Next Steps
 
 1. ✅ Code changes complete
-2. 🔄 Commit changes to pillar-repos/skmemory
+2. 🔄 Commit changes to skcapstone-repos/skmemory
 3. 🔄 Update SKCapstone for agent-aware commands
 4. 🔄 Test multi-agent functionality
 5. 🔄 Document agent creation process

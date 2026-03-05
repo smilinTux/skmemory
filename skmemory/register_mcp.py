@@ -57,7 +57,7 @@ def register_opencode(agent: str, dry_run: bool = False) -> bool:
         "skills": [
             {
                 "name": "skmemory",
-                "path": str(Path.home() / "clawd" / "pillar-repos" / "skmemory" / "SKILL.md"),
+                "path": str(Path.home() / "clawd" / "skcapstone-repos" / "skmemory" / "SKILL.md"),
             },
             {"name": "skcapstone", "path": str(Path.home() / "clawd" / "skcapstone" / "SKILL.md")},
         ],
@@ -124,7 +124,7 @@ def register_openclaw(agent: str, dry_run: bool = False) -> bool:
     config.setdefault("plugins", {})
     config["plugins"]["skmemory"] = {
         "enabled": True,
-        "path": str(Path.home() / "clawd" / "pillar-repos" / "skmemory" / "openclaw-plugin"),
+        "path": str(Path.home() / "clawd" / "skcapstone-repos" / "skmemory" / "openclaw-plugin"),
     }
     config["plugins"]["skcapstone"] = {
         "enabled": True,
