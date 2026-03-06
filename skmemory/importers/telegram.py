@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -287,8 +287,10 @@ def import_telegram(
         return _import_per_message(store, messages, name, base_tags)
     elif mode == "daily":
         return _import_daily(store, messages, name, base_tags)
+    elif mode == "catchup":
+        return _import_catchup(store, messages, name, base_tags)
     else:
-        raise ValueError(f"Unknown mode: {mode}. Use 'message' or 'daily'.")
+        raise ValueError(f"Unknown mode: {mode}. Use 'message', 'daily', or 'catchup'.")
 
 
 def _import_per_message(
@@ -432,3 +434,211 @@ def _import_daily(
         "days_processed": days_processed,
         "messages_imported": imported,
     }
+
+
+def _import_catchup(
+    store: MemoryStore,
+    messages: list[dict],
+    chat_name: str,
+    base_tags: list[str],
+) -> dict:
+    """Import across all memory tiers for full context catch-up.
+
+    Distributes messages intelligently across tiers:
+    - Last 24 hours → short-term (individual messages, full detail)
+    - Last 7 days → mid-term (daily summaries)
+    - Older than 7 days → long-term (weekly summaries, key themes)
+
+    Args:
+        store: Target MemoryStore.
+        messages: Filtered message list.
+        chat_name: Chat name for titles.
+        base_tags: Tags to apply.
+
+    Returns:
+        dict: Import stats per tier.
+    """
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    cutoff_short = now - timedelta(hours=24)
+    cutoff_mid = now - timedelta(days=7)
+
+    short_msgs: list[dict] = []
+    mid_msgs: dict[str, list[dict]] = defaultdict(list)
+    long_msgs: dict[str, list[dict]] = defaultdict(list)
+
+    for msg in messages:
+        date_str = msg.get("date", "")
+        if not date_str:
+            continue
+        try:
+            msg_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+            if msg_dt.tzinfo is None:
+                msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            # Try just the date portion
+            try:
+                msg_dt = datetime.strptime(date_str[:10], "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
+            except (ValueError, TypeError):
+                continue
+
+        if msg_dt >= cutoff_short:
+            short_msgs.append(msg)
+        elif msg_dt >= cutoff_mid:
+            day = date_str[:10]
+            mid_msgs[day].append(msg)
+        else:
+            # Group by ISO week for long-term
+            week_key = msg_dt.strftime("%Y-W%W")
+            long_msgs[week_key].append(msg)
+
+    stats = {
+        "mode": "catchup",
+        "chat_name": chat_name,
+        "total_messages": len(messages),
+        "short_term": {"count": 0},
+        "mid_term": {"days": 0, "messages": 0},
+        "long_term": {"weeks": 0, "messages": 0},
+    }
+
+    # --- Short-term: individual messages (last 24h) ---
+    for msg in short_msgs:
+        text = _extract_text(msg.get("text", ""))
+        sender = msg.get("from", msg.get("from_id", "unknown"))
+        emotional = _detect_emotion(text)
+        try:
+            store.snapshot(
+                title=f"{sender}: {text[:70]}",
+                content=text,
+                layer=MemoryLayer.SHORT,
+                role=MemoryRole.GENERAL,
+                tags=base_tags
+                + [
+                    f"sender:{sender}",
+                    f"role:{_detect_sender_role(sender)}",
+                    "catchup:short",
+                ]
+                + _detect_content_type(msg),
+                emotional=emotional,
+                source="telegram",
+                source_ref=f"telegram:{msg.get('id', '')}",
+                metadata={
+                    "telegram_msg_id": msg.get("id"),
+                    "sender": sender,
+                    "date": msg.get("date", ""),
+                    "chat": chat_name,
+                    "reply_ref": _detect_reply(msg),
+                },
+            )
+            stats["short_term"]["count"] += 1
+        except Exception:
+            pass
+
+    # --- Mid-term: daily summaries (last 7 days) ---
+    for day, day_msgs in sorted(mid_msgs.items()):
+        lines = []
+        senders: set[str] = set()
+        max_intensity = 0.0
+        all_labels: list[str] = []
+
+        for msg in day_msgs:
+            text = _extract_text(msg.get("text", ""))
+            sender = msg.get("from", msg.get("from_id", "unknown"))
+            senders.add(str(sender))
+            lines.append(f"[{sender}] {text}")
+            emo = _detect_emotion(text)
+            max_intensity = max(max_intensity, emo.intensity)
+            all_labels.extend(emo.labels)
+
+        content = "\n".join(lines)
+        unique_labels = list(dict.fromkeys(all_labels))[:5]
+
+        store.snapshot(
+            title=f"{chat_name} — {day} ({len(day_msgs)} messages)",
+            content=content,
+            layer=MemoryLayer.MID,
+            role=MemoryRole.GENERAL,
+            tags=base_tags + [f"date:{day}", "catchup:mid"],
+            emotional=EmotionalSnapshot(
+                intensity=max_intensity,
+                labels=unique_labels,
+            ),
+            source="telegram",
+            source_ref=f"telegram:daily:{day}",
+            metadata={
+                "date": day,
+                "message_count": len(day_msgs),
+                "participants": ", ".join(sorted(senders)),
+                "chat": chat_name,
+            },
+        )
+        stats["mid_term"]["days"] += 1
+        stats["mid_term"]["messages"] += len(day_msgs)
+
+    # --- Long-term: weekly summaries (older than 7 days) ---
+    for week, week_msgs in sorted(long_msgs.items()):
+        lines = []
+        senders: set[str] = set()
+        topics: set[str] = set()
+        max_intensity = 0.0
+        all_labels: list[str] = []
+        dates_covered: set[str] = set()
+
+        for msg in week_msgs:
+            text = _extract_text(msg.get("text", ""))
+            sender = msg.get("from", msg.get("from_id", "unknown"))
+            senders.add(str(sender))
+            dates_covered.add(msg.get("date", "")[:10])
+
+            # For long-term, keep only first 200 chars per message
+            lines.append(f"[{sender}] {text[:200]}")
+            emo = _detect_emotion(text)
+            max_intensity = max(max_intensity, emo.intensity)
+            all_labels.extend(emo.labels)
+
+            # Extract potential topics from longer messages
+            if len(text) > 100:
+                words = text.lower().split()
+                for w in words:
+                    if len(w) > 6 and w.isalpha():
+                        topics.add(w)
+
+        # Summarize: limit content to avoid bloat
+        if len(lines) > 50:
+            content = "\n".join(lines[:25])
+            content += f"\n\n... ({len(lines) - 25} more messages) ...\n\n"
+            content += "\n".join(lines[-10:])
+        else:
+            content = "\n".join(lines)
+
+        unique_labels = list(dict.fromkeys(all_labels))[:5]
+        date_range = f"{min(dates_covered)} to {max(dates_covered)}" if dates_covered else week
+
+        store.snapshot(
+            title=f"{chat_name} — Week {week} ({len(week_msgs)} messages)",
+            content=content,
+            layer=MemoryLayer.LONG,
+            role=MemoryRole.GENERAL,
+            tags=base_tags + [f"week:{week}", "catchup:long"],
+            emotional=EmotionalSnapshot(
+                intensity=max_intensity,
+                labels=unique_labels,
+            ),
+            source="telegram",
+            source_ref=f"telegram:weekly:{week}",
+            metadata={
+                "week": week,
+                "date_range": date_range,
+                "message_count": len(week_msgs),
+                "participants": ", ".join(sorted(senders)),
+                "chat": chat_name,
+                "days_covered": len(dates_covered),
+            },
+        )
+        stats["long_term"]["weeks"] += 1
+        stats["long_term"]["messages"] += len(week_msgs)
+
+    return stats

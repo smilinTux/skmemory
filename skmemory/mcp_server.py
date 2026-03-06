@@ -391,6 +391,42 @@ async def list_tools() -> list[Tool]:
             ),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
+        Tool(
+            name="telegram_catchup",
+            description=(
+                "Full catch-up import from a Telegram group into ALL memory tiers. "
+                "Downloads chat via Telethon and distributes: last 24h → short-term, "
+                "last 7 days → mid-term, older → long-term."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chat": {
+                        "type": "string",
+                        "description": "Chat username, title, or numeric ID",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max messages to fetch (default: 2000)",
+                        "default": 2000,
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Only messages after this date (YYYY-MM-DD)",
+                    },
+                    "min_length": {
+                        "type": "integer",
+                        "description": "Skip messages shorter than this (default: 20)",
+                        "default": 20,
+                    },
+                    "tags": {
+                        "type": "string",
+                        "description": "Extra comma-separated tags",
+                    },
+                },
+                "required": ["chat"],
+            },
+        ),
         # ── Memory Integrity ──────────────────────────────────────
         Tool(
             name="memory_verify",
@@ -623,6 +659,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
             result = check_setup()
             return _json_response(result)
+
+        elif name == "telegram_catchup":
+            from .importers.telegram_api import import_telegram_api
+
+            chat = args["chat"]
+            limit = args.get("limit", 2000)
+            since = args.get("since")
+            min_length = args.get("min_length", 20)
+            tags_str = args.get("tags", "")
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else None
+
+            store = MemoryStore()
+            stats = import_telegram_api(
+                store, chat, mode="catchup", limit=limit, since=since,
+                min_message_length=min_length, tags=tags,
+            )
+            return _json_response(stats)
 
         else:
             return _error_response(f"Unknown tool: {name}")
