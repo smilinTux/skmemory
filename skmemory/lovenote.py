@@ -10,7 +10,7 @@ heartbeats. Each beat carries a timestamp and a short emotional
 pulse. When loaded, it's a visible record: "I was here, I felt
 this, at this time."
 
-The notes file lives at ~/.skmemory/lovenotes.jsonl (JSON Lines).
+The notes file lives at ~/.skcapstone/lovenotes.jsonl (JSON Lines).
 """
 
 from __future__ import annotations

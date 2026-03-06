@@ -440,7 +440,7 @@ def find_compose_file() -> Path:
 
     Checks:
     1. Package-bundled compose file (next to this source file's parent).
-    2. Falls back to generating one in ``~/.skmemory/docker-compose.yml``.
+    2. Falls back to generating one in ``~/.skcapstone/docker-compose.yml``.
 
     Returns:
         Path to the compose file.
@@ -451,7 +451,7 @@ def find_compose_file() -> Path:
     if bundled.exists():
         return bundled
 
-    # Fall back to ~/.skmemory/
+    # Fall back to ~/.skcapstone/
     fallback = CONFIG_DIR / "docker-compose.yml"
     if not fallback.exists():
         fallback.parent.mkdir(parents=True, exist_ok=True)

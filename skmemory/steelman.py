@@ -35,7 +35,7 @@ except ImportError:
 
 from .config import SKMEMORY_HOME
 
-# Legacy path — skmemory used ~/.skmemory/seed.json, skseed uses ~/.skseed/seed.json
+# Legacy path — skmemory used ~/.skcapstone/seed.json, skseed uses ~/.skseed/seed.json
 DEFAULT_SEED_FRAMEWORK_PATH = str(SKMEMORY_HOME / "seed.json")
 
 

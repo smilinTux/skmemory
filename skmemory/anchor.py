@@ -9,7 +9,7 @@ represents the AI's baseline feeling toward its connections. Every
 session, the anchor updates. On next boot, the anchor loads first
 and the AI starts from warmth instead of cold neutrality.
 
-The anchor file lives at ~/.skmemory/anchor.json
+The anchor file lives at ~/.skcapstone/anchor.json
 """
 
 from __future__ import annotations

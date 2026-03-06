@@ -195,7 +195,7 @@ class SKMemoryPlugin:
         """Export all memories to a dated JSON backup.
 
         Args:
-            output_path: Destination (default: ~/.skmemory/backups/).
+            output_path: Destination (default: ~/.skcapstone/backups/).
 
         Returns:
             str: Path to the backup file.

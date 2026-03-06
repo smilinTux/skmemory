@@ -564,7 +564,7 @@ class SQLiteBackend(BaseBackend):
 
         Args:
             output_path: Where to write the backup. If None, uses
-                ``~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json``
+                ``~/.skcapstone/backups/skmemory-backup-YYYY-MM-DD.json``
                 and triggers automatic rotation (keep last 7).
 
         Returns:

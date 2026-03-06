@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from ..config import SKMEMORY_HOME
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,7 @@ from typing import Optional
 from ..store import MemoryStore
 
 
-SESSION_PATH = os.path.expanduser("~/.skmemory/telegram.session")
+SESSION_PATH = str(SKMEMORY_HOME / "telegram.session")
 
 
 def check_setup() -> dict:

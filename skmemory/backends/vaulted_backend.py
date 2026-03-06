@@ -147,7 +147,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
 
         Args:
             output_path: Destination path. Defaults to
-                ``~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json``.
+                ``~/.skcapstone/backups/skmemory-backup-YYYY-MM-DD.json``.
 
         Returns:
             str: Path to the written backup file.

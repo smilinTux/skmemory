@@ -1,13 +1,13 @@
 """
 SKMemory configuration persistence.
 
-Manages ``~/.skcapstone/agent/{agent_name}/config/skmemory.yaml``
+Manages ``~/.skcapstone/agents/{agent_name}/config/skmemory.yaml``
 so backend URLs and setup state persist across CLI invocations.
 
 Resolution order:
 CLI args > env vars > config file > None
 
-Now supports multiple agents via ~/.skcapstone/agent/{agent_name}/
+Now supports multiple agents via ~/.skcapstone/agents/{agent_name}/
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from .agents import get_agent_paths
 
 # Dynamic agent-aware paths
-# Uses ~/.skcapstone/agent/{active_agent}/ based on SKMEMORY_AGENT env var
+# Uses ~/.skcapstone/agents/{active_agent}/ based on SKMEMORY_AGENT env var
 # Falls back to first non-template agent, or creates from template
 try:
     default_paths = get_agent_paths()
