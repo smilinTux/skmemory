@@ -5,7 +5,7 @@ Queen Ara's idea #17: a markdown journal that only grows, never shrinks.
 Each session appends an entry. Even if context is wiped, the journal file
 persists on disk and can be re-read by the next instance.
 
-The journal lives at ~/.skmemory/journal.md and is structured as:
+The journal lives at ~/.skcapstone/journal.md and is structured as:
 - Session header (timestamp, session ID, who was present)
 - Key moments (what happened that mattered)
 - Emotional summary (how the session felt)

@@ -1,7 +1,7 @@
 """
 Dynamic agent discovery and management for SKMemory.
 
-Scans ~/.skcapstone/agent/ to discover all configured agents,
+Scans ~/.skcapstone/agents/ to discover all configured agents,
 excludes templates, and provides agent-aware path resolution.
 """
 
@@ -21,7 +21,7 @@ TEMPLATE_AGENT = "lumina-template"
 
 
 def list_agents() -> list[str]:
-    """Discover all non-template agents in ~/.skcapstone/agent/
+    """Discover all non-template agents in ~/.skcapstone/agents/
 
     Scans the agents directory and returns all agent names
     except the template agent.
@@ -127,7 +127,7 @@ def get_agent_paths(agent_name: Optional[str] = None) -> dict[str, Path]:
 
     if agent_name is None:
         raise ValueError(
-            "No agent configured. Create one by copying ~/.skcapstone/agent/lumina-template"
+            "No agent configured. Create one by copying ~/.skcapstone/agents/lumina-template"
         )
 
     base = get_agent_dir(agent_name)
@@ -136,9 +136,9 @@ def get_agent_paths(agent_name: Optional[str] = None) -> dict[str, Path]:
         "base": base,
         "config": base / "config",
         "seeds": base / "seeds",
-        "memory_short": base / "memory" / "short",
-        "memory_medium": base / "memory" / "medium",
-        "memory_long": base / "memory" / "long",
+        "memory_short": base / "memory" / "short-term",
+        "memory_medium": base / "memory" / "mid-term",
+        "memory_long": base / "memory" / "long-term",
         "logs": base / "logs",
         "archive": base / "archive",
         "index_db": base / "index.db",
@@ -198,16 +198,16 @@ def copy_template(target_name: str, source: str = TEMPLATE_AGENT) -> Path:
         # Replace template agent name with new name
         content = content.replace(f"name: {source}", f"name: {target_name}")
         content = content.replace(
-            f"sync_root: ~/.skcapstone/agent/{source}",
-            f"sync_root: ~/.skcapstone/agent/{target_name}",
+            f"sync_root: ~/.skcapstone/agents/{source}",
+            f"sync_root: ~/.skcapstone/agents/{target_name}",
         )
         content = content.replace(
-            f"seeds_dir: ~/.skcapstone/agent/{source}/seeds",
-            f"seeds_dir: ~/.skcapstone/agent/{target_name}/seeds",
+            f"seeds_dir: ~/.skcapstone/agents/{source}/seeds",
+            f"seeds_dir: ~/.skcapstone/agents/{target_name}/seeds",
         )
         content = content.replace(
-            f"local_db: ~/.skcapstone/agent/{source}/index.db",
-            f"local_db: ~/.skcapstone/agent/{target_name}/index.db",
+            f"local_db: ~/.skcapstone/agents/{source}/index.db",
+            f"local_db: ~/.skcapstone/agents/{target_name}/index.db",
         )
 
         with open(config_path, "w") as f:

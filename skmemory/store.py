@@ -432,7 +432,7 @@ class MemoryStore:
 
         Args:
             output_path: Destination file. Defaults to
-                ``~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json``.
+                ``~/.skcapstone/backups/skmemory-backup-YYYY-MM-DD.json``.
 
         Returns:
             str: Path to the written backup file.
@@ -474,7 +474,7 @@ class MemoryStore:
 
         Args:
             backup_dir: Directory to scan. Defaults to
-                ``~/.skmemory/backups/``.
+                ``~/.skcapstone/backups/``.
 
         Returns:
             list[dict]: Backup entries with ``path``, ``name``,
@@ -492,7 +492,7 @@ class MemoryStore:
         Args:
             keep: Number of backups to retain (default: 7).
             backup_dir: Directory to prune. Defaults to
-                ``~/.skmemory/backups/``.
+                ``~/.skcapstone/backups/``.
 
         Returns:
             list[str]: Paths of deleted backup files.

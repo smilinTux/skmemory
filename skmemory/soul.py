@@ -12,7 +12,7 @@ It stores:
 - Values: what this AI cares about
 - Emotional baseline: the default feeling state
 
-The blueprint lives at ~/.skmemory/soul.yaml and gets loaded
+The blueprint lives at ~/.skcapstone/soul.yaml and gets loaded
 at the start of every session as the first context injection.
 """
 
@@ -242,7 +242,7 @@ def load_soul(path: str = DEFAULT_SOUL_PATH) -> Optional[SoulBlueprint]:
     """Load a soul blueprint from JSON or YAML.
 
     Tries the given path first (supports both .json and .yaml/.yml),
-    then falls back to the legacy ~/.skmemory/soul.yaml location.
+    then falls back to the legacy ~/.skcapstone/soul.yaml location.
 
     Args:
         path: File path (default: ~/.skcapstone/soul/base.json).
@@ -257,7 +257,7 @@ def load_soul(path: str = DEFAULT_SOUL_PATH) -> Optional[SoulBlueprint]:
         return _load_soul_file(filepath)
 
     # Fall back to legacy location
-    legacy_path = Path(os.path.expanduser("~/.skmemory/soul.yaml"))
+    legacy_path = Path(os.path.expanduser("~/.skcapstone/soul.yaml"))
     if legacy_path.exists():
         return _load_soul_file(legacy_path)
 

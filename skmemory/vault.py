@@ -181,7 +181,7 @@ def encrypt_memory_store(
     """Encrypt all memory JSON files in a directory tree.
 
     Args:
-        memory_dir: Root memory directory (e.g., ~/.skmemory/memories/).
+        memory_dir: Root memory directory (e.g., ~/.skcapstone/memories/).
         passphrase: Encryption passphrase.
 
     Returns:

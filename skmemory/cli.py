@@ -558,7 +558,7 @@ def routing_status() -> None:
     """Show endpoint rankings, latency, and health for each backend."""
     if _active_selector is None:
         click.echo("No endpoint selector active (single-URL mode).")
-        click.echo("Configure multiple endpoints in ~/.skmemory/config.yaml to enable routing.")
+        click.echo("Configure multiple endpoints in ~/.skcapstone/config.yaml to enable routing.")
         return
 
     info = _active_selector.status()
@@ -625,7 +625,7 @@ def reindex(ctx: click.Context) -> None:
     "-o",
     default=None,
     type=click.Path(),
-    help="Output file path (default: ~/.skmemory/backups/skmemory-backup-YYYY-MM-DD.json)",
+    help="Output file path (default: ~/.skcapstone/backups/skmemory-backup-YYYY-MM-DD.json)",
 )
 @click.pass_context
 def export_backup(ctx: click.Context, output: Optional[str]) -> None:
@@ -703,7 +703,7 @@ def backup_cmd(
     Examples:
       skmemory backup --list
       skmemory backup --prune 7
-      skmemory backup --restore ~/.skmemory/backups/skmemory-backup-2026-03-01.json
+      skmemory backup --restore ~/.skcapstone/backups/skmemory-backup-2026-03-01.json
     """
     store: MemoryStore = ctx.obj["store"]
 
@@ -1709,7 +1709,7 @@ def telegram_setup_cmd() -> None:
         if not status["session"]:
             click.echo("")
             click.echo("First run will prompt for phone number + verification code.")
-            click.echo("Session is saved at ~/.skmemory/telegram.session for future use.")
+            click.echo("Session is saved at ~/.skcapstone/telegram.session for future use.")
     else:
         click.echo("Setup incomplete. Fix these issues:")
         click.echo("")
