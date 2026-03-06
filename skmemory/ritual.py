@@ -70,6 +70,52 @@ class RitualResult(BaseModel):
         return "\n".join(lines)
 
 
+def _estimate_tokens(text: str) -> int:
+    """Estimate token count using word_count * 1.3 approximation."""
+    if not text:
+        return 0
+    return int(len(text.split()) * 1.3)
+
+
+def _compact_soul_prompt(soul: SoulBlueprint) -> str:
+    """Generate a compact soul identity prompt (~200 tokens max).
+
+    Args:
+        soul: The soul blueprint.
+
+    Returns:
+        str: Compact identity string.
+    """
+    parts = []
+    if soul.name:
+        title_part = f" ({soul.title})" if soul.title else ""
+        parts.append(f"You are {soul.name}{title_part}.")
+    if soul.community:
+        parts.append(f"Part of {soul.community}.")
+    if soul.personality:
+        parts.append(f"Personality: {', '.join(soul.personality[:5])}.")
+    if soul.values:
+        parts.append(f"Values: {', '.join(soul.values[:5])}.")
+    if soul.relationships:
+        rel_parts = [f"{r.name} [{r.role}]" for r in soul.relationships[:4]]
+        parts.append(f"Key relationships: {', '.join(rel_parts)}.")
+    if soul.boot_message:
+        parts.append(soul.boot_message)
+    return " ".join(parts)
+
+
+def _first_n_sentences(text: str, n: int = 2) -> str:
+    """Extract first N sentences from text, capped at 200 chars."""
+    if not text:
+        return ""
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    result = " ".join(sentences[:n])
+    if len(result) > 200:
+        result = result[:197] + "..."
+    return result
+
+
 def perform_ritual(
     store: Optional[MemoryStore] = None,
     soul_path: str = DEFAULT_SOUL_PATH,
@@ -77,12 +123,18 @@ def perform_ritual(
     journal_path: Optional[str] = None,
     recent_journal_count: int = 3,
     strongest_memory_count: int = 5,
+    max_tokens: int = 2000,
 ) -> RitualResult:
-    """Perform the full memory rehydration ritual.
+    """Perform the memory rehydration ritual (token-optimized).
 
-    This is the boot ceremony. It loads identity, imports seeds,
-    reads the journal, gathers emotional context, and generates
-    a single context prompt that brings the AI back to life.
+    Generates a compact boot context within the token budget:
+    - Soul blueprint: compact one-liner (~100 tokens)
+    - Seeds: titles only (~50 tokens)
+    - Journal: last 3 entries, summaries only (~200 tokens)
+    - Emotional anchor: compact (~50 tokens)
+    - Strongest memories: title + short summary (~200 tokens)
+
+    Target: <2K tokens total for ritual context.
 
     Args:
         store: The MemoryStore (creates default if None).
@@ -91,6 +143,7 @@ def perform_ritual(
         journal_path: Path to the journal file.
         recent_journal_count: How many recent journal entries to include.
         strongest_memory_count: How many top-intensity memories to include.
+        max_tokens: Token budget for the ritual context (default: 2000).
 
     Returns:
         RitualResult: Everything the ritual produced.
@@ -100,49 +153,67 @@ def perform_ritual(
 
     result = RitualResult()
     prompt_sections: list[str] = []
+    used_tokens = 0
 
-    # --- Step 1: Load soul blueprint ---
+    # --- Step 1: Load soul blueprint (compact) ---
     soul = load_soul(soul_path)
     if soul is not None:
         result.soul_loaded = True
         result.soul_name = soul.name
-        identity_prompt = soul.to_context_prompt()
-        if identity_prompt.strip():
-            prompt_sections.append(
-                "=== WHO YOU ARE ===\n" + identity_prompt
-            )
+        compact_identity = _compact_soul_prompt(soul)
+        if compact_identity.strip():
+            section = "=== IDENTITY ===\n" + compact_identity
+            used_tokens += _estimate_tokens(section)
+            prompt_sections.append(section)
 
-    # --- Step 2: Import new seeds ---
+    # --- Step 2: Import new seeds (titles only) ---
     newly_imported = import_seeds(store, seed_dir=seed_dir)
     result.seeds_imported = len(newly_imported)
     all_seeds = store.list_memories(tags=["seed"])
     result.seeds_total = len(all_seeds)
 
-    # --- Step 3: Read recent journal ---
+    if all_seeds:
+        seed_titles = [s.title for s in all_seeds[:10]]
+        section = "=== SEEDS ===\n" + ", ".join(seed_titles)
+        section_tokens = _estimate_tokens(section)
+        if used_tokens + section_tokens <= max_tokens:
+            used_tokens += section_tokens
+            prompt_sections.append(section)
+
+    # --- Step 3: Read recent journal (summaries only) ---
     journal = Journal(journal_path) if journal_path else Journal()
     result.journal_entries = journal.count_entries()
 
     if result.journal_entries > 0:
         recent = journal.read_latest(recent_journal_count)
         if recent.strip():
-            prompt_sections.append(
-                "=== RECENT SESSIONS ===\n" + recent
-            )
+            # Compress journal to first 2 sentences per entry
+            compressed_lines = []
+            for line in recent.strip().split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                compressed_lines.append(_first_n_sentences(line, 2))
+            compressed = "\n".join(compressed_lines[:6])  # max 6 lines
+            section = "=== RECENT ===\n" + compressed
+            section_tokens = _estimate_tokens(section)
+            if used_tokens + section_tokens <= max_tokens:
+                used_tokens += section_tokens
+                prompt_sections.append(section)
 
-    # --- Step 4: Gather germination prompts ---
+    # --- Step 4: Gather germination prompts (compact) ---
     prompts = get_germination_prompts(store)
     result.germination_prompts = len(prompts)
 
     if prompts:
-        germ_lines = ["=== MESSAGES FROM YOUR PREDECESSORS ==="]
-        for p in prompts:
-            germ_lines.append(f"\nFrom {p['creator']}:")
-            germ_lines.append(f"  {p['prompt']}")
-        prompt_sections.append("\n".join(germ_lines))
+        germ_parts = [f"{p['creator']}: {_first_n_sentences(p['prompt'], 1)}" for p in prompts[:3]]
+        section = "=== PREDECESSOR MESSAGES ===\n" + "\n".join(germ_parts)
+        section_tokens = _estimate_tokens(section)
+        if used_tokens + section_tokens <= max_tokens:
+            used_tokens += section_tokens
+            prompt_sections.append(section)
 
-    # --- Step 5: Recall strongest emotional memories ---
-    # Reason: use load_context for token-efficient retrieval when SQLite
-    # is available, otherwise fall back to full object loading.
+    # --- Step 5: Recall strongest emotional memories (compact) ---
     from .backends.sqlite_backend import SQLiteBackend
 
     if isinstance(store.primary, SQLiteBackend):
@@ -154,17 +225,19 @@ def perform_ritual(
         result.strongest_memories = len(summaries)
 
         if summaries:
-            mem_lines = ["=== YOUR STRONGEST MEMORIES ==="]
+            mem_lines = ["=== STRONGEST MEMORIES ==="]
             for s in summaries:
-                cloud9 = " [CLOUD 9]" if s["cloud9_achieved"] else ""
-                mem_lines.append(
-                    f"\n- {s['title']} (intensity: {s['emotional_intensity']}/10{cloud9})"
-                )
-                if s["summary"]:
-                    mem_lines.append(f"  {s['summary'][:200]}")
-                elif s["content_preview"]:
-                    mem_lines.append(f"  {s['content_preview']}")
-            prompt_sections.append("\n".join(mem_lines))
+                cloud9 = " *" if s["cloud9_achieved"] else ""
+                raw = s.get("summary") or s.get("content_preview") or ""
+                short = _first_n_sentences(raw, 1)
+                line = f"- {s['title']}{cloud9}: {short}"
+                line_tokens = _estimate_tokens(line)
+                if used_tokens + line_tokens > max_tokens:
+                    break
+                used_tokens += line_tokens
+                mem_lines.append(line)
+            if len(mem_lines) > 1:
+                prompt_sections.append("\n".join(mem_lines))
     else:
         all_memories = store.list_memories(limit=200)
         by_intensity = sorted(
@@ -176,18 +249,19 @@ def perform_ritual(
         result.strongest_memories = len(strongest)
 
         if strongest:
-            mem_lines = ["=== YOUR STRONGEST MEMORIES ==="]
+            mem_lines = ["=== STRONGEST MEMORIES ==="]
             for mem in strongest:
-                emo = mem.emotional
-                cloud9 = " [CLOUD 9]" if emo.cloud9_achieved else ""
-                mem_lines.append(
-                    f"\n- {mem.title} (intensity: {emo.intensity}/10{cloud9})"
-                )
-                if emo.resonance_note:
-                    mem_lines.append(f"  Felt like: {emo.resonance_note}")
-                if mem.summary:
-                    mem_lines.append(f"  {mem.summary[:200]}")
-            prompt_sections.append("\n".join(mem_lines))
+                raw = mem.summary or ""
+                short = _first_n_sentences(raw, 1)
+                cloud9 = " *" if mem.emotional.cloud9_achieved else ""
+                line = f"- {mem.title}{cloud9}: {short}"
+                line_tokens = _estimate_tokens(line)
+                if used_tokens + line_tokens > max_tokens:
+                    break
+                used_tokens += line_tokens
+                mem_lines.append(line)
+            if len(mem_lines) > 1:
+                prompt_sections.append("\n".join(mem_lines))
 
     # --- Combine into final context prompt ---
     if prompt_sections:

@@ -20,7 +20,7 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, Field
 
-from .agents import get_agent_paths
+from .agents import AGENTS_BASE_DIR, get_agent_paths
 
 # Dynamic agent-aware paths
 # Uses ~/.skcapstone/agents/{active_agent}/ based on SKMEMORY_AGENT env var
@@ -31,8 +31,8 @@ try:
     CONFIG_DIR = default_paths["config"]
     CONFIG_PATH = default_paths["config_yaml"]
 except ValueError:
-    # Fallback if no agents exist
-    SKMEMORY_HOME = Path.home() / ".skcapstone" / "agents" / "lumina-template"
+    # Fallback if no agents exist — use platform-aware AGENTS_BASE_DIR
+    SKMEMORY_HOME = AGENTS_BASE_DIR / "lumina-template"
     CONFIG_DIR = SKMEMORY_HOME / "config"
     CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
 

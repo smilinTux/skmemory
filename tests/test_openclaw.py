@@ -91,13 +91,16 @@ class TestPluginContext:
     """Token-efficient context loading."""
 
     def test_load_context_returns_dict(self, plugin):
-        """Context loading returns a structured dict."""
+        """Context loading returns a structured dict with tiered keys."""
         plugin.snapshot("Context test", intensity=8.0)
         ctx = plugin.load_context(max_tokens=1000)
 
         assert isinstance(ctx, dict)
-        assert "memories" in ctx
+        assert "today" in ctx
+        assert "yesterday" in ctx
+        assert "older_summary" in ctx
         assert "token_estimate" in ctx
+        assert "token_budget" in ctx
 
 
 class TestPluginExport:

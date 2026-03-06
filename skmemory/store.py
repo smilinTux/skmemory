@@ -342,89 +342,156 @@ class MemoryStore:
 
     def load_context(
         self,
-        max_tokens: int = 3000,
+        max_tokens: int = 4000,
         strongest_count: int = 5,
         recent_count: int = 5,
         include_seeds: bool = True,
     ) -> dict:
-        """Load a token-efficient memory context for agent injection.
+        """Load tiered memory context for agent injection (lazy loading).
 
-        Uses the SQLite index to pull summaries without reading full files.
-        Designed to fit within a reasonable context window.
+        Uses date-based tiers per memory-architecture.md:
+        - Today's memories: full content (title + body)
+        - Yesterday's memories: summary only (title + first 2 sentences)
+        - Older than 2 days: reference count only
 
         Args:
-            max_tokens: Approximate token budget (1 token ~= 4 chars).
+            max_tokens: Approximate token budget (default: 4000).
+                Uses word_count * 1.3 approximation for estimation.
             strongest_count: How many top-intensity memories to include.
             recent_count: How many recent memories to include.
             include_seeds: Whether to include seed memories.
 
         Returns:
-            dict: Token-efficient context with summaries and metadata.
+            dict: Token-efficient tiered context with metadata.
         """
-        char_budget = max_tokens * 4
-        context: dict = {"memories": [], "seeds": [], "stats": {}}
-        used = 0
+        context: dict = {
+            "today": [],
+            "yesterday": [],
+            "older_summary": {},
+            "seeds": [],
+            "stats": {},
+        }
+        used_tokens = 0
 
         if isinstance(self.primary, SQLiteBackend):
-            strongest = self.primary.list_summaries(
-                limit=strongest_count,
-                order_by="emotional_intensity",
-                min_intensity=3.0,
-            )
-            recent = self.primary.list_summaries(
-                limit=recent_count,
-                order_by="created_at",
-            )
+            conn = self.primary._get_conn()
 
-            seen_ids: set[str] = set()
-            for mem in strongest + recent:
-                if mem["id"] in seen_ids:
-                    continue
-                seen_ids.add(mem["id"])
+            # --- Tier 1: Today's memories (full content) ---
+            today_rows = conn.execute(
+                "SELECT * FROM memories WHERE DATE(created_at) = DATE('now') "
+                "ORDER BY importance DESC, created_at DESC LIMIT 20"
+            ).fetchall()
 
-                entry_text = mem["title"] + (mem["summary"] or mem["content_preview"])
-                entry_size = len(entry_text)
-                if used + entry_size > char_budget:
+            for row in today_rows:
+                summary_dict = self.primary._row_to_memory_summary(row)
+                # Include full content for today
+                content = summary_dict.get("summary") or summary_dict.get("content_preview") or ""
+                entry = {
+                    "id": summary_dict["id"],
+                    "title": summary_dict["title"],
+                    "content": content,
+                    "tags": summary_dict["tags"],
+                    "layer": summary_dict["layer"],
+                    "emotional_intensity": summary_dict["emotional_intensity"],
+                }
+                entry_tokens = _estimate_tokens(entry["title"] + " " + content)
+                if used_tokens + entry_tokens > max_tokens:
                     break
-                used += entry_size
-                context["memories"].append(mem)
+                used_tokens += entry_tokens
+                context["today"].append(entry)
 
+            # --- Tier 2: Yesterday's memories (summary only: title + first 2 sentences) ---
+            yesterday_rows = conn.execute(
+                "SELECT * FROM memories WHERE DATE(created_at) = DATE('now', '-1 day') "
+                "ORDER BY importance DESC, created_at DESC LIMIT 20"
+            ).fetchall()
+
+            for row in yesterday_rows:
+                summary_dict = self.primary._row_to_memory_summary(row)
+                raw_text = summary_dict.get("summary") or summary_dict.get("content_preview") or ""
+                short_summary = _first_n_sentences(raw_text, 2)
+                entry = {
+                    "id": summary_dict["id"],
+                    "title": summary_dict["title"],
+                    "summary": short_summary,
+                }
+                entry_tokens = _estimate_tokens(entry["title"] + " " + short_summary)
+                if used_tokens + entry_tokens > max_tokens:
+                    break
+                used_tokens += entry_tokens
+                context["yesterday"].append(entry)
+
+            # --- Tier 3: Older memories (reference count only) ---
+            mid_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE DATE(created_at) < DATE('now', '-1 day') "
+                "AND layer = 'mid-term'"
+            ).fetchone()[0]
+            long_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE DATE(created_at) < DATE('now', '-1 day') "
+                "AND layer = 'long-term'"
+            ).fetchone()[0]
+            short_old_count = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE DATE(created_at) < DATE('now', '-1 day') "
+                "AND layer = 'short-term'"
+            ).fetchone()[0]
+
+            context["older_summary"] = {
+                "mid_term_count": mid_count,
+                "long_term_count": long_count,
+                "short_term_count": short_old_count,
+                "total": mid_count + long_count + short_old_count,
+                "hint": (
+                    f"{mid_count} mid-term memories, {long_count} long-term memories "
+                    "available via memory_search"
+                ),
+            }
+            used_tokens += _estimate_tokens(context["older_summary"]["hint"])
+
+            # --- Seeds (titles only to save tokens) ---
             if include_seeds:
-                seeds = self.primary.list_summaries(
+                seed_rows = self.primary.list_summaries(
                     tags=["seed"],
                     limit=10,
                     order_by="emotional_intensity",
                 )
-                for seed in seeds:
+                seen_ids = {m["id"] for m in context["today"]}
+                seen_ids.update(m["id"] for m in context["yesterday"])
+
+                for seed in seed_rows:
                     if seed["id"] in seen_ids:
                         continue
-                    entry_text = seed["title"] + seed["summary"]
-                    entry_size = len(entry_text)
-                    if used + entry_size > char_budget:
+                    entry = {
+                        "id": seed["id"],
+                        "title": seed["title"],
+                    }
+                    entry_tokens = _estimate_tokens(seed["title"])
+                    if used_tokens + entry_tokens > max_tokens:
                         break
-                    used += entry_size
-                    context["seeds"].append(seed)
+                    used_tokens += entry_tokens
+                    context["seeds"].append(entry)
 
             stats = self.primary.stats()
             context["stats"] = stats
         else:
-            # Reason: fallback for non-SQLite backends — uses full objects
+            # Fallback for non-SQLite backends: simple recent list
             all_mems = self.primary.list_memories(limit=strongest_count + recent_count)
             for mem in all_mems:
+                content_text = mem.summary or mem.content[:CONTENT_PREVIEW_LENGTH]
                 entry = {
                     "id": mem.id,
                     "title": mem.title,
-                    "summary": mem.summary or mem.content[:CONTENT_PREVIEW_LENGTH],
+                    "summary": _first_n_sentences(content_text, 2),
                     "emotional_intensity": mem.emotional.intensity,
                     "layer": mem.layer.value,
                 }
-                entry_size = len(entry["title"] + entry["summary"])
-                if used + entry_size > char_budget:
+                entry_tokens = _estimate_tokens(entry["title"] + " " + entry["summary"])
+                if used_tokens + entry_tokens > max_tokens:
                     break
-                used += entry_size
-                context["memories"].append(entry)
+                used_tokens += entry_tokens
+                context["today"].append(entry)
 
-        context["token_estimate"] = used // 4
+        context["token_estimate"] = used_tokens
+        context["token_budget"] = max_tokens
         return context
 
     def export_backup(self, output_path: str | None = None) -> str:
@@ -531,3 +598,40 @@ class MemoryStore:
             except Exception as e:
                 status["graph"] = {"ok": False, "error": str(e)}
         return status
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimate token count using word_count * 1.3 approximation.
+
+    Args:
+        text: The text to estimate.
+
+    Returns:
+        int: Approximate token count.
+    """
+    if not text:
+        return 0
+    word_count = len(text.split())
+    return int(word_count * 1.3)
+
+
+def _first_n_sentences(text: str, n: int = 2) -> str:
+    """Extract the first N sentences from text.
+
+    Args:
+        text: Source text.
+        n: Number of sentences to extract.
+
+    Returns:
+        str: The first N sentences, or the full text if fewer exist.
+    """
+    if not text:
+        return ""
+    # Split on sentence-ending punctuation followed by whitespace
+    import re
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    result = " ".join(sentences[:n])
+    # Cap at 200 chars as a safety net
+    if len(result) > 200:
+        result = result[:197] + "..."
+    return result

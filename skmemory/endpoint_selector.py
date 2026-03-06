@@ -289,7 +289,10 @@ class EndpointSelector:
                            Defaults to ``~/.skcapstone/heartbeats/``.
         """
         if heartbeat_dir is None:
-            heartbeat_dir = Path.home() / ".skcapstone" / "heartbeats"
+            from .agents import AGENTS_BASE_DIR
+
+            # heartbeats/ is a sibling of agents/ under the skcapstone root
+            heartbeat_dir = AGENTS_BASE_DIR.parent / "heartbeats"
 
         if not heartbeat_dir.is_dir():
             logger.debug("Heartbeat directory not found: %s", heartbeat_dir)

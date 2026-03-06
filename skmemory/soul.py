@@ -19,6 +19,7 @@ at the start of every session as the first context injection.
 from __future__ import annotations
 
 import os
+import platform
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -26,9 +27,19 @@ from typing import Any, Optional
 import yaml
 from pydantic import BaseModel, Field
 
+
+def _default_soul_path() -> str:
+    """Platform-aware default path for the soul blueprint."""
+    if platform.system() == "Windows":
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            return os.path.join(local, "skcapstone", "soul", "base.json")
+    return os.path.expanduser("~/.skcapstone/soul/base.json")
+
+
 DEFAULT_SOUL_PATH = os.environ.get(
     "SKMEMORY_SOUL_PATH",
-    os.path.expanduser("~/.skcapstone/soul/base.json"),
+    _default_soul_path(),
 )
 
 
@@ -256,9 +267,14 @@ def load_soul(path: str = DEFAULT_SOUL_PATH) -> Optional[SoulBlueprint]:
     if filepath.exists():
         return _load_soul_file(filepath)
 
-    # Fall back to legacy location
-    legacy_path = Path(os.path.expanduser("~/.skcapstone/soul.yaml"))
-    if legacy_path.exists():
+    # Fall back to legacy location (platform-aware)
+    if platform.system() == "Windows":
+        _local = os.environ.get("LOCALAPPDATA", "")
+        _legacy_str = os.path.join(_local, "skcapstone", "soul.yaml") if _local else ""
+    else:
+        _legacy_str = os.path.expanduser("~/.skcapstone/soul.yaml")
+    legacy_path = Path(_legacy_str) if _legacy_str else None
+    if legacy_path is not None and legacy_path.exists():
         return _load_soul_file(legacy_path)
 
     return None

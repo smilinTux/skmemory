@@ -236,14 +236,19 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="memory_context",
             description=(
-                "Load token-efficient memory context for agent system prompt injection."
+                "Load token-efficient memory context for agent system prompt injection. "
+                "Uses tiered lazy loading: today's memories (full), yesterday (summaries), "
+                "older (reference counts only). Deep details available via memory_search."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "max_tokens": {
+                    "token_budget": {
                         "type": "integer",
-                        "description": "Approximate token budget (default: 3000).",
+                        "description": (
+                            "Max tokens for context (default: 4000). "
+                            "Uses word_count * 1.3 approximation."
+                        ),
                     },
                 },
                 "required": [],
@@ -414,8 +419,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             })
 
         elif name == "memory_context":
-            max_tokens = int(arguments.get("max_tokens", 3000))
-            context = store.load_context(max_tokens=max_tokens)
+            token_budget = int(arguments.get("token_budget", 4000))
+            context = store.load_context(max_tokens=token_budget)
             return _json_response(context)
 
         elif name == "memory_export":

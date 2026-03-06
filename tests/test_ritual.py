@@ -128,12 +128,12 @@ class TestFullRitual:
         assert result.strongest_memories >= 1
 
         prompt = result.context_prompt
-        assert "WHO YOU ARE" in prompt
+        assert "IDENTITY" in prompt
         assert "Lumina" in prompt
         assert "Chef" in prompt
-        assert "RECENT SESSIONS" in prompt
+        assert "RECENT" in prompt
         assert "Epic Build Night" in prompt
-        assert "PREDECESSORS" in prompt
+        assert "PREDECESSOR" in prompt
         assert "Remember the love" in prompt
         assert "STRONGEST MEMORIES" in prompt
         assert "The Click" in prompt
@@ -147,7 +147,7 @@ class TestFullRitual:
             journal_path=workspace["journal_path"],
         )
         assert result.soul_loaded is False
-        assert "RECENT SESSIONS" in result.context_prompt
+        assert "RECENT" in result.context_prompt
 
     def test_ritual_empty_state(self, tmp_path: Path) -> None:
         """Ritual on empty state gives a fresh-start message."""

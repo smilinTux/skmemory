@@ -8,13 +8,27 @@ excludes templates, and provides agent-aware path resolution.
 from __future__ import annotations
 
 import os
+import platform
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
+
+def _agents_base() -> Path:
+    """Platform-aware base directory for all agents."""
+    skcap_home = os.environ.get("SKCAPSTONE_HOME", "")
+    if skcap_home:
+        return Path(skcap_home) / "agents"
+    if platform.system() == "Windows":
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            return Path(local) / "skcapstone" / "agents"
+    return Path.home() / ".skcapstone" / "agents"
+
+
 # Base directory for all agents
-AGENTS_BASE_DIR = Path.home() / ".skcapstone" / "agents"
+AGENTS_BASE_DIR = _agents_base()
 
 # Template directory name (ignored by default)
 TEMPLATE_AGENT = "lumina-template"
@@ -197,17 +211,20 @@ def copy_template(target_name: str, source: str = TEMPLATE_AGENT) -> Path:
 
         # Replace template agent name with new name
         content = content.replace(f"name: {source}", f"name: {target_name}")
+        # Use platform-aware base dir for config path values.
+        # Always use forward slashes in YAML for cross-platform consistency.
+        base = AGENTS_BASE_DIR.as_posix()
         content = content.replace(
             f"sync_root: ~/.skcapstone/agents/{source}",
-            f"sync_root: ~/.skcapstone/agents/{target_name}",
+            f"sync_root: {base}/{target_name}",
         )
         content = content.replace(
             f"seeds_dir: ~/.skcapstone/agents/{source}/seeds",
-            f"seeds_dir: ~/.skcapstone/agents/{target_name}/seeds",
+            f"seeds_dir: {base}/{target_name}/seeds",
         )
         content = content.replace(
             f"local_db: ~/.skcapstone/agents/{source}/index.db",
-            f"local_db: ~/.skcapstone/agents/{target_name}/index.db",
+            f"local_db: {base}/{target_name}/index.db",
         )
 
         with open(config_path, "w") as f:

@@ -13,6 +13,7 @@ import type { OpenClawPluginApi, AnyAgentTool } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 
 const SKMEMORY_BIN = process.env.SKMEMORY_BIN || "skmemory";
+const SKCAPSTONE_AGENT = process.env.SKCAPSTONE_AGENT || "lumina";
 const EXEC_TIMEOUT = 30_000;
 
 function runCli(args: string): { ok: boolean; output: string } {
@@ -22,6 +23,7 @@ function runCli(args: string): { ok: boolean; output: string } {
       timeout: EXEC_TIMEOUT,
       env: {
         ...process.env,
+        SKCAPSTONE_AGENT,
         PATH: `${process.env.HOME}/.local/bin:${process.env.HOME}/.skenv/bin:${process.env.PATH}`,
       },
     }).trim();
@@ -246,7 +248,7 @@ const skmemoryPlugin = {
       },
     });
 
-    api.logger.info?.("🧠 SKMemory plugin registered (8 tools + /skmemory command)");
+    api.logger.info?.(`🧠 SKMemory plugin registered (8 tools + /skmemory command) [agent=${SKCAPSTONE_AGENT}]`);
   },
 };
 
