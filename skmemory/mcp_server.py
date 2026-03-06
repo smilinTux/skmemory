@@ -306,6 +306,92 @@ async def list_tools() -> list[Tool]:
                 "required": ["action"],
             },
         ),
+        # ── Telegram ───────────────────────────────────────────────
+        Tool(
+            name="telegram_import",
+            description=(
+                "Import a Telegram Desktop chat export into memories. "
+                "Point to the export directory containing result.json."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "export_path": {
+                        "type": "string",
+                        "description": "Path to Telegram export directory or result.json file.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["daily", "message"],
+                        "description": "Import mode (default: daily).",
+                    },
+                    "min_length": {
+                        "type": "integer",
+                        "description": "Skip messages shorter than this (default: 30).",
+                    },
+                    "chat_name": {
+                        "type": "string",
+                        "description": "Override the chat name from the export.",
+                    },
+                    "tags": {
+                        "type": "string",
+                        "description": "Extra comma-separated tags.",
+                    },
+                },
+                "required": ["export_path"],
+            },
+        ),
+        Tool(
+            name="telegram_import_api",
+            description=(
+                "Import messages directly from Telegram API using Telethon. "
+                "Requires TELEGRAM_API_ID and TELEGRAM_API_HASH env vars."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chat": {
+                        "type": "string",
+                        "description": "Chat username, title, or numeric ID.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["daily", "message"],
+                        "description": "Import mode (default: daily).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of messages to fetch.",
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "Only fetch messages after this date (YYYY-MM-DD).",
+                    },
+                    "min_length": {
+                        "type": "integer",
+                        "description": "Skip messages shorter than this (default: 30).",
+                    },
+                    "chat_name": {
+                        "type": "string",
+                        "description": "Override the chat name.",
+                    },
+                    "tags": {
+                        "type": "string",
+                        "description": "Extra comma-separated tags.",
+                    },
+                },
+                "required": ["chat"],
+            },
+        ),
+        Tool(
+            name="telegram_setup",
+            description=(
+                "Check Telegram API setup status. Reports whether Telethon is "
+                "installed, API credentials are set, and a session file exists."
+            ),
+            inputSchema={"type": "object", "properties": {}, "required": []},
+        ),
+        # ── Memory Integrity ──────────────────────────────────────
         Tool(
             name="memory_verify",
             description=(
@@ -486,6 +572,57 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
             records = audit.tail(n)
             return _json_response(records)
+
+        # ── Telegram tools ────────────────────────────────────
+        elif name == "telegram_import":
+            from .importers.telegram import import_telegram
+
+            export_path = arguments["export_path"]
+            mode = arguments.get("mode", "daily")
+            min_length = arguments.get("min_length", 30)
+            chat_name = arguments.get("chat_name")
+            tags_str = arguments.get("tags", "")
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else None
+
+            stats = import_telegram(
+                store,
+                export_path,
+                mode=mode,
+                min_message_length=min_length,
+                chat_name=chat_name,
+                tags=tags,
+            )
+            return _json_response(stats)
+
+        elif name == "telegram_import_api":
+            from .importers.telegram_api import import_telegram_api
+
+            chat = arguments["chat"]
+            mode = arguments.get("mode", "daily")
+            limit = arguments.get("limit")
+            since = arguments.get("since")
+            min_length = arguments.get("min_length", 30)
+            chat_name = arguments.get("chat_name")
+            tags_str = arguments.get("tags", "")
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else None
+
+            stats = import_telegram_api(
+                store,
+                chat,
+                mode=mode,
+                limit=limit,
+                since=since,
+                min_message_length=min_length,
+                chat_name=chat_name,
+                tags=tags,
+            )
+            return _json_response(stats)
+
+        elif name == "telegram_setup":
+            from .importers.telegram_api import check_setup
+
+            result = check_setup()
+            return _json_response(result)
 
         else:
             return _error_response(f"Unknown tool: {name}")

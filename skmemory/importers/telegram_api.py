@@ -218,6 +218,227 @@ async def _fetch_messages(
         await client.disconnect()
 
 
+async def send_message(
+    chat: str,
+    message: str,
+    parse_mode: str | None = None,
+) -> dict:
+    """Send a message to a Telegram chat via Telethon.
+
+    Args:
+        chat: Chat username, title, or numeric ID.
+        message: Message text to send.
+        parse_mode: Optional parse mode — 'html' or 'markdown'.
+
+    Returns:
+        dict with keys: sent (bool), message_id, chat, date.
+
+    Raises:
+        RuntimeError: If credentials are missing or send fails.
+    """
+    api_id = os.environ.get("TELEGRAM_API_ID")
+    api_hash = os.environ.get("TELEGRAM_API_HASH")
+
+    if not api_id or not api_hash:
+        raise RuntimeError(
+            "Telegram API credentials not found. "
+            "Set TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables."
+        )
+
+    try:
+        from telethon import TelegramClient
+    except ImportError:
+        raise RuntimeError(
+            "Telethon is required. Install with: pip install skmemory[telegram]"
+        )
+
+    session_dir = Path(SESSION_PATH).parent
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    client = TelegramClient(SESSION_PATH, int(api_id), api_hash)
+    await client.start()
+
+    try:
+        # Resolve entity
+        try:
+            entity = await client.get_entity(chat)
+        except ValueError:
+            try:
+                entity = await client.get_entity(int(chat))
+            except (ValueError, TypeError):
+                raise RuntimeError(f"Could not find chat: {chat}")
+
+        # Determine parse mode
+        pm = None
+        if parse_mode:
+            if parse_mode.lower() == "html":
+                from telethon.extensions import html as telethon_html  # noqa: F401
+                pm = "html"
+            elif parse_mode.lower() in ("markdown", "md"):
+                pm = "md"
+
+        sent_msg = await client.send_message(entity, message, parse_mode=pm)
+
+        return {
+            "sent": True,
+            "message_id": sent_msg.id,
+            "chat": chat,
+            "date": sent_msg.date.isoformat() if sent_msg.date else "",
+        }
+    finally:
+        await client.disconnect()
+
+
+async def poll_messages(
+    chat: str,
+    limit: int = 20,
+    since: str | None = None,
+) -> list[dict]:
+    """Fetch recent messages from a Telegram chat (one-shot poll).
+
+    Args:
+        chat: Chat username, title, or numeric ID.
+        limit: Maximum number of messages to return.
+        since: Only return messages after this ISO date (YYYY-MM-DD).
+
+    Returns:
+        list[dict]: Messages as clean dicts with id, date, sender, text, etc.
+
+    Raises:
+        RuntimeError: If credentials are missing or connection fails.
+    """
+    api_id = os.environ.get("TELEGRAM_API_ID")
+    api_hash = os.environ.get("TELEGRAM_API_HASH")
+
+    if not api_id or not api_hash:
+        raise RuntimeError(
+            "Telegram API credentials not found. "
+            "Set TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables."
+        )
+
+    try:
+        from telethon import TelegramClient
+        from telethon.tl.types import User
+    except ImportError:
+        raise RuntimeError(
+            "Telethon is required. Install with: pip install skmemory[telegram]"
+        )
+
+    session_dir = Path(SESSION_PATH).parent
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    client = TelegramClient(SESSION_PATH, int(api_id), api_hash)
+    await client.start()
+
+    try:
+        # Resolve entity
+        try:
+            entity = await client.get_entity(chat)
+        except ValueError:
+            try:
+                entity = await client.get_entity(int(chat))
+            except (ValueError, TypeError):
+                raise RuntimeError(f"Could not find chat: {chat}")
+
+        kwargs: dict = {"limit": limit}
+        if since:
+            try:
+                since_dt = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                kwargs["offset_date"] = since_dt
+                kwargs["reverse"] = True
+            except ValueError:
+                raise RuntimeError(f"Invalid date format: {since}. Use YYYY-MM-DD.")
+
+        messages = []
+        async for msg in client.iter_messages(entity, **kwargs):
+            sender_name = "Unknown"
+            if msg.sender:
+                if isinstance(msg.sender, User):
+                    parts = [msg.sender.first_name or "", msg.sender.last_name or ""]
+                    sender_name = " ".join(p for p in parts if p) or str(msg.sender_id)
+                else:
+                    sender_name = getattr(msg.sender, "title", str(msg.sender_id))
+
+            messages.append({
+                "id": msg.id,
+                "date": msg.date.isoformat() if msg.date else "",
+                "sender": sender_name,
+                "sender_id": msg.sender_id,
+                "text": msg.text or "",
+                "has_media": msg.media is not None,
+                "reply_to": msg.reply_to.reply_to_msg_id if msg.reply_to else None,
+            })
+
+        return messages
+    finally:
+        await client.disconnect()
+
+
+async def list_chats(limit: int = 50) -> list[dict]:
+    """List available Telegram chats/groups/channels.
+
+    Args:
+        limit: Maximum number of dialogs to return.
+
+    Returns:
+        list[dict]: Chats with id, title, type, unread_count.
+
+    Raises:
+        RuntimeError: If credentials are missing or connection fails.
+    """
+    api_id = os.environ.get("TELEGRAM_API_ID")
+    api_hash = os.environ.get("TELEGRAM_API_HASH")
+
+    if not api_id or not api_hash:
+        raise RuntimeError(
+            "Telegram API credentials not found. "
+            "Set TELEGRAM_API_ID and TELEGRAM_API_HASH environment variables."
+        )
+
+    try:
+        from telethon import TelegramClient
+        from telethon.tl.types import User, Channel, Chat
+    except ImportError:
+        raise RuntimeError(
+            "Telethon is required. Install with: pip install skmemory[telegram]"
+        )
+
+    session_dir = Path(SESSION_PATH).parent
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    client = TelegramClient(SESSION_PATH, int(api_id), api_hash)
+    await client.start()
+
+    try:
+        chats = []
+        async for dialog in client.iter_dialogs(limit=limit):
+            entity = dialog.entity
+            chat_type = "unknown"
+            if isinstance(entity, User):
+                chat_type = "user"
+            elif isinstance(entity, Channel):
+                chat_type = "channel" if entity.broadcast else "supergroup"
+            elif isinstance(entity, Chat):
+                chat_type = "group"
+
+            title = dialog.title or ""
+            if isinstance(entity, User):
+                parts = [entity.first_name or "", entity.last_name or ""]
+                title = " ".join(p for p in parts if p) or str(entity.id)
+
+            chats.append({
+                "id": entity.id,
+                "title": title,
+                "type": chat_type,
+                "unread_count": dialog.unread_count,
+                "username": getattr(entity, "username", None),
+            })
+
+        return chats
+    finally:
+        await client.disconnect()
+
+
 def import_telegram_api(
     store: MemoryStore,
     chat_name_or_id: str,
