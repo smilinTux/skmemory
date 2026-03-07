@@ -13,6 +13,7 @@ for cross-device sync via Syncthing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional
@@ -20,6 +21,8 @@ from typing import Optional
 from .agents import get_agent_paths
 from .models import EmotionalSnapshot, Memory, SeedMemory
 from .store import MemoryStore
+
+logger = logging.getLogger("skmemory.seeds")
 
 # Dynamic seed directory based on active agent
 # Resolves to ~/.skcapstone/agents/{agent_name}/seeds/
@@ -186,17 +189,155 @@ def parse_seed_file(path: Path) -> Optional[SeedMemory]:
     )
 
 
+def validate_seed_data(data: dict) -> dict:
+    """Validate parsed seed JSON data before import into the memory store.
+
+    Checks required fields, content non-emptiness, timestamp validity,
+    tag types, and emotional-signature ranges for both standard and
+    Cloud9 seed formats.
+
+    Args:
+        data: Parsed JSON seed data (dict).
+
+    Returns:
+        Dict with ``valid`` (bool), ``errors`` (list[str]),
+        and ``warnings`` (list[str]) keys.
+    """
+    result: dict = {"valid": True, "errors": [], "warnings": []}
+
+    if not isinstance(data, dict):
+        result["valid"] = False
+        result["errors"].append("Seed data must be a JSON object")
+        return result
+
+    is_cloud9 = "seed_metadata" in data
+
+    # -- Required: seed_id --
+    if is_cloud9:
+        meta = data.get("seed_metadata", {})
+        seed_id = meta.get("seed_id") or data.get("seed_id")
+    else:
+        seed_id = data.get("seed_id")
+    if not seed_id or (isinstance(seed_id, str) and not seed_id.strip()):
+        result["valid"] = False
+        result["errors"].append("Missing or empty required field: seed_id")
+
+    # -- Required: version --
+    if is_cloud9:
+        version = (data.get("seed_metadata", {}).get("version")
+                   or data.get("version"))
+    else:
+        version = data.get("version")
+    if not version:
+        result["valid"] = False
+        result["errors"].append("Missing required field: version")
+
+    # -- Content non-empty --
+    if is_cloud9:
+        exp = data.get("experience_summary", {})
+        narrative = exp.get("narrative", "") if isinstance(exp, dict) else ""
+    else:
+        exp = data.get("experience", {})
+        narrative = exp.get("summary", "") if isinstance(exp, dict) else ""
+    if not narrative or not str(narrative).strip():
+        result["errors"].append("Seed experience content is empty")
+        result["valid"] = False
+
+    # -- Timestamp validation helper --
+    def _check_ts(value: str, field: str) -> None:
+        from datetime import datetime as _dt
+        if not isinstance(value, str) or not value.strip():
+            return
+        try:
+            _dt.fromisoformat(value.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            result["errors"].append(
+                f"{field} is not a valid ISO 8601 timestamp: {value!r}"
+            )
+            result["valid"] = False
+
+    if is_cloud9:
+        meta = data.get("seed_metadata", {})
+        if "created_at" in meta:
+            _check_ts(meta["created_at"], "seed_metadata.created_at")
+        ident = data.get("identity", {})
+        if isinstance(ident, dict) and "timestamp" in ident:
+            _check_ts(ident["timestamp"], "identity.timestamp")
+    else:
+        md = data.get("metadata", {})
+        if isinstance(md, dict) and "ingested_at" in md:
+            _check_ts(md["ingested_at"], "metadata.ingested_at")
+
+    # -- Tags must be strings --
+    def _check_tags(tags, field: str) -> None:
+        if tags is None:
+            return
+        if not isinstance(tags, list):
+            result["errors"].append(f"{field} must be a list")
+            result["valid"] = False
+            return
+        for i, tag in enumerate(tags):
+            if not isinstance(tag, str):
+                result["errors"].append(
+                    f"{field}[{i}] must be a string, got {type(tag).__name__}"
+                )
+                result["valid"] = False
+
+    md = data.get("metadata", {})
+    if isinstance(md, dict):
+        _check_tags(md.get("tags"), "metadata.tags")
+
+    # -- Emotional signature ranges --
+    if is_cloud9:
+        emo = (data.get("experience_summary", {})
+               .get("emotional_snapshot",
+                    data.get("experience_summary", {})
+                    .get("emotional_signature", {})))
+    else:
+        emo = data.get("experience", {}).get("emotional_signature", {})
+    if isinstance(emo, dict):
+        intensity = emo.get("intensity")
+        if intensity is not None and isinstance(intensity, (int, float)):
+            if not (0.0 <= float(intensity) <= 10.0):
+                result["warnings"].append(
+                    f"emotional intensity={intensity} outside 0-10 range"
+                )
+        valence = emo.get("valence")
+        if valence is not None and isinstance(valence, (int, float)):
+            if not (-1.0 <= float(valence) <= 1.0):
+                result["warnings"].append(
+                    f"emotional valence={valence} outside -1 to 1 range"
+                )
+        labels = emo.get("labels", emo.get("emotions"))
+        if labels is not None:
+            _check_tags(labels, "emotional.labels")
+
+    # -- Lineage --
+    lineage = data.get("lineage")
+    if lineage is not None and not isinstance(lineage, list):
+        result["errors"].append("lineage must be a list")
+        result["valid"] = False
+
+    return result
+
+
 def import_seeds(
     store: MemoryStore,
     seed_dir: str = DEFAULT_SEED_DIR,
+    *,
+    skip_invalid: bool = True,
 ) -> list[Memory]:
     """Scan a seed directory and import all seeds into the memory store.
 
-    Skips seeds that have already been imported (by checking source_ref).
+    Each seed file is validated before import. Invalid seeds are skipped
+    (with a warning logged) when *skip_invalid* is True, or cause a
+    ``ValueError`` when it is False.
 
     Args:
         store: The MemoryStore to import into.
         seed_dir: Path to the seed directory.
+        skip_invalid: If True (default), log and skip invalid seeds.
+            If False, raise ``ValueError`` on the first invalid seed.
 
     Returns:
         list[Memory]: Newly imported memories.
@@ -205,6 +346,30 @@ def import_seeds(
 
     imported: list[Memory] = []
     for path in scan_seed_directory(seed_dir):
+        # --- Validate before import ---
+        try:
+            raw_data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            msg = f"Skipping {path.name}: cannot read/parse file: {exc}"
+            if skip_invalid:
+                logger.warning(msg)
+                continue
+            raise ValueError(msg) from exc
+
+        validation = validate_seed_data(raw_data)
+        if not validation["valid"]:
+            errors_str = "; ".join(validation["errors"])
+            msg = f"Skipping {path.name}: validation failed: {errors_str}"
+            if skip_invalid:
+                logger.warning(msg)
+                continue
+            raise ValueError(msg)
+
+        if validation["warnings"]:
+            for w in validation["warnings"]:
+                logger.info("Seed %s warning: %s", path.name, w)
+
+        # --- Parse and import ---
         seed = parse_seed_file(path)
         if seed is None:
             continue

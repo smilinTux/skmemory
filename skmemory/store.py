@@ -252,19 +252,38 @@ class MemoryStore:
 
         return promoted
 
-    def ingest_seed(self, seed: SeedMemory) -> Memory:
+    def ingest_seed(self, seed: SeedMemory, *, validate: bool = True) -> Memory:
         """Import a Cloud 9 seed as a long-term memory.
 
         Converts a seed into a Memory and stores it. This is how
         seeds planted by one AI instance become retrievable memories
         for the next.
 
+        When *validate* is True (default), basic integrity checks run
+        before storage: seed_id must be non-empty and
+        experience_summary must contain content.
+
         Args:
             seed: The SeedMemory to import.
+            validate: Run pre-import validation (default True).
 
         Returns:
             Memory: The created long-term memory.
+
+        Raises:
+            ValueError: If validation is enabled and the seed is invalid.
         """
+        if validate:
+            errors: list[str] = []
+            if not seed.seed_id or not seed.seed_id.strip():
+                errors.append("seed_id is empty")
+            if not seed.experience_summary or not seed.experience_summary.strip():
+                errors.append("experience_summary is empty")
+            if errors:
+                raise ValueError(
+                    f"Seed validation failed: {'; '.join(errors)}"
+                )
+
         memory = seed.to_memory()
         self.primary.save(memory)
 
