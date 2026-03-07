@@ -1,6 +1,6 @@
 {
   "name": "@smilintux/skmemory",
-  "version": "0.6.0",
+  "version": "0.7.2",
   "description": "SKMemory - Universal AI memory system with git-based multi-layer memory and vector search.",
   "main": "index.js",
   "types": "index.d.ts",
