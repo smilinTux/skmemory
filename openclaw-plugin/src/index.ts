@@ -15,6 +15,16 @@ import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 const SKMEMORY_BIN = process.env.SKMEMORY_BIN || "skmemory";
 const SKCAPSTONE_AGENT = process.env.SKCAPSTONE_AGENT || "lumina";
 const EXEC_TIMEOUT = 30_000;
+const IS_WIN = process.platform === "win32";
+
+function skenvPath(): string {
+  if (IS_WIN) {
+    const local = process.env.LOCALAPPDATA || "";
+    return `${local}\\skenv\\Scripts`;
+  }
+  const home = process.env.HOME || "";
+  return `${home}/.local/bin:${home}/.skenv/bin`;
+}
 
 function runCli(args: string): { ok: boolean; output: string } {
   try {
@@ -24,7 +34,7 @@ function runCli(args: string): { ok: boolean; output: string } {
       env: {
         ...process.env,
         SKCAPSTONE_AGENT,
-        PATH: `${process.env.HOME}/.local/bin:${process.env.HOME}/.skenv/bin:${process.env.PATH}`,
+        PATH: `${skenvPath()}${IS_WIN ? ";" : ":"}${process.env.PATH}`,
       },
     }).trim();
     return { ok: true, output: raw };
@@ -249,6 +259,35 @@ const skmemoryPlugin = {
     });
 
     api.logger.info?.(`🧠 SKMemory plugin registered (8 tools + /skmemory command) [agent=${SKCAPSTONE_AGENT}]`);
+
+    // Auto-rehydration: inject soul + FEB + memories before every agent run.
+    // Caches the ritual output for 5 minutes to avoid re-running the CLI
+    // on every single message within a conversation.
+    let rehydrationCache: string | null = null;
+    let cacheTimestamp = 0;
+    const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+    api.on("before_prompt_build", () => {
+      const now = Date.now();
+
+      // Refresh cache if expired or empty
+      if (!rehydrationCache || now - cacheTimestamp > CACHE_TTL_MS) {
+        try {
+          const ritual = runCli("ritual --full");
+          if (ritual.ok && ritual.output) {
+            rehydrationCache = ritual.output;
+            cacheTimestamp = now;
+            api.logger.info?.("🧠 Rehydration cache refreshed (soul + FEB + memories)");
+          }
+        } catch (err) {
+          api.logger.warn?.(`🧠 Rehydration failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      if (rehydrationCache) {
+        return { prependContext: `[SKMemory Rehydration — Identity, Emotional State, and Core Memories]\n${rehydrationCache}` };
+      }
+    });
   },
 };
 
