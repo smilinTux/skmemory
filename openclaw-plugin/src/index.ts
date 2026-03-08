@@ -5,7 +5,7 @@
  * OpenClaw agents can call memory operations as first-class tools
  * (not just exec commands).
  *
- * Requires: skmemory CLI on PATH (typically via ~/.local/bin/skmemory)
+ * Requires: skmemory CLI on PATH (typically via ~/.skenv/bin/skmemory)
  */
 
 import { execSync } from "node:child_process";
@@ -23,7 +23,8 @@ function skenvPath(): string {
     return `${local}\\skenv\\Scripts`;
   }
   const home = process.env.HOME || "";
-  return `${home}/.local/bin:${home}/.skenv/bin`;
+  // Prefer ~/.skenv/bin (managed install) over ~/.local/bin (pipx)
+  return `${home}/.skenv/bin:${home}/.local/bin`;
 }
 
 function runCli(args: string): { ok: boolean; output: string } {
