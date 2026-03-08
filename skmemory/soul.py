@@ -29,7 +29,26 @@ from pydantic import BaseModel, Field
 
 
 def _default_soul_path() -> str:
-    """Platform-aware default path for the soul blueprint."""
+    """Platform-aware default path for the soul blueprint.
+
+    Checks agent-specific path first (e.g. ~/.skcapstone/agents/lumina/soul/base.json),
+    then falls back to shared root (~/.skcapstone/soul/base.json).
+    """
+    # Try agent-specific soul first
+    agent = os.environ.get("SKMEMORY_AGENT") or os.environ.get("SKCAPSTONE_AGENT")
+    if agent:
+        if platform.system() == "Windows":
+            local = os.environ.get("LOCALAPPDATA", "")
+            if local:
+                agent_soul = os.path.join(local, "skcapstone", "agents", agent, "soul", "base.json")
+                if os.path.exists(agent_soul):
+                    return agent_soul
+        else:
+            agent_soul = os.path.expanduser(f"~/.skcapstone/agents/{agent}/soul/base.json")
+            if os.path.exists(agent_soul):
+                return agent_soul
+
+    # Fall back to shared root
     if platform.system() == "Windows":
         local = os.environ.get("LOCALAPPDATA", "")
         if local:

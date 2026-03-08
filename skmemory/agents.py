@@ -112,8 +112,8 @@ def get_active_agent() -> Optional[str]:
     Returns:
         str: Agent name, or None if no agents found
     """
-    # Check environment variable first
-    env_agent = os.environ.get("SKMEMORY_AGENT")
+    # Check environment variables (SKMEMORY_AGENT > SKCAPSTONE_AGENT)
+    env_agent = os.environ.get("SKMEMORY_AGENT") or os.environ.get("SKCAPSTONE_AGENT")
     if env_agent and not is_template_agent(env_agent):
         agent_dir = get_agent_dir(env_agent)
         if agent_dir.exists():
