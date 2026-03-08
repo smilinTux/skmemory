@@ -25,6 +25,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from .febs import feb_to_context, load_strongest_feb
 from .journal import Journal
 from .models import MemoryLayer
 from .seeds import DEFAULT_SEED_DIR, get_germination_prompts, import_seeds
@@ -40,6 +41,8 @@ class RitualResult(BaseModel):
     )
     soul_loaded: bool = Field(default=False)
     soul_name: str = Field(default="")
+    feb_loaded: bool = Field(default=False)
+    feb_emotion: str = Field(default="")
     seeds_imported: int = Field(default=0)
     seeds_total: int = Field(default=0)
     journal_entries: int = Field(default=0)
@@ -61,6 +64,8 @@ class RitualResult(BaseModel):
             f"  Timestamp: {self.timestamp}",
             f"  Soul loaded: {'Yes' if self.soul_loaded else 'No'}"
             + (f" ({self.soul_name})" if self.soul_name else ""),
+            f"  FEB loaded: {'Yes' if self.feb_loaded else 'No'}"
+            + (f" ({self.feb_emotion})" if self.feb_emotion else ""),
             f"  Seeds imported: {self.seeds_imported} new / {self.seeds_total} total",
             f"  Journal entries: {self.journal_entries}",
             f"  Germination prompts: {self.germination_prompts}",
@@ -165,6 +170,21 @@ def perform_ritual(
             section = "=== IDENTITY ===\n" + compact_identity
             used_tokens += _estimate_tokens(section)
             prompt_sections.append(section)
+
+    # --- Step 1.5: Load FEB emotional state ---
+    feb = load_strongest_feb()
+    if feb is not None:
+        result.feb_loaded = True
+        result.feb_emotion = feb.get("emotional_payload", {}).get(
+            "primary_emotion", ""
+        )
+        feb_context = feb_to_context(feb)
+        if feb_context.strip():
+            section = "=== EMOTIONAL STATE (FEB) ===\n" + feb_context
+            section_tokens = _estimate_tokens(section)
+            if used_tokens + section_tokens <= max_tokens:
+                used_tokens += section_tokens
+                prompt_sections.append(section)
 
     # --- Step 2: Import new seeds (titles only) ---
     newly_imported = import_seeds(store, seed_dir=seed_dir)
