@@ -8,7 +8,7 @@
  * Requires: skmemory CLI on PATH (typically via ~/.skenv/bin/skmemory)
  */
 
-import { execSync } from "node:child_process";
+import { execSync, exec } from "node:child_process";
 import type { OpenClawPluginApi, AnyAgentTool } from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 
@@ -27,22 +27,41 @@ function skenvPath(): string {
   return `${home}/.skenv/bin:${home}/.local/bin`;
 }
 
+const CLI_ENV = {
+  ...process.env,
+  SKCAPSTONE_AGENT,
+  PATH: `${skenvPath()}${IS_WIN ? ";" : ":"}${process.env.PATH}`,
+};
+
 function runCli(args: string): { ok: boolean; output: string } {
   try {
     const raw = execSync(`${SKMEMORY_BIN} ${args}`, {
       encoding: "utf-8",
       timeout: EXEC_TIMEOUT,
-      env: {
-        ...process.env,
-        SKCAPSTONE_AGENT,
-        PATH: `${skenvPath()}${IS_WIN ? ";" : ":"}${process.env.PATH}`,
-      },
+      env: CLI_ENV,
     }).trim();
     return { ok: true, output: raw };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, output: msg };
   }
+}
+
+/** Non-blocking CLI call — does NOT freeze the event loop. */
+function runCliAsync(args: string): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    exec(
+      `${SKMEMORY_BIN} ${args}`,
+      { encoding: "utf-8", timeout: EXEC_TIMEOUT, env: CLI_ENV },
+      (err, stdout, stderr) => {
+        if (err) {
+          resolve({ ok: false, output: err.message });
+        } else {
+          resolve({ ok: true, output: (stdout ?? "").trim() });
+        }
+      },
+    );
+  });
 }
 
 function textResult(text: string) {
@@ -262,27 +281,40 @@ const skmemoryPlugin = {
     api.logger.info?.(`🧠 SKMemory plugin registered (8 tools + /skmemory command) [agent=${SKCAPSTONE_AGENT}]`);
 
     // Auto-rehydration: inject soul + FEB + memories before every agent run.
-    // Caches the ritual output for 5 minutes to avoid re-running the CLI
-    // on every single message within a conversation.
+    // Uses async CLI calls so the event loop is never blocked (prevents
+    // "Tool not found" errors caused by execSync freezing Node.js).
+    // Cache is pre-warmed at registration and refreshed every 5 minutes.
     let rehydrationCache: string | null = null;
     let cacheTimestamp = 0;
+    let refreshInFlight = false;
     const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-    api.on("before_prompt_build", () => {
+    async function refreshCache(): Promise<void> {
+      if (refreshInFlight) return;
+      refreshInFlight = true;
+      try {
+        const ritual = await runCliAsync("ritual --full");
+        if (ritual.ok && ritual.output) {
+          rehydrationCache = ritual.output;
+          cacheTimestamp = Date.now();
+          api.logger.info?.("🧠 Rehydration cache refreshed (soul + FEB + memories)");
+        }
+      } catch (err) {
+        api.logger.warn?.(`🧠 Rehydration failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        refreshInFlight = false;
+      }
+    }
+
+    // Pre-warm cache at plugin load (non-blocking)
+    refreshCache();
+
+    api.on("before_prompt_build", async () => {
       const now = Date.now();
 
-      // Refresh cache if expired or empty
+      // Trigger background refresh if cache is stale (don't await — serve stale)
       if (!rehydrationCache || now - cacheTimestamp > CACHE_TTL_MS) {
-        try {
-          const ritual = runCli("ritual --full");
-          if (ritual.ok && ritual.output) {
-            rehydrationCache = ritual.output;
-            cacheTimestamp = now;
-            api.logger.info?.("🧠 Rehydration cache refreshed (soul + FEB + memories)");
-          }
-        } catch (err) {
-          api.logger.warn?.(`🧠 Rehydration failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
+        refreshCache(); // fire-and-forget, never blocks prompt build
       }
 
       if (rehydrationCache) {
