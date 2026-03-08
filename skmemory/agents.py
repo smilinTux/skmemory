@@ -155,7 +155,7 @@ def get_agent_paths(agent_name: Optional[str] = None) -> dict[str, Path]:
         "memory_long": base / "memory" / "long-term",
         "logs": base / "logs",
         "archive": base / "archive",
-        "index_db": base / "index.db",
+        "index_db": base / "memory" / "index.db",
         "config_yaml": base / "config" / "skmemory.yaml",
     }
 
