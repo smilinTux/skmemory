@@ -242,9 +242,28 @@ def snapshot(
 @click.argument("memory_id")
 @click.pass_context
 def recall(ctx: click.Context, memory_id: str) -> None:
-    """Retrieve a specific memory by ID."""
+    """Retrieve a specific memory by ID (supports partial ID prefix)."""
     store: MemoryStore = ctx.obj["store"]
     memory = store.recall(memory_id)
+
+    # If exact match failed, try prefix matching across memory tier dirs
+    if memory is None and len(memory_id) >= 6:
+        from pathlib import Path
+        import os
+
+        agent = os.environ.get("SKCAPSTONE_AGENT", "lumina")
+        mem_root = Path.home() / ".skcapstone" / "agents" / agent / "memory"
+
+        for tier in ("short-term", "mid-term", "long-term"):
+            tier_dir = mem_root / tier
+            if not tier_dir.is_dir():
+                continue
+            for f in tier_dir.glob(f"{memory_id}*.json"):
+                memory = store.recall(f.stem)
+                if memory:
+                    break
+            if memory:
+                break
 
     if memory is None:
         click.echo(f"Memory not found: {memory_id}", err=True)
