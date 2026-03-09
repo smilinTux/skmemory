@@ -9,7 +9,7 @@
  *
  * Requires: skmemory CLI on PATH (typically via ~/.skenv/bin/skmemory)
  *
- * @version 0.6.1
+ * @version 0.6.2
  */
 
 import { execSync, exec } from "node:child_process";
@@ -216,6 +216,50 @@ function createImportSeedsTool() {
   };
 }
 
+function createRecallTool() {
+  return {
+    name: "skmemory_recall",
+    label: "SKMemory Recall",
+    description:
+      "Retrieve the full content of a specific memory by its ID. Use after skmemory_search to read the actual content of a memory.",
+    parameters: {
+      type: "object",
+      required: ["memory_id"],
+      properties: {
+        memory_id: { type: "string", description: "The memory ID (e.g., 241804cc or full UUID)." },
+      },
+    },
+    async execute(_id, params) {
+      const id = String(params?.memory_id ?? "");
+      const result = runCli(`recall ${escapeShellArg(id)}`);
+      return textResult(result.output);
+    },
+  };
+}
+
+function createSearchDeepTool() {
+  return {
+    name: "skmemory_search_deep",
+    label: "SKMemory Deep Search",
+    description:
+      "Deep search across all memory tiers. Slower but more thorough than regular search — searches full content, not just titles.",
+    parameters: {
+      type: "object",
+      required: ["query"],
+      properties: {
+        query: { type: "string", description: "Search query text." },
+        limit: { type: "number", description: "Max results (default: 5)." },
+      },
+    },
+    async execute(_id, params) {
+      const query = String(params?.query ?? "");
+      const limit = typeof params?.limit === "number" ? params.limit : 5;
+      const result = runCli(`search-deep ${escapeShellArg(query)} --limit ${limit}`);
+      return textResult(result.output);
+    },
+  };
+}
+
 function createExportTool() {
   return {
     name: "skmemory_export",
@@ -245,6 +289,8 @@ const skmemoryPlugin = {
       createHealthTool(),
       createContextTool(),
       createListTool(),
+      createRecallTool(),
+      createSearchDeepTool(),
       createImportSeedsTool(),
       createExportTool(),
     ];
@@ -267,7 +313,7 @@ const skmemoryPlugin = {
       },
     });
 
-    api.logger.info?.(`SKMemory plugin registered (8 tools + /skmemory command) [agent=${SKCAPSTONE_AGENT}]`);
+    api.logger.info?.(`SKMemory plugin registered (10 tools + /skmemory command) [agent=${SKCAPSTONE_AGENT}]`);
 
     // ── Auto-rehydration (non-blocking) ──────────────────────────────────
     // Injects soul + FEB + memories before every agent run.
