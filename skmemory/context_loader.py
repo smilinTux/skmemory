@@ -71,7 +71,7 @@ class LazyMemoryLoader:
         self.agent_name = agent_name
         self.paths = get_agent_paths(agent_name)
         self.today = datetime.now().date()
-        self.db = SQLiteBackend(str(self.paths["index_db"]))
+        self.db = SQLiteBackend(str(self.paths["base"] / "memory"))
 
     def load_active_context(self) -> MemoryContext:
         """Load token-optimized context for current session.
@@ -204,13 +204,13 @@ class LazyMemoryLoader:
             pattern = f"%{query}%"
             cursor = self.db._conn.execute(
                 """
-                SELECT id, title, content, summary, tags, layer, created_at
-                FROM memories 
-                WHERE title LIKE ? OR content LIKE ? OR tags LIKE ?
-                ORDER BY 
-                    CASE 
+                SELECT id, title, content_preview, summary, tags, layer, created_at
+                FROM memories
+                WHERE title LIKE ? OR content_preview LIKE ? OR tags LIKE ?
+                ORDER BY
+                    CASE
                         WHEN title LIKE ? THEN 3
-                        WHEN content LIKE ? THEN 2
+                        WHEN content_preview LIKE ? THEN 2
                         ELSE 1
                     END DESC,
                     created_at DESC
@@ -224,7 +224,7 @@ class LazyMemoryLoader:
                     "title": row[1],
                     "content": row[2],
                     "summary": row[3],
-                    "tags": json.loads(row[4]) if row[4] else [],
+                    "tags": (json.loads(row[4]) if row[4] and row[4].startswith("[") else []),
                     "layer": row[5],
                     "created_at": row[6],
                 }
