@@ -424,7 +424,9 @@ class SQLiteBackend(BaseBackend):
     def search_text(self, query: str, limit: int = 10) -> list[Memory]:
         """Search memories using the SQLite index (title, summary, preview).
 
-        Falls back to full file scan only if the index doesn't find matches.
+        For multi-word queries, tries AND first (all words must match).
+        If AND returns nothing, falls back to OR (any word matches),
+        ranked by how many query words each memory contains.
 
         Args:
             query: Search string.
@@ -434,18 +436,63 @@ class SQLiteBackend(BaseBackend):
             list[Memory]: Matching memories.
         """
         conn = self._get_conn()
-        query_param = f"%{query}%"
+        words = query.split()
+
+        if not words:
+            return []
+
+        cols = ["title", "summary", "content_preview", "tags"]
+
+        def _word_clause(word: str) -> str:
+            return "(" + " OR ".join(f"{c} LIKE ?" for c in cols) + ")"
+
+        def _word_params(word: str) -> list[str]:
+            pattern = f"%{word}%"
+            return [pattern] * len(cols)
+
+        # Try AND first: all words must match
+        and_clauses = [_word_clause(w) for w in words]
+        and_params: list[str] = []
+        for w in words:
+            and_params.extend(_word_params(w))
+        and_params.append(str(limit))
 
         rows = conn.execute(
-            """
+            f"""
             SELECT * FROM memories
-            WHERE title LIKE ? OR summary LIKE ? OR content_preview LIKE ?
-                  OR tags LIKE ?
+            WHERE {" AND ".join(and_clauses)}
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (query_param, query_param, query_param, query_param, limit),
+            and_params,
         ).fetchall()
+
+        if not rows and len(words) > 1:
+            # Fall back to OR: any word matches, ranked by match count
+            or_clauses = [_word_clause(w) for w in words]
+            # Use SUM of CASE expressions to count matching words
+            score_expr = " + ".join(
+                f"CASE WHEN {_word_clause(w)} THEN 1 ELSE 0 END"
+                for w in words
+            )
+            or_params: list[str] = []
+            # params for WHERE (OR)
+            for w in words:
+                or_params.extend(_word_params(w))
+            # params for ORDER BY score (same patterns again)
+            for w in words:
+                or_params.extend(_word_params(w))
+            or_params.append(str(limit))
+
+            rows = conn.execute(
+                f"""
+                SELECT * FROM memories
+                WHERE {" OR ".join(or_clauses)}
+                ORDER BY ({score_expr}) DESC, created_at DESC
+                LIMIT ?
+                """,
+                or_params,
+            ).fetchall()
 
         results = []
         for row in rows:

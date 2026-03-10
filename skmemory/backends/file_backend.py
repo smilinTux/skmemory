@@ -168,8 +168,11 @@ class FileBackend(BaseBackend):
         Returns:
             list[Memory]: Matching memories.
         """
-        query_lower = query.lower()
+        words = [w.lower() for w in query.split()]
+        if not words:
+            return []
         results: list[Memory] = []
+        scored: list[tuple[int, Memory]] = []
 
         for layer in MemoryLayer:
             layer_dir = self.base_path / layer.value
@@ -178,14 +181,18 @@ class FileBackend(BaseBackend):
             for json_file in layer_dir.glob("*.json"):
                 try:
                     raw = json_file.read_text(encoding="utf-8")
-                    if query_lower not in raw.lower():
+                    raw_lower = raw.lower()
+                    hits = sum(1 for w in words if w in raw_lower)
+                    if hits == 0:
                         continue
                     data = json.loads(raw)
-                    results.append(Memory(**data))
+                    scored.append((hits, Memory(**data)))
                 except (json.JSONDecodeError, Exception):
                     continue
 
-        results.sort(key=lambda m: m.created_at, reverse=True)
+        # Sort by match count desc, then recency
+        scored.sort(key=lambda t: (t[0], t[1].created_at), reverse=True)
+        results = [m for _, m in scored]
         return results[:limit]
 
     def health_check(self) -> dict:

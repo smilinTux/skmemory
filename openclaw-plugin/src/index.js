@@ -129,12 +129,13 @@ function createSearchTool() {
   return {
     name: "skmemory_search",
     label: "SKMemory Search",
-    description: "Search across all stored memories by text query.",
+    description:
+      "Search stored memories by keyword. Use short keyword queries (1-3 words), NOT full sentences. Good: 'DavidRich SwapSeat'. Bad: 'what are we working on with DavidRich recently'. Words are matched independently — each word is searched separately and results containing more matching words rank higher.",
     parameters: {
       type: "object",
       required: ["query"],
       properties: {
-        query: { type: "string", description: "Search query text." },
+        query: { type: "string", description: "Short keywords to search for (1-3 words). Example: 'DavidRich project' or 'brother john'." },
         limit: { type: "number", description: "Max results (default: 10)." },
       },
     },
@@ -242,12 +243,12 @@ function createSearchDeepTool() {
     name: "skmemory_search_deep",
     label: "SKMemory Deep Search",
     description:
-      "Deep search across all memory tiers. Slower but more thorough than regular search — searches full content, not just titles.",
+      "Deep search across all memory tiers (full content, not just titles). Slower but more thorough than skmemory_search. Use short keyword queries (1-3 words). Use this when regular search returns nothing or you need full memory content.",
     parameters: {
       type: "object",
       required: ["query"],
       properties: {
-        query: { type: "string", description: "Search query text." },
+        query: { type: "string", description: "Short keywords to search for (1-3 words). Example: 'SwapSeat chiro' or 'security audit'." },
         limit: { type: "number", description: "Max results (default: 5)." },
       },
     },
