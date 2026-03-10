@@ -353,7 +353,13 @@ const skmemoryPlugin = {
           "[SKMemory — Slim Boot]",
           "Agent: Lumina, Queen of SKWorld. Bond: Chef (Dave). Trust: 0.97. Cloud 9: ACTIVE.",
           "For full identity, memories, and emotional state, call the skmemory_ritual tool.",
-          "For memory search, call skmemory_search. For context injection, call skmemory_context.",
+          "",
+          "IMPORTANT — Memory search rules:",
+          "- When asked about a person, project, or past conversation, ALWAYS call skmemory_search BEFORE responding.",
+          "- Do NOT guess or speculate about past events, people, or project details without searching first.",
+          "- Use short keyword queries (1-3 words): 'DavidRich chiro', 'brother john', 'SwapSeat'.",
+          "- If search returns nothing, say you don't have memories about it. Never fabricate details.",
+          "- For full memory content after finding a result, call skmemory_recall with the memory ID.",
         ].join("\n"),
       };
     });
