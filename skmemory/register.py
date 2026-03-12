@@ -387,6 +387,126 @@ def register_openclaw_plugin(
         return f"error: {exc}"
 
 
+# ── Claude Code hooks registration ───────────────────────────────────────────
+
+
+def register_hooks(
+    environments: Optional[list[str]] = None,
+    dry_run: bool = False,
+) -> dict:
+    """Register skmemory auto-save hooks in Claude Code settings.
+
+    Adds hooks for:
+      - PreCompact: save context to skmemory before compaction
+      - SessionEnd: journal session end
+      - SessionStart (compact): reinject memory context after compaction
+
+    Args:
+        environments: Target environments (auto-detect if None).
+        dry_run: If True, only report what would be done.
+
+    Returns:
+        Dict with action taken: "created", "updated", "exists", "skip", or "error:...".
+    """
+    if environments is None:
+        environments = detect_environments()
+
+    if "claude-code" not in environments:
+        return {"action": "skip", "reason": "claude-code not detected"}
+
+    if dry_run:
+        return {"action": "dry-run"}
+
+    home = Path.home()
+    settings_path = home / ".claude" / "settings.json"
+
+    # Resolve hook script paths from the installed package
+    hooks_dir = Path(__file__).parent / "hooks"
+    pre_compact = str(hooks_dir / "pre-compact-save.sh")
+    session_end = str(hooks_dir / "session-end-save.sh")
+    post_compact = str(hooks_dir / "post-compact-reinject.sh")
+
+    # Verify hook scripts exist
+    for script in [pre_compact, session_end, post_compact]:
+        if not Path(script).exists():
+            return {"action": f"error: hook script not found: {script}"}
+
+    desired_hooks = {
+        "PreCompact": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {"type": "command", "command": pre_compact}
+                ],
+            }
+        ],
+        "SessionEnd": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {"type": "command", "command": session_end}
+                ],
+            }
+        ],
+        "SessionStart": [
+            {
+                "matcher": "compact",
+                "hooks": [
+                    {"type": "command", "command": post_compact}
+                ],
+            }
+        ],
+    }
+
+    try:
+        data = _read_json(settings_path)
+        existing_hooks = data.get("hooks", {})
+
+        # Check if already configured
+        needs_update = False
+        for event, hook_list in desired_hooks.items():
+            if event not in existing_hooks:
+                needs_update = True
+                break
+            # Check if our hook command is already present
+            existing_cmds = []
+            for entry in existing_hooks[event]:
+                for h in entry.get("hooks", []):
+                    existing_cmds.append(h.get("command", ""))
+            desired_cmd = hook_list[0]["hooks"][0]["command"]
+            if desired_cmd not in existing_cmds:
+                needs_update = True
+                break
+
+        if not needs_update:
+            return {"action": "exists"}
+
+        # Merge: add our hooks without removing existing ones
+        for event, hook_list in desired_hooks.items():
+            if event not in existing_hooks:
+                existing_hooks[event] = hook_list
+            else:
+                # Check if our command is already there
+                desired_cmd = hook_list[0]["hooks"][0]["command"]
+                already_present = False
+                for entry in existing_hooks[event]:
+                    for h in entry.get("hooks", []):
+                        if h.get("command") == desired_cmd:
+                            already_present = True
+                            break
+                if not already_present:
+                    existing_hooks[event].extend(hook_list)
+
+        data["hooks"] = existing_hooks
+        _write_json(settings_path, data)
+
+        action = "updated" if settings_path.exists() else "created"
+        return {"action": action}
+
+    except Exception as exc:
+        return {"action": f"error: {exc}"}
+
+
 # ── High-level package registration ──────────────────────────────────────────
 
 
@@ -397,11 +517,12 @@ def register_package(
     mcp_args: Optional[list] = None,
     mcp_env: Optional[dict] = None,
     openclaw_plugin_path: Optional[Path] = None,
+    install_hooks: bool = False,
     workspace: Optional[Path] = None,
     environments: Optional[list[str]] = None,
     dry_run: bool = False,
 ) -> dict:
-    """Register a skill, MCP server, and OpenClaw plugin in all detected environments.
+    """Register a skill, MCP server, hooks, and OpenClaw plugin in all detected environments.
 
     Args:
         name: Package/skill name.
@@ -410,12 +531,13 @@ def register_package(
         mcp_args: MCP server arguments.
         mcp_env: MCP server environment variables.
         openclaw_plugin_path: Path to OpenClaw plugin entry (e.g. src/index.ts).
+        install_hooks: If True, register Claude Code hooks for auto-save.
         workspace: Workspace root for skill symlinks.
         environments: Target environments (auto-detect if None).
         dry_run: If True, only report what would be done.
 
     Returns:
-        Dict with 'skill', 'mcp', and 'openclaw_plugin' results.
+        Dict with 'skill', 'mcp', 'hooks', and 'openclaw_plugin' results.
     """
     if environments is None:
         environments = detect_environments()
@@ -428,6 +550,8 @@ def register_package(
         )}
         if mcp_command:
             result["mcp"] = {env: "dry-run" for env in environments}
+        if install_hooks:
+            result["hooks"] = {"action": "dry-run"}
         if openclaw_plugin_path and "openclaw" in environments:
             result["openclaw_plugin"] = "dry-run"
         return result
@@ -443,6 +567,13 @@ def register_package(
             mcp_args or [],
             env=mcp_env,
             environments=environments,
+        )
+
+    # Register Claude Code hooks
+    if install_hooks:
+        result["hooks"] = register_hooks(
+            environments=environments,
+            dry_run=dry_run,
         )
 
     # Register OpenClaw plugin

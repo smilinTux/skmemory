@@ -61,6 +61,7 @@ dev = [
 [project.scripts]
 skmemory = "skmemory.cli:main"
 skmemory-mcp = "skmemory.mcp_server:main"
+skmemory-post-install = "skmemory.post_install:main"
 
 [project.urls]
 Homepage = "https://github.com/smilinTux/skmemory"
@@ -71,7 +72,7 @@ Issues = "https://github.com/smilinTux/skmemory/issues"
 include = ["skmemory*"]
 
 [tool.setuptools.package-data]
-skmemory = ["data/*.json", "SKILL.md"]
+skmemory = ["data/*.json", "SKILL.md", "hooks/*.sh"]
 
 [tool.black]
 line-length = 99

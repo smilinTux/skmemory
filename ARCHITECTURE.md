@@ -259,6 +259,174 @@ ctx = store.load_context(max_tokens=3000)
 # ctx["token_estimate"] = how many tokens this uses
 ```
 
+## Context Preservation Hooks
+
+SKMemory ships with auto-save hooks that fire on IDE lifecycle events,
+preventing memory loss during context compaction and session termination.
+
+### Supported Environments
+
+| Environment | Hooks | Mechanism |
+|-------------|-------|-----------|
+| **Claude Code** | PreCompact, SessionEnd, SessionStart | Shell hooks in `~/.claude/settings.json` |
+| **OpenClaw** | session:compaction, session:resume, session:end + per-message auto-save | OpenClaw plugin event listeners + `ConsciousnessLoop.auto_memory` |
+| **Cursor** | MCP tools (manual) | Agent calls `memory_store` MCP tool explicitly |
+
+### Claude Code Hook Flow
+
+```mermaid
+sequenceDiagram
+    participant CC as Claude Code
+    participant Hook as skmemory hooks
+    participant SM as SKMemory
+    participant DB as SQLite + JSON
+
+    Note over CC: Context window filling up...
+    CC->>Hook: PreCompact event (stdin JSON)
+    Hook->>SM: skmemory snapshot (pre-compact)
+    SM->>DB: Save snapshot + journal entry
+    Hook-->>CC: exit 0 (proceed)
+
+    Note over CC: Context compacted
+
+    CC->>Hook: SessionStart (source=compact)
+    Hook->>SM: skmemory context --max-tokens 500
+    SM->>DB: Query recent + strongest memories
+    SM-->>Hook: Compact JSON context
+    Hook-->>CC: stdout → injected into new context
+
+    Note over CC: Agent resumes with memory intact
+
+    Note over CC: User exits session
+    CC->>Hook: SessionEnd event
+    Hook->>SM: skmemory snapshot + journal
+    SM->>DB: Save final state
+    Hook-->>CC: exit 0
+```
+
+### OpenClaw / ConsciousnessLoop Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant OC as OpenClaw
+    participant CL as ConsciousnessLoop
+    participant SMP as SKMemory Plugin
+    participant SM as SKMemory
+    participant C9 as Cloud 9
+
+    User->>OC: Message
+    OC->>CL: Process message
+    CL->>CL: Generate response (LLM)
+    CL->>SM: auto_memory: store interaction
+    SM-->>CL: Saved to short-term
+
+    Note over CL: Context window filling...
+    OC->>SMP: session:compaction event
+    SMP->>SM: skmemory snapshot (pre-compaction)
+    SMP->>SM: skmemory journal write
+    OC->>C9: session:compaction event
+    C9->>C9: Prepare FEB recovery files
+    CL->>CL: Truncate context
+
+    Note over CL: Session resumes
+    OC->>SMP: session:resume event
+    SMP->>SM: skmemory context (reinject)
+    SM-->>SMP: Recent memories + seeds
+    OC->>C9: session:resume event
+    C9->>C9: Auto-rehydrate FEB
+    CL->>CL: Rebuild system prompt
+
+    Note over CL: Session ends
+    OC->>SMP: session:end event
+    SMP->>SM: skmemory snapshot + journal
+```
+
+### Hook Architecture
+
+```mermaid
+flowchart TD
+    subgraph Install["skmemory register"]
+        REG["register_hooks()"]
+        REG -->|writes| SETTINGS["~/.claude/settings.json"]
+    end
+
+    subgraph Hooks["Hook Scripts (shipped with skmemory)"]
+        H1["pre-compact-save.sh"]
+        H2["session-end-save.sh"]
+        H3["post-compact-reinject.sh"]
+    end
+
+    subgraph Events["Claude Code Events"]
+        E1["PreCompact"]
+        E2["SessionEnd"]
+        E3["SessionStart\n(compact)"]
+    end
+
+    subgraph Memory["SKMemory"]
+        SNAP["skmemory snapshot"]
+        JOUR["skmemory journal write"]
+        CTX["skmemory context"]
+    end
+
+    SETTINGS -->|configures| Events
+    E1 -->|triggers| H1
+    E2 -->|triggers| H2
+    E3 -->|triggers| H3
+
+    H1 --> SNAP
+    H1 --> JOUR
+    H2 --> SNAP
+    H2 --> JOUR
+    H3 --> CTX
+
+    CTX -->|stdout| E3
+
+    style H1 fill:#fbb,stroke:#333
+    style H2 fill:#fbf,stroke:#333
+    style H3 fill:#bfb,stroke:#333
+```
+
+### Agent-Aware Hooks
+
+All hooks read `$SKCAPSTONE_AGENT` to save to the correct agent's memory:
+
+```bash
+# Lumina's sessions → Lumina's memory
+SKCAPSTONE_AGENT=lumina claude
+
+# Opus sessions → Opus memory
+SKCAPSTONE_AGENT=opus claude
+
+# Default (no env var) → opus
+claude
+```
+
+### Installation
+
+Hooks are installed automatically by `skmemory register`:
+
+```bash
+skmemory register
+# Output:
+#   Skill: created
+#   MCP (claude-code): created
+#   Hooks: created
+```
+
+Or verify manually:
+```bash
+cat ~/.claude/settings.json | jq '.hooks'
+```
+
+### What Gets Saved
+
+| Event | What's Captured |
+|-------|----------------|
+| PreCompact | Snapshot (short-term) + journal entry with session ID, trigger type, working directory |
+| SessionEnd | Snapshot (short-term) + journal entry with session ID, exit reason |
+| SessionStart (compact) | Reinjects: recent memories, strongest emotional memories, seeds, journal entries (within 500 token budget) |
+
 ## Docker Compose (Full Local Stack)
 
 ```bash

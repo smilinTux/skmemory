@@ -27,7 +27,8 @@
       "events": [
         "session:start",
         "session:compaction",
-        "session:resume"
+        "session:resume",
+        "session:end"
       ],
       "dashboard": {
         "widgets": [

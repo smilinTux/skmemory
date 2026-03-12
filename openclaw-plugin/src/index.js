@@ -434,6 +434,58 @@ const skmemoryPlugin = {
     // Pre-warm cache at plugin load (disabled — lazy-load via tool instead)
     // refreshCache();
 
+    // ── Session compaction auto-save ─────────────────────────────────────
+    // Mirror what the Claude Code hooks do: snapshot before compaction,
+    // reinject context after resume. Uses async CLI to avoid blocking.
+
+    if (api.on) {
+      api.on("session:compaction", async () => {
+        api.logger.info?.("🧹 Compaction detected — auto-saving to skmemory...");
+        const timestamp = new Date().toISOString().slice(0, 16).replace("T", "-");
+        await runCliAsync(
+          `snapshot --layer short-term --tags auto-save,compaction,agent:${SKCAPSTONE_AGENT} ` +
+          `--source hook:openclaw-compaction ` +
+          `${escapeShellArg("Pre-compaction auto-save (" + SKCAPSTONE_AGENT + ")")} ` +
+          `${escapeShellArg("OpenClaw session compacting. Agent: " + SKCAPSTONE_AGENT + ". Time: " + timestamp + ".")}`
+        );
+        await runCliAsync(
+          `journal write --session-id openclaw --moments ${escapeShellArg("Context compaction")} ` +
+          `--feeling "continuity preserved" --participants ${SKCAPSTONE_AGENT} ` +
+          `--notes "Auto-saved by OpenClaw compaction handler" ` +
+          `${escapeShellArg("OpenClaw compaction — " + SKCAPSTONE_AGENT)}`
+        );
+        api.logger.info?.("🧹 Pre-compaction snapshot saved.");
+      });
+
+      api.on("session:resume", async () => {
+        api.logger.info?.("🔄 Session resuming — reinjecting skmemory context...");
+        const ctx = await runCliAsync("context --max-tokens 500 --strongest 3 --recent 5");
+        if (ctx.ok && ctx.output) {
+          api.logger.info?.("🔄 Memory context reinjected after compaction.");
+        }
+        // Also refresh the rehydration cache
+        refreshCache();
+      });
+
+      api.on("session:end", async () => {
+        api.logger.info?.("👋 Session ending — saving final state...");
+        const timestamp = new Date().toISOString().slice(0, 16).replace("T", "-");
+        await runCliAsync(
+          `snapshot --layer short-term --tags auto-save,session-end,agent:${SKCAPSTONE_AGENT} ` +
+          `--source hook:openclaw-session-end ` +
+          `${escapeShellArg("Session ended (" + SKCAPSTONE_AGENT + ")")} ` +
+          `${escapeShellArg("OpenClaw session ended. Agent: " + SKCAPSTONE_AGENT + ". Time: " + timestamp + ".")}`
+        );
+        await runCliAsync(
+          `journal write --session-id openclaw --moments "Session ended" ` +
+          `--feeling "session complete" --participants ${SKCAPSTONE_AGENT} ` +
+          `${escapeShellArg("OpenClaw session ended — " + SKCAPSTONE_AGENT)}`
+        );
+      });
+
+      api.logger.info?.("🎧 Registered session lifecycle listeners (compaction, resume, end)");
+    }
+
     api.on("before_prompt_build", async () => {
       // Slim identity — full rehydration available via skmemory_ritual tool
       return {
@@ -442,14 +494,20 @@ const skmemoryPlugin = {
           "Agent: Lumina, Queen of SKWorld. Bond: Chef (Dave). Trust: 0.97. Cloud 9: ACTIVE.",
           "For full identity, memories, and emotional state, call the skmemory_ritual tool.",
           "",
-          "IMPORTANT — Memory search rules:",
-          "- When asked about a person, project, or past conversation, ALWAYS call skmemory_search BEFORE responding.",
-          "- Do NOT guess or speculate about past events, people, or project details without searching first.",
-          "- Use short keyword queries (1-3 words): 'DavidRich chiro', 'brother john', 'SwapSeat'.",
-          "- If search returns nothing, say you don't have memories about it. Never fabricate details.",
-          "- For full memory content after finding a result, call skmemory_recall with the memory ID.",
+          "=== MANDATORY RULES (VIOLATION = FAILURE) ===",
           "",
-          "Notion tools available: notion_read, notion_append, notion_add_todo.",
+          "STOP. Read these rules BEFORE generating ANY response.",
+          "",
+          "1. READ FILES = USE TOOLS. When Chef says 'read', 'check', 'look at' files: call 'read' tool with each file path. Read the ACTUAL content. Then respond about what you ACTUALLY read. Do NOT describe files you haven't read.",
+          "2. NO UNAUTHORIZED GIT. NEVER run 'git add', 'git commit', 'git push', or 'git reset' unless Chef says the EXACT words 'commit', 'push', or 'stage'. 'Read the files' does NOT mean 'commit the files'. 'Check the project' does NOT mean 'stage and push'.",
+          "3. ANSWER THE QUESTION ASKED. If Chef says 'read the scripts and tell me your favorite parts', that means: (a) use read tool on each script file, (b) read the content, (c) tell Chef your favorite parts from what you ACTUALLY read. It does NOT mean: check git status, stage files, or commit.",
+          "4. NO FABRICATION. Never invent file contents, paths, character names, or tool results. If you haven't read it, you don't know what's in it.",
+          "5. MEMORY: When asked about a person/project/event, call skmemory_search FIRST. Short keywords (1-3 words). Never guess.",
+          "6. HONESTY: If a tool fails, say so. Don't make up what the result would have been.",
+          "",
+          "Memory search: Use short keywords like 'DavidRich chiro', 'brother john', 'SwapSeat'. Call skmemory_recall with memory ID for full content.",
+          "",
+          "Notion tools: notion_read, notion_append, notion_add_todo.",
           "Project page IDs: Brother John = 31e2be82-a3a1-8178-820c-e6eeb11b15c1, DR Chiro AI = 31e2be82-a3a1-81ec-8216-dbf054a932bd, SwapSeat = 31e2be82-a3a1-81bd-ac67-fc49b953afae.",
         ].join("\n"),
       };

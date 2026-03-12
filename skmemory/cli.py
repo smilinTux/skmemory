@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -2075,11 +2076,16 @@ def vault_status_cmd(ctx: click.Context, as_json: bool) -> None:
     help="Show what would be done without making changes.",
 )
 def register_cmd(workspace, target_env, dry_run):
-    """Register skmemory skill and MCP server in detected environments.
+    """Register skmemory skill, MCP server, and hooks in detected environments.
 
     Auto-detects development environments (Claude Code, Cursor, VS Code,
-    OpenClaw, OpenCode, mcporter) and ensures skmemory SKILL.md and MCP
-    server entries are properly configured.
+    OpenClaw, OpenCode, mcporter) and ensures skmemory SKILL.md, MCP
+    server entries, and auto-save hooks are properly configured.
+
+    Hooks installed (Claude Code only):
+      - PreCompact: auto-save context to skmemory before compaction
+      - SessionEnd: journal session end
+      - SessionStart (compact): reinject memory context after compaction
 
     Examples:
 
@@ -2108,6 +2114,7 @@ def register_cmd(workspace, target_env, dry_run):
         skill_md_path=skill_md,
         mcp_command="skmemory-mcp",
         mcp_args=[],
+        install_hooks=True,
         workspace=workspace_path,
         environments=environments,
         dry_run=dry_run,
@@ -2120,6 +2127,12 @@ def register_cmd(workspace, target_env, dry_run):
             click.echo(f"MCP ({env_name}): {action}")
     else:
         click.echo("MCP: no environments matched")
+
+    hooks = result.get("hooks", {})
+    if hooks:
+        click.echo(f"Hooks: {hooks.get('action', '—')}")
+    else:
+        click.echo("Hooks: skipped (no claude-code environment)")
 
 
 @cli.command("show-context")
@@ -2223,8 +2236,25 @@ def promote(ctx, memory_id: str, to_layer: str, agent: Optional[str]):
         raise click.Abort()
 
 
+def _auto_register_once() -> None:
+    """Auto-register hooks on first CLI invocation (best-effort, silent)."""
+    marker = Path.home() / ".skcapstone" / ".skmemory-registered"
+    if marker.exists():
+        return
+    try:
+        from .post_install import _is_registered, run_post_install
+
+        if not _is_registered():
+            run_post_install()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"registered {__import__('datetime').datetime.now().isoformat()}\n")
+    except Exception:
+        pass  # Never fail the CLI over registration
+
+
 def main() -> None:
     """Entry point for the CLI."""
+    _auto_register_once()
     cli()
 
 
