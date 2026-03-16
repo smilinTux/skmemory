@@ -26,6 +26,10 @@ from .models import (
 )
 
 
+MAX_CONTENT_LENGTH = 10000
+CONTENT_OVERFLOW_STRATEGY = "split"  # "truncate" or "split"
+
+
 class MemoryStore:
     """Main entry point for all memory operations.
 
@@ -37,6 +41,8 @@ class MemoryStore:
         primary: The primary storage backend (default: FileBackend).
         vector: Optional vector search backend (e.g., SKVectorBackend).
         graph: Optional graph backend (e.g., SKGraphBackend) for relationship indexing.
+        max_content_length: Max chars before overflow strategy applies (default: 10000).
+        content_overflow_strategy: "truncate" or "split" (default: "split").
     """
 
     def __init__(
@@ -45,6 +51,8 @@ class MemoryStore:
         vector: Optional[BaseBackend] = None,
         graph: Optional["SKGraphBackend"] = None,
         use_sqlite: bool = True,
+        max_content_length: int = MAX_CONTENT_LENGTH,
+        content_overflow_strategy: str = CONTENT_OVERFLOW_STRATEGY,
     ) -> None:
         if primary is not None:
             self.primary = primary
@@ -54,6 +62,8 @@ class MemoryStore:
             self.primary = FileBackend()
         self.vector = vector
         self.graph = graph
+        self.max_content_length = max_content_length
+        self.content_overflow_strategy = content_overflow_strategy
 
     def snapshot(
         self,
@@ -89,6 +99,30 @@ class MemoryStore:
         Returns:
             Memory: The stored memory with its assigned ID.
         """
+        # Handle content overflow
+        if len(content) > self.max_content_length:
+            if self.content_overflow_strategy == "split":
+                return self._snapshot_split(
+                    title=title,
+                    content=content,
+                    layer=layer,
+                    role=role,
+                    tags=tags,
+                    emotional=emotional,
+                    source=source,
+                    source_ref=source_ref,
+                    related_ids=related_ids,
+                    metadata=metadata,
+                )
+            else:
+                logger.info(
+                    "Content truncated from %d to %d chars for '%s'",
+                    len(content),
+                    self.max_content_length,
+                    title,
+                )
+                content = content[: self.max_content_length]
+
         memory = Memory(
             title=title,
             content=content,
@@ -119,6 +153,101 @@ class MemoryStore:
                 logger.warning("Graph indexing failed for memory %s: %s", memory.id, exc)
 
         return memory
+
+    def _snapshot_split(
+        self,
+        title: str,
+        content: str,
+        *,
+        layer: MemoryLayer = MemoryLayer.SHORT,
+        role: MemoryRole = MemoryRole.GENERAL,
+        tags: Optional[list[str]] = None,
+        emotional: Optional[EmotionalSnapshot] = None,
+        source: str = "manual",
+        source_ref: str = "",
+        related_ids: Optional[list[str]] = None,
+        metadata: Optional[dict] = None,
+    ) -> Memory:
+        """Split oversized content into parent (summary) + child (chunk) memories.
+
+        The parent memory contains a summary (first 200 chars) and links to
+        child memories via related_ids. Each child holds one chunk.
+
+        Returns:
+            Memory: The parent memory.
+        """
+        chunk_size = self.max_content_length
+        chunks = [
+            content[i : i + chunk_size]
+            for i in range(0, len(content), chunk_size)
+        ]
+
+        logger.info(
+            "Splitting '%s' (%d chars) into %d chunks",
+            title,
+            len(content),
+            len(chunks),
+        )
+
+        # Create child memories first
+        child_ids: list[str] = []
+        for i, chunk in enumerate(chunks):
+            child = Memory(
+                title=f"{title} [part {i + 1}/{len(chunks)}]",
+                content=chunk,
+                layer=layer,
+                role=role,
+                tags=(tags or []) + ["content-chunk"],
+                emotional=emotional or EmotionalSnapshot(),
+                source=source,
+                source_ref=source_ref,
+                metadata={
+                    **(metadata or {}),
+                    "chunk_index": i,
+                    "chunk_total": len(chunks),
+                },
+            )
+            child.seal()
+            self.primary.save(child)
+            child_ids.append(child.id)
+
+        # Create parent with summary
+        summary = content[:200] + ("..." if len(content) > 200 else "")
+        all_related = (related_ids or []) + child_ids
+
+        parent = Memory(
+            title=title,
+            content=summary,
+            summary=summary,
+            layer=layer,
+            role=role,
+            tags=(tags or []) + ["content-split-parent"],
+            emotional=emotional or EmotionalSnapshot(),
+            source=source,
+            source_ref=source_ref,
+            related_ids=all_related,
+            metadata={
+                **(metadata or {}),
+                "split_children": child_ids,
+                "original_length": len(content),
+            },
+        )
+        parent.seal()
+        self.primary.save(parent)
+
+        if self.vector:
+            try:
+                self.vector.save(parent)
+            except Exception as exc:
+                logger.warning("Vector indexing failed for split parent %s: %s", parent.id, exc)
+
+        if self.graph:
+            try:
+                self.graph.index_memory(parent)
+            except Exception as exc:
+                logger.warning("Graph indexing failed for split parent %s: %s", parent.id, exc)
+
+        return parent
 
     def recall(self, memory_id: str) -> Optional[Memory]:
         """Retrieve a specific memory by ID with integrity verification.

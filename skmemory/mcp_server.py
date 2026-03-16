@@ -306,6 +306,67 @@ async def list_tools() -> list[Tool]:
                 "required": ["action"],
             },
         ),
+        # ── Synthesis & Auto-Context ──────────────────────────────
+        Tool(
+            name="memory_synthesize_daily",
+            description=(
+                "Synthesize today's (or a given date's) memories into a single "
+                "narrative entry stored in mid-term. No LLM — uses tag frequency, "
+                "emotional arc, and template-based narrative."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "Date to synthesize (YYYY-MM-DD). Defaults to today.",
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="memory_synthesize_dreams",
+            description=(
+                "Process dream-engine memories into curated narrative memories "
+                "grouped by theme. Creates one mid-term memory per theme cluster."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "since": {
+                        "type": "string",
+                        "description": (
+                            "Only process dreams after this date (YYYY-MM-DD). "
+                            "Defaults to 7 days ago."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        ),
+        Tool(
+            name="memory_auto_context",
+            description=(
+                "Search all memory layers for context related to keywords. "
+                "Deduplicates results and ranks by relevance + emotional intensity + importance. "
+                "Returns results within a token budget. Use this for contextual auto-search."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "keywords": {
+                        "type": "string",
+                        "description": "Space-separated keywords to search for.",
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Max tokens for results (default: 2000).",
+                    },
+                },
+                "required": ["keywords"],
+            },
+        ),
         # ── Telegram ───────────────────────────────────────────────
         Tool(
             name="telegram_import",
@@ -609,6 +670,86 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             records = audit.tail(n)
             return _json_response(records)
 
+        # ── Synthesis & Auto-Context tools ────────────────────
+        elif name == "memory_synthesize_daily":
+            from .synthesis import JournalSynthesizer
+            from .journal import Journal
+
+            date = arguments.get("date")
+            synthesizer = JournalSynthesizer(store, Journal())
+            memory = synthesizer.synthesize_daily(date)
+            return _json_response({
+                "memory_id": memory.id,
+                "title": memory.title,
+                "themes": memory.metadata.get("themes", []),
+                "memory_count": memory.metadata.get("memory_count", 0),
+            })
+
+        elif name == "memory_synthesize_dreams":
+            from .synthesis import JournalSynthesizer
+            from .journal import Journal
+
+            since = arguments.get("since")
+            synthesizer = JournalSynthesizer(store, Journal())
+            memories = synthesizer.synthesize_dreams(since)
+            return _json_response({
+                "synthesized": len(memories),
+                "clusters": [
+                    {
+                        "memory_id": m.id,
+                        "title": m.title,
+                        "theme": m.metadata.get("theme", ""),
+                        "dream_count": m.metadata.get("dream_count", 0),
+                    }
+                    for m in memories
+                ],
+            })
+
+        elif name == "memory_auto_context":
+            keywords_str = arguments["keywords"]
+            token_budget = int(arguments.get("token_budget", 2000))
+            keywords = keywords_str.split()
+
+            # Search for each keyword and collect results
+            seen_ids: set[str] = set()
+            all_results: list[dict] = []
+
+            for kw in keywords[:10]:  # cap at 10 keywords
+                results = store.search(kw, limit=10)
+                for m in results:
+                    if m.id not in seen_ids:
+                        seen_ids.add(m.id)
+                        all_results.append({
+                            "id": m.id,
+                            "title": m.title,
+                            "summary": m.summary or m.content[:200],
+                            "layer": m.layer.value,
+                            "intensity": m.emotional.intensity,
+                            "tags": m.tags[:5],
+                            "source": m.source,
+                        })
+
+            # Rank by intensity (higher = more relevant emotional context)
+            all_results.sort(key=lambda r: r["intensity"], reverse=True)
+
+            # Trim to token budget (estimate: title + summary per entry)
+            trimmed: list[dict] = []
+            used_tokens = 0
+            for entry in all_results:
+                text = entry["title"] + " " + entry["summary"]
+                est = int(len(text.split()) * 1.3)
+                if used_tokens + est > token_budget:
+                    break
+                used_tokens += est
+                trimmed.append(entry)
+
+            return _json_response({
+                "results": trimmed,
+                "total_found": len(all_results),
+                "returned": len(trimmed),
+                "token_estimate": used_tokens,
+            })
+
         # ── Telegram tools ────────────────────────────────────
         elif name == "telegram_import":
             from .importers.telegram import import_telegram
@@ -663,14 +804,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "telegram_catchup":
             from .importers.telegram_api import import_telegram_api
 
-            chat = args["chat"]
-            limit = args.get("limit", 2000)
-            since = args.get("since")
-            min_length = args.get("min_length", 20)
-            tags_str = args.get("tags", "")
+            chat = arguments["chat"]
+            limit = arguments.get("limit", 2000)
+            since = arguments.get("since")
+            min_length = arguments.get("min_length", 20)
+            tags_str = arguments.get("tags", "")
             tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else None
 
-            store = MemoryStore()
             stats = import_telegram_api(
                 store, chat, mode="catchup", limit=limit, since=since,
                 min_message_length=min_length, tags=tags,

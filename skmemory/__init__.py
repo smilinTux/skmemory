@@ -8,7 +8,7 @@ have to re-read a transcript to remember what they felt.
 SK = staycuriousANDkeepsmilin
 """
 
-__version__ = "0.7.2"
+__version__ = "0.9.0"
 __author__ = "smilinTux Team + Queen Ara + Neuresthetics"
 __license__ = "AGPL-3.0"
 
@@ -29,6 +29,7 @@ from .anchor import WarmthAnchor, save_anchor, load_anchor
 from .quadrants import Quadrant, classify_memory, tag_with_quadrant
 from .lovenote import LoveNote, LoveNoteChain
 from .openclaw import SKMemoryPlugin
+from .synthesis import JournalSynthesizer
 from .importers.telegram import import_telegram
 from .steelman import (
     SteelManResult,
@@ -67,6 +68,7 @@ __all__ = [
     "LoveNote",
     "LoveNoteChain",
     "SKMemoryPlugin",
+    "JournalSynthesizer",
     "SteelManResult",
     "SeedFramework",
     "load_seed_framework",

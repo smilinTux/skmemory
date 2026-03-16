@@ -47,6 +47,10 @@ class PromotionCriteria(BaseModel):
         mid_to_long_tags: Tags that auto-qualify for long-term.
         cloud9_auto_promote: Auto-promote Cloud 9 memories to long-term.
         max_promotions_per_sweep: Cap on promotions per sweep.
+        source_auto_promote: Sources that auto-promote after age threshold
+            regardless of access count (e.g. dreaming-engine writes once).
+        source_auto_promote_age_hours: Hours before source auto-promotion.
+        protected_tags: Tags that protect memories from TTL-based archival.
     """
 
     short_to_mid_intensity: float = Field(default=5.0, ge=0.0, le=10.0)
@@ -59,6 +63,26 @@ class PromotionCriteria(BaseModel):
     )
     cloud9_auto_promote: bool = True
     max_promotions_per_sweep: int = Field(default=50, ge=1)
+
+    source_auto_promote: list[str] = Field(
+        default_factory=lambda: ["dreaming-engine", "journal-synthesis"],
+        description="Sources that auto-promote after age threshold regardless of access count.",
+    )
+    source_auto_promote_age_hours: float = Field(
+        default=12.0,
+        ge=0.0,
+        description="Hours before source-based auto-promotion triggers.",
+    )
+    protected_tags: list[str] = Field(
+        default_factory=lambda: [
+            "narrative",
+            "journal-synthesis",
+            "milestone",
+            "breakthrough",
+            "cloud9:achieved",
+        ],
+        description="Tags that protect memories from TTL-based archival.",
+    )
 
 
 class PromotionResult(BaseModel):
@@ -277,6 +301,13 @@ class PromotionEngine:
             if access >= c.short_to_mid_access_count:
                 return True
 
+        # Source-based auto-promotion (e.g. dreams, journal synthesis)
+        # These sources write once and are never re-accessed, so access_count
+        # stays at 0. Promote based on age alone.
+        if memory.source in c.source_auto_promote:
+            if age_hours >= c.source_auto_promote_age_hours:
+                return True
+
         return False
 
     def _qualifies_mid_to_long(self, memory: Memory) -> bool:
@@ -369,6 +400,10 @@ class PromotionEngine:
         matching = [t for t in memory.tags if t in qualifying_tags]
         if matching:
             reasons.append(f"tagged: {', '.join(matching)}")
+
+        default_auto_sources = ["dreaming-engine", "journal-synthesis"]
+        if memory.source in default_auto_sources:
+            reasons.append(f"source auto-promote ({memory.source})")
 
         return "; ".join(reasons) if reasons else "criteria met"
 
