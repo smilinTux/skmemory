@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pgpy
 import pytest
+
+pgpy = pytest.importorskip("pgpy", reason="pgpy not available or incompatible")
 from pgpy.constants import (
     HashAlgorithm,
     KeyFlags,
