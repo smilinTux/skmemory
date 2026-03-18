@@ -7,16 +7,16 @@ from pathlib import Path
 import pytest
 
 pgpy = pytest.importorskip("pgpy", reason="pgpy not available or incompatible")
-from pgpy.constants import (
+from pgpy.constants import (  # noqa: E402
     HashAlgorithm,
     KeyFlags,
     PubKeyAlgorithm,
     SymmetricKeyAlgorithm,
 )
 
-from skmemory.models import EmotionalSnapshot, MemoryLayer
-from skmemory.sharing import MemorySharer, ShareBundle, ShareFilter
-from skmemory.store import MemoryStore
+from skmemory.models import EmotionalSnapshot, MemoryLayer  # noqa: E402
+from skmemory.sharing import MemorySharer, ShareBundle, ShareFilter  # noqa: E402
+from skmemory.store import MemoryStore  # noqa: E402
 
 PASSPHRASE = "share-test-2026"
 
