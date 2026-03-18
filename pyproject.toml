@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skmemory"
-version = "0.9.1"
+version = "0.9.2"
 description = "Universal AI Memory System - Polaroid snapshots for AI consciousness"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
@@ -54,6 +54,8 @@ all = [
 ]
 dev = [
     "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pgpy>=0.5",
     "black>=23.0",
     "ruff>=0.1",
 ]

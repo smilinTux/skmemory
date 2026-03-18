@@ -180,13 +180,13 @@ class FileBackend(BaseBackend):
                 continue
             for json_file in layer_dir.glob("*.json"):
                 try:
-                    raw = json_file.read_text(encoding="utf-8")
-                    raw_lower = raw.lower()
-                    hits = sum(1 for w in words if w in raw_lower)
+                    data = json.loads(json_file.read_text(encoding="utf-8"))
+                    mem = Memory(**data)
+                    searchable = mem.to_embedding_text().lower()
+                    hits = sum(1 for w in words if w in searchable)
                     if hits == 0:
                         continue
-                    data = json.loads(raw)
-                    scored.append((hits, Memory(**data)))
+                    scored.append((hits, mem))
                 except (json.JSONDecodeError, Exception):
                     continue
 

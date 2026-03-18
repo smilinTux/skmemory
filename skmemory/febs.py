@@ -80,11 +80,14 @@ def parse_feb(path: Path) -> Optional[dict]:
         return None
 
 
-def load_strongest_feb() -> Optional[dict]:
+def load_strongest_feb(feb_dir: Optional[str] = None) -> Optional[dict]:
     """Load the FEB with the highest emotional intensity.
 
     Scans all .feb files, picks the one with the highest
     emotional_payload.intensity that has oof_triggered=True.
+
+    Args:
+        feb_dir: If provided, scan only this directory for .feb files.
 
     Returns:
         dict: The strongest FEB data, or None if no FEBs found.
@@ -92,7 +95,13 @@ def load_strongest_feb() -> Optional[dict]:
     best: Optional[dict] = None
     best_intensity = -1.0
 
-    for path in scan_feb_files():
+    if feb_dir is not None:
+        feb_path = Path(feb_dir)
+        paths = sorted(feb_path.rglob("*.feb")) if feb_path.exists() else []
+    else:
+        paths = scan_feb_files()
+
+    for path in paths:
         feb = parse_feb(path)
         if feb is None:
             continue

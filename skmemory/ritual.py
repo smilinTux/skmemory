@@ -126,6 +126,7 @@ def perform_ritual(
     soul_path: str = DEFAULT_SOUL_PATH,
     seed_dir: str = DEFAULT_SEED_DIR,
     journal_path: Optional[str] = None,
+    feb_dir: Optional[str] = None,
     recent_journal_count: int = 3,
     strongest_memory_count: int = 5,
     max_tokens: int = 2000,
@@ -172,7 +173,7 @@ def perform_ritual(
             prompt_sections.append(section)
 
     # --- Step 1.5: Load FEB emotional state ---
-    feb = load_strongest_feb()
+    feb = load_strongest_feb(feb_dir=feb_dir)
     if feb is not None:
         result.feb_loaded = True
         result.feb_emotion = feb.get("emotional_payload", {}).get(

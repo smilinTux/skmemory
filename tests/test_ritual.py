@@ -159,6 +159,7 @@ class TestFullRitual:
             soul_path=str(tmp_path / "no_soul.yaml"),
             seed_dir=str(tmp_path / "no_seeds"),
             journal_path=str(tmp_path / "no_journal.md"),
+            feb_dir=str(tmp_path / "no_febs"),
         )
         assert result.soul_loaded is False
         assert result.seeds_imported == 0
