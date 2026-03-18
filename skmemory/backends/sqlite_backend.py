@@ -134,8 +134,33 @@ class SQLiteBackend(BaseBackend):
         return self._conn
 
     def _ensure_db(self) -> None:
-        """Initialize the database schema."""
+        """Initialize the database schema, migrating old tables if needed."""
         conn = self._get_conn()
+
+        # Migrate: add columns that may be missing from older schemas.
+        # We check pragma_table_info first so this is safe on fresh DBs too.
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='memories'"
+        ).fetchone()
+        if row is not None:
+            existing = {
+                r[1]
+                for r in conn.execute("PRAGMA table_info(memories)").fetchall()
+            }
+            migrations = [
+                ("importance", "ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5"),
+                ("access_count", "ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0"),
+                ("last_accessed", "ALTER TABLE memories ADD COLUMN last_accessed TEXT"),
+            ]
+            for col, ddl in migrations:
+                if col not in existing:
+                    conn.execute(ddl)
+            conn.commit()
+
+            # Drop stale view so CREATE VIEW IF NOT EXISTS picks up new columns.
+            conn.execute("DROP VIEW IF EXISTS active_memories")
+            conn.commit()
+
         conn.executescript(_SCHEMA)
         conn.commit()
 

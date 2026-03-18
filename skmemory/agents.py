@@ -106,14 +106,15 @@ def get_active_agent() -> Optional[str]:
     """Get the currently active agent from environment or default to first non-template.
 
     Checks in order:
-    1. SKMEMORY_AGENT environment variable
-    2. First non-template agent in the directory
+    1. SKCAPSTONE_AGENT environment variable (authoritative agent selector)
+    2. SKMEMORY_AGENT environment variable (legacy/override)
+    3. First non-template agent in the directory
 
     Returns:
         str: Agent name, or None if no agents found
     """
-    # Check environment variables (SKMEMORY_AGENT > SKCAPSTONE_AGENT)
-    env_agent = os.environ.get("SKMEMORY_AGENT") or os.environ.get("SKCAPSTONE_AGENT")
+    # Check environment variables (SKCAPSTONE_AGENT > SKMEMORY_AGENT)
+    env_agent = os.environ.get("SKCAPSTONE_AGENT") or os.environ.get("SKMEMORY_AGENT")
     if env_agent and not is_template_agent(env_agent):
         agent_dir = get_agent_dir(env_agent)
         if agent_dir.exists():

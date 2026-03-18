@@ -2135,6 +2135,46 @@ def register_cmd(workspace, target_env, dry_run):
         click.echo("Hooks: skipped (no claude-code environment)")
 
 
+@cli.command("feb-context")
+@click.argument("feb_path", required=False, default=None, type=click.Path(exists=True))
+@click.option("--agent", default=None, help="Agent name (default: active agent)")
+def feb_context_cmd(feb_path: Optional[str], agent: Optional[str]):
+    """Show formatted FEB emotional state for rehydration.
+
+    If FEB_PATH is given, formats that file. Otherwise, loads the
+    strongest FEB from the agent's trust/febs/ and ~/.openclaw/feb/.
+
+    Examples:
+        skmemory feb-context
+        skmemory feb-context ~/.skcapstone/agents/opus/trust/febs/default-love.feb
+    """
+    from pathlib import Path as _Path
+
+    from .febs import feb_to_context, load_strongest_feb, parse_feb
+
+    try:
+        if feb_path:
+            feb = parse_feb(_Path(feb_path))
+        else:
+            # Temporarily override agent if specified
+            if agent:
+                import os
+
+                os.environ["SKCAPSTONE_AGENT"] = agent
+            feb = load_strongest_feb()
+
+        if feb is None:
+            click.echo("(no FEB data)", err=True)
+            raise SystemExit(1)
+
+        click.echo(feb_to_context(feb))
+    except SystemExit:
+        raise
+    except Exception as e:
+        click.echo(f"Error loading FEB: {e}", err=True)
+        raise click.Abort()
+
+
 @cli.command("show-context")
 @click.pass_context
 @click.option("--agent", default=None, help="Agent name (default: active agent)")

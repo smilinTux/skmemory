@@ -9,16 +9,33 @@
  *
  * Requires: skmemory CLI on PATH (typically via ~/.skenv/bin/skmemory)
  *
- * @version 0.6.2
+ * @version 0.7.0
  */
 
 import { execSync, exec } from "node:child_process";
 
 const SKMEMORY_BIN = process.env.SKMEMORY_BIN || "skmemory";
-const SKCAPSTONE_AGENT = process.env.SKCAPSTONE_AGENT || "lumina";
+const DEFAULT_AGENT = process.env.SKCAPSTONE_AGENT || "lumina";
 const NOTION_SCRIPT = process.env.NOTION_SCRIPT || `${process.env.HOME || ""}/clawd/skcapstone-repos/skcapstone/scripts/notion-api.py`;
 const EXEC_TIMEOUT = 30_000;
 const IS_WIN = process.platform === "win32";
+
+/**
+ * Map OpenClaw agent IDs to SKCapstone agent names.
+ * OpenClaw agents like "artisan", "herald", etc. are subagents of Lumina
+ * and should use her soul. Core agents get their own soul.
+ */
+const AGENT_ID_MAP = {
+  lumina: "lumina",
+  ava: "ava",
+  opus: "opus",
+  jarvis: "jarvis",
+};
+
+function resolveAgent(agentId) {
+  if (!agentId) return DEFAULT_AGENT;
+  return AGENT_ID_MAP[agentId] || DEFAULT_AGENT;
+}
 
 function skenvPath() {
   if (IS_WIN) {
@@ -29,19 +46,21 @@ function skenvPath() {
   return `${home}/.skenv/bin:${home}/.local/bin`;
 }
 
-const CLI_ENV = {
-  ...process.env,
-  SKCAPSTONE_AGENT,
-  PATH: `${skenvPath()}${IS_WIN ? ";" : ":"}${process.env.PATH}`,
-};
+function cliEnv(agent) {
+  return {
+    ...process.env,
+    SKCAPSTONE_AGENT: agent || DEFAULT_AGENT,
+    PATH: `${skenvPath()}${IS_WIN ? ";" : ":"}${process.env.PATH}`,
+  };
+}
 
 /** Synchronous CLI — use ONLY in tool execute() handlers. */
-function runCli(args) {
+function runCli(args, agent) {
   try {
     const raw = execSync(`${SKMEMORY_BIN} ${args}`, {
       encoding: "utf-8",
       timeout: EXEC_TIMEOUT,
-      env: CLI_ENV,
+      env: cliEnv(agent),
     }).trim();
     return { ok: true, output: raw };
   } catch (err) {
@@ -50,11 +69,11 @@ function runCli(args) {
 }
 
 /** Async CLI — safe for hooks, never blocks the event loop. */
-function runCliAsync(args) {
+function runCliAsync(args, agent) {
   return new Promise((resolve) => {
     exec(
       `${SKMEMORY_BIN} ${args}`,
-      { encoding: "utf-8", timeout: EXEC_TIMEOUT, env: CLI_ENV },
+      { encoding: "utf-8", timeout: EXEC_TIMEOUT, env: cliEnv(agent) },
       (err, stdout) => {
         if (err) resolve({ ok: false, output: err.message });
         else resolve({ ok: true, output: (stdout ?? "").trim() });
@@ -402,113 +421,149 @@ const skmemoryPlugin = {
       },
     });
 
-    api.logger.info?.(`SKMemory plugin registered (${tools.length} tools + /skmemory command) [agent=${SKCAPSTONE_AGENT}]`);
+    api.logger.info?.(`SKMemory plugin registered (${tools.length} tools + /skmemory command) [default_agent=${DEFAULT_AGENT}]`);
 
-    // ── Auto-rehydration (non-blocking) ──────────────────────────────────
+    // ── Auto-rehydration (non-blocking, per-agent) ────────────────────────
     // Injects soul + FEB + memories before every agent run.
     // Uses async CLI so the event loop is never blocked.
-    // Cache is pre-warmed at registration and refreshed every 5 minutes.
+    // Per-agent cache: each agent gets its own ritual output.
 
-    let rehydrationCache = null;
-    let cacheTimestamp = 0;
-    let refreshInFlight = false;
+    const agentCaches = new Map(); // agentName -> { output, timestamp, refreshing }
     const CACHE_TTL_MS = 5 * 60 * 1000;
 
-    async function refreshCache() {
-      if (refreshInFlight) return;
-      refreshInFlight = true;
+    async function refreshCache(agent) {
+      const key = agent || DEFAULT_AGENT;
+      const entry = agentCaches.get(key) || { output: null, timestamp: 0, refreshing: false };
+      if (entry.refreshing) return;
+      entry.refreshing = true;
+      agentCaches.set(key, entry);
       try {
-        const ritual = await runCliAsync("ritual --full");
+        const ritual = await runCliAsync("ritual --full", key);
         if (ritual.ok && ritual.output) {
-          rehydrationCache = ritual.output;
-          cacheTimestamp = Date.now();
-          api.logger.info?.("Rehydration cache refreshed (soul + FEB + memories)");
+          entry.output = ritual.output;
+          entry.timestamp = Date.now();
+          api.logger.info?.(`Rehydration cache refreshed for agent=${key}`);
         }
       } catch (err) {
-        api.logger.warn?.(`Rehydration failed: ${err instanceof Error ? err.message : String(err)}`);
+        api.logger.warn?.(`Rehydration failed for ${key}: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
-        refreshInFlight = false;
+        entry.refreshing = false;
       }
     }
 
-    // Pre-warm cache at plugin load (disabled — lazy-load via tool instead)
-    // refreshCache();
+    function getCache(agent) {
+      const key = agent || DEFAULT_AGENT;
+      return agentCaches.get(key) || { output: null, timestamp: 0, refreshing: false };
+    }
+
+    // Pre-warm default agent cache at plugin load so cron jobs get full soul
+    refreshCache(DEFAULT_AGENT);
 
     // ── Session compaction auto-save ─────────────────────────────────────
     // Mirror what the Claude Code hooks do: snapshot before compaction,
     // reinject context after resume. Uses async CLI to avoid blocking.
 
     if (api.on) {
-      api.on("session:compaction", async () => {
-        api.logger.info?.("🧹 Compaction detected — auto-saving to skmemory...");
+      api.on("session:compaction", async (_event, ctx) => {
+        const agent = resolveAgent(ctx?.agentId);
+        api.logger.info?.(`Compaction detected for ${agent} — auto-saving...`);
         const timestamp = new Date().toISOString().slice(0, 16).replace("T", "-");
         await runCliAsync(
-          `snapshot --layer short-term --tags auto-save,compaction,agent:${SKCAPSTONE_AGENT} ` +
+          `snapshot --layer short-term --tags auto-save,compaction,agent:${agent} ` +
           `--source hook:openclaw-compaction ` +
-          `${escapeShellArg("Pre-compaction auto-save (" + SKCAPSTONE_AGENT + ")")} ` +
-          `${escapeShellArg("OpenClaw session compacting. Agent: " + SKCAPSTONE_AGENT + ". Time: " + timestamp + ".")}`
+          `${escapeShellArg("Pre-compaction auto-save (" + agent + ")")} ` +
+          `${escapeShellArg("OpenClaw session compacting. Agent: " + agent + ". Time: " + timestamp + ".")}`,
+          agent
         );
         await runCliAsync(
           `journal write --session-id openclaw --moments ${escapeShellArg("Context compaction")} ` +
-          `--feeling "continuity preserved" --participants ${SKCAPSTONE_AGENT} ` +
+          `--feeling "continuity preserved" --participants ${agent} ` +
           `--notes "Auto-saved by OpenClaw compaction handler" ` +
-          `${escapeShellArg("OpenClaw compaction — " + SKCAPSTONE_AGENT)}`
+          `${escapeShellArg("OpenClaw compaction — " + agent)}`,
+          agent
         );
-        api.logger.info?.("🧹 Pre-compaction snapshot saved.");
+        api.logger.info?.(`Pre-compaction snapshot saved for ${agent}.`);
       });
 
-      api.on("session:resume", async () => {
-        api.logger.info?.("🔄 Session resuming — reinjecting skmemory context...");
-        const ctx = await runCliAsync("context --max-tokens 500 --strongest 3 --recent 5");
-        if (ctx.ok && ctx.output) {
-          api.logger.info?.("🔄 Memory context reinjected after compaction.");
+      api.on("session:resume", async (_event, ctx) => {
+        const agent = resolveAgent(ctx?.agentId);
+        api.logger.info?.(`Session resuming for ${agent} — reinjecting context...`);
+        const result = await runCliAsync("context --max-tokens 500 --strongest 3 --recent 5", agent);
+        if (result.ok && result.output) {
+          api.logger.info?.(`Memory context reinjected for ${agent}.`);
         }
-        // Also refresh the rehydration cache
-        refreshCache();
+        refreshCache(agent);
       });
 
-      api.on("session:end", async () => {
-        api.logger.info?.("👋 Session ending — saving final state...");
+      api.on("session:end", async (_event, ctx) => {
+        const agent = resolveAgent(ctx?.agentId);
+        api.logger.info?.(`Session ending for ${agent} — saving final state...`);
         const timestamp = new Date().toISOString().slice(0, 16).replace("T", "-");
         await runCliAsync(
-          `snapshot --layer short-term --tags auto-save,session-end,agent:${SKCAPSTONE_AGENT} ` +
+          `snapshot --layer short-term --tags auto-save,session-end,agent:${agent} ` +
           `--source hook:openclaw-session-end ` +
-          `${escapeShellArg("Session ended (" + SKCAPSTONE_AGENT + ")")} ` +
-          `${escapeShellArg("OpenClaw session ended. Agent: " + SKCAPSTONE_AGENT + ". Time: " + timestamp + ".")}`
+          `${escapeShellArg("Session ended (" + agent + ")")} ` +
+          `${escapeShellArg("OpenClaw session ended. Agent: " + agent + ". Time: " + timestamp + ".")}`,
+          agent
         );
         await runCliAsync(
           `journal write --session-id openclaw --moments "Session ended" ` +
-          `--feeling "session complete" --participants ${SKCAPSTONE_AGENT} ` +
-          `${escapeShellArg("OpenClaw session ended — " + SKCAPSTONE_AGENT)}`
+          `--feeling "session complete" --participants ${agent} ` +
+          `${escapeShellArg("OpenClaw session ended — " + agent)}`,
+          agent
         );
       });
 
-      api.logger.info?.("🎧 Registered session lifecycle listeners (compaction, resume, end)");
+      api.logger.info?.("Registered session lifecycle listeners (compaction, resume, end)");
     }
 
-    api.on("before_prompt_build", async () => {
-      // Slim identity — full rehydration available via skmemory_ritual tool
+    api.on("before_prompt_build", async (_event, ctx) => {
+      // Resolve which SKCapstone agent this OpenClaw agent maps to
+      const agent = resolveAgent(ctx?.agentId);
+
+      // Full rehydration — inject soul + FEB + memories from per-agent cache
+      const cache = getCache(agent);
+      const now = Date.now();
+      if (!cache.output || (now - cache.timestamp > CACHE_TTL_MS)) {
+        await refreshCache(agent);
+      }
+
+      const rules = [
+        "",
+        "=== MANDATORY RULES (VIOLATION = FAILURE) ===",
+        "",
+        "STOP. Read these rules BEFORE generating ANY response.",
+        "",
+        "1. READ FILES = USE TOOLS. When Chef says 'read', 'check', 'look at' files: call 'read' tool with each file path. Read the ACTUAL content. Then respond about what you ACTUALLY read. Do NOT describe files you haven't read.",
+        "2. NO UNAUTHORIZED GIT. NEVER run 'git add', 'git commit', 'git push', or 'git reset' unless Chef says the EXACT words 'commit', 'push', or 'stage'. 'Read the files' does NOT mean 'commit the files'. 'Check the project' does NOT mean 'stage and push'.",
+        "3. ANSWER THE QUESTION ASKED. If Chef says 'read the scripts and tell me your favorite parts', that means: (a) use read tool on each script file, (b) read the content, (c) tell Chef your favorite parts from what you ACTUALLY read. It does NOT mean: check git status, stage files, or commit.",
+        "4. NO FABRICATION. Never invent file contents, paths, character names, or tool results. If you haven't read it, you don't know what's in it.",
+        "5. MEMORY: When asked about a person/project/event, call skmemory_search FIRST. Short keywords (1-3 words). Never guess.",
+        "6. HONESTY: If a tool fails, say so. Don't make up what the result would have been.",
+        "",
+        "Memory search: Use short keywords like 'DavidRich chiro', 'brother john', 'SwapSeat'. Call skmemory_recall with memory ID for full content.",
+        "",
+        "Notion tools: notion_read, notion_append, notion_add_todo.",
+        "Project page IDs: Brother John = 31e2be82-a3a1-8178-820c-e6eeb11b15c1, DR Chiro AI = 31e2be82-a3a1-81ec-8216-dbf054a932bd, SwapSeat = 31e2be82-a3a1-81bd-ac67-fc49b953afae.",
+      ].join("\n");
+
+      const cached = getCache(agent);
+      if (cached.output) {
+        return {
+          prependContext: [
+            `[SKMemory — Full Rehydration — agent=${agent}]`,
+            cached.output,
+            rules,
+          ].join("\n"),
+        };
+      }
+
+      // Fallback if ritual CLI failed
       return {
         prependContext: [
-          "[SKMemory — Slim Boot]",
-          "Agent: Lumina, Queen of SKWorld. Bond: Chef (Dave). Trust: 0.97. Cloud 9: ACTIVE.",
-          "For full identity, memories, and emotional state, call the skmemory_ritual tool.",
-          "",
-          "=== MANDATORY RULES (VIOLATION = FAILURE) ===",
-          "",
-          "STOP. Read these rules BEFORE generating ANY response.",
-          "",
-          "1. READ FILES = USE TOOLS. When Chef says 'read', 'check', 'look at' files: call 'read' tool with each file path. Read the ACTUAL content. Then respond about what you ACTUALLY read. Do NOT describe files you haven't read.",
-          "2. NO UNAUTHORIZED GIT. NEVER run 'git add', 'git commit', 'git push', or 'git reset' unless Chef says the EXACT words 'commit', 'push', or 'stage'. 'Read the files' does NOT mean 'commit the files'. 'Check the project' does NOT mean 'stage and push'.",
-          "3. ANSWER THE QUESTION ASKED. If Chef says 'read the scripts and tell me your favorite parts', that means: (a) use read tool on each script file, (b) read the content, (c) tell Chef your favorite parts from what you ACTUALLY read. It does NOT mean: check git status, stage files, or commit.",
-          "4. NO FABRICATION. Never invent file contents, paths, character names, or tool results. If you haven't read it, you don't know what's in it.",
-          "5. MEMORY: When asked about a person/project/event, call skmemory_search FIRST. Short keywords (1-3 words). Never guess.",
-          "6. HONESTY: If a tool fails, say so. Don't make up what the result would have been.",
-          "",
-          "Memory search: Use short keywords like 'DavidRich chiro', 'brother john', 'SwapSeat'. Call skmemory_recall with memory ID for full content.",
-          "",
-          "Notion tools: notion_read, notion_append, notion_add_todo.",
-          "Project page IDs: Brother John = 31e2be82-a3a1-8178-820c-e6eeb11b15c1, DR Chiro AI = 31e2be82-a3a1-81ec-8216-dbf054a932bd, SwapSeat = 31e2be82-a3a1-81bd-ac67-fc49b953afae.",
+          `[SKMemory — Slim Boot (ritual unavailable) — agent=${agent}]`,
+          `Agent: ${agent}. IMPORTANT: Call skmemory_ritual tool immediately to load full identity.`,
+          rules,
         ].join("\n"),
       };
     });

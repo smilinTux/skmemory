@@ -13,7 +13,7 @@ File format on disk (per memory file):
     SKMV1 || salt(16) || nonce(12) || AES-GCM(json_bytes) || tag(16)
 
 Usage:
-    backend = VaultedSQLiteBackend(passphrase="sovereign-key")
+    backend = VaultedSQLiteBackend(passphrase="EXAMPLE-DO-NOT-USE")
     store = MemoryStore(primary=backend, use_sqlite=False)
     mem = store.snapshot("title", "content")
     recalled = store.recall(mem.id)  # transparent decrypt
@@ -50,7 +50,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
 
     Example::
 
-        backend = VaultedSQLiteBackend(passphrase="my-secret")
+        backend = VaultedSQLiteBackend(passphrase="EXAMPLE-DO-NOT-USE")
         store = MemoryStore(primary=backend, use_sqlite=False)
         m = store.snapshot("Private thought", "End-to-end encrypted on disk")
         r = store.recall(m.id)  # decrypted on the fly

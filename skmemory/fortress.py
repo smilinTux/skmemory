@@ -345,7 +345,7 @@ class FortifiedMemoryStore(MemoryStore):
 
         # AES-256-GCM passphrase encryption (recommended)
         store = FortifiedMemoryStore(
-            vault_passphrase="my-sovereign-key",
+            vault_passphrase="EXAMPLE-DO-NOT-USE",
             alert_callbacks=[lambda alert: send_to_slack(alert.to_dict())],
         )
         memory = store.snapshot("title", "content")
