@@ -1,9 +1,5 @@
 """Tests for the SQLite-indexed storage backend."""
 
-import json
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from skmemory.backends.sqlite_backend import SQLiteBackend
@@ -151,9 +147,7 @@ class TestListSummaries:
     def test_summaries_order_by_intensity(self, backend):
         """Can order by emotional intensity."""
         self._store_memories(backend, 5)
-        summaries = backend.list_summaries(
-            order_by="emotional_intensity", limit=3
-        )
+        summaries = backend.list_summaries(order_by="emotional_intensity", limit=3)
         intensities = [s["emotional_intensity"] for s in summaries]
         assert intensities == sorted(intensities, reverse=True)
 
@@ -180,24 +174,23 @@ class TestSearch:
 
     def test_search_finds_by_title(self, backend):
         """Search matches on title."""
-        m = Memory(title="Penguin Kingdom moment", content="details",
-                    layer=MemoryLayer.SHORT)
+        m = Memory(title="Penguin Kingdom moment", content="details", layer=MemoryLayer.SHORT)
         backend.save(m)
         results = backend.search_text("Penguin")
         assert len(results) == 1
 
     def test_search_finds_by_tags(self, backend):
         """Search matches on tags."""
-        m = Memory(title="Tagged", content="details",
-                    layer=MemoryLayer.SHORT, tags=["cloud9", "love"])
+        m = Memory(
+            title="Tagged", content="details", layer=MemoryLayer.SHORT, tags=["cloud9", "love"]
+        )
         backend.save(m)
         results = backend.search_text("cloud9")
         assert len(results) == 1
 
     def test_search_no_results(self, backend):
         """Search returns empty for no matches."""
-        m = Memory(title="Something", content="nothing special",
-                    layer=MemoryLayer.SHORT)
+        m = Memory(title="Something", content="nothing special", layer=MemoryLayer.SHORT)
         backend.save(m)
         results = backend.search_text("zzzznonexistent")
         assert len(results) == 0
@@ -209,8 +202,7 @@ class TestRelatedMemories:
     def test_get_related_follows_links(self, backend):
         """Related memories are found via related_ids."""
         m1 = Memory(title="Root", content="root", layer=MemoryLayer.SHORT)
-        m2 = Memory(title="Child", content="child", layer=MemoryLayer.SHORT,
-                     related_ids=[m1.id])
+        m2 = Memory(title="Child", content="child", layer=MemoryLayer.SHORT, related_ids=[m1.id])
         backend.save(m1)
         backend.save(m2)
 
@@ -220,8 +212,7 @@ class TestRelatedMemories:
     def test_get_related_follows_parent(self, backend):
         """Related memories are found via parent_id."""
         m1 = Memory(title="Parent", content="parent", layer=MemoryLayer.LONG)
-        m2 = Memory(title="Child", content="child", layer=MemoryLayer.SHORT,
-                     parent_id=m1.id)
+        m2 = Memory(title="Child", content="child", layer=MemoryLayer.SHORT, parent_id=m1.id)
         backend.save(m1)
         backend.save(m2)
 

@@ -16,10 +16,8 @@ Simple, human-readable, append-only. Like a real journal.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -32,9 +30,7 @@ class JournalEntry(BaseModel):
     """A single journal entry for one session."""
 
     session_id: str = Field(default="")
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     participants: list[str] = Field(
         default_factory=list,
         description="Who was in this session (AI names, human names)",
@@ -81,12 +77,12 @@ class JournalEntry(BaseModel):
 
         if self.emotional_summary:
             lines.append("")
-            lines.append(f"### How It Felt")
+            lines.append("### How It Felt")
             lines.append(self.emotional_summary)
 
         if self.notes:
             lines.append("")
-            lines.append(f"### Notes")
+            lines.append("### Notes")
             lines.append(self.notes)
 
         lines.append("")

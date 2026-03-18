@@ -9,7 +9,12 @@ from pathlib import Path
 import pytest
 
 from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
-from skmemory.promotion import PromotionCriteria, PromotionEngine, PromotionResult, PromotionScheduler
+from skmemory.promotion import (
+    PromotionCriteria,
+    PromotionEngine,
+    PromotionResult,
+    PromotionScheduler,
+)
 from skmemory.store import MemoryStore
 
 
@@ -50,7 +55,9 @@ def store(tmp_path: Path) -> MemoryStore:
         title="Important mid-term",
         content="A mid-term memory with high emotional weight",
         layer=MemoryLayer.MID,
-        emotional=EmotionalSnapshot(intensity=9.0, valence=0.95, labels=["love"], cloud9_achieved=True),
+        emotional=EmotionalSnapshot(
+            intensity=9.0, valence=0.95, labels=["love"], cloud9_achieved=True
+        ),
         tags=["cloud9:achieved"],
     )
 
@@ -263,7 +270,7 @@ class TestRePromotionGuard:
         self, engine: PromotionEngine, store: MemoryStore
     ) -> None:
         """Running sweep twice doesn't double-promote the same memory."""
-        result1 = engine.sweep()
+        engine.sweep()
         result2 = engine.sweep()
 
         # Second sweep should find nothing new to promote

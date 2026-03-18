@@ -36,11 +36,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install lint tools
-        run: pip install black ruff
+        run: pip install ruff
       - name: Check formatting
-        run: black --check src/ tests/
+        run: ruff format --check skmemory/ tests/
       - name: Lint
-        run: ruff check src/
+        run: ruff check skmemory/ tests/
 
   build:
     runs-on: ubuntu-latest

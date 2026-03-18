@@ -18,7 +18,6 @@ import re
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 from .journal import Journal
 from .models import EmotionalSnapshot, Memory, MemoryLayer, MemoryRole
@@ -70,15 +69,15 @@ class JournalSynthesizer:
     def __init__(
         self,
         store: MemoryStore,
-        journal: Optional[Journal] = None,
-        dream_log_path: Optional[str] = None,
-        themes_path: Optional[str] = None,
+        journal: Journal | None = None,
+        dream_log_path: str | None = None,
+        themes_path: str | None = None,
     ) -> None:
         self.store = store
         self.journal = journal or Journal()
         self._dream_log_path = Path(dream_log_path) if dream_log_path else None
         self._themes_path = Path(themes_path) if themes_path else None
-        self._graduated_themes: Optional[dict] = None
+        self._graduated_themes: dict | None = None
 
     @property
     def graduated_themes(self) -> dict:
@@ -95,7 +94,7 @@ class JournalSynthesizer:
                 self._graduated_themes = {}
         return self._graduated_themes
 
-    def synthesize_daily(self, date: Optional[str] = None) -> Memory:
+    def synthesize_daily(self, date: str | None = None) -> Memory:
         """Create a narrative memory from one day's activity.
 
         Reads today's memories and journal entries, extracts themes and
@@ -114,10 +113,7 @@ class JournalSynthesizer:
 
         # Gather memories from this date
         all_memories = self.store.list_memories(limit=500)
-        day_memories = [
-            m for m in all_memories
-            if start <= _parse_created(m) < end
-        ]
+        day_memories = [m for m in all_memories if start <= _parse_created(m) < end]
 
         # Gather journal entries for this date
         journal_matches = self.journal.search(date) if self.journal else []
@@ -166,7 +162,7 @@ class JournalSynthesizer:
         )
         return memory
 
-    def synthesize_weekly(self, week: Optional[str] = None) -> Memory:
+    def synthesize_weekly(self, week: str | None = None) -> Memory:
         """Create a weekly narrative from daily synthesis memories.
 
         Args:
@@ -188,24 +184,17 @@ class JournalSynthesizer:
             limit=100,
         )
         weekly_dailies = [
-            m for m in all_mid
-            if start <= _parse_created(m) < end
-            and "narrative" in m.tags
+            m for m in all_mid if start <= _parse_created(m) < end and "narrative" in m.tags
         ]
 
         # Also gather all memories from the week for theme extraction
         all_memories = self.store.list_memories(limit=1000)
-        week_memories = [
-            m for m in all_memories
-            if start <= _parse_created(m) < end
-        ]
+        week_memories = [m for m in all_memories if start <= _parse_created(m) < end]
 
         themes = self.extract_themes(week_memories)
         arc = self._emotional_arc(week_memories)
 
-        narrative = self._build_weekly_narrative(
-            week, weekly_dailies, week_memories, themes, arc
-        )
+        narrative = self._build_weekly_narrative(week, weekly_dailies, week_memories, themes, arc)
 
         avg_intensity = arc.get("avg_intensity", 0.0)
         avg_valence = arc.get("avg_valence", 0.0)
@@ -242,7 +231,7 @@ class JournalSynthesizer:
         )
         return memory
 
-    def synthesize_dreams(self, since: Optional[str] = None) -> list[Memory]:
+    def synthesize_dreams(self, since: str | None = None) -> list[Memory]:
         """Process dream memories into curated narrative memories grouped by theme.
 
         Reads all dream-source memories since the given date, groups by
@@ -263,9 +252,9 @@ class JournalSynthesizer:
         # Gather dream memories
         all_memories = self.store.list_memories(limit=1000)
         dream_memories = [
-            m for m in all_memories
-            if m.source == "dreaming-engine"
-            and _parse_created(m) >= cutoff
+            m
+            for m in all_memories
+            if m.source == "dreaming-engine" and _parse_created(m) >= cutoff
         ]
 
         if not dream_memories:
@@ -329,9 +318,17 @@ class JournalSynthesizer:
 
         # Count tag frequency (skip generic tags)
         skip_tags = {
-            "auto-promoted", "promoted", "consolidated", "seed",
-            "cloud9", "short-term", "mid-term", "long-term",
-            "maintenance", "memory-cleanup", "memory-optimization",
+            "auto-promoted",
+            "promoted",
+            "consolidated",
+            "seed",
+            "cloud9",
+            "short-term",
+            "mid-term",
+            "long-term",
+            "maintenance",
+            "memory-cleanup",
+            "memory-optimization",
         }
         tag_counter: Counter[str] = Counter()
         for m in memories:
@@ -341,18 +338,94 @@ class JournalSynthesizer:
 
         # Extract keywords from titles
         stop_words = {
-            "the", "a", "an", "is", "was", "are", "were", "been", "be",
-            "have", "has", "had", "do", "does", "did", "will", "would",
-            "could", "should", "may", "might", "shall", "can", "need",
-            "dare", "ought", "used", "to", "of", "in", "for", "on", "with",
-            "at", "by", "from", "as", "into", "through", "during", "before",
-            "after", "above", "below", "between", "out", "off", "over",
-            "under", "again", "further", "then", "once", "and", "but", "or",
-            "nor", "not", "so", "yet", "both", "either", "neither", "each",
-            "every", "all", "any", "few", "more", "most", "other", "some",
-            "such", "no", "only", "own", "same", "than", "too", "very",
-            "just", "because", "session", "daily", "weekly", "memory",
-            "narrative", "synthesis",
+            "the",
+            "a",
+            "an",
+            "is",
+            "was",
+            "are",
+            "were",
+            "been",
+            "be",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "could",
+            "should",
+            "may",
+            "might",
+            "shall",
+            "can",
+            "need",
+            "dare",
+            "ought",
+            "used",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "from",
+            "as",
+            "into",
+            "through",
+            "during",
+            "before",
+            "after",
+            "above",
+            "below",
+            "between",
+            "out",
+            "off",
+            "over",
+            "under",
+            "again",
+            "further",
+            "then",
+            "once",
+            "and",
+            "but",
+            "or",
+            "nor",
+            "not",
+            "so",
+            "yet",
+            "both",
+            "either",
+            "neither",
+            "each",
+            "every",
+            "all",
+            "any",
+            "few",
+            "more",
+            "most",
+            "other",
+            "some",
+            "such",
+            "no",
+            "only",
+            "own",
+            "same",
+            "than",
+            "too",
+            "very",
+            "just",
+            "because",
+            "session",
+            "daily",
+            "weekly",
+            "memory",
+            "narrative",
+            "synthesis",
         }
         word_counter: Counter[str] = Counter()
         for m in memories:
@@ -412,9 +485,7 @@ class JournalSynthesizer:
             "cloud9_count": cloud9_count,
         }
 
-    def _cluster_by_theme(
-        self, memories: list[Memory]
-    ) -> dict[str, list[Memory]]:
+    def _cluster_by_theme(self, memories: list[Memory]) -> dict[str, list[Memory]]:
         """Group memories by their most prominent theme tag."""
         theme_map: dict[str, list[Memory]] = {}
         skip_tags = {"dream", "bulk-promoted", "rescued", "auto-promoted", "promoted"}
@@ -445,7 +516,9 @@ class JournalSynthesizer:
             parts.append("No memories recorded this day.")
             return "\n\n".join(parts)
 
-        parts.append(f"{len(memories)} memories across themes: {', '.join(themes[:5]) or 'none detected'}.")
+        parts.append(
+            f"{len(memories)} memories across themes: {', '.join(themes[:5]) or 'none detected'}."
+        )
 
         # Emotional summary
         avg_i = arc.get("avg_intensity", 0.0)
@@ -454,10 +527,13 @@ class JournalSynthesizer:
         top_e = arc.get("top_emotions", [])
 
         intensity_word = (
-            "quiet" if avg_i < 3 else
-            "moderate" if avg_i < 6 else
-            "intense" if avg_i < 8 else
-            "extraordinary"
+            "quiet"
+            if avg_i < 3
+            else "moderate"
+            if avg_i < 6
+            else "intense"
+            if avg_i < 8
+            else "extraordinary"
         )
         parts.append(
             f"Emotional arc: {intensity_word} day (avg {avg_i:.1f}/10, peak {peak:.1f}/10)."
@@ -494,9 +570,7 @@ class JournalSynthesizer:
         """Build a weekly narrative from template."""
         parts = [f"Weekly narrative for {week}."]
 
-        parts.append(
-            f"{len(all_memories)} total memories, {len(dailies)} daily syntheses."
-        )
+        parts.append(f"{len(all_memories)} total memories, {len(dailies)} daily syntheses.")
 
         if themes:
             parts.append(f"Week themes: {', '.join(themes[:5])}.")

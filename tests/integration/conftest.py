@@ -13,6 +13,7 @@ never touched. Both are torn down after the test session.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import uuid
 
@@ -70,6 +71,7 @@ def _skvector_available() -> bool:
 def _sentence_transformers_available() -> bool:
     try:
         import sentence_transformers  # noqa: F401  # type: ignore[import]
+
         return True
     except ImportError:
         return False
@@ -126,6 +128,7 @@ def falkordb_backend():
     # Teardown: drop the test graph
     try:
         from falkordb import FalkorDB  # type: ignore[import]
+
         db = FalkorDB.from_url(SKGRAPH_URL)
         db.select_graph(TEST_GRAPH_NAME).delete()
     except Exception:
@@ -136,10 +139,8 @@ def falkordb_backend():
 def falkordb_clean(falkordb_backend):
     """SKGraphBackend with test graph wiped before each test."""
     # Clear all nodes so tests are independent
-    try:
+    with contextlib.suppress(Exception):
         falkordb_backend._graph.query("MATCH (n) DETACH DELETE n")
-    except Exception:
-        pass
     return falkordb_backend
 
 
@@ -171,10 +172,8 @@ def qdrant_backend():
     yield backend
 
     # Teardown: delete test collection
-    try:
+    with contextlib.suppress(Exception):
         backend._client.delete_collection(TEST_COLLECTION_NAME)
-    except Exception:
-        pass
 
 
 @pytest.fixture
@@ -182,6 +181,7 @@ def qdrant_clean(qdrant_backend):
     """SKVectorBackend with collection wiped before each test."""
     try:
         from qdrant_client.models import Distance, VectorParams
+
         from skmemory.backends.skvector_backend import VECTOR_DIM
 
         qdrant_backend._client.delete_collection(TEST_COLLECTION_NAME)

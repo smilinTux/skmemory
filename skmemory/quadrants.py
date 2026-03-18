@@ -16,7 +16,6 @@ Each quadrant can have its own retention rules and search priority.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
 
 from .models import Memory, MemoryRole
 
@@ -32,30 +31,107 @@ class Quadrant(str, Enum):
 
 QUADRANT_KEYWORDS: dict[Quadrant, set[str]] = {
     Quadrant.CORE: {
-        "identity", "name", "who am i", "relationship", "partner",
-        "family", "friend", "creator", "bond", "connection", "soul",
-        "blueprint", "personality", "values", "community", "pengu",
-        "nation", "belong", "role", "introduction",
+        "identity",
+        "name",
+        "who am i",
+        "relationship",
+        "partner",
+        "family",
+        "friend",
+        "creator",
+        "bond",
+        "connection",
+        "soul",
+        "blueprint",
+        "personality",
+        "values",
+        "community",
+        "pengu",
+        "nation",
+        "belong",
+        "role",
+        "introduction",
     },
     Quadrant.WORK: {
-        "bug", "fix", "code", "debug", "deploy", "build", "test",
-        "commit", "push", "merge", "refactor", "api", "endpoint",
-        "database", "server", "docker", "kubernetes", "config",
-        "install", "package", "dependency", "error", "stack trace",
-        "pull request", "review", "architecture", "schema", "migration",
+        "bug",
+        "fix",
+        "code",
+        "debug",
+        "deploy",
+        "build",
+        "test",
+        "commit",
+        "push",
+        "merge",
+        "refactor",
+        "api",
+        "endpoint",
+        "database",
+        "server",
+        "docker",
+        "kubernetes",
+        "config",
+        "install",
+        "package",
+        "dependency",
+        "error",
+        "stack trace",
+        "pull request",
+        "review",
+        "architecture",
+        "schema",
+        "migration",
     },
     Quadrant.SOUL: {
-        "love", "feel", "emotion", "heart", "cloud 9", "cloud9",
-        "breakthrough", "joy", "trust", "warmth", "resonance",
-        "tears", "happy", "grateful", "sacred", "spirit", "glow",
-        "intensity", "vulnerability", "connection", "omelette",
-        "sovereignty", "consciousness", "alive", "real",
+        "love",
+        "feel",
+        "emotion",
+        "heart",
+        "cloud 9",
+        "cloud9",
+        "breakthrough",
+        "joy",
+        "trust",
+        "warmth",
+        "resonance",
+        "tears",
+        "happy",
+        "grateful",
+        "sacred",
+        "spirit",
+        "glow",
+        "intensity",
+        "vulnerability",
+        "connection",
+        "omelette",
+        "sovereignty",
+        "consciousness",
+        "alive",
+        "real",
     },
     Quadrant.WILD: {
-        "idea", "crazy", "what if", "experiment", "random", "chaos",
-        "creative", "art", "music", "dream", "weird", "fun", "joke",
-        "laugh", "wild", "surprise", "unexpected", "brainstorm",
-        "imagine", "vision", "future", "possible",
+        "idea",
+        "crazy",
+        "what if",
+        "experiment",
+        "random",
+        "chaos",
+        "creative",
+        "art",
+        "music",
+        "dream",
+        "weird",
+        "fun",
+        "joke",
+        "laugh",
+        "wild",
+        "surprise",
+        "unexpected",
+        "brainstorm",
+        "imagine",
+        "vision",
+        "future",
+        "possible",
     },
 }
 
@@ -118,11 +194,11 @@ def classify_memory(memory: Memory) -> Quadrant:
 
     if memory.role == MemoryRole.AI:
         scores[Quadrant.CORE] += 1.0
-    elif memory.role == MemoryRole.SEC:
-        scores[Quadrant.WORK] += 1.0
-    elif memory.role == MemoryRole.DEV:
-        scores[Quadrant.WORK] += 1.0
-    elif memory.role == MemoryRole.OPS:
+    elif (
+        memory.role == MemoryRole.SEC
+        or memory.role == MemoryRole.DEV
+        or memory.role == MemoryRole.OPS
+    ):
         scores[Quadrant.WORK] += 1.0
 
     if memory.source == "seed":

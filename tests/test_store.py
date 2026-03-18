@@ -1,6 +1,5 @@
 """Tests for the MemoryStore (main interface)."""
 
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -8,7 +7,6 @@ import pytest
 from skmemory.backends.file_backend import FileBackend
 from skmemory.models import (
     EmotionalSnapshot,
-    Memory,
     MemoryLayer,
     MemoryRole,
     SeedMemory,

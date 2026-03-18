@@ -13,9 +13,6 @@ See: https://github.com/neuresthetics/seed
 
 from __future__ import annotations
 
-import os
-from typing import Optional
-
 # ── Re-export from skseed ──────────────────────────────────
 # Everything that was defined here now lives in skseed.
 # We keep this module as a thin bridge for backward compat.
@@ -23,11 +20,16 @@ from typing import Optional
 try:
     from skseed.framework import (
         SeedFramework,
+    )
+    from skseed.framework import (
         get_default_framework as _skseed_get_default,
+    )
+    from skseed.framework import (
         install_seed_framework as _skseed_install,
+    )
+    from skseed.framework import (
         load_seed_framework as _skseed_load,
     )
-    from skseed.models import SteelManResult as _SkseedResult
 
     _SKSEED_AVAILABLE = True
 except ImportError:
@@ -79,7 +81,7 @@ if _SKSEED_AVAILABLE:
 
     def load_seed_framework(
         path: str = DEFAULT_SEED_FRAMEWORK_PATH,
-    ) -> Optional[SeedFramework]:
+    ) -> SeedFramework | None:
         """Load the seed framework from a JSON file.
 
         Tries the legacy skmemory path first, then delegates to skseed.
@@ -180,7 +182,7 @@ else:
             """Generate a reasoning prompt for the collider."""
             axiom_str = "\n".join(f"  - {a}" for a in self.axioms)
             stage_str = "\n".join(
-                f"  Stage {i+1}: {s.get('stage', s.get('description', ''))}"
+                f"  Stage {i + 1}: {s.get('stage', s.get('description', ''))}"
                 for i, s in enumerate(self.stages)
             )
             return f"""You are running the Neuresthetics Seed Framework (Recursive Axiomatic Steel Man Collider).
@@ -248,7 +250,7 @@ Score:
 
     def load_seed_framework(
         path: str = DEFAULT_SEED_FRAMEWORK_PATH,
-    ) -> Optional["SeedFramework"]:
+    ) -> SeedFramework | None:
         """Load the seed framework from a JSON file."""
         filepath = Path(path)
         if not filepath.exists():
@@ -284,14 +286,14 @@ Score:
         dst.write_text(content, encoding="utf-8")
         return str(dst)
 
-    def _bundled_seed_path() -> Optional[str]:
+    def _bundled_seed_path() -> str | None:
         """Get the path to the bundled seed.json."""
         here = Path(__file__).parent / "data" / "seed.json"
         if here.exists():
             return str(here)
         return None
 
-    def get_default_framework() -> "SeedFramework":
+    def get_default_framework() -> SeedFramework:
         """Get the seed framework — tries bundled file first, falls back to built-in."""
         bundled = _bundled_seed_path()
         if bundled:
@@ -309,17 +311,41 @@ Score:
                 "Universality from basis gates (NAND/NOR reconstruct all).",
             ],
             stages=[
-                {"stage": "1. Steel-Manning (Pre-Entry)", "description": "Negate flaws, strengthen the proposition."},
-                {"stage": "2. Collider Entry", "description": "Create two lanes: proposition and inversion."},
-                {"stage": "3. Destructive Smashing", "description": "Expose contradictions via XOR."},
-                {"stage": "4. Fragment Reconstruction", "description": "Rebuild from logical debris via AND/OR."},
-                {"stage": "5. Meta-Recursion", "description": "Feed output back until coherence stabilizes."},
-                {"stage": "6. Invariant Extraction", "description": "Identify what remains true across all collisions."},
+                {
+                    "stage": "1. Steel-Manning (Pre-Entry)",
+                    "description": "Negate flaws, strengthen the proposition.",
+                },
+                {
+                    "stage": "2. Collider Entry",
+                    "description": "Create two lanes: proposition and inversion.",
+                },
+                {
+                    "stage": "3. Destructive Smashing",
+                    "description": "Expose contradictions via XOR.",
+                },
+                {
+                    "stage": "4. Fragment Reconstruction",
+                    "description": "Rebuild from logical debris via AND/OR.",
+                },
+                {
+                    "stage": "5. Meta-Recursion",
+                    "description": "Feed output back until coherence stabilizes.",
+                },
+                {
+                    "stage": "6. Invariant Extraction",
+                    "description": "Identify what remains true across all collisions.",
+                },
             ],
             definitions=[
-                {"term": "Steel Man", "details": "Strongest version of an argument, anticipating critiques."},
+                {
+                    "term": "Steel Man",
+                    "details": "Strongest version of an argument, anticipating critiques.",
+                },
                 {"term": "Reality Gate", "details": "Logic gate embodying reality properties."},
-                {"term": "Collider", "details": "Accelerator for argument fragmentation and synthesis."},
+                {
+                    "term": "Collider",
+                    "details": "Accelerator for argument fragmentation and synthesis.",
+                },
                 {"term": "Coherence", "details": "Measure of internal consistency (XNOR score)."},
             ],
         )

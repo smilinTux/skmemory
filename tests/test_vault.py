@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 try:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import cryptography.hazmat.primitives.ciphers.aead  # noqa: F401
+
     CRYPTO_AVAILABLE = True
 except ImportError:
     CRYPTO_AVAILABLE = False
@@ -89,14 +90,14 @@ class TestEncryptDecrypt:
         vault1 = MemoryVault(passphrase="correct")
         vault2 = MemoryVault(passphrase="wrong")
         encrypted = vault1.encrypt(sample_json)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             vault2.decrypt(encrypted)
 
     def test_tampered_ciphertext_fails(self, vault: MemoryVault, sample_json: bytes):
         """Altered ciphertext fails authenticated decryption."""
         encrypted = bytearray(vault.encrypt(sample_json))
         encrypted[-10] ^= 0xFF
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             vault.decrypt(bytes(encrypted))
 
     def test_bad_header_raises(self, vault: MemoryVault):

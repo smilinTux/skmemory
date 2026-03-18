@@ -8,12 +8,12 @@ the system degrades gracefully when SKGraph is unavailable.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from skmemory.backends.skgraph_backend import SKGraphBackend
 from skmemory.backends.file_backend import FileBackend
+from skmemory.backends.skgraph_backend import SKGraphBackend
 from skmemory.models import (
     EmotionalSnapshot,
     Memory,

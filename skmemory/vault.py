@@ -17,13 +17,10 @@ Usage:
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger("skmemory.vault")
 
@@ -169,7 +166,7 @@ class MemoryVault:
         """
         try:
             data = path.read_bytes()
-            return data[:len(VAULT_HEADER)] == VAULT_HEADER
+            return data[: len(VAULT_HEADER)] == VAULT_HEADER
         except OSError:
             return False
 

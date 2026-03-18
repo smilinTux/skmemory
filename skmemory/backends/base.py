@@ -8,7 +8,6 @@ delegates to whichever backend(s) are configured.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from ..models import Memory, MemoryLayer
 
@@ -28,7 +27,7 @@ class BaseBackend(ABC):
         """
 
     @abstractmethod
-    def load(self, memory_id: str) -> Optional[Memory]:
+    def load(self, memory_id: str) -> Memory | None:
         """Retrieve a single memory by ID.
 
         Args:
@@ -52,8 +51,8 @@ class BaseBackend(ABC):
     @abstractmethod
     def list_memories(
         self,
-        layer: Optional[MemoryLayer] = None,
-        tags: Optional[list[str]] = None,
+        layer: MemoryLayer | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
     ) -> list[Memory]:
         """List memories with optional filtering.

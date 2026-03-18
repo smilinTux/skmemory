@@ -25,11 +25,10 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from .models import EmotionalSnapshot, Memory, MemoryLayer
+from .models import Memory, MemoryLayer
 from .store import MemoryStore
 
 logger = logging.getLogger("skmemory.promotion")
@@ -141,7 +140,7 @@ class PromotionEngine:
     def __init__(
         self,
         store: MemoryStore,
-        criteria: Optional[PromotionCriteria] = None,
+        criteria: PromotionCriteria | None = None,
     ) -> None:
         self._store = store
         self._criteria = criteria or PromotionCriteria()
@@ -172,7 +171,7 @@ class PromotionEngine:
         logger.info(result.summary())
         return result
 
-    def evaluate(self, memory: Memory) -> Optional[MemoryLayer]:
+    def evaluate(self, memory: Memory) -> MemoryLayer | None:
         """Evaluate whether a memory qualifies for promotion.
 
         Args:
@@ -181,19 +180,17 @@ class PromotionEngine:
         Returns:
             Optional[MemoryLayer]: Target tier if it qualifies, None otherwise.
         """
-        if memory.layer == MemoryLayer.SHORT:
-            if self._qualifies_short_to_mid(memory):
-                return MemoryLayer.MID
-        elif memory.layer == MemoryLayer.MID:
-            if self._qualifies_mid_to_long(memory):
-                return MemoryLayer.LONG
+        if memory.layer == MemoryLayer.SHORT and self._qualifies_short_to_mid(memory):
+            return MemoryLayer.MID
+        elif memory.layer == MemoryLayer.MID and self._qualifies_mid_to_long(memory):
+            return MemoryLayer.LONG
         return None
 
     def promote_memory(
         self,
         memory: Memory,
         target: MemoryLayer,
-    ) -> Optional[Memory]:
+    ) -> Memory | None:
         """Promote a single memory to a higher tier.
 
         Creates a promoted copy with a generated summary.
@@ -304,11 +301,9 @@ class PromotionEngine:
         # Source-based auto-promotion (e.g. dreams, journal synthesis)
         # These sources write once and are never re-accessed, so access_count
         # stays at 0. Promote based on age alone.
-        if memory.source in c.source_auto_promote:
-            if age_hours >= c.source_auto_promote_age_hours:
-                return True
-
-        return False
+        return (
+            memory.source in c.source_auto_promote and age_hours >= c.source_auto_promote_age_hours
+        )
 
     def _qualifies_mid_to_long(self, memory: Memory) -> bool:
         """Check if a mid-term memory qualifies for long-term.
@@ -331,10 +326,7 @@ class PromotionEngine:
         if any(tag in memory.tags for tag in c.mid_to_long_tags):
             return True
 
-        if memory.emotional.cloud9_achieved and c.cloud9_auto_promote:
-            return True
-
-        return False
+        return bool(memory.emotional.cloud9_achieved and c.cloud9_auto_promote)
 
     @staticmethod
     def _age_hours(memory: Memory) -> float:
@@ -373,10 +365,7 @@ class PromotionEngine:
         emotional_sig = memory.emotional.signature()
         tags_str = ", ".join(memory.tags[:5]) if memory.tags else "untagged"
 
-        return (
-            f"{memory.title}: {content_preview} "
-            f"[{emotional_sig}] [{tags_str}]"
-        )
+        return f"{memory.title}: {content_preview} [{emotional_sig}] [{tags_str}]"
 
     @staticmethod
     def _promotion_reason(memory: Memory) -> str:
@@ -435,14 +424,14 @@ class PromotionScheduler:
     def __init__(
         self,
         store: MemoryStore,
-        criteria: Optional[PromotionCriteria] = None,
+        criteria: PromotionCriteria | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
     ) -> None:
         self._engine = PromotionEngine(store, criteria)
         self._interval = interval_seconds
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._last_result: Optional[PromotionResult] = None
+        self._last_result: PromotionResult | None = None
         self._sweep_count: int = 0
 
     # ── public API ──────────────────────────────────────────────────────────
@@ -496,7 +485,7 @@ class PromotionScheduler:
         return self._thread is not None and self._thread.is_alive()
 
     @property
-    def last_result(self) -> Optional[PromotionResult]:
+    def last_result(self) -> PromotionResult | None:
         """The result from the most recent completed sweep, or None."""
         return self._last_result
 

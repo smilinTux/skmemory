@@ -22,8 +22,6 @@ Coverage:
 
 from __future__ import annotations
 
-import pytest
-
 from .conftest import make_memory, requires_skgraph
 
 pytestmark = requires_skgraph
@@ -152,7 +150,6 @@ class TestSKGraphEdges:
 
     def test_related_to_explicit_edges(self, falkordb_clean):
         mem_a = make_memory(title="Memory A")
-        mem_b = make_memory(title="Memory B")
         falkordb_clean.save(mem_a)
         # mem_b has mem_a in related_ids
         mem_b_linked = make_memory(title="Memory B", related_ids=[mem_a.id])
@@ -172,7 +169,7 @@ class TestSKGraphEdges:
 
         lineage = falkordb_clean.get_lineage(child.id)
         assert len(lineage) >= 1
-        ancestor_ids = [l["id"] for l in lineage]
+        ancestor_ids = [lbl["id"] for lbl in lineage]
         assert parent.id in ancestor_ids
 
     def test_auto_shared_tag_related_to(self, falkordb_clean):
@@ -337,7 +334,7 @@ class TestSKGraphTraversal:
         falkordb_clean.save(child)
 
         lineage = falkordb_clean.get_lineage(child.id)
-        ancestor_ids = [l["id"] for l in lineage]
+        ancestor_ids = [lbl["id"] for lbl in lineage]
         assert parent.id in ancestor_ids
         assert grandparent.id in ancestor_ids
 
@@ -353,8 +350,7 @@ class TestSKGraphClusters:
         # Create a hub: mem_hub shares tags with many others
         hub = make_memory(title="Hub", tags=["hub-tag", "shared-tag"])
         spokes = [
-            make_memory(title=f"Spoke {i}", tags=["hub-tag", "shared-tag"])
-            for i in range(4)
+            make_memory(title=f"Spoke {i}", tags=["hub-tag", "shared-tag"]) for i in range(4)
         ]
         falkordb_clean.save(hub)
         for s in spokes:

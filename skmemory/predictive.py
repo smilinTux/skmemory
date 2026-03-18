@@ -25,7 +25,6 @@ import math
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -62,7 +61,7 @@ class PredictiveRecall:
 
     def __init__(
         self,
-        log_path: Optional[Path] = None,
+        log_path: Path | None = None,
         max_events: int = 5000,
     ) -> None:
         self._log_path = log_path or DEFAULT_ACCESS_LOG
@@ -100,7 +99,10 @@ class PredictiveRecall:
         current_session: list[AccessEvent] = []
 
         for event in sorted(self._events, key=lambda e: e.timestamp):
-            if current_session and (event.timestamp - current_session[-1].timestamp) > session_window:
+            if (
+                current_session
+                and (event.timestamp - current_session[-1].timestamp) > session_window
+            ):
                 sessions.append(current_session)
                 current_session = []
             current_session.append(event)
@@ -111,7 +113,7 @@ class PredictiveRecall:
             ids_in_session = [e.memory_id for e in session]
             for i, mid in enumerate(ids_in_session):
                 self._frequency[mid] += 1
-                for other in ids_in_session[i + 1:]:
+                for other in ids_in_session[i + 1 :]:
                     if other != mid:
                         self._cooccurrence[mid][other] += 1
                         self._cooccurrence[other][mid] += 1
@@ -120,7 +122,9 @@ class PredictiveRecall:
             for tag in event.tags:
                 self._tag_affinity[tag][event.memory_id] += 1
 
-    def log_access(self, memory_id: str, tags: Optional[list[str]] = None, layer: str = "", context: str = "") -> None:
+    def log_access(
+        self, memory_id: str, tags: list[str] | None = None, layer: str = "", context: str = ""
+    ) -> None:
         """Record a memory access event for pattern learning.
 
         Args:
@@ -144,15 +148,15 @@ class PredictiveRecall:
             self._tag_affinity[tag][memory_id] += 1
 
         if len(self._events) > self._max_events:
-            self._events = self._events[-self._max_events:]
+            self._events = self._events[-self._max_events :]
             self._rebuild_indices()
 
         self._save()
 
     def predict(
         self,
-        recent_ids: Optional[list[str]] = None,
-        active_tags: Optional[list[str]] = None,
+        recent_ids: list[str] | None = None,
+        active_tags: list[str] | None = None,
         limit: int = 10,
     ) -> list[dict]:
         """Predict which memories will be needed next.
@@ -228,5 +232,5 @@ class PredictiveRecall:
     def _save(self) -> None:
         """Persist the access log to disk."""
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
-        data = [e.model_dump() for e in self._events[-self._max_events:]]
+        data = [e.model_dump() for e in self._events[-self._max_events :]]
         self._log_path.write_text(json.dumps(data, indent=2))

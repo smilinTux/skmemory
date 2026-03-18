@@ -25,12 +25,10 @@ import json
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from ..models import Memory, MemoryLayer
 from ..vault import VAULT_HEADER, MemoryVault
-from .sqlite_backend import SQLiteBackend
-from .sqlite_backend import DEFAULT_BASE_PATH
+from .sqlite_backend import DEFAULT_BASE_PATH, SQLiteBackend
 
 
 class VaultedSQLiteBackend(SQLiteBackend):
@@ -83,7 +81,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
         self._index_memory(memory, path)
         return memory.id
 
-    def load(self, memory_id: str) -> Optional[Memory]:
+    def load(self, memory_id: str) -> Memory | None:
         """Decrypt and parse a memory file.
 
         Handles both encrypted (``SKMV1`` header) and plaintext files
@@ -100,7 +98,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
             return None
         return self._read_memory_file(path)
 
-    def _row_to_memory(self, row: sqlite3.Row) -> Optional[Memory]:
+    def _row_to_memory(self, row: sqlite3.Row) -> Memory | None:
         """Load a full Memory object, decrypting if needed.
 
         Args:
@@ -143,7 +141,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
                     continue
         return count
 
-    def export_all(self, output_path: Optional[str] = None) -> str:
+    def export_all(self, output_path: str | None = None) -> str:
         """Export all memories (decrypted) to a JSON backup file.
 
         Args:
@@ -267,7 +265,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
     # Internal
     # ------------------------------------------------------------------
 
-    def _read_memory_file(self, path: Path) -> Optional[Memory]:
+    def _read_memory_file(self, path: Path) -> Memory | None:
         """Read a file and parse to Memory, decrypting if needed.
 
         Args:

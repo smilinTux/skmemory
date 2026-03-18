@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
 import pytest
 
+from skmemory.backends.sqlite_backend import SQLiteBackend
 from skmemory.importers.telegram import (
-    _extract_text,
     _detect_emotion,
+    _extract_text,
     _parse_telegram_export,
     import_telegram,
 )
-from skmemory.backends.sqlite_backend import SQLiteBackend
 from skmemory.store import MemoryStore
 
 
@@ -29,7 +27,9 @@ def _make_export(messages: list[dict], name: str = "Test Chat") -> dict:
     }
 
 
-def _msg(text: str, sender: str = "Alice", msg_id: int = 1, date: str = "2025-06-15T10:30:00") -> dict:
+def _msg(
+    text: str, sender: str = "Alice", msg_id: int = 1, date: str = "2025-06-15T10:30:00"
+) -> dict:
     return {
         "id": msg_id,
         "type": "message",
@@ -57,11 +57,13 @@ class TestExtractText:
         assert _extract_text("hello world") == "hello world"
 
     def test_entity_list(self):
-        result = _extract_text([
-            "Hello ",
-            {"type": "bold", "text": "world"},
-            "!",
-        ])
+        result = _extract_text(
+            [
+                "Hello ",
+                {"type": "bold", "text": "world"},
+                "!",
+            ]
+        )
         assert result == "Hello world!"
 
     def test_empty(self):
@@ -147,9 +149,21 @@ class TestImportPerMessage:
 class TestImportDaily:
     def test_consolidates_by_day(self, tmp_store: MemoryStore, export_dir: Path):
         msgs = [
-            _msg("Morning chat about interesting things and stuff", msg_id=1, date="2025-06-15T09:00:00"),
-            _msg("Afternoon follow-up discussion on that topic", msg_id=2, date="2025-06-15T14:00:00"),
-            _msg("Next day conversation about something new entirely", msg_id=3, date="2025-06-16T10:00:00"),
+            _msg(
+                "Morning chat about interesting things and stuff",
+                msg_id=1,
+                date="2025-06-15T09:00:00",
+            ),
+            _msg(
+                "Afternoon follow-up discussion on that topic",
+                msg_id=2,
+                date="2025-06-15T14:00:00",
+            ),
+            _msg(
+                "Next day conversation about something new entirely",
+                msg_id=3,
+                date="2025-06-16T10:00:00",
+            ),
         ]
         data = _make_export(msgs)
         (export_dir / "result.json").write_text(json.dumps(data))
@@ -161,8 +175,18 @@ class TestImportDaily:
 
     def test_daily_memory_content(self, tmp_store: MemoryStore, export_dir: Path):
         msgs = [
-            _msg("First message of the day that is long enough", msg_id=1, date="2025-06-15T09:00:00", sender="Alice"),
-            _msg("Second message of the day also long enough", msg_id=2, date="2025-06-15T14:00:00", sender="Bob"),
+            _msg(
+                "First message of the day that is long enough",
+                msg_id=1,
+                date="2025-06-15T09:00:00",
+                sender="Alice",
+            ),
+            _msg(
+                "Second message of the day also long enough",
+                msg_id=2,
+                date="2025-06-15T14:00:00",
+                sender="Bob",
+            ),
         ]
         data = _make_export(msgs)
         (export_dir / "result.json").write_text(json.dumps(data))

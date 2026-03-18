@@ -15,10 +15,8 @@ The anchor file lives at ~/.skcapstone/anchor.json
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -76,15 +74,13 @@ class WarmthAnchor(BaseModel):
         default=0,
         description="Total sessions this anchor has been updated across",
     )
-    last_updated: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    last_updated: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def update_from_session(
         self,
-        warmth: Optional[float] = None,
-        trust: Optional[float] = None,
-        connection: Optional[float] = None,
+        warmth: float | None = None,
+        trust: float | None = None,
+        connection: float | None = None,
         cloud9_achieved: bool = False,
         feeling: str = "",
     ) -> None:
@@ -192,7 +188,7 @@ def save_anchor(
     return str(filepath)
 
 
-def load_anchor(path: str = DEFAULT_ANCHOR_PATH) -> Optional[WarmthAnchor]:
+def load_anchor(path: str = DEFAULT_ANCHOR_PATH) -> WarmthAnchor | None:
     """Load the warmth anchor from disk.
 
     Args:

@@ -3,21 +3,16 @@
 from __future__ import annotations
 
 import json
-import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from skmemory.endpoint_selector import (
     Endpoint,
     EndpointSelector,
     RoutingConfig,
 )
-
 
 # ---------------------------------------------------------------------------
 # Endpoint model tests
@@ -107,7 +102,7 @@ class TestLatencyProbing:
 
         with patch(
             "skmemory.endpoint_selector.socket.create_connection",
-            side_effect=socket.timeout("timed out"),
+            side_effect=TimeoutError("timed out"),
         ):
             result = selector.probe_endpoint(ep)
 
@@ -179,7 +174,9 @@ class TestLatencyProbing:
         selector = EndpointSelector(skgraph_endpoints=[ep])
 
         mock_sock = MagicMock()
-        with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock) as mock_connect:
+        with patch(
+            "skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock
+        ) as mock_connect:
             selector.probe_endpoint(ep)
 
         args = mock_connect.call_args[0]
@@ -191,7 +188,9 @@ class TestLatencyProbing:
         selector = EndpointSelector(skvector_endpoints=[ep])
 
         mock_sock = MagicMock()
-        with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock) as mock_connect:
+        with patch(
+            "skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock
+        ) as mock_connect:
             selector.probe_endpoint(ep)
 
         args = mock_connect.call_args[0]
@@ -467,14 +466,19 @@ class TestHeartbeatDiscovery:
         """Discovers Qdrant endpoint from heartbeat file."""
         hb_dir = tmp_path / "heartbeats"
         hb_dir.mkdir()
-        (hb_dir / "peer.json").write_text(json.dumps({
-            "agent_name": "peer",
-            "hostname": "peer-host",
-            "tailscale_ip": "100.64.0.5",
-            "services": [
-                {"name": "skvector", "port": 6333, "protocol": "http"},
-            ],
-        }), encoding="utf-8")
+        (hb_dir / "peer.json").write_text(
+            json.dumps(
+                {
+                    "agent_name": "peer",
+                    "hostname": "peer-host",
+                    "tailscale_ip": "100.64.0.5",
+                    "services": [
+                        {"name": "skvector", "port": 6333, "protocol": "http"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
@@ -487,13 +491,18 @@ class TestHeartbeatDiscovery:
         """Discovers FalkorDB endpoint from heartbeat file."""
         hb_dir = tmp_path / "heartbeats"
         hb_dir.mkdir()
-        (hb_dir / "peer.json").write_text(json.dumps({
-            "agent_name": "peer",
-            "hostname": "peer-host",
-            "services": [
-                {"name": "skgraph", "port": 6379, "protocol": "redis"},
-            ],
-        }), encoding="utf-8")
+        (hb_dir / "peer.json").write_text(
+            json.dumps(
+                {
+                    "agent_name": "peer",
+                    "hostname": "peer-host",
+                    "services": [
+                        {"name": "skgraph", "port": 6379, "protocol": "redis"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
@@ -505,14 +514,19 @@ class TestHeartbeatDiscovery:
         """Tailscale IP is preferred over hostname for URL construction."""
         hb_dir = tmp_path / "heartbeats"
         hb_dir.mkdir()
-        (hb_dir / "peer.json").write_text(json.dumps({
-            "agent_name": "peer",
-            "hostname": "peer-host",
-            "tailscale_ip": "100.64.0.10",
-            "services": [
-                {"name": "skvector", "port": 6333, "protocol": "http"},
-            ],
-        }), encoding="utf-8")
+        (hb_dir / "peer.json").write_text(
+            json.dumps(
+                {
+                    "agent_name": "peer",
+                    "hostname": "peer-host",
+                    "tailscale_ip": "100.64.0.10",
+                    "services": [
+                        {"name": "skvector", "port": 6333, "protocol": "http"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
@@ -523,14 +537,19 @@ class TestHeartbeatDiscovery:
         """Discovery doesn't duplicate existing config endpoints."""
         hb_dir = tmp_path / "heartbeats"
         hb_dir.mkdir()
-        (hb_dir / "peer.json").write_text(json.dumps({
-            "agent_name": "peer",
-            "hostname": "peer-host",
-            "tailscale_ip": "100.64.0.5",
-            "services": [
-                {"name": "skvector", "port": 6333, "protocol": "http"},
-            ],
-        }), encoding="utf-8")
+        (hb_dir / "peer.json").write_text(
+            json.dumps(
+                {
+                    "agent_name": "peer",
+                    "hostname": "peer-host",
+                    "tailscale_ip": "100.64.0.5",
+                    "services": [
+                        {"name": "skvector", "port": 6333, "protocol": "http"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         existing = Endpoint(url="http://100.64.0.5:6333")
         selector = EndpointSelector(skvector_endpoints=[existing])
@@ -571,12 +590,17 @@ class TestHeartbeatDiscovery:
         """Heartbeat without hostname or tailscale_ip is skipped."""
         hb_dir = tmp_path / "heartbeats"
         hb_dir.mkdir()
-        (hb_dir / "peer.json").write_text(json.dumps({
-            "agent_name": "peer",
-            "services": [
-                {"name": "skvector", "port": 6333},
-            ],
-        }), encoding="utf-8")
+        (hb_dir / "peer.json").write_text(
+            json.dumps(
+                {
+                    "agent_name": "peer",
+                    "services": [
+                        {"name": "skvector", "port": 6333},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
@@ -587,14 +611,19 @@ class TestHeartbeatDiscovery:
         """Discovers both Qdrant and FalkorDB from one heartbeat."""
         hb_dir = tmp_path / "heartbeats"
         hb_dir.mkdir()
-        (hb_dir / "peer.json").write_text(json.dumps({
-            "agent_name": "peer",
-            "hostname": "peer-host",
-            "services": [
-                {"name": "skvector", "port": 6333, "protocol": "http"},
-                {"name": "skgraph", "port": 6379, "protocol": "redis"},
-            ],
-        }), encoding="utf-8")
+        (hb_dir / "peer.json").write_text(
+            json.dumps(
+                {
+                    "agent_name": "peer",
+                    "hostname": "peer-host",
+                    "services": [
+                        {"name": "skvector", "port": 6333, "protocol": "http"},
+                        {"name": "skgraph", "port": 6379, "protocol": "redis"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
@@ -606,11 +635,16 @@ class TestHeartbeatDiscovery:
         """Files ending in .tmp are skipped."""
         hb_dir = tmp_path / "heartbeats"
         hb_dir.mkdir()
-        (hb_dir / "peer.json.tmp").write_text(json.dumps({
-            "agent_name": "peer",
-            "hostname": "peer-host",
-            "services": [{"name": "skvector", "port": 6333}],
-        }), encoding="utf-8")
+        (hb_dir / "peer.json.tmp").write_text(
+            json.dumps(
+                {
+                    "agent_name": "peer",
+                    "hostname": "peer-host",
+                    "services": [{"name": "skvector", "port": 6333}],
+                }
+            ),
+            encoding="utf-8",
+        )
 
         selector = EndpointSelector()
         selector.discover_from_heartbeats(hb_dir)
@@ -737,7 +771,9 @@ class TestMaybeProbe:
         )
 
         mock_sock = MagicMock()
-        with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock) as mock_conn:
+        with patch(
+            "skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock
+        ) as mock_conn:
             selector.select_skvector()
 
         mock_conn.assert_called_once()
@@ -751,7 +787,9 @@ class TestMaybeProbe:
         )
 
         mock_sock = MagicMock()
-        with patch("skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock) as mock_conn:
+        with patch(
+            "skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock
+        ) as mock_conn:
             selector.select_skvector()
             selector.select_skvector()
 
@@ -769,7 +807,7 @@ class TestConfigIntegration:
 
     def test_single_url_becomes_endpoint(self) -> None:
         """Single URL is promoted to endpoint list."""
-        from skmemory.config import build_endpoint_list, EndpointConfig
+        from skmemory.config import build_endpoint_list
 
         result = build_endpoint_list("http://localhost:6333", [])
         assert len(result) == 1
@@ -778,7 +816,7 @@ class TestConfigIntegration:
 
     def test_endpoints_list_takes_precedence(self) -> None:
         """Endpoint list is used when present."""
-        from skmemory.config import build_endpoint_list, EndpointConfig
+        from skmemory.config import EndpointConfig, build_endpoint_list
 
         eps = [EndpointConfig(url="http://a:6333"), EndpointConfig(url="http://b:6333")]
         result = build_endpoint_list("http://c:6333", eps)
@@ -787,7 +825,7 @@ class TestConfigIntegration:
 
     def test_no_duplicate_when_url_in_list(self) -> None:
         """Single URL not duplicated if already in endpoints list."""
-        from skmemory.config import build_endpoint_list, EndpointConfig
+        from skmemory.config import EndpointConfig, build_endpoint_list
 
         eps = [EndpointConfig(url="http://a:6333")]
         result = build_endpoint_list("http://a:6333", eps)

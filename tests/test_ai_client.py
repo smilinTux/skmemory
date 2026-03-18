@@ -4,12 +4,9 @@ These tests verify the client interface without requiring a running
 Ollama server. The client is designed to fail gracefully.
 """
 
-import json
-from unittest.mock import MagicMock, patch
-
 import pytest
 
-from skmemory.ai_client import AIClient, DEFAULT_MODEL, DEFAULT_URL
+from skmemory.ai_client import DEFAULT_MODEL, DEFAULT_URL, AIClient
 
 
 class TestClientInit:

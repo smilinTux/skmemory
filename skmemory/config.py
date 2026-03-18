@@ -13,9 +13,7 @@ Now supports multiple agents via ~/.skcapstone/agents/{agent_name}/
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -48,12 +46,12 @@ class EndpointConfig(BaseModel):
 class SKMemoryConfig(BaseModel):
     """Persistent configuration for SKMemory backends."""
 
-    skvector_url: Optional[str] = None
-    skvector_key: Optional[str] = None
-    skgraph_url: Optional[str] = None
+    skvector_url: str | None = None
+    skvector_key: str | None = None
+    skgraph_url: str | None = None
     backends_enabled: list[str] = Field(default_factory=list)
-    docker_compose_file: Optional[str] = None
-    setup_completed_at: Optional[str] = None
+    docker_compose_file: str | None = None
+    setup_completed_at: str | None = None
 
     # Multi-endpoint HA support
     skvector_endpoints: list[EndpointConfig] = Field(default_factory=list)
@@ -62,7 +60,7 @@ class SKMemoryConfig(BaseModel):
     heartbeat_discovery: bool = False
 
 
-def load_config(path: Path = CONFIG_PATH) -> Optional[SKMemoryConfig]:
+def load_config(path: Path = CONFIG_PATH) -> SKMemoryConfig | None:
     """Load configuration from YAML.
 
     Args:
@@ -106,10 +104,10 @@ def save_config(config: SKMemoryConfig, path: Path = CONFIG_PATH) -> Path:
 
 
 def merge_env_and_config(
-    cli_skvector_url: Optional[str] = None,
-    cli_skvector_key: Optional[str] = None,
-    cli_skgraph_url: Optional[str] = None,
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    cli_skvector_url: str | None = None,
+    cli_skvector_key: str | None = None,
+    cli_skgraph_url: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
     """Resolve backend URLs with precedence: CLI > env > config > None.
 
     Args:
@@ -142,7 +140,7 @@ def merge_env_and_config(
 
 
 def build_endpoint_list(
-    single_url: Optional[str],
+    single_url: str | None,
     endpoints: list[EndpointConfig],
     default_role: str = "primary",
 ) -> list[EndpointConfig]:

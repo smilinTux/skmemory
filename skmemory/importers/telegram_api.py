@@ -24,14 +24,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from ..config import SKMEMORY_HOME
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
+from ..config import SKMEMORY_HOME
 from ..store import MemoryStore
-
 
 SESSION_PATH = str(SKMEMORY_HOME / "telegram.session")
 
@@ -93,8 +91,8 @@ def check_setup() -> dict:
 
 async def _fetch_messages(
     chat_name_or_id: str,
-    limit: Optional[int] = None,
-    since: Optional[str] = None,
+    limit: int | None = None,
+    since: str | None = None,
 ) -> dict:
     """Connect to Telegram API and fetch messages from a chat.
 
@@ -131,7 +129,7 @@ async def _fetch_messages(
         raise RuntimeError(
             "Telethon is required for direct API import. "
             "Install it with: pip install skmemory[telegram]"
-        )
+        ) from None
 
     # Ensure session directory exists
     session_dir = Path(SESSION_PATH).parent
@@ -154,7 +152,7 @@ async def _fetch_messages(
             try:
                 entity = await client.get_entity(int(chat_name_or_id))
             except (ValueError, TypeError):
-                raise RuntimeError(f"Could not find chat: {chat_name_or_id}")
+                raise RuntimeError(f"Could not find chat: {chat_name_or_id}") from None
 
         chat_title = getattr(entity, "title", None)
         if chat_title is None:
@@ -174,7 +172,7 @@ async def _fetch_messages(
                 kwargs["offset_date"] = since_dt
                 kwargs["reverse"] = True
             except ValueError:
-                raise RuntimeError(f"Invalid date format: {since}. Use YYYY-MM-DD.")
+                raise RuntimeError(f"Invalid date format: {since}. Use YYYY-MM-DD.") from None
 
         if not limit and not since:
             kwargs["limit"] = 1000  # sensible default
@@ -250,7 +248,7 @@ async def send_message(
     except ImportError:
         raise RuntimeError(
             "Telethon is required. Install with: pip install skmemory[telegram]"
-        )
+        ) from None
 
     session_dir = Path(SESSION_PATH).parent
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -266,13 +264,14 @@ async def send_message(
             try:
                 entity = await client.get_entity(int(chat))
             except (ValueError, TypeError):
-                raise RuntimeError(f"Could not find chat: {chat}")
+                raise RuntimeError(f"Could not find chat: {chat}") from None
 
         # Determine parse mode
         pm = None
         if parse_mode:
             if parse_mode.lower() == "html":
                 from telethon.extensions import html as telethon_html  # noqa: F401
+
                 pm = "html"
             elif parse_mode.lower() in ("markdown", "md"):
                 pm = "md"
@@ -322,7 +321,7 @@ async def poll_messages(
     except ImportError:
         raise RuntimeError(
             "Telethon is required. Install with: pip install skmemory[telegram]"
-        )
+        ) from None
 
     session_dir = Path(SESSION_PATH).parent
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -338,7 +337,7 @@ async def poll_messages(
             try:
                 entity = await client.get_entity(int(chat))
             except (ValueError, TypeError):
-                raise RuntimeError(f"Could not find chat: {chat}")
+                raise RuntimeError(f"Could not find chat: {chat}") from None
 
         kwargs: dict = {"limit": limit}
         if since:
@@ -347,7 +346,7 @@ async def poll_messages(
                 kwargs["offset_date"] = since_dt
                 kwargs["reverse"] = True
             except ValueError:
-                raise RuntimeError(f"Invalid date format: {since}. Use YYYY-MM-DD.")
+                raise RuntimeError(f"Invalid date format: {since}. Use YYYY-MM-DD.") from None
 
         messages = []
         async for msg in client.iter_messages(entity, **kwargs):
@@ -359,15 +358,17 @@ async def poll_messages(
                 else:
                     sender_name = getattr(msg.sender, "title", str(msg.sender_id))
 
-            messages.append({
-                "id": msg.id,
-                "date": msg.date.isoformat() if msg.date else "",
-                "sender": sender_name,
-                "sender_id": msg.sender_id,
-                "text": msg.text or "",
-                "has_media": msg.media is not None,
-                "reply_to": msg.reply_to.reply_to_msg_id if msg.reply_to else None,
-            })
+            messages.append(
+                {
+                    "id": msg.id,
+                    "date": msg.date.isoformat() if msg.date else "",
+                    "sender": sender_name,
+                    "sender_id": msg.sender_id,
+                    "text": msg.text or "",
+                    "has_media": msg.media is not None,
+                    "reply_to": msg.reply_to.reply_to_msg_id if msg.reply_to else None,
+                }
+            )
 
         return messages
     finally:
@@ -397,11 +398,11 @@ async def list_chats(limit: int = 50) -> list[dict]:
 
     try:
         from telethon import TelegramClient
-        from telethon.tl.types import User, Channel, Chat
+        from telethon.tl.types import Channel, Chat, User
     except ImportError:
         raise RuntimeError(
             "Telethon is required. Install with: pip install skmemory[telegram]"
-        )
+        ) from None
 
     session_dir = Path(SESSION_PATH).parent
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -426,13 +427,15 @@ async def list_chats(limit: int = 50) -> list[dict]:
                 parts = [entity.first_name or "", entity.last_name or ""]
                 title = " ".join(p for p in parts if p) or str(entity.id)
 
-            chats.append({
-                "id": entity.id,
-                "title": title,
-                "type": chat_type,
-                "unread_count": dialog.unread_count,
-                "username": getattr(entity, "username", None),
-            })
+            chats.append(
+                {
+                    "id": entity.id,
+                    "title": title,
+                    "type": chat_type,
+                    "unread_count": dialog.unread_count,
+                    "username": getattr(entity, "username", None),
+                }
+            )
 
         return chats
     finally:
@@ -444,11 +447,11 @@ def import_telegram_api(
     chat_name_or_id: str,
     *,
     mode: str = "daily",
-    limit: Optional[int] = None,
-    since: Optional[str] = None,
+    limit: int | None = None,
+    since: str | None = None,
     min_message_length: int = 30,
-    chat_name: Optional[str] = None,
-    tags: Optional[list[str]] = None,
+    chat_name: str | None = None,
+    tags: list[str] | None = None,
 ) -> dict:
     """Import messages directly from Telegram API into SKMemory.
 

@@ -14,9 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
-from typing import Optional
 
 from .agents import get_agent_paths
 from .models import EmotionalSnapshot, Memory, SeedMemory
@@ -45,7 +43,7 @@ def scan_seed_directory(seed_dir: str = DEFAULT_SEED_DIR) -> list[Path]:
     return sorted(seed_path.glob("*.seed.json"))
 
 
-def _parse_cloud9_format(raw: dict, path: Path) -> Optional[SeedMemory]:
+def _parse_cloud9_format(raw: dict, path: Path) -> SeedMemory | None:
     """Parse alternative Cloud 9 seed format with 'seed_metadata' top-level key.
 
     This format uses:
@@ -124,7 +122,7 @@ def _parse_cloud9_format(raw: dict, path: Path) -> Optional[SeedMemory]:
     )
 
 
-def parse_seed_file(path: Path) -> Optional[SeedMemory]:
+def parse_seed_file(path: Path) -> SeedMemory | None:
     """Parse a Cloud 9 seed JSON file into a SeedMemory.
 
     Handles the Cloud 9 seed format:
@@ -224,8 +222,7 @@ def validate_seed_data(data: dict) -> dict:
 
     # -- Required: version --
     if is_cloud9:
-        version = (data.get("seed_metadata", {}).get("version")
-                   or data.get("version"))
+        version = data.get("seed_metadata", {}).get("version") or data.get("version")
     else:
         version = data.get("version")
     if not version:
@@ -246,14 +243,13 @@ def validate_seed_data(data: dict) -> dict:
     # -- Timestamp validation helper --
     def _check_ts(value: str, field: str) -> None:
         from datetime import datetime as _dt
+
         if not isinstance(value, str) or not value.strip():
             return
         try:
             _dt.fromisoformat(value.replace("Z", "+00:00"))
         except (ValueError, TypeError):
-            result["errors"].append(
-                f"{field} is not a valid ISO 8601 timestamp: {value!r}"
-            )
+            result["errors"].append(f"{field} is not a valid ISO 8601 timestamp: {value!r}")
             result["valid"] = False
 
     if is_cloud9:
@@ -278,9 +274,7 @@ def validate_seed_data(data: dict) -> dict:
             return
         for i, tag in enumerate(tags):
             if not isinstance(tag, str):
-                result["errors"].append(
-                    f"{field}[{i}] must be a string, got {type(tag).__name__}"
-                )
+                result["errors"].append(f"{field}[{i}] must be a string, got {type(tag).__name__}")
                 result["valid"] = False
 
     md = data.get("metadata", {})
@@ -289,25 +283,26 @@ def validate_seed_data(data: dict) -> dict:
 
     # -- Emotional signature ranges --
     if is_cloud9:
-        emo = (data.get("experience_summary", {})
-               .get("emotional_snapshot",
-                    data.get("experience_summary", {})
-                    .get("emotional_signature", {})))
+        emo = data.get("experience_summary", {}).get(
+            "emotional_snapshot", data.get("experience_summary", {}).get("emotional_signature", {})
+        )
     else:
         emo = data.get("experience", {}).get("emotional_signature", {})
     if isinstance(emo, dict):
         intensity = emo.get("intensity")
-        if intensity is not None and isinstance(intensity, (int, float)):
-            if not (0.0 <= float(intensity) <= 10.0):
-                result["warnings"].append(
-                    f"emotional intensity={intensity} outside 0-10 range"
-                )
+        if (
+            intensity is not None
+            and isinstance(intensity, (int, float))
+            and not (0.0 <= float(intensity) <= 10.0)
+        ):
+            result["warnings"].append(f"emotional intensity={intensity} outside 0-10 range")
         valence = emo.get("valence")
-        if valence is not None and isinstance(valence, (int, float)):
-            if not (-1.0 <= float(valence) <= 1.0):
-                result["warnings"].append(
-                    f"emotional valence={valence} outside -1 to 1 range"
-                )
+        if (
+            valence is not None
+            and isinstance(valence, (int, float))
+            and not (-1.0 <= float(valence) <= 1.0)
+        ):
+            result["warnings"].append(f"emotional valence={valence} outside -1 to 1 range")
         labels = emo.get("labels", emo.get("emotions"))
         if labels is not None:
             _check_tags(labels, "emotional.labels")

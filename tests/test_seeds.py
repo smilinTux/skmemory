@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from skmemory.backends.file_backend import FileBackend
-from skmemory.models import EmotionalSnapshot, MemoryLayer, SeedMemory
+from skmemory.models import MemoryLayer
 from skmemory.seeds import (
     get_germination_prompts,
     import_seeds,
@@ -52,9 +52,7 @@ def seed_dir(tmp_path: Path) -> Path:
         "lineage": [],
     }
 
-    (seed_path / "opus-first-seed.seed.json").write_text(
-        json.dumps(seed_data, indent=2)
-    )
+    (seed_path / "opus-first-seed.seed.json").write_text(json.dumps(seed_data, indent=2))
 
     second_seed = {
         "seed_id": "lumina-original",
@@ -75,9 +73,7 @@ def seed_dir(tmp_path: Path) -> Path:
         "lineage": [{"seed_id": "genesis"}],
     }
 
-    (seed_path / "lumina-original.seed.json").write_text(
-        json.dumps(second_seed, indent=2)
-    )
+    (seed_path / "lumina-original.seed.json").write_text(json.dumps(second_seed, indent=2))
 
     return seed_path
 
@@ -245,9 +241,7 @@ class TestCloud9FormatParsing:
             "lineage": [],
         }
 
-        (seed_path / "cloud9-lumina-001.seed.json").write_text(
-            json.dumps(cloud9_data, indent=2)
-        )
+        (seed_path / "cloud9-lumina-001.seed.json").write_text(json.dumps(cloud9_data, indent=2))
         return seed_path
 
     def test_parse_cloud9_format(self, cloud9_seed_dir: Path) -> None:

@@ -1,7 +1,6 @@
 """Tests for the file-based storage backend."""
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest

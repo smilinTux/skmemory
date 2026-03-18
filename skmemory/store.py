@@ -10,12 +10,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
 from .backends.base import BaseBackend
-
-logger = logging.getLogger("skmemory.store")
 from .backends.file_backend import FileBackend
+from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
 from .models import (
     EmotionalSnapshot,
@@ -25,6 +23,7 @@ from .models import (
     SeedMemory,
 )
 
+logger = logging.getLogger("skmemory.store")
 
 MAX_CONTENT_LENGTH = 10000
 CONTENT_OVERFLOW_STRATEGY = "split"  # "truncate" or "split"
@@ -47,9 +46,9 @@ class MemoryStore:
 
     def __init__(
         self,
-        primary: Optional[BaseBackend] = None,
-        vector: Optional[BaseBackend] = None,
-        graph: Optional["SKGraphBackend"] = None,
+        primary: BaseBackend | None = None,
+        vector: BaseBackend | None = None,
+        graph: SKGraphBackend | None = None,
         use_sqlite: bool = True,
         max_content_length: int = MAX_CONTENT_LENGTH,
         content_overflow_strategy: str = CONTENT_OVERFLOW_STRATEGY,
@@ -72,12 +71,12 @@ class MemoryStore:
         *,
         layer: MemoryLayer = MemoryLayer.SHORT,
         role: MemoryRole = MemoryRole.GENERAL,
-        tags: Optional[list[str]] = None,
-        emotional: Optional[EmotionalSnapshot] = None,
+        tags: list[str] | None = None,
+        emotional: EmotionalSnapshot | None = None,
         source: str = "manual",
         source_ref: str = "",
-        related_ids: Optional[list[str]] = None,
-        metadata: Optional[dict] = None,
+        related_ids: list[str] | None = None,
+        metadata: dict | None = None,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -161,12 +160,12 @@ class MemoryStore:
         *,
         layer: MemoryLayer = MemoryLayer.SHORT,
         role: MemoryRole = MemoryRole.GENERAL,
-        tags: Optional[list[str]] = None,
-        emotional: Optional[EmotionalSnapshot] = None,
+        tags: list[str] | None = None,
+        emotional: EmotionalSnapshot | None = None,
         source: str = "manual",
         source_ref: str = "",
-        related_ids: Optional[list[str]] = None,
-        metadata: Optional[dict] = None,
+        related_ids: list[str] | None = None,
+        metadata: dict | None = None,
     ) -> Memory:
         """Split oversized content into parent (summary) + child (chunk) memories.
 
@@ -177,10 +176,7 @@ class MemoryStore:
             Memory: The parent memory.
         """
         chunk_size = self.max_content_length
-        chunks = [
-            content[i : i + chunk_size]
-            for i in range(0, len(content), chunk_size)
-        ]
+        chunks = [content[i : i + chunk_size] for i in range(0, len(content), chunk_size)]
 
         logger.info(
             "Splitting '%s' (%d chars) into %d chunks",
@@ -249,7 +245,7 @@ class MemoryStore:
 
         return parent
 
-    def recall(self, memory_id: str) -> Optional[Memory]:
+    def recall(self, memory_id: str) -> Memory | None:
         """Retrieve a specific memory by ID with integrity verification.
 
         Automatically checks the integrity hash on recall. If the
@@ -325,8 +321,8 @@ class MemoryStore:
 
     def list_memories(
         self,
-        layer: Optional[MemoryLayer] = None,
-        tags: Optional[list[str]] = None,
+        layer: MemoryLayer | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
     ) -> list[Memory]:
         """List memories with optional filtering.
@@ -346,7 +342,7 @@ class MemoryStore:
         memory_id: str,
         target: MemoryLayer,
         summary: str = "",
-    ) -> Optional[Memory]:
+    ) -> Memory | None:
         """Promote a memory to a higher persistence tier.
 
         Creates a new memory at the target layer linked to the original.
@@ -371,13 +367,17 @@ class MemoryStore:
             try:
                 self.vector.save(promoted)
             except Exception as exc:
-                logger.warning("Vector indexing failed for promoted memory %s: %s", promoted.id, exc)
+                logger.warning(
+                    "Vector indexing failed for promoted memory %s: %s", promoted.id, exc
+                )
 
         if self.graph:
             try:
                 self.graph.index_memory(promoted)
             except Exception as exc:
-                logger.warning("Graph indexing failed for promoted memory %s: %s", promoted.id, exc)
+                logger.warning(
+                    "Graph indexing failed for promoted memory %s: %s", promoted.id, exc
+                )
 
         return promoted
 
@@ -409,9 +409,7 @@ class MemoryStore:
             if not seed.experience_summary or not seed.experience_summary.strip():
                 errors.append("experience_summary is empty")
             if errors:
-                raise ValueError(
-                    f"Seed validation failed: {'; '.join(errors)}"
-                )
+                raise ValueError(f"Seed validation failed: {'; '.join(errors)}")
 
         memory = seed.to_memory()
         self.primary.save(memory)
@@ -448,7 +446,7 @@ class MemoryStore:
         self,
         session_id: str,
         summary: str,
-        emotional: Optional[EmotionalSnapshot] = None,
+        emotional: EmotionalSnapshot | None = None,
     ) -> Memory:
         """Compress a session's short-term memories into a single mid-term memory.
 
@@ -662,9 +660,7 @@ class MemoryStore:
             temp = SQLiteBackend(base_path=str(self.primary.base_path))
             temp.reindex()
             return temp.export_all(output_path)
-        raise RuntimeError(
-            f"Export not supported for backend: {type(self.primary).__name__}"
-        )
+        raise RuntimeError(f"Export not supported for backend: {type(self.primary).__name__}")
 
     def import_backup(self, backup_path: str) -> int:
         """Restore memories from a JSON backup file.
@@ -680,9 +676,7 @@ class MemoryStore:
         """
         if isinstance(self.primary, SQLiteBackend):
             return self.primary.import_backup(backup_path)
-        raise RuntimeError(
-            f"Import not supported for backend: {type(self.primary).__name__}"
-        )
+        raise RuntimeError(f"Import not supported for backend: {type(self.primary).__name__}")
 
     def list_backups(self, backup_dir: str | None = None) -> list[dict]:
         """List all skmemory backup files, sorted newest first.
@@ -699,9 +693,7 @@ class MemoryStore:
             return self.primary.list_backups(backup_dir)
         return []
 
-    def prune_backups(
-        self, keep: int = 7, backup_dir: str | None = None
-    ) -> list[str]:
+    def prune_backups(self, keep: int = 7, backup_dir: str | None = None) -> list[str]:
         """Delete oldest backups, keeping only the N most recent.
 
         Args:
@@ -777,7 +769,8 @@ def _first_n_sentences(text: str, n: int = 2) -> str:
         return ""
     # Split on sentence-ending punctuation followed by whitespace
     import re
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     result = " ".join(sentences[:n])
     # Cap at 200 chars as a safety net
     if len(result) > 200:

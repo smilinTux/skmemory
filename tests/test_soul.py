@@ -6,11 +6,9 @@ import pytest
 
 from skmemory.soul import (
     SoulBlueprint,
-    Relationship,
-    CoreMemoryRef,
     create_default_soul,
-    save_soul,
     load_soul,
+    save_soul,
 )
 
 

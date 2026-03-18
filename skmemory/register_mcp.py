@@ -18,7 +18,6 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Optional
 
 
 def get_agent_name() -> str:
@@ -115,7 +114,7 @@ def register_openclaw(agent: str, dry_run: bool = False) -> bool:
 
     # Read existing config
     if config_file.exists():
-        with open(config_file, "r") as f:
+        with open(config_file) as f:
             config = json.load(f)
     else:
         config = {}

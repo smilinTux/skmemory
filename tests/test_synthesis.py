@@ -18,7 +18,6 @@ from skmemory.synthesis import (
     _week_range,
 )
 
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -34,7 +33,6 @@ def store(tmp_path: Path) -> MemoryStore:
 @pytest.fixture()
 def populated_store(store: MemoryStore) -> MemoryStore:
     """Store with a mix of memories from today."""
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     store.snapshot(
         title="Morning coffee reflection",
@@ -86,7 +84,9 @@ def synthesizer(populated_store: MemoryStore) -> JournalSynthesizer:
 
 class TestFirstNSentences:
     def test_basic(self) -> None:
-        assert _first_n_sentences("Hello world. How are you? Fine.", 2) == "Hello world. How are you?"
+        assert (
+            _first_n_sentences("Hello world. How are you? Fine.", 2) == "Hello world. How are you?"
+        )
 
     def test_single(self) -> None:
         assert _first_n_sentences("One sentence here.", 1) == "One sentence here."

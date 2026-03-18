@@ -22,13 +22,12 @@ Coverage areas:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from skmemory.backends.skgraph_backend import SKGraphBackend
 from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
-
 
 # ─────────────────────────────────────────────────────────
 # Shared fixtures
@@ -89,9 +88,11 @@ class TestInitialization:
     def test_lazy_init_without_falkordb(self):
         """Backend gracefully handles missing falkordb package."""
         fb = SKGraphBackend()
-        with patch.dict("sys.modules", {"falkordb": None}):
-            with patch("builtins.__import__", side_effect=ImportError("no falkordb")):
-                assert fb._ensure_initialized() is False
+        with (
+            patch.dict("sys.modules", {"falkordb": None}),
+            patch("builtins.__import__", side_effect=ImportError("no falkordb")),
+        ):
+            assert fb._ensure_initialized() is False
 
     def test_connection_failure_handled(self):
         """Backend handles connection failure gracefully."""
@@ -138,10 +139,7 @@ class TestIndexMemory:
         calls = [str(c) for c in mock_graph.query.call_args_list]
         # Explicit RELATED_TO edges: one per related_id, passed with b_id param.
         # Exclude the shared-tag auto-wire query (which uses a_id only, no b_id).
-        explicit_related = [
-            c for c in calls
-            if "RELATED_TO" in c and "b_id" in c
-        ]
+        explicit_related = [c for c in calls if "RELATED_TO" in c and "b_id" in c]
         assert len(explicit_related) == len(related_memory.related_ids)
 
     def test_index_with_parent_id(self, backend, mock_graph, related_memory):
@@ -164,10 +162,7 @@ class TestIndexMemory:
         calls = [str(c) for c in mock_graph.query.call_args_list]
         # Explicit TAGGED calls use $tag param; exclude the shared-tag sweep
         # (CREATE_SHARED_TAG_RELATED also contains "TAGGED" but uses $a_id only).
-        explicit_tagged = [
-            c for c in calls
-            if "TAGGED" in c and "'tag'" in c
-        ]
+        explicit_tagged = [c for c in calls if "TAGGED" in c and "'tag'" in c]
         assert len(explicit_tagged) == len(sample_memory.tags)
 
     def test_index_creates_from_source_edge(self, backend, mock_graph, sample_memory):
@@ -177,9 +172,7 @@ class TestIndexMemory:
         source_calls = [c for c in calls if "FROM_SOURCE" in c]
         assert len(source_calls) >= 1
 
-    def test_index_creates_preceded_by_edge_when_prior_exists(
-        self, backend, mock_graph
-    ):
+    def test_index_creates_preceded_by_edge_when_prior_exists(self, backend, mock_graph):
         """PRECEDED_BY edge is created when a prior memory from same source exists."""
         # Simulate a previous memory from same source being found
         prior_result = MagicMock()
@@ -202,9 +195,7 @@ class TestIndexMemory:
         def side_effect(query, params=None):
             call_count[0] += 1
             result = MagicMock()
-            if "FIND_PREVIOUS_FROM_SOURCE" in query or (
-                params and "exclude_id" in params
-            ):
+            if "FIND_PREVIOUS_FROM_SOURCE" in query or (params and "exclude_id" in params):
                 result.result_set = [["prior-mem-id", "2026-01-01T00:00:00"]]
             else:
                 result.result_set = []
@@ -556,13 +547,15 @@ class TestStats:
     def test_stats_returns_counts(self, backend, mock_graph):
         """stats() returns node_count, edge_count, memory_count, tag_distribution."""
         results = [
-            MagicMock(result_set=[[42]]),   # COUNT_NODES
+            MagicMock(result_set=[[42]]),  # COUNT_NODES
             MagicMock(result_set=[[100]]),  # COUNT_EDGES
-            MagicMock(result_set=[[30]]),   # COUNT_MEMORIES
-            MagicMock(result_set=[         # TAG_DISTRIBUTION
-                ("cloud9", 15),
-                ("seed", 10),
-            ]),
+            MagicMock(result_set=[[30]]),  # COUNT_MEMORIES
+            MagicMock(
+                result_set=[  # TAG_DISTRIBUTION
+                    ("cloud9", 15),
+                    ("seed", 10),
+                ]
+            ),
         ]
         mock_graph.query.side_effect = results
 
@@ -592,10 +585,10 @@ class TestStats:
     def test_stats_empty_graph(self, backend, mock_graph):
         """stats() handles an empty graph gracefully."""
         results = [
-            MagicMock(result_set=[[0]]),   # COUNT_NODES
-            MagicMock(result_set=[[0]]),   # COUNT_EDGES
-            MagicMock(result_set=[[0]]),   # COUNT_MEMORIES
-            MagicMock(result_set=[]),      # TAG_DISTRIBUTION — empty
+            MagicMock(result_set=[[0]]),  # COUNT_NODES
+            MagicMock(result_set=[[0]]),  # COUNT_EDGES
+            MagicMock(result_set=[[0]]),  # COUNT_MEMORIES
+            MagicMock(result_set=[]),  # TAG_DISTRIBUTION — empty
         ]
         mock_graph.query.side_effect = results
 

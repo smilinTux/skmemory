@@ -24,6 +24,7 @@ def _is_registered() -> bool:
         return False
     try:
         import json
+
         data = json.loads(settings.read_text())
         hooks = data.get("hooks", {})
         return "PreCompact" in hooks and "SessionEnd" in hooks
@@ -33,7 +34,7 @@ def _is_registered() -> bool:
 
 def run_post_install() -> None:
     """Register skmemory MCP server, hooks, and skill symlinks."""
-    from .register import detect_environments, register_package, register_hooks
+    from .register import detect_environments, register_package
 
     print("skmemory: running post-install registration...")
 

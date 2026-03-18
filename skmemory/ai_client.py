@@ -15,10 +15,8 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.request
 import urllib.error
-from typing import Optional
-
+import urllib.request
 
 DEFAULT_URL = "http://localhost:11434"
 DEFAULT_MODEL = "llama3.2"
@@ -36,17 +34,13 @@ class AIClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        model: Optional[str] = None,
-        timeout: Optional[int] = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        timeout: int | None = None,
     ) -> None:
-        self.base_url = (
-            base_url or os.environ.get("SKMEMORY_AI_URL", DEFAULT_URL)
-        ).rstrip("/")
+        self.base_url = (base_url or os.environ.get("SKMEMORY_AI_URL", DEFAULT_URL)).rstrip("/")
         self.model = model or os.environ.get("SKMEMORY_AI_MODEL", DEFAULT_MODEL)
-        self.timeout = timeout or int(
-            os.environ.get("SKMEMORY_AI_TIMEOUT", str(DEFAULT_TIMEOUT))
-        )
+        self.timeout = timeout or int(os.environ.get("SKMEMORY_AI_TIMEOUT", str(DEFAULT_TIMEOUT)))
 
     def is_available(self) -> bool:
         """Check if the LLM server is reachable.
@@ -93,7 +87,7 @@ class AIClient:
         except Exception:
             return ""
 
-    def embed(self, text: str, model: Optional[str] = None) -> list[float]:
+    def embed(self, text: str, model: str | None = None) -> list[float]:
         """Generate an embedding vector using Ollama's embed API.
 
         Args:
@@ -103,9 +97,7 @@ class AIClient:
         Returns:
             list[float]: Embedding vector, or empty list on failure.
         """
-        embed_model = model or os.environ.get(
-            "SKMEMORY_EMBED_MODEL", "nomic-embed-text"
-        )
+        embed_model = model or os.environ.get("SKMEMORY_EMBED_MODEL", "nomic-embed-text")
         payload = {"model": embed_model, "input": text}
 
         try:
@@ -175,9 +167,7 @@ class AIClient:
             ),
         )
 
-    def smart_search_rerank(
-        self, query: str, candidates: list[dict]
-    ) -> list[dict]:
+    def smart_search_rerank(self, query: str, candidates: list[dict]) -> list[dict]:
         """Use the LLM to rerank search results by relevance.
 
         Args:
@@ -198,8 +188,7 @@ class AIClient:
         prompt = (
             f"Query: {query}\n\n"
             "Rank these memories by relevance (most relevant first). "
-            "Return only the numbers separated by commas:\n\n"
-            + "\n".join(descriptions)
+            "Return only the numbers separated by commas:\n\n" + "\n".join(descriptions)
         )
 
         response = self.generate(prompt)

@@ -19,9 +19,7 @@ Directory layout:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from typing import Optional
 
 from ..config import SKMEMORY_HOME
 from ..models import Memory, MemoryLayer
@@ -57,7 +55,7 @@ class FileBackend(BaseBackend):
         """
         return self.base_path / memory.layer.value / f"{memory.id}.json"
 
-    def _find_file(self, memory_id: str) -> Optional[Path]:
+    def _find_file(self, memory_id: str) -> Path | None:
         """Locate a memory file across all layers.
 
         Args:
@@ -89,7 +87,7 @@ class FileBackend(BaseBackend):
         )
         return memory.id
 
-    def load(self, memory_id: str) -> Optional[Memory]:
+    def load(self, memory_id: str) -> Memory | None:
         """Load a memory by ID from disk.
 
         Args:
@@ -124,8 +122,8 @@ class FileBackend(BaseBackend):
 
     def list_memories(
         self,
-        layer: Optional[MemoryLayer] = None,
-        tags: Optional[list[str]] = None,
+        layer: MemoryLayer | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
     ) -> list[Memory]:
         """List memories from disk with optional filtering.

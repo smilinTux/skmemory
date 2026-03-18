@@ -6,14 +6,11 @@ All Docker/network operations are mocked — no Docker required to run tests.
 
 from __future__ import annotations
 
-import os
-import socket
 import subprocess
 from pathlib import Path
 from unittest import mock
 
 import pytest
-import yaml
 from click.testing import CliRunner
 
 from skmemory.config import (
@@ -24,8 +21,8 @@ from skmemory.config import (
 )
 from skmemory.setup_wizard import (
     PlatformInfo,
-    check_skgraph_health,
     check_port_available,
+    check_skgraph_health,
     check_skvector_health,
     compose_down,
     compose_ps,
@@ -36,7 +33,6 @@ from skmemory.setup_wizard import (
     install_python_deps,
     run_setup_wizard,
 )
-
 
 # ═══════════════════════════════════════════════════════════
 # Config tests
@@ -98,7 +94,9 @@ class TestConfig:
         assert config.docker_compose_file is None
         assert config.setup_completed_at is None
 
-    def test_merge_cli_overrides_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_merge_cli_overrides_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("SKMEMORY_SKVECTOR_URL", "http://env:6333")
         monkeypatch.setenv("SKMEMORY_SKVECTOR_KEY", "env-key")
         monkeypatch.setenv("SKMEMORY_SKGRAPH_URL", "redis://env:6379")
@@ -112,7 +110,9 @@ class TestConfig:
         assert skvector_key == "cli-key"
         assert skgraph_url == "redis://cli:6379"
 
-    def test_merge_env_overrides_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_merge_env_overrides_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("SKMEMORY_SKVECTOR_URL", "http://env:6333")
         monkeypatch.delenv("SKMEMORY_SKVECTOR_KEY", raising=False)
         monkeypatch.delenv("SKMEMORY_SKGRAPH_URL", raising=False)
@@ -174,14 +174,16 @@ class TestPlatformDetection:
         assert not info.compose_available
 
     def test_docker_daemon_not_running(self) -> None:
-        with mock.patch("skmemory.setup_wizard.shutil.which", return_value="/usr/bin/docker"):
-            with mock.patch(
+        with (
+            mock.patch("skmemory.setup_wizard.shutil.which", return_value="/usr/bin/docker"),
+            mock.patch(
                 "skmemory.setup_wizard.subprocess.run",
                 return_value=subprocess.CompletedProcess(
                     args=["docker", "info"], returncode=1, stdout="", stderr="Cannot connect"
                 ),
-            ):
-                info = detect_platform()
+            ),
+        ):
+            info = detect_platform()
         assert not info.docker_available
 
     def test_compose_v2_detected(self) -> None:
@@ -189,14 +191,20 @@ class TestPlatformDetection:
             if cmd == ["docker", "info"]:
                 return subprocess.CompletedProcess(args=cmd, returncode=0)
             if cmd == ["docker", "version", "--format", "{{.Server.Version}}"]:
-                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="24.0.7\n", stderr="")
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="24.0.7\n", stderr=""
+                )
             if cmd == ["docker", "compose", "version"]:
-                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="v2.23.0\n", stderr="")
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="v2.23.0\n", stderr=""
+                )
             return subprocess.CompletedProcess(args=cmd, returncode=1)
 
-        with mock.patch("skmemory.setup_wizard.shutil.which", return_value="/usr/bin/docker"):
-            with mock.patch("skmemory.setup_wizard.subprocess.run", side_effect=mock_run):
-                info = detect_platform()
+        with (
+            mock.patch("skmemory.setup_wizard.shutil.which", return_value="/usr/bin/docker"),
+            mock.patch("skmemory.setup_wizard.subprocess.run", side_effect=mock_run),
+        ):
+            info = detect_platform()
 
         assert info.docker_available
         assert info.compose_available
@@ -208,7 +216,9 @@ class TestPlatformDetection:
             if cmd == ["docker", "info"]:
                 return subprocess.CompletedProcess(args=cmd, returncode=0)
             if cmd == ["docker", "version", "--format", "{{.Server.Version}}"]:
-                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="20.10.0\n", stderr="")
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="20.10.0\n", stderr=""
+                )
             if cmd == ["docker", "compose", "version"]:
                 return subprocess.CompletedProcess(args=cmd, returncode=1)
             if cmd == ["docker-compose", "--version"]:
@@ -217,9 +227,11 @@ class TestPlatformDetection:
                 )
             return subprocess.CompletedProcess(args=cmd, returncode=1)
 
-        with mock.patch("skmemory.setup_wizard.shutil.which", return_value="/usr/bin/docker"):
-            with mock.patch("skmemory.setup_wizard.subprocess.run", side_effect=mock_run):
-                info = detect_platform()
+        with (
+            mock.patch("skmemory.setup_wizard.shutil.which", return_value="/usr/bin/docker"),
+            mock.patch("skmemory.setup_wizard.subprocess.run", side_effect=mock_run),
+        ):
+            info = detect_platform()
 
         assert info.docker_available
         assert info.compose_available
@@ -230,16 +242,20 @@ class TestPlatformDetection:
             if cmd == ["docker", "info"]:
                 return subprocess.CompletedProcess(args=cmd, returncode=0)
             if cmd == ["docker", "version", "--format", "{{.Server.Version}}"]:
-                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="24.0.7\n", stderr="")
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="24.0.7\n", stderr=""
+                )
             if cmd == ["docker", "compose", "version"]:
                 return subprocess.CompletedProcess(args=cmd, returncode=1)
             if cmd == ["docker-compose", "--version"]:
                 return subprocess.CompletedProcess(args=cmd, returncode=1)
             return subprocess.CompletedProcess(args=cmd, returncode=1)
 
-        with mock.patch("skmemory.setup_wizard.shutil.which", return_value="/usr/bin/docker"):
-            with mock.patch("skmemory.setup_wizard.subprocess.run", side_effect=mock_run):
-                info = detect_platform()
+        with (
+            mock.patch("skmemory.setup_wizard.shutil.which", return_value="/usr/bin/docker"),
+            mock.patch("skmemory.setup_wizard.subprocess.run", side_effect=mock_run),
+        ):
+            info = detect_platform()
 
         assert info.docker_available
         assert not info.compose_available
@@ -304,12 +320,14 @@ class TestHealthChecks:
             assert check_skvector_health(timeout=5) is True
 
     def test_skvector_timeout(self) -> None:
-        with mock.patch(
-            "skmemory.setup_wizard.urllib.request.urlopen",
-            side_effect=urllib.error.URLError("Connection refused"),
+        with (
+            mock.patch(
+                "skmemory.setup_wizard.urllib.request.urlopen",
+                side_effect=urllib.error.URLError("Connection refused"),
+            ),
+            mock.patch("skmemory.setup_wizard.time.sleep"),
         ):
-            with mock.patch("skmemory.setup_wizard.time.sleep"):
-                assert check_skvector_health(timeout=1) is False
+            assert check_skvector_health(timeout=1) is False
 
     def test_skgraph_healthy(self) -> None:
         mock_sock = mock.MagicMock()
@@ -321,12 +339,14 @@ class TestHealthChecks:
             assert check_skgraph_health(timeout=5) is True
 
     def test_skgraph_timeout(self) -> None:
-        with mock.patch(
-            "skmemory.setup_wizard.socket.create_connection",
-            side_effect=OSError("Connection refused"),
+        with (
+            mock.patch(
+                "skmemory.setup_wizard.socket.create_connection",
+                side_effect=OSError("Connection refused"),
+            ),
+            mock.patch("skmemory.setup_wizard.time.sleep"),
         ):
-            with mock.patch("skmemory.setup_wizard.time.sleep"):
-                assert check_skgraph_health(timeout=1) is False
+            assert check_skgraph_health(timeout=1) is False
 
 
 # ═══════════════════════════════════════════════════════════
@@ -342,7 +362,9 @@ class TestComposeCommands:
         compose_file.write_text("services: {}")
 
         with mock.patch("skmemory.setup_wizard.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
             compose_up(services=["skvector"], compose_file=compose_file, use_legacy=False)
 
         mock_run.assert_called_once()
@@ -358,7 +380,9 @@ class TestComposeCommands:
         compose_file.write_text("services: {}")
 
         with mock.patch("skmemory.setup_wizard.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
             compose_up(services=None, compose_file=compose_file, use_legacy=True)
 
         args = mock_run.call_args[0][0]
@@ -369,7 +393,9 @@ class TestComposeCommands:
         compose_file.write_text("services: {}")
 
         with mock.patch("skmemory.setup_wizard.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
             compose_down(compose_file=compose_file, remove_volumes=True, use_legacy=False)
 
         args = mock_run.call_args[0][0]
@@ -381,7 +407,9 @@ class TestComposeCommands:
         compose_file.write_text("services: {}")
 
         with mock.patch("skmemory.setup_wizard.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
             compose_down(compose_file=compose_file, remove_volumes=False, use_legacy=False)
 
         args = mock_run.call_args[0][0]
@@ -393,7 +421,9 @@ class TestComposeCommands:
         compose_file.write_text("services: {}")
 
         with mock.patch("skmemory.setup_wizard.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="running", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="running", stderr=""
+            )
             result = compose_ps(compose_file=compose_file, use_legacy=False)
 
         assert result.stdout == "running"
@@ -411,7 +441,9 @@ class TestPipInstall:
 
     def test_install_skvector_deps(self) -> None:
         with mock.patch("skmemory.setup_wizard.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
             install_python_deps(["skvector"])
 
         args = mock_run.call_args[0][0]
@@ -422,7 +454,9 @@ class TestPipInstall:
 
     def test_install_skgraph_deps(self) -> None:
         with mock.patch("skmemory.setup_wizard.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
             install_python_deps(["skgraph"])
 
         args = mock_run.call_args[0][0]
@@ -431,7 +465,9 @@ class TestPipInstall:
 
     def test_install_both_deps(self) -> None:
         with mock.patch("skmemory.setup_wizard.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=""
+            )
             install_python_deps(["skvector", "skgraph"])
 
         args = mock_run.call_args[0][0]
@@ -466,7 +502,9 @@ class TestFindComposeFile:
         assert path.exists()
         assert path.name == "docker-compose.yml"
 
-    def test_fallback_generates_compose(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fallback_generates_compose(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # Trick find_compose_file into not finding the bundled one
         monkeypatch.setattr(
             "skmemory.setup_wizard.Path.__file__",
@@ -478,7 +516,9 @@ class TestFindComposeFile:
 
         # Make the bundled path not exist by patching
         fake_package = tmp_path / "nonexistent_pkg"
-        with mock.patch("skmemory.setup_wizard.Path.__file__", str(fake_package / "setup_wizard.py")):
+        with mock.patch(
+            "skmemory.setup_wizard.Path.__file__", str(fake_package / "setup_wizard.py")
+        ):
             # Just verify the function doesn't crash when it can't find bundled
             path = find_compose_file()
             assert path.exists()
@@ -505,18 +545,27 @@ class TestSetupWizard:
         output = []
 
         with (
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()
+            ),
             mock.patch("skmemory.setup_wizard.check_port_available", return_value=True),
-            mock.patch("skmemory.setup_wizard.find_compose_file", return_value=tmp_path / "docker-compose.yml"),
+            mock.patch(
+                "skmemory.setup_wizard.find_compose_file",
+                return_value=tmp_path / "docker-compose.yml",
+            ),
             mock.patch(
                 "skmemory.setup_wizard.compose_up",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
             mock.patch("skmemory.setup_wizard.check_skvector_health", return_value=True),
             mock.patch("skmemory.setup_wizard.check_skgraph_health", return_value=True),
             mock.patch(
                 "skmemory.setup_wizard.install_python_deps",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
             mock.patch("skmemory.setup_wizard.save_config", return_value=tmp_path / "config.yaml"),
         ):
@@ -559,7 +608,9 @@ class TestSetupWizard:
     def test_wizard_port_conflict(self) -> None:
         output = []
         with (
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()
+            ),
             mock.patch("skmemory.setup_wizard.check_port_available", return_value=False),
         ):
             result = run_setup_wizard(non_interactive=True, echo=output.append)
@@ -570,9 +621,13 @@ class TestSetupWizard:
     def test_wizard_compose_up_fails(self, tmp_path: Path) -> None:
         output = []
         with (
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()
+            ),
             mock.patch("skmemory.setup_wizard.check_port_available", return_value=True),
-            mock.patch("skmemory.setup_wizard.find_compose_file", return_value=tmp_path / "dc.yml"),
+            mock.patch(
+                "skmemory.setup_wizard.find_compose_file", return_value=tmp_path / "dc.yml"
+            ),
             mock.patch(
                 "skmemory.setup_wizard.compose_up",
                 return_value=subprocess.CompletedProcess(
@@ -588,17 +643,25 @@ class TestSetupWizard:
     def test_wizard_skvector_only(self, tmp_path: Path) -> None:
         output = []
         with (
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()
+            ),
             mock.patch("skmemory.setup_wizard.check_port_available", return_value=True),
-            mock.patch("skmemory.setup_wizard.find_compose_file", return_value=tmp_path / "dc.yml"),
+            mock.patch(
+                "skmemory.setup_wizard.find_compose_file", return_value=tmp_path / "dc.yml"
+            ),
             mock.patch(
                 "skmemory.setup_wizard.compose_up",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
             mock.patch("skmemory.setup_wizard.check_skvector_health", return_value=True),
             mock.patch(
                 "skmemory.setup_wizard.install_python_deps",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
             mock.patch("skmemory.setup_wizard.save_config", return_value=tmp_path / "config.yaml"),
         ):
@@ -615,7 +678,9 @@ class TestSetupWizard:
 
     def test_wizard_no_backends_selected(self) -> None:
         output = []
-        with mock.patch("skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()):
+        with mock.patch(
+            "skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()
+        ):
             result = run_setup_wizard(
                 enable_skvector=False,
                 enable_skgraph=False,
@@ -629,12 +694,18 @@ class TestSetupWizard:
     def test_wizard_skip_deps(self, tmp_path: Path) -> None:
         output = []
         with (
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()
+            ),
             mock.patch("skmemory.setup_wizard.check_port_available", return_value=True),
-            mock.patch("skmemory.setup_wizard.find_compose_file", return_value=tmp_path / "dc.yml"),
+            mock.patch(
+                "skmemory.setup_wizard.find_compose_file", return_value=tmp_path / "dc.yml"
+            ),
             mock.patch(
                 "skmemory.setup_wizard.compose_up",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
             mock.patch("skmemory.setup_wizard.check_skvector_health", return_value=True),
             mock.patch("skmemory.setup_wizard.install_python_deps") as mock_pip,
@@ -665,20 +736,35 @@ class TestSetupCLI:
 
         runner = CliRunner()
         with mock.patch("skmemory.setup_wizard.run_setup_wizard") as mock_wizard:
-            mock_wizard.return_value = {"success": True, "services": [], "health": {}, "config_path": None, "errors": []}
+            mock_wizard.return_value = {
+                "success": True,
+                "services": [],
+                "health": {},
+                "config_path": None,
+                "errors": [],
+            }
             result = runner.invoke(cli, ["setup", "wizard", "--yes", "--no-skgraph"])
 
         assert result.exit_code == 0
         mock_wizard.assert_called_once()
         call_kwargs = mock_wizard.call_args
-        assert call_kwargs.kwargs.get("enable_skgraph") is False or call_kwargs[1].get("enable_skgraph") is False
+        assert (
+            call_kwargs.kwargs.get("enable_skgraph") is False
+            or call_kwargs[1].get("enable_skgraph") is False
+        )
 
     def test_setup_wizard_cli_failure(self) -> None:
         from skmemory.cli import cli
 
         runner = CliRunner()
         with mock.patch("skmemory.setup_wizard.run_setup_wizard") as mock_wizard:
-            mock_wizard.return_value = {"success": False, "services": [], "health": {}, "config_path": None, "errors": ["Docker not available"]}
+            mock_wizard.return_value = {
+                "success": False,
+                "services": [],
+                "health": {},
+                "config_path": None,
+                "errors": ["Docker not available"],
+            }
             result = runner.invoke(cli, ["setup", "wizard", "--yes"])
 
         assert result.exit_code == 1
@@ -703,12 +789,18 @@ class TestSetupCLI:
         runner = CliRunner()
         with (
             mock.patch("skmemory.config.load_config", return_value=cfg),
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=PlatformInfo(
-                os_name="Linux", docker_available=True, compose_available=True
-            )),
-            mock.patch("skmemory.setup_wizard.compose_ps", return_value=subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="skmemory-skvector  running", stderr=""
-            )),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform",
+                return_value=PlatformInfo(
+                    os_name="Linux", docker_available=True, compose_available=True
+                ),
+            ),
+            mock.patch(
+                "skmemory.setup_wizard.compose_ps",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="skmemory-skvector  running", stderr=""
+                ),
+            ),
             mock.patch("skmemory.setup_wizard.check_skvector_health", return_value=True),
         ):
             result = runner.invoke(cli, ["setup", "status"])
@@ -720,13 +812,21 @@ class TestSetupCLI:
 
         runner = CliRunner()
         with (
-            mock.patch("skmemory.config.load_config", return_value=SKMemoryConfig(backends_enabled=["skvector"])),
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=PlatformInfo(
-                os_name="Linux", docker_available=True, compose_available=True
-            )),
+            mock.patch(
+                "skmemory.config.load_config",
+                return_value=SKMemoryConfig(backends_enabled=["skvector"]),
+            ),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform",
+                return_value=PlatformInfo(
+                    os_name="Linux", docker_available=True, compose_available=True
+                ),
+            ),
             mock.patch(
                 "skmemory.setup_wizard.compose_up",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
         ):
             result = runner.invoke(cli, ["setup", "start", "--service", "skvector"])
@@ -740,12 +840,17 @@ class TestSetupCLI:
         runner = CliRunner()
         with (
             mock.patch("skmemory.config.load_config", return_value=SKMemoryConfig()),
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=PlatformInfo(
-                os_name="Linux", docker_available=True, compose_available=True
-            )),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform",
+                return_value=PlatformInfo(
+                    os_name="Linux", docker_available=True, compose_available=True
+                ),
+            ),
             mock.patch(
                 "skmemory.setup_wizard.compose_down",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
         ):
             result = runner.invoke(cli, ["setup", "stop"])
@@ -759,12 +864,17 @@ class TestSetupCLI:
         runner = CliRunner()
         with (
             mock.patch("skmemory.config.load_config", return_value=SKMemoryConfig()),
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=PlatformInfo(
-                os_name="Linux", docker_available=True, compose_available=True
-            )),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform",
+                return_value=PlatformInfo(
+                    os_name="Linux", docker_available=True, compose_available=True
+                ),
+            ),
             mock.patch(
                 "subprocess.run",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
         ):
             result = runner.invoke(cli, ["setup", "stop", "--service", "skvector"])
@@ -777,12 +887,17 @@ class TestSetupCLI:
         runner = CliRunner()
         with (
             mock.patch("skmemory.config.load_config", return_value=SKMemoryConfig()),
-            mock.patch("skmemory.setup_wizard.detect_platform", return_value=PlatformInfo(
-                os_name="Linux", docker_available=True, compose_available=True
-            )),
+            mock.patch(
+                "skmemory.setup_wizard.detect_platform",
+                return_value=PlatformInfo(
+                    os_name="Linux", docker_available=True, compose_available=True
+                ),
+            ),
             mock.patch(
                 "skmemory.setup_wizard.compose_down",
-                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout="", stderr=""
+                ),
             ),
             mock.patch("skmemory.config.CONFIG_PATH", Path("/tmp/nonexistent_config.yaml")),
         ):
@@ -811,11 +926,11 @@ class TestGetStoreWiring:
             skgraph_url="redis://localhost:6379",
         )
         with mock.patch("skmemory.config.load_config", return_value=cfg):
-            store = _get_store()
+            _get_store()
 
         # SKVector may fail to import but that's OK — we test the wiring logic
         # SKGraph should be wired (lazy init, won't connect yet)
-        assert store.graph is not None or store.vector is not None or True  # at least no crash
+        assert True  # at least no crash (store.graph/vector may be None if backends unavailable)
 
     def test_get_store_no_config_no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from skmemory.cli import _get_store
@@ -832,4 +947,4 @@ class TestGetStoreWiring:
         assert store.primary is not None
 
 
-import urllib.error
+import urllib.error  # noqa: E402

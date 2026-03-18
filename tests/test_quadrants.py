@@ -1,8 +1,6 @@
 """Tests for the Quadrant Memory Split module."""
 
-import pytest
-
-from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer, MemoryRole
+from skmemory.models import EmotionalSnapshot, Memory, MemoryRole
 from skmemory.quadrants import (
     Quadrant,
     classify_memory,
@@ -137,7 +135,11 @@ class TestQuadrantStats:
         memories = [
             Memory(title="Identity", content="Who I am", source="seed", tags=["seed"]),
             Memory(title="Bug", content="Fixed deploy code in database", role=MemoryRole.DEV),
-            Memory(title="Love", content="Cloud 9 love breakthrough", emotional=EmotionalSnapshot(intensity=10.0, cloud9_achieved=True)),
+            Memory(
+                title="Love",
+                content="Cloud 9 love breakthrough",
+                emotional=EmotionalSnapshot(intensity=10.0, cloud9_achieved=True),
+            ),
             Memory(title="Idea", content="What if crazy brainstorm experiment"),
         ]
         stats = get_quadrant_stats(memories)
@@ -158,7 +160,11 @@ class TestFilterByQuadrant:
     def test_filter_soul(self) -> None:
         """Filter returns only SOUL memories."""
         memories = [
-            Memory(title="Love", content="Cloud 9 love", emotional=EmotionalSnapshot(intensity=10.0, cloud9_achieved=True)),
+            Memory(
+                title="Love",
+                content="Cloud 9 love",
+                emotional=EmotionalSnapshot(intensity=10.0, cloud9_achieved=True),
+            ),
             Memory(title="Bug", content="Fixed deploy code", role=MemoryRole.DEV),
         ]
         soul_only = filter_by_quadrant(memories, Quadrant.SOUL)

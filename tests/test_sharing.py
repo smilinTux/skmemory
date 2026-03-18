@@ -13,7 +13,7 @@ from pgpy.constants import (
     SymmetricKeyAlgorithm,
 )
 
-from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
+from skmemory.models import EmotionalSnapshot, MemoryLayer
 from skmemory.sharing import MemorySharer, ShareBundle, ShareFilter
 from skmemory.store import MemoryStore
 
@@ -164,7 +164,9 @@ class TestImportBundle:
     """Tests for memory import."""
 
     def test_import_adds_provenance(
-        self, sharer: MemorySharer, receiver_store: MemoryStore,
+        self,
+        sharer: MemorySharer,
+        receiver_store: MemoryStore,
     ) -> None:
         """Imported memories have provenance tags."""
         sf = ShareFilter(tags=["project"])
@@ -180,7 +182,9 @@ class TestImportBundle:
         assert len(imported) >= 1
         assert any("shared:from:capauth:alice@skworld.io" in m.tags for m in imported)
 
-    def test_import_untrusted_skips(self, sharer: MemorySharer, receiver_store: MemoryStore) -> None:
+    def test_import_untrusted_skips(
+        self, sharer: MemorySharer, receiver_store: MemoryStore
+    ) -> None:
         """Untrusted sharer is rejected."""
         sf = ShareFilter(tags=["project"])
         bundle = sharer.export_memories(sf)
@@ -207,7 +211,9 @@ class TestEncryptDecrypt:
     """Tests for PGP encryption of share bundles."""
 
     def test_encrypt_decrypt_roundtrip(
-        self, sharer: MemorySharer, recipient_keys: tuple[str, str],
+        self,
+        sharer: MemorySharer,
+        recipient_keys: tuple[str, str],
     ) -> None:
         """Bundle encrypted for recipient can be decrypted."""
         priv, pub = recipient_keys

@@ -19,14 +19,11 @@ Or from the OpenClaw JS plugin (calls CLI under the hood).
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from typing import Any, Optional
 
-from .models import EmotionalSnapshot, MemoryLayer, MemoryRole
-from .store import MemoryStore
 from .backends.sqlite_backend import SQLiteBackend
-
+from .models import EmotionalSnapshot, MemoryLayer
+from .store import MemoryStore
 
 OPENCLAW_BASE = Path.home() / ".openclaw"
 SKMEMORY_OPENCLAW_DIR = OPENCLAW_BASE / "plugins" / "skmemory"
@@ -48,14 +45,15 @@ class SKMemoryPlugin:
 
     def __init__(
         self,
-        base_path: Optional[str] = None,
-        skvector_url: Optional[str] = None,
-        skvector_key: Optional[str] = None,
+        base_path: str | None = None,
+        skvector_url: str | None = None,
+        skvector_key: str | None = None,
     ) -> None:
         vector = None
         if skvector_url:
             try:
                 from .backends.skvector_backend import SKVectorBackend
+
                 vector = SKVectorBackend(url=skvector_url, api_key=skvector_key)
             except Exception:
                 pass
@@ -97,10 +95,10 @@ class SKMemoryPlugin:
         content: str = "",
         *,
         layer: str = "short-term",
-        tags: Optional[list[str]] = None,
+        tags: list[str] | None = None,
         intensity: float = 0.0,
         valence: float = 0.0,
-        emotions: Optional[list[str]] = None,
+        emotions: list[str] | None = None,
         source: str = "openclaw",
     ) -> str:
         """Capture a memory snapshot.
@@ -152,16 +150,11 @@ class SKMemoryPlugin:
                 "ORDER BY created_at DESC LIMIT ?",
                 (q, q, q, limit),
             ).fetchall()
-            return [
-                self.store.primary._row_to_memory_summary(r) for r in rows
-            ]
+            return [self.store.primary._row_to_memory_summary(r) for r in rows]
         results = self.store.search(query, limit=limit)
-        return [
-            {"id": m.id, "title": m.title, "layer": m.layer.value}
-            for m in results
-        ]
+        return [{"id": m.id, "title": m.title, "layer": m.layer.value} for m in results]
 
-    def recall(self, memory_id: str) -> Optional[dict]:
+    def recall(self, memory_id: str) -> dict | None:
         """Retrieve a full memory by ID.
 
         Args:
@@ -191,7 +184,7 @@ class SKMemoryPlugin:
             "context_prompt": result.context_prompt,
         }
 
-    def export(self, output_path: Optional[str] = None) -> str:
+    def export(self, output_path: str | None = None) -> str:
         """Export all memories to a dated JSON backup.
 
         Args:
@@ -229,9 +222,8 @@ class SKMemoryPlugin:
         """
         try:
             from . import __version__
+
             state["skmemory_version"] = __version__
-            SKMEMORY_STATE_FILE.write_text(
-                json.dumps(state, indent=2), encoding="utf-8"
-            )
+            SKMEMORY_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
         except Exception:
             pass

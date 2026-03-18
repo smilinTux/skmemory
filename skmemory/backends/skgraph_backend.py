@@ -38,10 +38,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
-from ..models import Memory, MemoryLayer
 from .. import graph_queries as Q
+from ..models import Memory
 
 logger = logging.getLogger(__name__)
 
@@ -219,11 +218,7 @@ class SKGraphBackend:
             # PLANTED edge for AI seed memories
             if memory.source == "seed":
                 creator = next(
-                    (
-                        t.split(":", 1)[1]
-                        for t in memory.tags
-                        if t.startswith("creator:")
-                    ),
+                    (t.split(":", 1)[1] for t in memory.tags if t.startswith("creator:")),
                     None,
                 )
                 if creator:
@@ -241,7 +236,7 @@ class SKGraphBackend:
     # Read operations
     # ─────────────────────────────────────────────────────────
 
-    def get(self, memory_id: str) -> Optional[dict]:
+    def get(self, memory_id: str) -> dict | None:
         """Retrieve the graph node properties for a memory by ID.
 
         Returns only the properties stored in the graph (no full content).
@@ -544,24 +539,17 @@ class SKGraphBackend:
 
         try:
             node_result = self._graph.query(Q.COUNT_NODES)
-            node_count = (
-                node_result.result_set[0][0] if node_result.result_set else 0
-            )
+            node_count = node_result.result_set[0][0] if node_result.result_set else 0
 
             edge_result = self._graph.query(Q.COUNT_EDGES)
-            edge_count = (
-                edge_result.result_set[0][0] if edge_result.result_set else 0
-            )
+            edge_count = edge_result.result_set[0][0] if edge_result.result_set else 0
 
             mem_result = self._graph.query(Q.COUNT_MEMORIES)
-            memory_count = (
-                mem_result.result_set[0][0] if mem_result.result_set else 0
-            )
+            memory_count = mem_result.result_set[0][0] if mem_result.result_set else 0
 
             tag_result = self._graph.query(Q.TAG_DISTRIBUTION)
             tag_distribution = [
-                {"tag": row[0], "memory_count": row[1]}
-                for row in tag_result.result_set
+                {"tag": row[0], "memory_count": row[1]} for row in tag_result.result_set
             ]
 
             return {

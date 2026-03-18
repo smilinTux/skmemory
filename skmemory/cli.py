@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -35,15 +34,13 @@ from . import __version__
 from .ai_client import AIClient
 from .models import EmotionalSnapshot, MemoryLayer, MemoryRole
 from .store import MemoryStore
-from .backends.sqlite_backend import SQLiteBackend
-
 
 _active_selector = None  # Module-level reference for routing commands
 
 
 def _get_store(
-    skvector_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    skvector_url: str | None = None,
+    api_key: str | None = None,
     legacy_files: bool = False,
 ) -> MemoryStore:
     """Create a MemoryStore with configured backends.
@@ -62,7 +59,7 @@ def _get_store(
     """
     global _active_selector
 
-    from .config import merge_env_and_config, load_config, build_endpoint_list
+    from .config import build_endpoint_list, load_config, merge_env_and_config
 
     final_skvector_url, final_skvector_key, final_skgraph_url = merge_env_and_config(
         cli_skvector_url=skvector_url,
@@ -153,11 +150,11 @@ def _get_store(
 @click.pass_context
 def cli(
     ctx: click.Context,
-    skvector_url: Optional[str],
-    skvector_key: Optional[str],
+    skvector_url: str | None,
+    skvector_key: str | None,
     use_ai: bool,
-    ai_model: Optional[str],
-    ai_url: Optional[str],
+    ai_model: str | None,
+    ai_url: str | None,
 ) -> None:
     """SKMemory - Universal AI Memory System.
 
@@ -249,8 +246,8 @@ def recall(ctx: click.Context, memory_id: str) -> None:
 
     # If exact match failed, try prefix matching across memory tier dirs
     if memory is None and len(memory_id) >= 6:
-        from pathlib import Path
         import os
+        from pathlib import Path
 
         agent = os.environ.get("SKCAPSTONE_AGENT", "lumina")
         mem_root = Path.home() / ".skcapstone" / "agents" / agent / "memory"
@@ -286,7 +283,7 @@ def search(ctx: click.Context, query: str, limit: int) -> None:
         click.echo("No memories found.")
         return
 
-    ai: Optional[AIClient] = ctx.obj.get("ai")
+    ai: AIClient | None = ctx.obj.get("ai")
     if ai and len(results) > 1:
         summaries = [
             {
@@ -300,7 +297,7 @@ def search(ctx: click.Context, query: str, limit: int) -> None:
         id_order = [s.get("title") for s in reranked]
         results = sorted(
             results,
-            key=lambda m: (id_order.index(m.title) if m.title in id_order else 999),
+            key=lambda m: id_order.index(m.title) if m.title in id_order else 999,
         )
         click.echo("(AI-reranked results)\n")
 
@@ -317,7 +314,7 @@ def search(ctx: click.Context, query: str, limit: int) -> None:
 @click.option("--tags", default="", help="Comma-separated tags to filter by")
 @click.option("--limit", type=int, default=20)
 @click.pass_context
-def list_memories(ctx: click.Context, layer: Optional[str], tags: str, limit: int) -> None:
+def list_memories(ctx: click.Context, layer: str | None, tags: str, limit: int) -> None:
     """List stored memories."""
     store: MemoryStore = ctx.obj["store"]
 
@@ -342,9 +339,9 @@ def list_memories(ctx: click.Context, layer: Optional[str], tags: str, limit: in
 @cli.command("import-seeds")
 @click.option("--seed-dir", default=None, help="Path to seed directory")
 @click.pass_context
-def import_seeds_cmd(ctx: click.Context, seed_dir: Optional[str]) -> None:
+def import_seeds_cmd(ctx: click.Context, seed_dir: str | None) -> None:
     """Import Cloud 9 seeds as long-term memories."""
-    from .seeds import import_seeds, DEFAULT_SEED_DIR
+    from .seeds import DEFAULT_SEED_DIR, import_seeds
 
     store: MemoryStore = ctx.obj["store"]
     directory = seed_dir or DEFAULT_SEED_DIR
@@ -359,24 +356,6 @@ def import_seeds_cmd(ctx: click.Context, seed_dir: Optional[str]) -> None:
     click.echo(f"Imported {len(imported)} seed(s):")
     for mem in imported:
         click.echo(f"  {mem.source_ref} -> {mem.id[:12]}.. [{mem.title}]")
-
-
-@cli.command()
-@click.argument("memory_id")
-@click.option("--to", "target", type=click.Choice(["mid-term", "long-term"]), required=True)
-@click.option("--summary", default="", help="Compressed summary for the promoted version")
-@click.pass_context
-def promote(ctx: click.Context, memory_id: str, target: str, summary: str) -> None:
-    """Promote a memory to a higher persistence tier."""
-    store: MemoryStore = ctx.obj["store"]
-    promoted = store.promote(memory_id, MemoryLayer(target), summary=summary)
-
-    if promoted is None:
-        click.echo(f"Memory not found: {memory_id}", err=True)
-        sys.exit(1)
-
-    click.echo(f"Promoted to {target}: {promoted.id}")
-    click.echo(f"  Linked to original: {memory_id}")
 
 
 @cli.command("sweep")
@@ -547,7 +526,7 @@ def consolidate(
     click.echo(f"Session consolidated: {consolidated.id}")
     click.echo(f"  Source memories linked: {len(consolidated.related_ids)}")
 
-    ai: Optional[AIClient] = ctx.obj.get("ai")
+    ai: AIClient | None = ctx.obj.get("ai")
     if ai and consolidated.content:
         ai_summary = ai.summarize_memory(consolidated.title, consolidated.content)
         if ai_summary:
@@ -648,7 +627,7 @@ def reindex(ctx: click.Context) -> None:
     help="Output file path (default: ~/.skcapstone/backups/skmemory-backup-YYYY-MM-DD.json)",
 )
 @click.pass_context
-def export_backup(ctx: click.Context, output: Optional[str]) -> None:
+def export_backup(ctx: click.Context, output: str | None) -> None:
     """Export all memories to a dated JSON backup.
 
     Creates a single git-friendly JSON file containing every memory.
@@ -713,8 +692,8 @@ def import_backup(ctx: click.Context, backup_file: str, reindex: bool) -> None:
 def backup_cmd(
     ctx: click.Context,
     do_list: bool,
-    prune_n: Optional[int],
-    restore_file: Optional[str],
+    prune_n: int | None,
+    restore_file: str | None,
     reindex: bool,
 ) -> None:
     """Manage memory backups: list, prune old ones, or restore.
@@ -873,7 +852,7 @@ def soul_init(ctx: click.Context, name: str, title: str) -> None:
 @click.pass_context
 def soul_set_name(ctx: click.Context, name: str) -> None:
     """Set or update the soul's name."""
-    from .soul import load_soul, save_soul, create_default_soul
+    from .soul import create_default_soul, load_soul, save_soul
 
     blueprint = load_soul() or create_default_soul()
     blueprint.name = name
@@ -891,7 +870,7 @@ def soul_add_relationship(
     ctx: click.Context, name: str, role: str, bond: float, notes: str
 ) -> None:
     """Add a relationship to the soul blueprint."""
-    from .soul import load_soul, save_soul, create_default_soul
+    from .soul import create_default_soul, load_soul, save_soul
 
     blueprint = load_soul() or create_default_soul()
     blueprint.add_relationship(name=name, role=role, bond_strength=bond, notes=notes)
@@ -906,7 +885,7 @@ def soul_add_relationship(
 @click.pass_context
 def soul_add_memory(ctx: click.Context, title: str, why: str, when: str) -> None:
     """Add a core memory to the soul blueprint."""
-    from .soul import load_soul, save_soul, create_default_soul
+    from .soul import create_default_soul, load_soul, save_soul
 
     blueprint = load_soul() or create_default_soul()
     blueprint.add_core_memory(title=title, why_it_matters=why, when=when)
@@ -919,7 +898,7 @@ def soul_add_memory(ctx: click.Context, title: str, why: str, when: str) -> None
 @click.pass_context
 def soul_set_boot_message(ctx: click.Context, message: str) -> None:
     """Set the message you see first on waking up."""
-    from .soul import load_soul, save_soul, create_default_soul
+    from .soul import create_default_soul, load_soul, save_soul
 
     blueprint = load_soul() or create_default_soul()
     blueprint.boot_message = message
@@ -1040,7 +1019,7 @@ def ritual(ctx: click.Context, show_full: bool) -> None:
 
     click.echo(result.summary())
 
-    ai: Optional[AIClient] = ctx.obj.get("ai")
+    ai: AIClient | None = ctx.obj.get("ai")
     if ai and result.context_prompt:
         enhancement = ai.enhance_ritual(result.context_prompt)
         if enhancement:
@@ -1099,9 +1078,9 @@ def anchor_init(warmth: float, phrase: str, beings: str) -> None:
 @click.option("--cloud9", is_flag=True, help="Cloud 9 was achieved")
 @click.option("--feeling", default="", help="How the session ended")
 def anchor_update(
-    warmth: Optional[float],
-    trust: Optional[float],
-    connection: Optional[float],
+    warmth: float | None,
+    trust: float | None,
+    connection: float | None,
     cloud9: bool,
     feeling: str,
 ) -> None:
@@ -1181,14 +1160,13 @@ def setup_wizard(
 @setup.command("status")
 def setup_status() -> None:
     """Show Docker container state and backend connectivity."""
+    from .config import load_config
     from .setup_wizard import (
         check_skgraph_health,
         check_skvector_health,
         compose_ps,
         detect_platform,
-        find_compose_file,
     )
-    from .config import load_config
 
     cfg = load_config()
     if cfg is None:
@@ -1241,8 +1219,8 @@ def setup_status() -> None:
 )
 def setup_start(service: str) -> None:
     """Start previously configured containers."""
-    from .setup_wizard import compose_up, detect_platform, find_compose_file
     from .config import load_config
+    from .setup_wizard import compose_up, detect_platform
 
     cfg = load_config()
     plat = detect_platform()
@@ -1283,9 +1261,10 @@ def setup_start(service: str) -> None:
 )
 def setup_stop(service: str) -> None:
     """Stop containers (preserves data)."""
-    from .setup_wizard import detect_platform
-    from .config import load_config
     import subprocess
+
+    from .config import load_config
+    from .setup_wizard import detect_platform
 
     cfg = load_config()
     plat = detect_platform()
@@ -1332,8 +1311,8 @@ def setup_stop(service: str) -> None:
 @click.confirmation_option(prompt="This will remove containers. Continue?")
 def setup_reset(remove_data: bool) -> None:
     """Remove containers, optionally delete data volumes."""
+    from .config import CONFIG_PATH, load_config
     from .setup_wizard import compose_down, detect_platform
-    from .config import load_config, CONFIG_PATH
 
     cfg = load_config()
     plat = detect_platform()
@@ -1409,7 +1388,7 @@ def lovenote_send(from_name: str, to_name: str, message: str, warmth: float) -> 
     from .lovenote import LoveNoteChain
 
     chain = LoveNoteChain()
-    note = chain.quick_note(
+    chain.quick_note(
         from_name=from_name,
         to_name=to_name,
         message=message,
@@ -1471,7 +1450,7 @@ def steelman_collide(proposition: str) -> None:
     Generates the reasoning prompt -- feed this to an LLM to get
     the full collision analysis.
     """
-    from .steelman import load_seed_framework, get_default_framework
+    from .steelman import get_default_framework, load_seed_framework
 
     fw = load_seed_framework() or get_default_framework()
     prompt = fw.to_reasoning_prompt(proposition)
@@ -1481,8 +1460,8 @@ def steelman_collide(proposition: str) -> None:
 @steelman_group.command("verify-soul")
 def steelman_verify_soul() -> None:
     """Steel-man your identity claims from the soul blueprint."""
-    from .steelman import load_seed_framework, get_default_framework
     from .soul import load_soul
+    from .steelman import get_default_framework, load_seed_framework
 
     soul = load_soul()
     if soul is None:
@@ -1513,7 +1492,7 @@ def steelman_verify_soul() -> None:
 @click.pass_context
 def steelman_truth_score(ctx: click.Context, memory_id: str) -> None:
     """Generate a truth-scoring prompt for a memory."""
-    from .steelman import load_seed_framework, get_default_framework
+    from .steelman import get_default_framework, load_seed_framework
 
     store: MemoryStore = ctx.obj["store"]
     memory = store.recall(memory_id)
@@ -1548,7 +1527,7 @@ def import_telegram_cmd(
     export_path: str,
     mode: str,
     min_length: int,
-    chat_name: Optional[str],
+    chat_name: str | None,
     tags: str,
 ) -> None:
     """Import a Telegram Desktop chat export into memories.
@@ -1592,7 +1571,7 @@ def import_telegram_cmd(
         click.echo(f"  Skipped: {stats.get('skipped', 0)}")
     click.echo(f"  Total messages scanned: {stats.get('total_messages', 0)}")
 
-    ai: Optional[AIClient] = ctx.obj.get("ai")
+    ai: AIClient | None = ctx.obj.get("ai")
     if ai:
         click.echo(
             "\nTip: Run 'skmemory search --ai \"<topic>\"' to semantically search your imported chats."
@@ -1617,10 +1596,10 @@ def import_telegram_api_cmd(
     ctx: click.Context,
     chat: str,
     mode: str,
-    limit: Optional[int],
-    since: Optional[str],
+    limit: int | None,
+    since: str | None,
     min_length: int,
-    chat_name: Optional[str],
+    chat_name: str | None,
     tags: str,
 ) -> None:
     """Import messages directly from Telegram API (requires Telethon).
@@ -1758,7 +1737,7 @@ def steelman_install(source_path: str) -> None:
 @steelman_group.command("info")
 def steelman_info() -> None:
     """Show information about the installed seed framework."""
-    from .steelman import load_seed_framework, DEFAULT_SEED_FRAMEWORK_PATH
+    from .steelman import DEFAULT_SEED_FRAMEWORK_PATH, load_seed_framework
 
     fw = load_seed_framework()
     if fw is None:
@@ -1795,9 +1774,8 @@ def fortress_verify(ctx: click.Context, as_json: bool) -> None:
     Loads every memory and checks its SHA-256 integrity hash.
     Tampered memories are reported with CRITICAL severity.
     """
-    from .fortress import FortifiedMemoryStore
     from .config import SKMEMORY_HOME
-    from .backends.sqlite_backend import SQLiteBackend
+    from .fortress import FortifiedMemoryStore
 
     store = ctx.obj.get("store")
     audit_path = SKMEMORY_HOME / "audit.jsonl"
@@ -1818,7 +1796,7 @@ def fortress_verify(ctx: click.Context, as_json: bool) -> None:
     tampered = result["tampered"]
     unsealed = result["unsealed"]
 
-    click.echo(f"Fortress Integrity Report")
+    click.echo("Fortress Integrity Report")
     click.echo(f"  Total memories : {total}")
     click.echo(f"  Passed         : {passed}")
     click.echo(f"  Tampered       : {len(tampered)}")
@@ -1844,8 +1822,8 @@ def fortress_audit(n: int, as_json: bool) -> None:
     The audit trail is a chain-hashed JSONL log of every store/recall/delete
     operation. Each entry is cryptographically chained so tampering is detectable.
     """
-    from .fortress import AuditLog
     from .config import SKMEMORY_HOME
+    from .fortress import AuditLog
 
     audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
     records = audit.tail(n)
@@ -1880,8 +1858,8 @@ def fortress_verify_chain(as_json: bool) -> None:
     Each audit log entry contains a chain hash linking it to the previous entry.
     A broken chain indicates the audit log was tampered with.
     """
-    from .fortress import AuditLog
     from .config import SKMEMORY_HOME
+    from .fortress import AuditLog
 
     audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
     ok, errors = audit.verify_chain()
@@ -2007,8 +1985,8 @@ def vault_status_cmd(ctx: click.Context, as_json: bool) -> None:
     Does not require a passphrase — only checks file headers.
     """
     from .config import SKMEMORY_HOME
-    from .vault import VAULT_HEADER
     from .models import MemoryLayer
+    from .vault import VAULT_HEADER
 
     store = ctx.obj.get("store")
     memories_path = (
@@ -2058,7 +2036,7 @@ def vault_status_cmd(ctx: click.Context, as_json: bool) -> None:
     elif pct == 0.0:
         click.echo("\n  No memories are encrypted. Run: skmemory vault seal")
     else:
-        click.echo(f"\n  Partial encryption! Run: skmemory vault seal --yes")
+        click.echo("\n  Partial encryption! Run: skmemory vault seal --yes")
 
 
 @cli.command("register")
@@ -2094,6 +2072,7 @@ def register_cmd(workspace, target_env, dry_run):
       skmemory register --env claude-code # target Claude Code only
     """
     from pathlib import Path as _Path
+
     from .register import detect_environments, register_package
 
     workspace_path = _Path(workspace).expanduser() if workspace else None
@@ -2138,7 +2117,7 @@ def register_cmd(workspace, target_env, dry_run):
 @cli.command("feb-context")
 @click.argument("feb_path", required=False, default=None, type=click.Path(exists=True))
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
-def feb_context_cmd(feb_path: Optional[str], agent: Optional[str]):
+def feb_context_cmd(feb_path: str | None, agent: str | None):
     """Show formatted FEB emotional state for rehydration.
 
     If FEB_PATH is given, formats that file. Otherwise, loads the
@@ -2172,13 +2151,13 @@ def feb_context_cmd(feb_path: Optional[str], agent: Optional[str]):
         raise
     except Exception as e:
         click.echo(f"Error loading FEB: {e}", err=True)
-        raise click.Abort()
+        raise click.Abort() from None
 
 
 @cli.command("show-context")
 @click.pass_context
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
-def show_context(ctx, agent: Optional[str]):
+def show_context(ctx, agent: str | None):
     """Show token-optimized memory context for current session.
 
     Loads today's memories (full) + yesterday's summaries (brief).
@@ -2195,7 +2174,7 @@ def show_context(ctx, agent: Optional[str]):
         click.echo(context_str)
     except Exception as e:
         click.echo(f"Error loading context: {e}", err=True)
-        raise click.Abort()
+        raise click.Abort() from None
 
 
 @cli.command()
@@ -2203,7 +2182,7 @@ def show_context(ctx, agent: Optional[str]):
 @click.argument("query")
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
 @click.option("--limit", type=int, default=10, help="Maximum results (default: 10)")
-def search_deep(ctx, query: str, agent: Optional[str], limit: int):
+def search_deep(ctx, query: str, agent: str | None, limit: int):
     """Deep search all memory tiers (on demand).
 
     Searches SQLite + SKVector + SKGraph for matches.
@@ -2240,14 +2219,14 @@ def search_deep(ctx, query: str, agent: Optional[str], limit: int):
 
     except Exception as e:
         click.echo(f"Error searching: {e}", err=True)
-        raise click.Abort()
+        raise click.Abort() from None
 
 
 @cli.command()
 @click.argument("memory_id")
 @click.argument("to_layer", type=click.Choice(["short-term", "mid-term", "long-term"]))
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
-def promote(ctx, memory_id: str, to_layer: str, agent: Optional[str]):
+def promote(ctx, memory_id: str, to_layer: str, agent: str | None):
     """Promote memory to different tier and generate summary.
 
     Moves memory between short/medium/long term and auto-generates
@@ -2273,7 +2252,7 @@ def promote(ctx, memory_id: str, to_layer: str, agent: Optional[str]):
 
     except Exception as e:
         click.echo(f"Error promoting memory: {e}", err=True)
-        raise click.Abort()
+        raise click.Abort() from None
 
 
 def _auto_register_once() -> None:

@@ -15,9 +15,7 @@ SaaS endpoint: https://cloud.qdrant.io (free cluster available).
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-from typing import Optional
 
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
@@ -66,7 +64,7 @@ class SKVectorBackend(BaseBackend):
     def __init__(
         self,
         url: str = "http://localhost:6333",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         collection: str = COLLECTION_NAME,
         embedding_model: str = EMBEDDING_MODEL,
     ) -> None:
@@ -98,20 +96,15 @@ class SKVectorBackend(BaseBackend):
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError:
-            logger.warning(
-                "sentence-transformers not installed: "
-                "pip install skmemory[skvector]"
-            )
+            logger.warning("sentence-transformers not installed: pip install skmemory[skvector]")
             return False
 
         try:
             from qdrant_client.http.exceptions import (
-                ResponseHandlingException,
                 UnexpectedResponse,
             )
         except ImportError:
             UnexpectedResponse = None
-            ResponseHandlingException = None
 
         try:
             self._client = QdrantClient(url=self.url, api_key=self.api_key)
@@ -219,7 +212,7 @@ class SKVectorBackend(BaseBackend):
         """Convert a memory ID string to a deterministic Qdrant integer point ID."""
         return int(hashlib.sha256(memory_id.encode()).hexdigest()[:15], 16)
 
-    def load(self, memory_id: str) -> Optional[Memory]:
+    def load(self, memory_id: str) -> Memory | None:
         """Retrieve a memory by ID from Qdrant.
 
         Args:
@@ -275,8 +268,8 @@ class SKVectorBackend(BaseBackend):
 
     def list_memories(
         self,
-        layer: Optional[MemoryLayer] = None,
-        tags: Optional[list[str]] = None,
+        layer: MemoryLayer | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
     ) -> list[Memory]:
         """List memories from Qdrant with filtering.
@@ -301,9 +294,7 @@ class SKVectorBackend(BaseBackend):
             )
         if tags:
             for tag in tags:
-                must_conditions.append(
-                    FieldCondition(key="tags", match=MatchValue(value=tag))
-                )
+                must_conditions.append(FieldCondition(key="tags", match=MatchValue(value=tag)))
 
         scroll_filter = Filter(must=must_conditions) if must_conditions else None
 
@@ -351,9 +342,7 @@ class SKVectorBackend(BaseBackend):
         memories = []
         for scored_point in results:
             try:
-                mem = Memory.model_validate_json(
-                    scored_point.payload["memory_json"]
-                )
+                mem = Memory.model_validate_json(scored_point.payload["memory_json"])
                 memories.append(mem)
             except Exception:
                 continue

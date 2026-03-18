@@ -16,17 +16,18 @@ Jonathan Clements' AMK concept taken to its sovereign conclusion.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
-import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from .config import SKMEMORY_HOME
-from .models import EmotionalSnapshot, Memory, MemoryLayer, MemoryRole
+from .models import Memory
 from .store import MemoryStore
 
 logger = logging.getLogger("skmemory.fortress")
@@ -38,6 +39,7 @@ DEFAULT_ENCRYPTED_PATH = SKMEMORY_HOME / "encrypted"
 # ---------------------------------------------------------------------------
 # Audit log
 # ---------------------------------------------------------------------------
+
 
 class AuditLog:
     """Append-only JSONL audit trail for memory operations.
@@ -71,7 +73,7 @@ class AuditLog:
                 # Read last line efficiently
                 f.seek(max(0, size - 4096))
                 tail = f.read().decode("utf-8", errors="replace")
-                lines = [l for l in tail.split("\n") if l.strip()]
+                lines = [lbl for lbl in tail.split("\n") if lbl.strip()]
                 if not lines:
                     return "genesis"
                 last = json.loads(lines[-1])
@@ -123,10 +125,8 @@ class AuditLog:
             for line in f:
                 line = line.strip()
                 if line:
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError):
                         records.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
         return records[-n:]
 
     def verify_chain(self) -> tuple[bool, list[str]]:
@@ -174,6 +174,7 @@ class AuditLog:
 # At-rest encryption
 # ---------------------------------------------------------------------------
 
+
 class EncryptedFileBackend:
     """Transparent PGP encryption layer over FileBackend JSON files.
 
@@ -192,17 +193,16 @@ class EncryptedFileBackend:
     def __init__(
         self,
         fingerprint: str,
-        gnupg_home: Optional[str] = None,
+        gnupg_home: str | None = None,
     ) -> None:
         try:
-            import gnupg
+            import gnupg as _gnupg
         except ImportError as exc:
             raise ImportError(
                 "python-gnupg is required for at-rest encryption. "
                 "Install with: pip install python-gnupg"
             ) from exc
 
-        import gnupg as _gnupg
         home = gnupg_home or os.path.expanduser("~/.gnupg")
         self._gpg = _gnupg.GPG(gnupghome=home)
         self.fingerprint = fingerprint.upper().replace(" ", "")
@@ -240,7 +240,7 @@ class EncryptedFileBackend:
             raise RuntimeError(f"GPG encryption failed: {result.status} / {result.stderr}")
         return str(result)
 
-    def decrypt(self, ciphertext: str, passphrase: Optional[str] = None) -> str:
+    def decrypt(self, ciphertext: str, passphrase: str | None = None) -> str:
         """Decrypt ASCII-armored PGP ciphertext to plaintext JSON.
 
         Args:
@@ -267,6 +267,7 @@ class EncryptedFileBackend:
 # Tamper alert system
 # ---------------------------------------------------------------------------
 
+
 class TamperAlert:
     """Structured tamper alert with rich context.
 
@@ -285,7 +286,7 @@ class TamperAlert:
         memory_id: str,
         expected_hash: str,
         actual_hash: str,
-        detected_at: Optional[str] = None,
+        detected_at: str | None = None,
     ) -> None:
         self.memory_id = memory_id
         self.expected_hash = expected_hash
@@ -306,15 +307,13 @@ class TamperAlert:
         }
 
     def __repr__(self) -> str:
-        return (
-            f"TamperAlert(id={self.memory_id!r}, "
-            f"detected_at={self.detected_at!r})"
-        )
+        return f"TamperAlert(id={self.memory_id!r}, detected_at={self.detected_at!r})"
 
 
 # ---------------------------------------------------------------------------
 # Fortified MemoryStore
 # ---------------------------------------------------------------------------
+
 
 class FortifiedMemoryStore(MemoryStore):
     """A hardened MemoryStore with audit trail, encryption, and tamper alerts.
@@ -354,11 +353,11 @@ class FortifiedMemoryStore(MemoryStore):
 
     def __init__(
         self,
-        audit_path: Optional[Path] = None,
-        vault_passphrase: Optional[str] = None,
-        encryption_key_fingerprint: Optional[str] = None,
-        gnupg_home: Optional[str] = None,
-        alert_callbacks: Optional[list[Callable[[TamperAlert], None]]] = None,
+        audit_path: Path | None = None,
+        vault_passphrase: str | None = None,
+        encryption_key_fingerprint: str | None = None,
+        gnupg_home: str | None = None,
+        alert_callbacks: list[Callable[[TamperAlert], None]] | None = None,
         **store_kwargs: Any,
     ) -> None:
         # Wire in VaultedSQLiteBackend as primary when vault_passphrase is set
@@ -377,8 +376,8 @@ class FortifiedMemoryStore(MemoryStore):
         super().__init__(**store_kwargs)
         self.audit = AuditLog(path=audit_path or DEFAULT_AUDIT_PATH)
         self.alert_callbacks: list[Callable[[TamperAlert], None]] = alert_callbacks or []
-        self._encryption: Optional[EncryptedFileBackend] = None
-        self._vault_passphrase: Optional[str] = vault_passphrase
+        self._encryption: EncryptedFileBackend | None = None
+        self._vault_passphrase: str | None = vault_passphrase
 
         if encryption_key_fingerprint:
             self._encryption = EncryptedFileBackend(
@@ -420,7 +419,7 @@ class FortifiedMemoryStore(MemoryStore):
         logger.debug("Fortress: stored memory %s (sealed)", memory.id)
         return memory
 
-    def recall(self, memory_id: str) -> Optional[Memory]:
+    def recall(self, memory_id: str) -> Memory | None:
         """Recall a memory with integrity verification and tamper alerting.
 
         Overrides ``MemoryStore.recall`` to trigger structured ``TamperAlert``
@@ -544,9 +543,7 @@ class FortifiedMemoryStore(MemoryStore):
         """
         return self.audit.verify_chain()
 
-    def register_alert_callback(
-        self, callback: Callable[[TamperAlert], None]
-    ) -> None:
+    def register_alert_callback(self, callback: Callable[[TamperAlert], None]) -> None:
         """Register a function to be called when tamper is detected.
 
         Args:
@@ -574,7 +571,7 @@ class FortifiedMemoryStore(MemoryStore):
             raise RuntimeError("Encryption not configured — pass encryption_key_fingerprint")
         return self._encryption.encrypt(json_text)
 
-    def decrypt_payload(self, armored: str, passphrase: Optional[str] = None) -> str:
+    def decrypt_payload(self, armored: str, passphrase: str | None = None) -> str:
         """Decrypt PGP ciphertext back to JSON.
 
         Args:
@@ -615,9 +612,7 @@ class FortifiedMemoryStore(MemoryStore):
         from .backends.vaulted_backend import VaultedSQLiteBackend
 
         if not isinstance(self.primary, VaultedSQLiteBackend):
-            raise RuntimeError(
-                "vault_status() requires vault_passphrase to be set."
-            )
+            raise RuntimeError("vault_status() requires vault_passphrase to be set.")
         return self.primary.vault_status()
 
     def seal_vault(self) -> int:
@@ -634,9 +629,7 @@ class FortifiedMemoryStore(MemoryStore):
         from .backends.vaulted_backend import VaultedSQLiteBackend
 
         if not isinstance(self.primary, VaultedSQLiteBackend):
-            raise RuntimeError(
-                "seal_vault() requires vault_passphrase to be set."
-            )
+            raise RuntimeError("seal_vault() requires vault_passphrase to be set.")
         count = self.primary.seal_all()
         self.audit.append("vault_seal", "ALL", ok=True, files_sealed=count)
         return count
@@ -653,9 +646,7 @@ class FortifiedMemoryStore(MemoryStore):
         from .backends.vaulted_backend import VaultedSQLiteBackend
 
         if not isinstance(self.primary, VaultedSQLiteBackend):
-            raise RuntimeError(
-                "unseal_vault() requires vault_passphrase to be set."
-            )
+            raise RuntimeError("unseal_vault() requires vault_passphrase to be set.")
         count = self.primary.unseal_all()
         self.audit.append("vault_unseal", "ALL", ok=True, files_decrypted=count)
         return count
@@ -672,8 +663,7 @@ class FortifiedMemoryStore(MemoryStore):
             actual_hash=computed_hash,
         )
         logger.critical(
-            "TAMPER ALERT: Memory %s integrity check failed! "
-            "Expected=%s Actual=%s",
+            "TAMPER ALERT: Memory %s integrity check failed! Expected=%s Actual=%s",
             memory.id,
             memory.integrity_hash[:16],
             computed_hash[:16],

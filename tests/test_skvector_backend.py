@@ -7,8 +7,7 @@ list, delete, and health check operations.
 
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -22,6 +21,7 @@ from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
 
 try:
     import qdrant_client  # noqa: F401
+
     QDRANT_AVAILABLE = True
 except ImportError:
     QDRANT_AVAILABLE = False

@@ -25,13 +25,11 @@ Directory layout (same as FileBackend):
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
-from typing import Optional
 
 from ..config import SKMEMORY_HOME
-from ..models import EmotionalSnapshot, Memory, MemoryLayer
+from ..models import Memory, MemoryLayer
 from .base import BaseBackend
 
 DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memory")
@@ -77,10 +75,10 @@ CREATE INDEX IF NOT EXISTS idx_access_count ON memories(access_count DESC);
 
 -- NEW: View for active context (today + recent summaries)
 CREATE VIEW IF NOT EXISTS active_memories AS
-SELECT 
+SELECT
     id, title, summary, content_preview, tags, layer, created_at,
     importance, access_count,
-    CASE 
+    CASE
         WHEN DATE(created_at) = CURRENT_DATE THEN 'today'
         WHEN DATE(created_at) = DATE('now', '-1 day') THEN 'yesterday'
         WHEN DATE(created_at) >= DATE('now', '-7 days') THEN 'week'
@@ -88,7 +86,7 @@ SELECT
     END as context_tier
 FROM memories
 WHERE created_at >= DATE('now', '-30 days')
-ORDER BY 
+ORDER BY
     context_tier,
     importance DESC,
     access_count DESC;
@@ -109,7 +107,7 @@ class SQLiteBackend(BaseBackend):
         self.base_path = Path(base_path)
         self._ensure_dirs()
         self._db_path = self.base_path / "index.db"
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._ensure_db()
 
     def _ensure_dirs(self) -> None:
@@ -143,13 +141,16 @@ class SQLiteBackend(BaseBackend):
             "SELECT name FROM sqlite_master WHERE type='table' AND name='memories'"
         ).fetchone()
         if row is not None:
-            existing = {
-                r[1]
-                for r in conn.execute("PRAGMA table_info(memories)").fetchall()
-            }
+            existing = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
             migrations = [
-                ("importance", "ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5"),
-                ("access_count", "ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0"),
+                (
+                    "importance",
+                    "ALTER TABLE memories ADD COLUMN importance REAL NOT NULL DEFAULT 0.5",
+                ),
+                (
+                    "access_count",
+                    "ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
+                ),
                 ("last_accessed", "ALTER TABLE memories ADD COLUMN last_accessed TEXT"),
             ]
             for col, ddl in migrations:
@@ -175,7 +176,7 @@ class SQLiteBackend(BaseBackend):
         """
         return self.base_path / memory.layer.value / f"{memory.id}.json"
 
-    def _find_file(self, memory_id: str) -> Optional[Path]:
+    def _find_file(self, memory_id: str) -> Path | None:
         """Locate a memory file using the index first, then fallback.
 
         Args:
@@ -263,14 +264,14 @@ class SQLiteBackend(BaseBackend):
             "content_preview": row["content_preview"],
             "emotional_intensity": row["emotional_intensity"],
             "emotional_valence": row["emotional_valence"],
-            "emotional_labels": [l for l in row["emotional_labels"].split(",") if l],
+            "emotional_labels": [lbl for lbl in row["emotional_labels"].split(",") if lbl],
             "cloud9_achieved": bool(row["cloud9_achieved"]),
             "created_at": row["created_at"],
             "parent_id": row["parent_id"],
             "related_ids": [r for r in row["related_ids"].split(",") if r],
         }
 
-    def _row_to_memory(self, row: sqlite3.Row) -> Optional[Memory]:
+    def _row_to_memory(self, row: sqlite3.Row) -> Memory | None:
         """Load the full Memory object from disk using the index path.
 
         Args:
@@ -306,7 +307,7 @@ class SQLiteBackend(BaseBackend):
         self._index_memory(memory, path)
         return memory.id
 
-    def load(self, memory_id: str) -> Optional[Memory]:
+    def load(self, memory_id: str) -> Memory | None:
         """Load a memory by ID, using the index for fast lookup.
 
         Args:
@@ -347,8 +348,8 @@ class SQLiteBackend(BaseBackend):
 
     def list_memories(
         self,
-        layer: Optional[MemoryLayer] = None,
-        tags: Optional[list[str]] = None,
+        layer: MemoryLayer | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
     ) -> list[Memory]:
         """List memories using the index for filtering, loading full objects.
@@ -391,8 +392,8 @@ class SQLiteBackend(BaseBackend):
 
     def list_summaries(
         self,
-        layer: Optional[MemoryLayer] = None,
-        tags: Optional[list[str]] = None,
+        layer: MemoryLayer | None = None,
+        tags: list[str] | None = None,
         limit: int = 50,
         min_intensity: float = 0.0,
         order_by: str = "created_at",
@@ -497,8 +498,7 @@ class SQLiteBackend(BaseBackend):
             or_clauses = [_word_clause(w) for w in words]
             # Use SUM of CASE expressions to count matching words
             score_expr = " + ".join(
-                f"CASE WHEN {_word_clause(w)} THEN 1 ELSE 0 END"
-                for w in words
+                f"CASE WHEN {_word_clause(w)} THEN 1 ELSE 0 END" for w in words
             )
             or_params: list[str] = []
             # params for WHERE (OR)
@@ -573,7 +573,7 @@ class SQLiteBackend(BaseBackend):
 
         return results
 
-    def list_backups(self, backup_dir: Optional[str] = None) -> list[dict]:
+    def list_backups(self, backup_dir: str | None = None) -> list[dict]:
         """List all skmemory backup files, sorted newest first.
 
         Args:
@@ -584,10 +584,7 @@ class SQLiteBackend(BaseBackend):
             list[dict]: Backup entries, newest first. Each entry has:
                 ``path``, ``name``, ``size_bytes``, ``date``.
         """
-        if backup_dir is None:
-            bdir = self.base_path.parent / "backups"
-        else:
-            bdir = Path(backup_dir)
+        bdir = self.base_path.parent / "backups" if backup_dir is None else Path(backup_dir)
 
         if not bdir.exists():
             return []
@@ -604,7 +601,7 @@ class SQLiteBackend(BaseBackend):
             )
         return entries
 
-    def prune_backups(self, keep: int = 7, backup_dir: Optional[str] = None) -> list[str]:
+    def prune_backups(self, keep: int = 7, backup_dir: str | None = None) -> list[str]:
         """Delete oldest backups, retaining only the N most recent.
 
         Args:
@@ -626,7 +623,7 @@ class SQLiteBackend(BaseBackend):
                 pass
         return deleted
 
-    def export_all(self, output_path: Optional[str] = None) -> str:
+    def export_all(self, output_path: str | None = None) -> str:
         """Export all memories as a single JSON file for backup.
 
         Reads every JSON file on disk and bundles them into one
@@ -663,8 +660,10 @@ class SQLiteBackend(BaseBackend):
                 except (json.JSONDecodeError, Exception):
                     continue
 
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
         from .. import __version__
-        from datetime import datetime as _dt, timezone as _tz
 
         payload = {
             "skmemory_version": __version__,

@@ -16,10 +16,8 @@ The notes file lives at ~/.skcapstone/lovenotes.jsonl (JSON Lines).
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -31,9 +29,7 @@ DEFAULT_NOTES_PATH = str(SKMEMORY_HOME / "lovenotes.jsonl")
 class LoveNote(BaseModel):
     """A single heartbeat -- proof of continued connection."""
 
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     from_name: str = Field(default="", description="Who is sending this note")
     to_name: str = Field(default="", description="Who it's addressed to")
     message: str = Field(
@@ -111,7 +107,7 @@ class LoveNoteChain:
         """
         if not self.path.exists():
             return 0
-        with open(self.path, "r", encoding="utf-8") as f:
+        with open(self.path, encoding="utf-8") as f:
             return sum(1 for line in f if line.strip())
 
     def read_latest(self, n: int = 10) -> list[LoveNote]:
@@ -139,7 +135,7 @@ class LoveNoteChain:
             return []
 
         notes = []
-        with open(self.path, "r", encoding="utf-8") as f:
+        with open(self.path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -161,10 +157,7 @@ class LoveNoteChain:
             list[LoveNote]: Notes from this sender.
         """
         name_lower = name.lower()
-        return [
-            n for n in self.read_all()
-            if n.from_name.lower() == name_lower
-        ]
+        return [n for n in self.read_all() if n.from_name.lower() == name_lower]
 
     def health(self) -> dict:
         """Check love note chain status.

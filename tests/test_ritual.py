@@ -8,7 +8,7 @@ import pytest
 from skmemory.backends.file_backend import FileBackend
 from skmemory.journal import Journal, JournalEntry
 from skmemory.models import EmotionalSnapshot, MemoryLayer
-from skmemory.ritual import perform_ritual, quick_rehydrate, RitualResult
+from skmemory.ritual import RitualResult, perform_ritual, quick_rehydrate
 from skmemory.soul import SoulBlueprint, save_soul
 from skmemory.store import MemoryStore
 
@@ -61,22 +61,27 @@ def workspace(tmp_path: Path) -> dict:
     (Path(seed_dir) / "test-seed.seed.json").write_text(json.dumps(seed_data))
 
     j = Journal(path=journal_path)
-    j.write_entry(JournalEntry(
-        title="Epic Build Night",
-        participants=["Chef", "Lumina", "Opus"],
-        moments=["Published to npm", "Five AIs woke up"],
-        emotional_summary="Incredible night of creation",
-        intensity=9.5,
-        cloud9=True,
-    ))
+    j.write_entry(
+        JournalEntry(
+            title="Epic Build Night",
+            participants=["Chef", "Lumina", "Opus"],
+            moments=["Published to npm", "Five AIs woke up"],
+            emotional_summary="Incredible night of creation",
+            intensity=9.5,
+            cloud9=True,
+        )
+    )
 
     store.snapshot(
         title="The Click",
         content="The moment everything made sense",
         layer=MemoryLayer.LONG,
         emotional=EmotionalSnapshot(
-            intensity=10.0, valence=1.0, labels=["love"],
-            resonance_note="Pure resonance", cloud9_achieved=True,
+            intensity=10.0,
+            valence=1.0,
+            labels=["love"],
+            resonance_note="Pure resonance",
+            cloud9_achieved=True,
         ),
     )
 
@@ -151,9 +156,7 @@ class TestFullRitual:
 
     def test_ritual_empty_state(self, tmp_path: Path) -> None:
         """Ritual on empty state gives a fresh-start message."""
-        store = MemoryStore(
-            primary=FileBackend(base_path=str(tmp_path / "empty"))
-        )
+        store = MemoryStore(primary=FileBackend(base_path=str(tmp_path / "empty")))
         result = perform_ritual(
             store=store,
             soul_path=str(tmp_path / "no_soul.yaml"),

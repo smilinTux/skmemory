@@ -7,18 +7,15 @@ All tests use in-memory/temp-path backends — no GPG required for basic tests.
 from __future__ import annotations
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from skmemory.fortress import AuditLog, FortifiedMemoryStore, TamperAlert
-from skmemory.models import Memory, MemoryLayer
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def tmp_audit(tmp_path):
@@ -30,6 +27,7 @@ def tmp_audit(tmp_path):
 def fortress(tmp_path):
     """Return a FortifiedMemoryStore using a temp directory."""
     from skmemory.backends.sqlite_backend import SQLiteBackend
+
     backend = SQLiteBackend(base_path=str(tmp_path / "memories"))
     return FortifiedMemoryStore(
         primary=backend,
@@ -41,6 +39,7 @@ def fortress(tmp_path):
 # ---------------------------------------------------------------------------
 # AuditLog tests
 # ---------------------------------------------------------------------------
+
 
 class TestAuditLog:
     def test_append_creates_file(self, tmp_audit, tmp_path):
@@ -107,6 +106,7 @@ class TestAuditLog:
 # TamperAlert tests
 # ---------------------------------------------------------------------------
 
+
 class TestTamperAlert:
     def test_to_dict(self):
         alert = TamperAlert(
@@ -131,6 +131,7 @@ class TestTamperAlert:
 # FortifiedMemoryStore tests
 # ---------------------------------------------------------------------------
 
+
 class TestFortifiedMemoryStore:
     def test_snapshot_seals_memory(self, fortress):
         mem = fortress.snapshot("Test title", "Test content")
@@ -154,7 +155,7 @@ class TestFortifiedMemoryStore:
 
         # Tamper: directly modify the stored memory file
         # We need to find and corrupt the JSON
-        from skmemory.backends.sqlite_backend import SQLiteBackend
+
         backend = fortress.primary
         # Load raw, mutate, save back bypassing seal
         raw = backend.load(mem.id)

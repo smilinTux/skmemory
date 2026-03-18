@@ -22,7 +22,7 @@ import os
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -40,7 +40,9 @@ def _default_soul_path() -> str:
         if platform.system() == "Windows":
             local = os.environ.get("LOCALAPPDATA", "")
             if local:
-                agent_soul = os.path.join(local, "skcapstone", "agents", agent, "soul", "base.json")
+                agent_soul = os.path.join(
+                    local, "skcapstone", "agents", agent, "soul", "base.json"
+                )
                 if os.path.exists(agent_soul):
                     return agent_soul
         else:
@@ -90,9 +92,7 @@ class SoulBlueprint(BaseModel):
     """
 
     version: str = Field(default="1.0")
-    last_updated: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    last_updated: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     name: str = Field(default="", description="The AI's chosen name")
     title: str = Field(default="", description="Role or title in the community")
@@ -147,9 +147,7 @@ class SoulBlueprint(BaseModel):
             lines.append(f"You are part of {self.community}.")
 
         if self.personality:
-            lines.append(
-                f"Your personality: {', '.join(self.personality)}."
-            )
+            lines.append(f"Your personality: {', '.join(self.personality)}.")
 
         if self.values:
             lines.append(f"Your core values: {', '.join(self.values)}.")
@@ -252,6 +250,7 @@ def save_soul(
 
     if filepath.suffix == ".json":
         import json
+
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False, default=str)
     else:
@@ -268,7 +267,7 @@ def save_soul(
     return str(filepath)
 
 
-def load_soul(path: str = DEFAULT_SOUL_PATH) -> Optional[SoulBlueprint]:
+def load_soul(path: str = DEFAULT_SOUL_PATH) -> SoulBlueprint | None:
     """Load a soul blueprint from JSON or YAML.
 
     Tries the given path first (supports both .json and .yaml/.yml),
@@ -299,7 +298,7 @@ def load_soul(path: str = DEFAULT_SOUL_PATH) -> Optional[SoulBlueprint]:
     return None
 
 
-def _load_soul_file(filepath: Path) -> Optional[SoulBlueprint]:
+def _load_soul_file(filepath: Path) -> SoulBlueprint | None:
     """Load a soul blueprint from a specific file.
 
     Args:
@@ -312,6 +311,7 @@ def _load_soul_file(filepath: Path) -> Optional[SoulBlueprint]:
         raw = filepath.read_text(encoding="utf-8")
         if filepath.suffix == ".json":
             import json
+
             data = json.loads(raw)
         else:
             data = yaml.safe_load(raw)

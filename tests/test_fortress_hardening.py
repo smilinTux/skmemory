@@ -11,19 +11,18 @@ Covers:
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
 
 try:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import cryptography.hazmat.primitives.ciphers.aead  # noqa: F401
 
     CRYPTO_AVAILABLE = True
 except ImportError:
     CRYPTO_AVAILABLE = False
 
-from skmemory.vault import VAULT_HEADER, MemoryVault
+from skmemory.vault import VAULT_HEADER
 
 pytestmark = pytest.mark.skipif(
     not CRYPTO_AVAILABLE,
@@ -246,7 +245,7 @@ class TestVaultedSQLiteBackend:
 class TestFortifiedMemoryStoreVault:
     def test_vault_passphrase_activates_encryption(self, fortress_vaulted, tmp_path):
         """FortifiedMemoryStore with vault_passphrase should encrypt files."""
-        mem = fortress_vaulted.snapshot("Vaulted Title", "Encrypted content")
+        fortress_vaulted.snapshot("Vaulted Title", "Encrypted content")
 
         # Find the physical file
         base = fortress_vaulted.primary.base_path
@@ -361,8 +360,9 @@ class TestFortressCLI:
     def test_fortress_verify_clean(self, tmp_path):
         """skmemory fortress verify should exit 0 for a clean store."""
         from click.testing import CliRunner
-        from skmemory.cli import cli
+
         from skmemory.backends.sqlite_backend import SQLiteBackend
+        from skmemory.cli import cli
         from skmemory.store import MemoryStore
 
         runner = CliRunner()
@@ -371,9 +371,7 @@ class TestFortressCLI:
             cli,
             ["fortress", "verify"],
             obj={
-                "store": MemoryStore(
-                    primary=SQLiteBackend(base_path=str(tmp_path / "memories"))
-                ),
+                "store": MemoryStore(primary=SQLiteBackend(base_path=str(tmp_path / "memories"))),
                 "ai": None,
             },
         )
@@ -383,8 +381,9 @@ class TestFortressCLI:
     def test_vault_status_cli(self, tmp_path):
         """skmemory vault status should show encryption coverage."""
         from click.testing import CliRunner
-        from skmemory.cli import cli
+
         from skmemory.backends.sqlite_backend import SQLiteBackend
+        from skmemory.cli import cli
         from skmemory.store import MemoryStore
 
         runner = CliRunner()
@@ -392,9 +391,7 @@ class TestFortressCLI:
             cli,
             ["vault", "status"],
             obj={
-                "store": MemoryStore(
-                    primary=SQLiteBackend(base_path=str(tmp_path / "memories"))
-                ),
+                "store": MemoryStore(primary=SQLiteBackend(base_path=str(tmp_path / "memories"))),
                 "ai": None,
             },
         )
@@ -404,6 +401,7 @@ class TestFortressCLI:
     def test_fortress_audit_cli(self, tmp_path):
         """skmemory fortress audit should show audit entries."""
         from click.testing import CliRunner
+
         from skmemory.cli import cli
         from skmemory.fortress import AuditLog
 
@@ -424,8 +422,9 @@ class TestFortressCLI:
     def test_vault_seal_cli_requires_passphrase(self, tmp_path):
         """vault seal without passphrase should prompt or fail."""
         from click.testing import CliRunner
-        from skmemory.cli import cli
+
         from skmemory.backends.sqlite_backend import SQLiteBackend
+        from skmemory.cli import cli
         from skmemory.store import MemoryStore
 
         runner = CliRunner()
@@ -434,9 +433,7 @@ class TestFortressCLI:
             ["vault", "seal", "--yes"],
             input="badpass\nbadpass\n",
             obj={
-                "store": MemoryStore(
-                    primary=SQLiteBackend(base_path=str(tmp_path / "memories"))
-                ),
+                "store": MemoryStore(primary=SQLiteBackend(base_path=str(tmp_path / "memories"))),
                 "ai": None,
             },
         )

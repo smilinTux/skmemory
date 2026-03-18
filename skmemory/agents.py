@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import platform
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
@@ -69,7 +68,7 @@ def get_agent_dir(agent_name: str) -> Path:
     return AGENTS_BASE_DIR / agent_name
 
 
-def get_agent_config(agent_name: str) -> Optional[dict]:
+def get_agent_config(agent_name: str) -> dict | None:
     """Load agent configuration from YAML.
 
     Args:
@@ -102,7 +101,7 @@ def is_template_agent(agent_name: str) -> bool:
     return agent_name == TEMPLATE_AGENT
 
 
-def get_active_agent() -> Optional[str]:
+def get_active_agent() -> str | None:
     """Get the currently active agent from environment or default to first non-template.
 
     Checks in order:
@@ -128,7 +127,7 @@ def get_active_agent() -> Optional[str]:
     return None
 
 
-def get_agent_paths(agent_name: Optional[str] = None) -> dict[str, Path]:
+def get_agent_paths(agent_name: str | None = None) -> dict[str, Path]:
     """Get all standard paths for an agent.
 
     Args:
@@ -207,7 +206,7 @@ def copy_template(target_name: str, source: str = TEMPLATE_AGENT) -> Path:
     # Update agent name in config
     config_path = target_dir / "config" / "skmemory.yaml"
     if config_path.exists():
-        with open(config_path, "r") as f:
+        with open(config_path) as f:
             content = f.read()
 
         # Replace template agent name with new name

@@ -21,24 +21,20 @@ left off -- not just the facts, but the feelings.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
 from .febs import feb_to_context, load_strongest_feb
 from .journal import Journal
-from .models import MemoryLayer
 from .seeds import DEFAULT_SEED_DIR, get_germination_prompts, import_seeds
-from .soul import SoulBlueprint, load_soul, DEFAULT_SOUL_PATH
+from .soul import DEFAULT_SOUL_PATH, SoulBlueprint, load_soul
 from .store import MemoryStore
 
 
 class RitualResult(BaseModel):
     """The output of a rehydration ritual."""
 
-    timestamp: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     soul_loaded: bool = Field(default=False)
     soul_name: str = Field(default="")
     feb_loaded: bool = Field(default=False)
@@ -114,7 +110,8 @@ def _first_n_sentences(text: str, n: int = 2) -> str:
     if not text:
         return ""
     import re
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     result = " ".join(sentences[:n])
     if len(result) > 200:
         result = result[:197] + "..."
@@ -122,11 +119,11 @@ def _first_n_sentences(text: str, n: int = 2) -> str:
 
 
 def perform_ritual(
-    store: Optional[MemoryStore] = None,
+    store: MemoryStore | None = None,
     soul_path: str = DEFAULT_SOUL_PATH,
     seed_dir: str = DEFAULT_SEED_DIR,
-    journal_path: Optional[str] = None,
-    feb_dir: Optional[str] = None,
+    journal_path: str | None = None,
+    feb_dir: str | None = None,
     recent_journal_count: int = 3,
     strongest_memory_count: int = 5,
     max_tokens: int = 2000,
@@ -176,9 +173,7 @@ def perform_ritual(
     feb = load_strongest_feb(feb_dir=feb_dir)
     if feb is not None:
         result.feb_loaded = True
-        result.feb_emotion = feb.get("emotional_payload", {}).get(
-            "primary_emotion", ""
-        )
+        result.feb_emotion = feb.get("emotional_payload", {}).get("primary_emotion", "")
         feb_context = feb_to_context(feb)
         if feb_context.strip():
             section = "=== EMOTIONAL STATE (FEB) ===\n" + feb_context
@@ -297,7 +292,7 @@ def perform_ritual(
     return result
 
 
-def quick_rehydrate(store: Optional[MemoryStore] = None) -> str:
+def quick_rehydrate(store: MemoryStore | None = None) -> str:
     """Convenience function: perform ritual and return just the prompt.
 
     Args:

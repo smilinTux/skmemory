@@ -8,8 +8,8 @@ Level 2 (skgraph)  - Graph relationship traversal (powered by FalkorDB).
 """
 
 from .base import BaseBackend
-from .skgraph_backend import SKGraphBackend
 from .file_backend import FileBackend
+from .skgraph_backend import SKGraphBackend
 
 __all__ = ["BaseBackend", "SKGraphBackend", "FileBackend", "VaultedSQLiteBackend"]
 

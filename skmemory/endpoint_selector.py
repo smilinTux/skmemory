@@ -22,10 +22,9 @@ import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 logger = logging.getLogger("skmemory.endpoint_selector")
 
@@ -39,21 +38,21 @@ class Endpoint(BaseModel):
     """A single backend endpoint with health and latency tracking."""
 
     url: str
-    role: str = "primary"           # primary | replica
-    tailscale_ip: str = ""          # optional, for display
-    latency_ms: float = -1.0        # -1 = not yet probed
+    role: str = "primary"  # primary | replica
+    tailscale_ip: str = ""  # optional, for display
+    latency_ms: float = -1.0  # -1 = not yet probed
     healthy: bool = True
-    last_checked: str = ""          # ISO timestamp
+    last_checked: str = ""  # ISO timestamp
     fail_count: int = 0
 
 
 class RoutingConfig(BaseModel):
     """Configuration for endpoint routing behavior."""
 
-    strategy: str = "failover"      # failover | latency | local-first | read-local-write-primary
+    strategy: str = "failover"  # failover | latency | local-first | read-local-write-primary
     probe_interval_seconds: int = 30
     probe_timeout_seconds: int = 3
-    max_fail_count: int = 3         # mark unhealthy after N consecutive failures
+    max_fail_count: int = 3  # mark unhealthy after N consecutive failures
     recovery_interval_seconds: int = 60  # re-check unhealthy endpoints
 
 
@@ -76,9 +75,9 @@ class EndpointSelector:
 
     def __init__(
         self,
-        skvector_endpoints: Optional[list[dict | Endpoint]] = None,
-        skgraph_endpoints: Optional[list[dict | Endpoint]] = None,
-        config: Optional[RoutingConfig] = None,
+        skvector_endpoints: list[dict | Endpoint] | None = None,
+        skgraph_endpoints: list[dict | Endpoint] | None = None,
+        config: RoutingConfig | None = None,
     ) -> None:
         self._config = config or RoutingConfig()
         self._skvector: list[Endpoint] = self._normalize(skvector_endpoints or [])
@@ -97,11 +96,13 @@ class EndpointSelector:
             else:
                 # Try pydantic model with .url attribute (EndpointConfig)
                 try:
-                    result.append(Endpoint(
-                        url=ep.url,
-                        role=getattr(ep, "role", "primary"),
-                        tailscale_ip=getattr(ep, "tailscale_ip", ""),
-                    ))
+                    result.append(
+                        Endpoint(
+                            url=ep.url,
+                            role=getattr(ep, "role", "primary"),
+                            tailscale_ip=getattr(ep, "tailscale_ip", ""),
+                        )
+                    )
                 except AttributeError:
                     logger.warning("Cannot normalize endpoint: %s", ep)
         return result
@@ -110,7 +111,7 @@ class EndpointSelector:
     # Core selection
     # -------------------------------------------------------------------
 
-    def select_skvector(self, for_write: bool = False) -> Optional[Endpoint]:
+    def select_skvector(self, for_write: bool = False) -> Endpoint | None:
         """Select the best SKVector endpoint.
 
         Args:
@@ -123,7 +124,7 @@ class EndpointSelector:
         self._maybe_probe()
         return self._select(self._skvector, for_write)
 
-    def select_skgraph(self, for_write: bool = False) -> Optional[Endpoint]:
+    def select_skgraph(self, for_write: bool = False) -> Endpoint | None:
         """Select the best SKGraph endpoint.
 
         Args:
@@ -136,7 +137,7 @@ class EndpointSelector:
         self._maybe_probe()
         return self._select(self._skgraph, for_write)
 
-    def _select(self, endpoints: list[Endpoint], for_write: bool) -> Optional[Endpoint]:
+    def _select(self, endpoints: list[Endpoint], for_write: bool) -> Endpoint | None:
         """Apply the routing strategy to pick the best endpoint."""
         if not endpoints:
             return None
@@ -249,7 +250,7 @@ class EndpointSelector:
             endpoint.latency_ms = round(elapsed_ms, 2)
             endpoint.fail_count = 0
             endpoint.healthy = True
-        except (OSError, socket.timeout):
+        except (TimeoutError, OSError):
             endpoint.fail_count += 1
             endpoint.latency_ms = -1.0
             if endpoint.fail_count >= self._config.max_fail_count:
@@ -277,7 +278,7 @@ class EndpointSelector:
     # Heartbeat mesh discovery
     # -------------------------------------------------------------------
 
-    def discover_from_heartbeats(self, heartbeat_dir: Optional[Path] = None) -> None:
+    def discover_from_heartbeats(self, heartbeat_dir: Path | None = None) -> None:
         """Discover backend endpoints from heartbeat mesh files.
 
         Reads heartbeat JSON files and looks for a ``services`` field
@@ -332,20 +333,24 @@ class EndpointSelector:
                 url = f"{protocol}://{host}:{port}"
 
                 if name == "skvector" and url not in existing_skvector_urls:
-                    self._skvector.append(Endpoint(
-                        url=url,
-                        role="replica",
-                        tailscale_ip=tailscale_ip,
-                    ))
+                    self._skvector.append(
+                        Endpoint(
+                            url=url,
+                            role="replica",
+                            tailscale_ip=tailscale_ip,
+                        )
+                    )
                     existing_skvector_urls.add(url)
                     logger.info("Discovered SKVector endpoint: %s", url)
 
                 elif name == "skgraph" and url not in existing_skgraph_urls:
-                    self._skgraph.append(Endpoint(
-                        url=url,
-                        role="replica",
-                        tailscale_ip=tailscale_ip,
-                    ))
+                    self._skgraph.append(
+                        Endpoint(
+                            url=url,
+                            role="replica",
+                            tailscale_ip=tailscale_ip,
+                        )
+                    )
                     existing_skgraph_urls.add(url)
                     logger.info("Discovered SKGraph endpoint: %s", url)
 

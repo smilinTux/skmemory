@@ -1,6 +1,5 @@
 """Tests for the OpenClaw integration module."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -118,8 +117,6 @@ class TestPluginExport:
         backup = str(tmp_path / "backup.json")
         plugin.export(backup)
 
-        fresh = SKMemoryPlugin(
-            base_path=str(tmp_path / "fresh_memories")
-        )
+        fresh = SKMemoryPlugin(base_path=str(tmp_path / "fresh_memories"))
         count = fresh.import_backup(backup)
         assert count == 1

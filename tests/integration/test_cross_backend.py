@@ -150,9 +150,7 @@ class TestTagConsistency:
 
         for tag in tags:
             fb_results = fb.search_by_tags([tag])
-            assert any(r["id"] == mem.id for r in fb_results), (
-                f"FalkorDB missing tag: {tag}"
-            )
+            assert any(r["id"] == mem.id for r in fb_results), f"FalkorDB missing tag: {tag}"
 
         # Qdrant verifies tags are in the stored memory
         qdrant_memories = qd.list_memories(limit=100)
@@ -179,7 +177,7 @@ class TestPromotionLineageConsistency:
 
         # FalkorDB lineage
         lineage = fb.get_lineage(child.id)
-        ancestor_ids = [l["id"] for l in lineage]
+        ancestor_ids = [lbl["id"] for lbl in lineage]
         assert parent.id in ancestor_ids, "FalkorDB lineage should include parent"
 
         # Qdrant: both parent and child indexed
@@ -191,9 +189,7 @@ class TestPromotionLineageConsistency:
         # Qdrant: child's parent_id preserved
         qdrant_child = next((m for m in qdrant_memories if m.id == child.id), None)
         assert qdrant_child is not None
-        assert qdrant_child.parent_id == parent.id, (
-            "Qdrant should preserve parent_id in payload"
-        )
+        assert qdrant_child.parent_id == parent.id, "Qdrant should preserve parent_id in payload"
 
     def test_multi_hop_lineage_all_indexed_in_qdrant(self, backends):
         fb, qd = backends
@@ -206,7 +202,7 @@ class TestPromotionLineageConsistency:
             _dual_save(fb, qd, mem)
 
         lineage = fb.get_lineage(child.id)
-        ancestor_ids = {l["id"] for l in lineage}
+        ancestor_ids = {lbl["id"] for lbl in lineage}
         assert parent.id in ancestor_ids
         assert grandparent.id in ancestor_ids
 
@@ -239,7 +235,6 @@ class TestSearchComplementarity:
 
         # Qdrant semantic search
         qd_results = qd.search_text("agent self-awareness continuity", limit=10)
-        qd_ids = [m.id for m in qd_results]
         # Semantic search may not always return the exact memory but should not error
         assert isinstance(qd_results, list)
 

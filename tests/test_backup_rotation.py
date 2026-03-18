@@ -8,9 +8,8 @@ from click.testing import CliRunner
 
 from skmemory.backends.sqlite_backend import SQLiteBackend
 from skmemory.cli import cli
-from skmemory.models import EmotionalSnapshot, MemoryLayer
+from skmemory.models import EmotionalSnapshot
 from skmemory.store import MemoryStore
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -69,17 +68,13 @@ class TestListBackups:
 
     def test_lists_all_backup_files(self, backend, tmp_path):
         backup_dir = tmp_path / "backups"
-        _make_backup_files(
-            backup_dir, ["2026-01-01", "2026-01-02", "2026-01-03"]
-        )
+        _make_backup_files(backup_dir, ["2026-01-01", "2026-01-02", "2026-01-03"])
         results = backend.list_backups(str(backup_dir))
         assert len(results) == 3
 
     def test_sorted_newest_first(self, backend, tmp_path):
         backup_dir = tmp_path / "backups"
-        _make_backup_files(
-            backup_dir, ["2026-01-01", "2026-01-03", "2026-01-02"]
-        )
+        _make_backup_files(backup_dir, ["2026-01-01", "2026-01-03", "2026-01-02"])
         results = backend.list_backups(str(backup_dir))
         dates = [r["date"] for r in results]
         assert dates == ["2026-01-03", "2026-01-02", "2026-01-01"]
@@ -156,18 +151,14 @@ class TestPruneBackups:
 
     def test_deleted_files_are_gone(self, backend, tmp_path):
         backup_dir = tmp_path / "backups"
-        _make_backup_files(
-            backup_dir, ["2026-01-01", "2026-01-02", "2026-01-03"]
-        )
+        _make_backup_files(backup_dir, ["2026-01-01", "2026-01-02", "2026-01-03"])
         deleted = backend.prune_backups(keep=1, backup_dir=str(backup_dir))
         for path in deleted:
             assert not Path(path).exists()
 
     def test_store_delegates_to_backend(self, store, tmp_path):
         backup_dir = store.primary.base_path.parent / "backups"
-        _make_backup_files(
-            backup_dir, ["2026-01-01", "2026-01-02", "2026-01-03"]
-        )
+        _make_backup_files(backup_dir, ["2026-01-01", "2026-01-02", "2026-01-03"])
         deleted = store.prune_backups(keep=1)
         assert len(deleted) == 2
 

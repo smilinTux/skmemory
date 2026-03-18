@@ -20,10 +20,6 @@ Coverage:
 
 from __future__ import annotations
 
-import time
-
-import pytest
-
 from .conftest import make_memory, requires_skvector
 
 pytestmark = requires_skvector
@@ -206,6 +202,7 @@ class TestSKVectorVectorSearch:
         # At minimum, no error is raised and results are Memory objects
         for m in results:
             from skmemory.models import Memory
+
             assert isinstance(m, Memory)
 
     def test_search_text_empty_collection_returns_empty(self, qdrant_clean):

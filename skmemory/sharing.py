@@ -24,7 +24,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -160,13 +160,15 @@ class MemorySharer:
             checksum=checksum,
             metadata={
                 "filter_tags": share_filter.tags,
-                "filter_layers": [l.value for l in share_filter.layers],
+                "filter_layers": [lbl.value for lbl in share_filter.layers],
             },
         )
 
         logger.info(
             "Exported %d memories for %s (bundle %s)",
-            len(serialized), recipient or "anyone", bundle.bundle_id,
+            len(serialized),
+            recipient or "anyone",
+            bundle.bundle_id,
         )
         return bundle
 
@@ -198,7 +200,8 @@ class MemorySharer:
         if bundle.checksum and actual_checksum != bundle.checksum:
             logger.error(
                 "Bundle checksum mismatch! Expected %s, got %s",
-                bundle.checksum[:16], actual_checksum[:16],
+                bundle.checksum[:16],
+                actual_checksum[:16],
             )
             return {"imported": 0, "skipped": 0, "errors": bundle.memory_count}
 
@@ -245,7 +248,10 @@ class MemorySharer:
 
         logger.info(
             "Imported %d/%d memories from %s (bundle %s)",
-            imported, bundle.memory_count, bundle.sharer, bundle.bundle_id,
+            imported,
+            bundle.memory_count,
+            bundle.sharer,
+            bundle.bundle_id,
         )
         return {"imported": imported, "skipped": skipped, "errors": errors}
 

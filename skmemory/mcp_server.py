@@ -32,14 +32,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from .store import MemoryStore
 from .models import MemoryLayer
+from .store import MemoryStore
 
 logger = logging.getLogger("skmemory.mcp")
 
@@ -49,7 +49,7 @@ server = Server("skmemory")
 # Shared store instance
 # ---------------------------------------------------------------------------
 
-_store: Optional[MemoryStore] = None
+_store: MemoryStore | None = None
 
 
 def _get_store() -> MemoryStore:
@@ -215,9 +215,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="memory_consolidate",
-            description=(
-                "Compress a session's short-term memories into one mid-term memory."
-            ),
+            description=("Compress a session's short-term memories into one mid-term memory."),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -275,9 +273,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="memory_health",
-            description=(
-                "Full health check across all backends (primary, vector, graph)."
-            ),
+            description=("Full health check across all backends (primary, vector, graph)."),
             inputSchema={"type": "object", "properties": {}, "required": []},
         ),
         Tool(
@@ -585,21 +581,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             promoted = store.promote(memory_id, target, summary=summary)
             if promoted is None:
                 return _error_response(f"Memory not found: {memory_id}")
-            return _json_response({
-                "promoted_id": promoted.id,
-                "source_id": memory_id,
-                "target_layer": target_str,
-            })
+            return _json_response(
+                {
+                    "promoted_id": promoted.id,
+                    "source_id": memory_id,
+                    "target_layer": target_str,
+                }
+            )
 
         elif name == "memory_consolidate":
             session_id = arguments["session_id"]
             summary = arguments["summary"]
             consolidated = store.consolidate_session(session_id, summary)
-            return _json_response({
-                "memory_id": consolidated.id,
-                "session_id": session_id,
-                "consolidated": True,
-            })
+            return _json_response(
+                {
+                    "memory_id": consolidated.id,
+                    "session_id": session_id,
+                    "consolidated": True,
+                }
+            )
 
         elif name == "memory_context":
             token_budget = int(arguments.get("token_budget", 4000))
@@ -650,8 +650,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return _json_response(health)
 
         elif name == "memory_verify":
-            from .fortress import FortifiedMemoryStore
             from .config import SKMEMORY_HOME
+            from .fortress import FortifiedMemoryStore
 
             fortress = FortifiedMemoryStore(
                 primary=store.primary,
@@ -662,8 +662,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return _json_response(result)
 
         elif name == "memory_audit":
-            from .fortress import AuditLog
             from .config import SKMEMORY_HOME
+            from .fortress import AuditLog
 
             n = int(arguments.get("last", 20))
             audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
@@ -672,38 +672,42 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # ── Synthesis & Auto-Context tools ────────────────────
         elif name == "memory_synthesize_daily":
-            from .synthesis import JournalSynthesizer
             from .journal import Journal
+            from .synthesis import JournalSynthesizer
 
             date = arguments.get("date")
             synthesizer = JournalSynthesizer(store, Journal())
             memory = synthesizer.synthesize_daily(date)
-            return _json_response({
-                "memory_id": memory.id,
-                "title": memory.title,
-                "themes": memory.metadata.get("themes", []),
-                "memory_count": memory.metadata.get("memory_count", 0),
-            })
+            return _json_response(
+                {
+                    "memory_id": memory.id,
+                    "title": memory.title,
+                    "themes": memory.metadata.get("themes", []),
+                    "memory_count": memory.metadata.get("memory_count", 0),
+                }
+            )
 
         elif name == "memory_synthesize_dreams":
-            from .synthesis import JournalSynthesizer
             from .journal import Journal
+            from .synthesis import JournalSynthesizer
 
             since = arguments.get("since")
             synthesizer = JournalSynthesizer(store, Journal())
             memories = synthesizer.synthesize_dreams(since)
-            return _json_response({
-                "synthesized": len(memories),
-                "clusters": [
-                    {
-                        "memory_id": m.id,
-                        "title": m.title,
-                        "theme": m.metadata.get("theme", ""),
-                        "dream_count": m.metadata.get("dream_count", 0),
-                    }
-                    for m in memories
-                ],
-            })
+            return _json_response(
+                {
+                    "synthesized": len(memories),
+                    "clusters": [
+                        {
+                            "memory_id": m.id,
+                            "title": m.title,
+                            "theme": m.metadata.get("theme", ""),
+                            "dream_count": m.metadata.get("dream_count", 0),
+                        }
+                        for m in memories
+                    ],
+                }
+            )
 
         elif name == "memory_auto_context":
             keywords_str = arguments["keywords"]
@@ -719,15 +723,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 for m in results:
                     if m.id not in seen_ids:
                         seen_ids.add(m.id)
-                        all_results.append({
-                            "id": m.id,
-                            "title": m.title,
-                            "summary": m.summary or m.content[:200],
-                            "layer": m.layer.value,
-                            "intensity": m.emotional.intensity,
-                            "tags": m.tags[:5],
-                            "source": m.source,
-                        })
+                        all_results.append(
+                            {
+                                "id": m.id,
+                                "title": m.title,
+                                "summary": m.summary or m.content[:200],
+                                "layer": m.layer.value,
+                                "intensity": m.emotional.intensity,
+                                "tags": m.tags[:5],
+                                "source": m.source,
+                            }
+                        )
 
             # Rank by intensity (higher = more relevant emotional context)
             all_results.sort(key=lambda r: r["intensity"], reverse=True)
@@ -743,12 +749,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 used_tokens += est
                 trimmed.append(entry)
 
-            return _json_response({
-                "results": trimmed,
-                "total_found": len(all_results),
-                "returned": len(trimmed),
-                "token_estimate": used_tokens,
-            })
+            return _json_response(
+                {
+                    "results": trimmed,
+                    "total_found": len(all_results),
+                    "returned": len(trimmed),
+                    "token_estimate": used_tokens,
+                }
+            )
 
         # ── Telegram tools ────────────────────────────────────
         elif name == "telegram_import":
@@ -812,8 +820,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else None
 
             stats = import_telegram_api(
-                store, chat, mode="catchup", limit=limit, since=since,
-                min_message_length=min_length, tags=tags,
+                store,
+                chat,
+                mode="catchup",
+                limit=limit,
+                since=since,
+                min_message_length=min_length,
+                tags=tags,
             )
             return _json_response(stats)
 

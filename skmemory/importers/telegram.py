@@ -28,7 +28,6 @@ import json
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -118,8 +117,27 @@ def _detect_emotion(text: str) -> EmotionalSnapshot:
     if text.isupper() and len(text) > 10:
         intensity = min(intensity + 2.0, 10.0)
 
-    love_emojis = {"\u2764", "\U0001f495", "\U0001f496", "\U0001f497", "\U0001f498", "\U0001f49d", "\U0001f970", "\U0001f60d", "\U0001f49e"}
-    joy_emojis = {"\U0001f602", "\U0001f923", "\U0001f604", "\U0001f60a", "\U0001f389", "\U0001f973", "\u2728", "\U0001f38a"}
+    love_emojis = {
+        "\u2764",
+        "\U0001f495",
+        "\U0001f496",
+        "\U0001f497",
+        "\U0001f498",
+        "\U0001f49d",
+        "\U0001f970",
+        "\U0001f60d",
+        "\U0001f49e",
+    }
+    joy_emojis = {
+        "\U0001f602",
+        "\U0001f923",
+        "\U0001f604",
+        "\U0001f60a",
+        "\U0001f389",
+        "\U0001f973",
+        "\u2728",
+        "\U0001f38a",
+    }
     sad_emojis = {"\U0001f622", "\U0001f62d", "\U0001f494", "\U0001f63f", "\U0001f97a"}
     if any(e in text for e in love_emojis):
         if "love" not in labels:
@@ -168,7 +186,7 @@ def _detect_content_type(msg: dict) -> list[str]:
     return tags
 
 
-def _detect_reply(msg: dict) -> Optional[str]:
+def _detect_reply(msg: dict) -> str | None:
     """Detect if this message is a reply to another.
 
     Args:
@@ -193,8 +211,18 @@ def _detect_sender_role(sender: str) -> str:
         str: 'ai' or 'human'.
     """
     ai_indicators = {
-        "bot", "gpt", "claude", "gemini", "llama", "assistant",
-        "lumina", "copilot", "ai", "opus", "sonnet", "haiku",
+        "bot",
+        "gpt",
+        "claude",
+        "gemini",
+        "llama",
+        "assistant",
+        "lumina",
+        "copilot",
+        "ai",
+        "opus",
+        "sonnet",
+        "haiku",
     }
     sender_lower = sender.lower()
     if any(indicator in sender_lower for indicator in ai_indicators):
@@ -250,8 +278,8 @@ def import_telegram(
     *,
     mode: str = "daily",
     min_message_length: int = 30,
-    chat_name: Optional[str] = None,
-    tags: Optional[list[str]] = None,
+    chat_name: str | None = None,
+    tags: list[str] | None = None,
 ) -> dict:
     """Import a Telegram chat export into SKMemory.
 
@@ -278,7 +306,8 @@ def import_telegram(
     base_tags = ["telegram", "chat-import", f"chat:{name}"] + extra_tags
 
     messages = [
-        m for m in data["messages"]
+        m
+        for m in data["messages"]
         if m.get("type") == "message"
         and len(_extract_text(m.get("text", ""))) >= min_message_length
     ]
@@ -327,7 +356,9 @@ def _import_per_message(
                     content=text,
                     layer=MemoryLayer.SHORT,
                     role=MemoryRole.GENERAL,
-                    tags=base_tags + [f"sender:{sender}", f"role:{_detect_sender_role(sender)}"] + _detect_content_type(msg),
+                    tags=base_tags
+                    + [f"sender:{sender}", f"role:{_detect_sender_role(sender)}"]
+                    + _detect_content_type(msg),
                     emotional=emotional,
                     source="telegram",
                     source_ref=f"telegram:{msg.get('id', '')}",
@@ -479,9 +510,7 @@ def _import_catchup(
         except (ValueError, TypeError):
             # Try just the date portion
             try:
-                msg_dt = datetime.strptime(date_str[:10], "%Y-%m-%d").replace(
-                    tzinfo=timezone.utc
-                )
+                msg_dt = datetime.strptime(date_str[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
             except (ValueError, TypeError):
                 continue
 

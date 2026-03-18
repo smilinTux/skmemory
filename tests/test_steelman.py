@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 from pathlib import Path
 
@@ -48,9 +47,9 @@ class TestSteelManResult:
 
     def test_coherence_bounds(self) -> None:
         """Coherence must be between 0 and 1."""
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             SteelManResult(proposition="x", coherence_score=1.5)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017
             SteelManResult(proposition="x", coherence_score=-0.1)
 
     def test_summary_format(self) -> None:

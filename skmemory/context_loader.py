@@ -20,8 +20,6 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Optional
 
 from .agents import get_agent_paths
 from .backends.sqlite_backend import SQLiteBackend
@@ -57,9 +55,9 @@ class MemoryContext:
 
         # Historical reference
         if self.historical_count > 0:
-            sections.append(f"\n## Historical Memory")
+            sections.append("\n## Historical Memory")
             sections.append(f"- {self.historical_count} long-term memories available")
-            sections.append(f"- Use 'search memory [query]' to recall specific details")
+            sections.append("- Use 'search memory [query]' to recall specific details")
 
         return "\n".join(sections)
 
@@ -67,7 +65,7 @@ class MemoryContext:
 class LazyMemoryLoader:
     """Efficiently loads memories based on date tiers."""
 
-    def __init__(self, agent_name: Optional[str] = None):
+    def __init__(self, agent_name: str | None = None):
         self.agent_name = agent_name
         self.paths = get_agent_paths(agent_name)
         self.today = datetime.now().date()
@@ -92,8 +90,8 @@ class LazyMemoryLoader:
             cursor = self.db._conn.execute(
                 """
                 SELECT id, title, content, tags, emotional_signature
-                FROM memories 
-                WHERE DATE(created_at) = ? 
+                FROM memories
+                WHERE DATE(created_at) = ?
                   AND layer = 'short'
                 ORDER BY created_at DESC
                 LIMIT 50
@@ -121,8 +119,8 @@ class LazyMemoryLoader:
             cursor = self.db._conn.execute(
                 """
                 SELECT id, title, summary, tags
-                FROM memories 
-                WHERE DATE(created_at) = ? 
+                FROM memories
+                WHERE DATE(created_at) = ?
                   AND layer IN ('short', 'medium')
                 ORDER BY importance DESC
                 LIMIT 20
@@ -149,7 +147,7 @@ class LazyMemoryLoader:
         try:
             cursor = self.db._conn.execute(
                 """
-                SELECT COUNT(*) FROM memories 
+                SELECT COUNT(*) FROM memories
                 WHERE DATE(created_at) < ?
                 """,
                 (yesterday,),
@@ -234,7 +232,7 @@ class LazyMemoryLoader:
             logger.error(f"Failed to search SQLite: {e}")
             return []
 
-    def get_memory_by_id(self, memory_id: str) -> Optional[dict]:
+    def get_memory_by_id(self, memory_id: str) -> dict | None:
         """Load full memory details by ID (for deep recall).
 
         Args:
@@ -246,9 +244,9 @@ class LazyMemoryLoader:
         try:
             cursor = self.db._conn.execute(
                 """
-                SELECT id, title, content, summary, tags, 
+                SELECT id, title, content, summary, tags,
                        emotional_signature, layer, created_at
-                FROM memories 
+                FROM memories
                 WHERE id = ?
                 """,
                 (memory_id,),
@@ -292,7 +290,7 @@ class LazyMemoryLoader:
                 # Update in database
                 self.db._conn.execute(
                     """
-                    UPDATE memories 
+                    UPDATE memories
                     SET layer = ?, summary = ?
                     WHERE id = ?
                     """,
@@ -323,7 +321,7 @@ class LazyMemoryLoader:
                 break
 
 
-def get_context_for_session(agent_name: Optional[str] = None) -> str:
+def get_context_for_session(agent_name: str | None = None) -> str:
     """Convenience function: get token-optimized context.
 
     Usage:

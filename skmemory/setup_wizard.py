@@ -19,21 +19,19 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
 
-from .config import CONFIG_DIR, SKMemoryConfig, load_config, save_config
+from .config import CONFIG_DIR, SKMemoryConfig, save_config
 
 # ─────────────────────────────────────────────────────────
 # Docker Desktop direct download URLs
 # ─────────────────────────────────────────────────────────
 
 DOCKER_DESKTOP_DOWNLOAD = {
-    "Windows": (
-        "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"
-    ),
+    "Windows": ("https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe"),
     "Darwin": "https://docs.docker.com/desktop/install/mac-install/",
 }
 
@@ -174,26 +172,25 @@ def get_docker_install_instructions(os_name: str) -> str:
     Returns:
         Human-readable install guide.
     """
-    if os_name == "Linux":
-        return (
+    _instructions = {
+        "Linux": (
             "Install Docker Engine:\n"
             "  curl -fsSL https://get.docker.com | sh\n"
             "  sudo usermod -aG docker $USER\n"
             "  (log out and back in, then retry)"
-        )
-    elif os_name == "Darwin":
-        return (
+        ),
+        "Darwin": (
             "Install Docker Desktop for macOS:\n"
             "  https://docs.docker.com/desktop/install/mac-install/\n"
             "  Or: brew install --cask docker"
-        )
-    elif os_name == "Windows":
-        return (
+        ),
+        "Windows": (
             "Install Docker Desktop for Windows:\n"
             "  https://docs.docker.com/desktop/install/windows-install/\n"
             "  WSL2 backend recommended."
-        )
-    return "Install Docker: https://docs.docker.com/get-docker/"
+        ),
+    }
+    return _instructions.get(os_name, "Install Docker: https://docs.docker.com/get-docker/")
 
 
 # ─────────────────────────────────────────────────────────
@@ -210,8 +207,7 @@ def _open_url_in_browser(url: str) -> None:
         elif os_name == "Darwin":
             subprocess.run(["open", url], timeout=5, check=False)
         else:
-            subprocess.run(["xdg-open", url], timeout=5,
-                           capture_output=True, check=False)
+            subprocess.run(["xdg-open", url], timeout=5, capture_output=True, check=False)
     except Exception:
         pass
 
@@ -331,9 +327,12 @@ def _try_install_docker_windows(echo: Callable, input_fn: Callable) -> bool:
             try:
                 result = subprocess.run(
                     [
-                        "winget", "install",
-                        "--id", "Docker.DockerDesktop",
-                        "--source", "winget",
+                        "winget",
+                        "install",
+                        "--id",
+                        "Docker.DockerDesktop",
+                        "--source",
+                        "winget",
                         "--accept-package-agreements",
                         "--accept-source-agreements",
                     ],
@@ -350,7 +349,7 @@ def _try_install_docker_windows(echo: Callable, input_fn: Callable) -> bool:
                 else:
                     echo("winget install failed. Opening the download page...")
                     _open_url_in_browser(installer_url)
-                    echo(f"Download the installer, run it, restart, then:")
+                    echo("Download the installer, run it, restart, then:")
                     echo("  skmemory setup wizard")
                     return False
             except (subprocess.TimeoutExpired, OSError) as exc:
@@ -359,7 +358,7 @@ def _try_install_docker_windows(echo: Callable, input_fn: Callable) -> bool:
                 return False
 
     # No winget — offer browser download.
-    echo(f"Download Docker Desktop for Windows:")
+    echo("Download Docker Desktop for Windows:")
     echo(f"  {installer_url}")
     echo("")
     echo("After installing:")
@@ -377,7 +376,7 @@ def _try_install_docker_windows(echo: Callable, input_fn: Callable) -> bool:
 def try_install_docker(
     os_name: str,
     echo: Callable,
-    input_fn: Optional[Callable] = None,
+    input_fn: Callable | None = None,
 ) -> bool:
     """Offer to help the user install Docker for their OS.
 
@@ -460,8 +459,8 @@ def find_compose_file() -> Path:
 
 
 def compose_up(
-    services: Optional[list[str]] = None,
-    compose_file: Optional[Path] = None,
+    services: list[str] | None = None,
+    compose_file: Path | None = None,
     use_legacy: bool = False,
 ) -> subprocess.CompletedProcess:
     """Start containers via docker compose.
@@ -485,7 +484,7 @@ def compose_up(
 
 
 def compose_down(
-    compose_file: Optional[Path] = None,
+    compose_file: Path | None = None,
     remove_volumes: bool = False,
     use_legacy: bool = False,
 ) -> subprocess.CompletedProcess:
@@ -510,7 +509,7 @@ def compose_down(
 
 
 def compose_ps(
-    compose_file: Optional[Path] = None,
+    compose_file: Path | None = None,
     use_legacy: bool = False,
 ) -> subprocess.CompletedProcess:
     """Show container status.
@@ -560,9 +559,7 @@ def check_skvector_health(url: str = "http://localhost:6333", timeout: int = 30)
     return False
 
 
-def check_skgraph_health(
-    host: str = "localhost", port: int = 6379, timeout: int = 30
-) -> bool:
+def check_skgraph_health(host: str = "localhost", port: int = 6379, timeout: int = 30) -> bool:
     """Send Redis PING to SKGraph and wait for PONG.
 
     Args:
@@ -626,9 +623,9 @@ def run_setup_wizard(
     enable_skgraph: bool = True,
     skip_deps: bool = False,
     non_interactive: bool = False,
-    deployment_mode: Optional[str] = None,
-    echo: Optional[Callable] = None,
-    input_fn: Optional[Callable] = None,
+    deployment_mode: str | None = None,
+    echo: Callable | None = None,
+    input_fn: Callable | None = None,
 ) -> dict:
     """Run the full interactive setup wizard.
 
@@ -691,25 +688,19 @@ def run_setup_wizard(
         echo("Press Enter to skip a backend you don't want to enable.")
         echo("")
 
-        skvector_url: Optional[str] = None
-        skvector_key: Optional[str] = None
-        skgraph_url: Optional[str] = None
+        skvector_url: str | None = None
+        skvector_key: str | None = None
+        skgraph_url: str | None = None
 
         if enable_skvector:
-            raw = input_fn(
-                "SKVector URL (e.g. https://xyz.cloud.qdrant.io:6333): "
-            ).strip()
+            raw = input_fn("SKVector URL (e.g. https://xyz.cloud.qdrant.io:6333): ").strip()
             if raw:
                 skvector_url = raw
-                key_raw = input_fn(
-                    "SKVector API key (press Enter if none): "
-                ).strip()
+                key_raw = input_fn("SKVector API key (press Enter if none): ").strip()
                 skvector_key = key_raw or None
 
         if enable_skgraph:
-            raw = input_fn(
-                "SKGraph URL (e.g. redis://myserver:6379): "
-            ).strip()
+            raw = input_fn("SKGraph URL (e.g. redis://myserver:6379): ").strip()
             if raw:
                 skgraph_url = raw
 
@@ -816,9 +807,8 @@ def run_setup_wizard(
             port_issues.append("6333 (SKVector REST) in use")
         if not check_port_available(6334):
             port_issues.append("6334 (SKVector gRPC) in use")
-    if enable_skgraph:
-        if not check_port_available(6379):
-            port_issues.append("6379 (SKGraph) in use")
+    if enable_skgraph and not check_port_available(6379):
+        port_issues.append("6379 (SKGraph) in use")
 
     if port_issues:
         echo("conflict!")
@@ -908,9 +898,7 @@ def run_setup_wizard(
 
     echo(f"\nConfig saved: {config_path}")
 
-    has_errors = any(
-        "timed out" in e or "failed" in e for e in result["errors"]
-    )
+    has_errors = any("timed out" in e or "failed" in e for e in result["errors"])
     if not has_errors:
         result["success"] = True
         echo("Setup complete!")

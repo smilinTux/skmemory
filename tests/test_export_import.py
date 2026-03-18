@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from skmemory.backends.sqlite_backend import SQLiteBackend
-from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
+from skmemory.models import EmotionalSnapshot, MemoryLayer
 from skmemory.store import MemoryStore
 
 
@@ -98,9 +98,7 @@ class TestImport:
         backup = tmp_path / "backup.json"
         self._create_backup(populated_store, backup)
 
-        fresh_backend = SQLiteBackend(
-            base_path=str(tmp_path / "fresh_memories")
-        )
+        fresh_backend = SQLiteBackend(base_path=str(tmp_path / "fresh_memories"))
         fresh_store = MemoryStore(primary=fresh_backend)
 
         count = fresh_store.import_backup(str(backup))
@@ -114,9 +112,7 @@ class TestImport:
         data = json.loads(backup.read_text())
         first_id = data["memories"][0]["id"]
 
-        fresh_backend = SQLiteBackend(
-            base_path=str(tmp_path / "fresh_memories")
-        )
+        fresh_backend = SQLiteBackend(base_path=str(tmp_path / "fresh_memories"))
         fresh_store = MemoryStore(primary=fresh_backend)
         fresh_store.import_backup(str(backup))
 
@@ -155,9 +151,7 @@ class TestRoundTrip:
         backup = tmp_path / "backup.json"
         populated_store.export_backup(str(backup))
 
-        fresh_backend = SQLiteBackend(
-            base_path=str(tmp_path / "fresh")
-        )
+        fresh_backend = SQLiteBackend(base_path=str(tmp_path / "fresh"))
         fresh_store = MemoryStore(primary=fresh_backend)
         count = fresh_store.import_backup(str(backup))
         assert count == 5

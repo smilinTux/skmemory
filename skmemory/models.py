@@ -11,7 +11,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -90,12 +90,8 @@ class Memory(BaseModel):
     """
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     layer: MemoryLayer = Field(default=MemoryLayer.SHORT)
     role: MemoryRole = Field(default=MemoryRole.GENERAL)
@@ -123,7 +119,7 @@ class Memory(BaseModel):
         default_factory=list,
         description="IDs of related memories (graph edges)",
     )
-    parent_id: Optional[str] = Field(
+    parent_id: str | None = Field(
         default=None,
         description="ID of parent memory (for hierarchical chains)",
     )

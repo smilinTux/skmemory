@@ -26,8 +26,6 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
-
 
 # ── Environment detection ────────────────────────────────────────────────────
 
@@ -89,7 +87,7 @@ def detect_environments() -> list[str]:
 def register_skill(
     name: str,
     skill_md_path: Path,
-    workspace: Optional[Path] = None,
+    workspace: Path | None = None,
 ) -> dict:
     """Register a skill by symlinking its SKILL.md into the workspace skills dir.
 
@@ -164,7 +162,7 @@ def _upsert_mcp_entry(
     name: str,
     command: str,
     args: list,
-    env: Optional[dict] = None,
+    env: dict | None = None,
 ) -> str:
     """Add or update an MCP server entry in a JSON config file.
 
@@ -203,8 +201,8 @@ def register_mcp(
     name: str,
     command: str,
     args: list,
-    env: Optional[dict] = None,
-    environments: Optional[list[str]] = None,
+    env: dict | None = None,
+    environments: list[str] | None = None,
 ) -> dict:
     """Register an MCP server in detected (or specified) environments.
 
@@ -391,7 +389,7 @@ def register_openclaw_plugin(
 
 
 def register_hooks(
-    environments: Optional[list[str]] = None,
+    environments: list[str] | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Register skmemory auto-save hooks in Claude Code settings.
@@ -435,25 +433,19 @@ def register_hooks(
         "PreCompact": [
             {
                 "matcher": "",
-                "hooks": [
-                    {"type": "command", "command": pre_compact}
-                ],
+                "hooks": [{"type": "command", "command": pre_compact}],
             }
         ],
         "SessionEnd": [
             {
                 "matcher": "",
-                "hooks": [
-                    {"type": "command", "command": session_end}
-                ],
+                "hooks": [{"type": "command", "command": session_end}],
             }
         ],
         "SessionStart": [
             {
                 "matcher": "compact",
-                "hooks": [
-                    {"type": "command", "command": post_compact}
-                ],
+                "hooks": [{"type": "command", "command": post_compact}],
             }
         ],
     }
@@ -513,13 +505,13 @@ def register_hooks(
 def register_package(
     name: str,
     skill_md_path: Path,
-    mcp_command: Optional[str] = None,
-    mcp_args: Optional[list] = None,
-    mcp_env: Optional[dict] = None,
-    openclaw_plugin_path: Optional[Path] = None,
+    mcp_command: str | None = None,
+    mcp_args: list | None = None,
+    mcp_env: dict | None = None,
+    openclaw_plugin_path: Path | None = None,
     install_hooks: bool = False,
-    workspace: Optional[Path] = None,
-    environments: Optional[list[str]] = None,
+    workspace: Path | None = None,
+    environments: list[str] | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Register a skill, MCP server, hooks, and OpenClaw plugin in all detected environments.
@@ -545,9 +537,10 @@ def register_package(
     result: dict = {"name": name, "environments": environments}
 
     if dry_run:
-        result["skill"] = {"action": "dry-run", "path": str(
-            (workspace or Path.home() / "clawd") / "skills" / name / "SKILL.md"
-        )}
+        result["skill"] = {
+            "action": "dry-run",
+            "path": str((workspace or Path.home() / "clawd") / "skills" / name / "SKILL.md"),
+        }
         if mcp_command:
             result["mcp"] = {env: "dry-run" for env in environments}
         if install_hooks:
@@ -579,7 +572,9 @@ def register_package(
     # Register OpenClaw plugin
     if openclaw_plugin_path is not None and "openclaw" in environments:
         result["openclaw_plugin"] = register_openclaw_plugin(
-            name, openclaw_plugin_path, dry_run=dry_run,
+            name,
+            openclaw_plugin_path,
+            dry_run=dry_run,
         )
 
     return result

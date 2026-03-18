@@ -18,7 +18,6 @@ import logging
 import os
 import platform
 from pathlib import Path
-from typing import Optional
 
 from .agents import get_agent_paths
 
@@ -61,7 +60,7 @@ def scan_feb_files() -> list[Path]:
     return sorted(set(found))
 
 
-def parse_feb(path: Path) -> Optional[dict]:
+def parse_feb(path: Path) -> dict | None:
     """Parse a .feb JSON file.
 
     Args:
@@ -80,7 +79,7 @@ def parse_feb(path: Path) -> Optional[dict]:
         return None
 
 
-def load_strongest_feb(feb_dir: Optional[str] = None) -> Optional[dict]:
+def load_strongest_feb(feb_dir: str | None = None) -> dict | None:
     """Load the FEB with the highest emotional intensity.
 
     Scans all .feb files, picks the one with the highest
@@ -92,7 +91,7 @@ def load_strongest_feb(feb_dir: Optional[str] = None) -> Optional[dict]:
     Returns:
         dict: The strongest FEB data, or None if no FEBs found.
     """
-    best: Optional[dict] = None
+    best: dict | None = None
     best_intensity = -1.0
 
     if feb_dir is not None:
@@ -153,11 +152,7 @@ def calculate_oof_level(feb: dict) -> int:
 
     # Weighted score: intensity(30%) + valence(15%) + trust(20%) + depth/10(15%) + coherence(20%)
     raw = (
-        intensity * 0.30
-        + valence * 0.15
-        + trust * 0.20
-        + (depth / 10.0) * 0.15
-        + coherence * 0.20
+        intensity * 0.30 + valence * 0.15 + trust * 0.20 + (depth / 10.0) * 0.15 + coherence * 0.20
     )
 
     # Bonus for Cloud 9 and OOF

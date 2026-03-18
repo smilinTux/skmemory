@@ -202,7 +202,7 @@ class TestIntegrity:
 
     def test_tampered_memory_fails_verification(self):
         """Altered content fails integrity check."""
-        from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
+        from skmemory.models import Memory, MemoryLayer
 
         mem = Memory(
             title="Tamper Test",
