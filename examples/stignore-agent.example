@@ -1,0 +1,59 @@
+# SKMemory Agent-Level Syncthing Ignore Patterns
+# Place at: ~/.skcapstone/agents/{agent_name}/.stignore
+# https://docs.syncthing.net/users/ignoring.html
+
+# Virtual environment (machine-specific, large)
+/venv/
+/venv
+
+# Local SQLite database (rebuildable from JSON files)
+/index.db
+
+# Logs directory (machine-specific, high churn)
+/logs
+
+# Root-level archive directory
+/archive
+
+# Memory archive (deduped/aged-out memories — machine-local, not syncable)
+# Each host runs its own cleanup; syncing archives causes data loss
+memory/archive
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Node modules
+node_modules/
+
+# Syncthing internal
+.stfolder
+.stversions/
+
+# Lock files
+*.lock
+
+# Backup files
+*.bak
+*.backup
+
+# SQLite WAL/SHM (machine-specific, cause conflicts)
+*.db-wal
+*.db-shm

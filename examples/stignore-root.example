@@ -1,0 +1,62 @@
+// SKCapstone Root-Level Syncthing Ignore Patterns
+// Place at: ~/.skcapstone/.stignore
+// https://docs.syncthing.net/users/ignoring.html
+
+// Private key material must never leave this node
+*.key
+*.pem
+**/private.*
+
+// Python venv (platform-specific)
+venv
+
+// Python cache
+__pycache__
+*.pyc
+*.pyo
+
+// OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+// Runtime files
+daemon.pid
+
+// Operational files written independently per-host (cause sync conflicts)
+memory/promotion-log.json
+/heartbeats
+metrics/daily
+logs/daemon.log
+
+// Memory archive (deduped/aged-out memories — machine-local, not syncable)
+// Each host runs its own cleanup; syncing archives causes data loss
+**/memory/archive
+
+// Machine-local indexes — rebuildable from JSON memory files
+// SQLite DBs cause constant sync conflicts when written on multiple hosts
+**/index.db
+**/index.db-wal
+**/index.db-shm
+**/index.json
+
+// Per-host runtime state (not portable between machines)
+**/.last_checkpoint
+**/dreaming-state.json
+
+// Reflection logs (per-host cron output)
+**/reflection.log
+
+// Syncthing conflict artifacts (clean up, never sync)
+**/*.sync-conflict*
+
+// Local-only dirs (not synced)
+sessions
+conversations
+backups
+prompt_versions
+deployments
+connectors
+pubsub
+file-transfer
+souls

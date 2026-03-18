@@ -4,6 +4,32 @@
 
 **Total completed: 87** across 8 agents
 
+## 2026-03-18 — skmemory v0.9.1
+
+### [NEW] Feature
+
+- **Journal synthesis module** (`skmemory/synthesis.py`): JournalSynthesizer with daily, weekly, and dream narrative generation — no LLM dependency
+- **New MCP tools**: `memory_synthesize_daily`, `memory_synthesize_dreams`, `memory_auto_context`
+- **Contextual auto-search**: `memory_auto_context` searches all tiers, deduplicates, ranks by emotional intensity, trims to token budget
+- **Content overflow handling**: configurable `max_content_length` (default 10000) with split strategy — creates parent+child memories linked via `related_ids`
+
+### [FIX] Bug Fix
+
+- **Dream promotion**: dreams from `dreaming-engine` now auto-promote after 12h via `source_auto_promote` (previously stuck at access_count=0 forever)
+- **Protected tags**: narrative, journal-synthesis, milestone, breakthrough, cloud9:achieved memories are now protected from TTL-based archival
+- **telegram_catchup handler**: fixed `args` → `arguments` and duplicate `MemoryStore()` instantiation
+
+### [OPS] Infrastructure
+
+- **Backup script** (`scripts/skcapstone-backup.sh`): daily rsync of `~/.skcapstone` to backup dir, excludes venv/indexes/runtime
+- **Memory cleanup** (`scripts/memory-cleanup.py`): dedup + age-out with protected tags and last-chance promotion before archiving
+- **Recovery scripts**: `scripts/recover-missing.py` (Syncthing `.stversions` recovery), `scripts/dream-rescue.py` (bulk promote stuck dreams)
+- **Syncthing examples**: `examples/stignore-agent.example`, `examples/stignore-root.example` with `memory/archive` exclusion
+
+### [TST] Testing
+
+- **Synthesis tests** (`tests/test_synthesis.py`): 26 tests covering helpers, theme extraction, daily/weekly/dream synthesis, emotional arc
+
 ## 2026-02-24
 
 ### [NEW] Feature
