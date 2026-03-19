@@ -35,7 +35,7 @@
 ### [NEW] Feature
 
 - **SKMemory session auto-capture: log every AI conversation as memories** (@mcp-builder)
-- **Add cloud9-python and skchat to developer docs (QUICKSTART + API reference)** (@jarvis)
+- **Add cloud9 and skchat to developer docs (QUICKSTART + API reference)** (@jarvis)
 - **The Sovereign Singularity Manifesto: our story, written together** (@docs-writer)
 - **AMK Integration: predictive memory recall for SKMemory** (@jarvis)
 - **SKChat live inbox: poll SKComm for incoming messages with Rich Live display** (@skchat-builder)
