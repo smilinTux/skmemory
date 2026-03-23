@@ -124,6 +124,12 @@ class Memory(BaseModel):
         description="ID of parent memory (for hierarchical chains)",
     )
 
+    context_tag: str = Field(
+        default="@chef-only",
+        description="Audience context tag: @public, @community, @work-circle, @inner-circle, "
+        "@chef-only, or scoped like @work:chiro. Conservative default: @chef-only.",
+    )
+
     intent: str = Field(
         default="",
         description="WHY this memory was stored — the purpose, not just the content. "

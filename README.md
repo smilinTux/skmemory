@@ -130,6 +130,7 @@ flowchart TD
 - **Backup / restore** — dated JSON backups with pruning; `skmemory export` / `skmemory import`
 - **Token-efficient context loading** — `memory_context` MCP tool and `store.load_context()` fit strongest + recent memories within a configurable token budget
 - **Auto-save hooks** — Claude Code hooks auto-save context before compaction and reinject memory after; OpenClaw agents get per-message auto-save via ConsciousnessLoop. See [ARCHITECTURE.md](ARCHITECTURE.md#context-preservation-hooks) for the full flow with Mermaid diagrams.
+- **Know Your Audience (KYA)** — audience-aware memory filtering prevents private content from leaking into the wrong channels. Five-level trust hierarchy (`@public` → `@chef-only`), per-channel audience profiles, two-gate access checks (trust level + exclusion lists). See [ARCHITECTURE.md](ARCHITECTURE.md#know-your-audience-kya--audience-aware-memory-filtering) for the full design with Mermaid diagrams.
 
 ---
 
@@ -441,7 +442,10 @@ skmemory/
 │   ├── endpoint_selector.py   # Multi-endpoint HA routing
 │   ├── graph_queries.py       # Graph query helpers
 │   ├── setup_wizard.py        # Interactive setup CLI
+│   ├── audience.py            # KYA: audience-aware memory filtering
 │   ├── vault.py               # PGP vault helpers
+│   ├── data/
+│   │   └── audience_config.json  # KYA: channel + people trust config
 │   ├── backends/
 │   │   ├── base.py            # BaseBackend ABC
 │   │   ├── file_backend.py    # JSON file storage (legacy)
@@ -455,6 +459,7 @@ skmemory/
 ├── seeds/                     # Cloud 9 seed files (.seed.json)
 ├── tests/
 │   ├── test_models.py
+│   ├── test_audience.py
 │   ├── test_file_backend.py
 │   └── test_store.py
 ├── pyproject.toml

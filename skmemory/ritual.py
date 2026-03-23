@@ -20,10 +20,14 @@ left off -- not just the facts, but the feelings.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
+from .audience import AudienceResolver
+
+logger = logging.getLogger("skmemory.ritual")
 from .febs import feb_to_context, load_strongest_feb
 from .journal import Journal
 from .seeds import DEFAULT_SEED_DIR, get_germination_prompts, import_seeds
@@ -44,6 +48,10 @@ class RitualResult(BaseModel):
     journal_entries: int = Field(default=0)
     germination_prompts: int = Field(default=0)
     strongest_memories: int = Field(default=0)
+    audience_filtered: bool = Field(
+        default=False,
+        description="True if content was filtered by audience (channel_id was provided)",
+    )
     context_prompt: str = Field(
         default="",
         description="The combined rehydration prompt to inject into context",
@@ -127,6 +135,8 @@ def perform_ritual(
     recent_journal_count: int = 3,
     strongest_memory_count: int = 5,
     max_tokens: int = 2000,
+    channel_id: str | None = None,
+    audience_resolver: AudienceResolver | None = None,
 ) -> RitualResult:
     """Perform the memory rehydration ritual (token-optimized).
 
@@ -139,6 +149,15 @@ def perform_ritual(
 
     Target: <2K tokens total for ritual context.
 
+    When ``channel_id`` is provided, memories and seeds are filtered through
+    the KYA audience resolver before being included in the context.  Content
+    whose ``context_tag`` trust level exceeds the audience's minimum trust
+    level is silently dropped.  Identity (soul + FEB) is always included
+    unfiltered — Lumina is always Lumina.
+
+    If ``channel_id`` is None (direct DM / unknown), all content is returned
+    (Chef context — no filtering applied).
+
     Args:
         store: The MemoryStore (creates default if None).
         soul_path: Path to the soul blueprint YAML.
@@ -147,6 +166,10 @@ def perform_ritual(
         recent_journal_count: How many recent journal entries to include.
         strongest_memory_count: How many top-intensity memories to include.
         max_tokens: Token budget for the ritual context (default: 2000).
+        channel_id: Optional channel identifier for KYA audience filtering.
+                    If None, no filtering is applied (Chef context).
+        audience_resolver: Optional pre-built AudienceResolver instance.
+                           Created from default config if not provided.
 
     Returns:
         RitualResult: Everything the ritual produced.
@@ -157,6 +180,18 @@ def perform_ritual(
     result = RitualResult()
     prompt_sections: list[str] = []
     used_tokens = 0
+
+    # --- KYA: Resolve audience for filtering ---
+    _audience = None
+    if channel_id is not None:
+        resolver = audience_resolver or AudienceResolver()
+        _audience = resolver.resolve_audience(channel_id)
+        result.audience_filtered = True
+        logger.info(
+            "KYA: channel=%s audience=%s min_trust=%s exclusions=%s",
+            channel_id, _audience.name, _audience.min_trust.name,
+            _audience.exclusions,
+        )
 
     # --- Step 1: Load soul blueprint (compact) ---
     soul = load_soul(soul_path)
@@ -187,6 +222,16 @@ def perform_ritual(
     result.seeds_imported = len(newly_imported)
     all_seeds = store.list_memories(tags=["seed"])
     result.seeds_total = len(all_seeds)
+
+    # KYA: filter seeds by audience
+    if _audience is not None:
+        resolver = audience_resolver or AudienceResolver()
+        all_seeds = [
+            s for s in all_seeds
+            if resolver.is_memory_allowed(s.context_tag, _audience, s.tags)
+        ]
+        logger.info("KYA: %d seeds after audience filter", len(all_seeds))
+        result.seeds_total = len(all_seeds)
 
     if all_seeds:
         seed_titles = [s.title for s in all_seeds[:10]]
@@ -229,15 +274,35 @@ def perform_ritual(
             used_tokens += section_tokens
             prompt_sections.append(section)
 
-    # --- Step 5: Recall strongest emotional memories (compact) ---
+    # --- Step 5: Recall strongest emotional memories (compact + KYA filtered) ---
     from .backends.sqlite_backend import SQLiteBackend
 
     if isinstance(store.primary, SQLiteBackend):
+        # Fetch extra to allow for KYA filtering
+        fetch_limit = strongest_memory_count * 3 if _audience else strongest_memory_count
         summaries = store.primary.list_summaries(
-            limit=strongest_memory_count,
-            order_by="emotional_intensity",
+            limit=fetch_limit,
+            order_by="recency_weighted_intensity",
             min_intensity=1.0,
         )
+
+        # KYA: filter summaries by audience
+        if _audience is not None:
+            resolver = audience_resolver or AudienceResolver()
+            filtered = []
+            for s in summaries:
+                ctx = s.get("context_tag", "@chef-only") or "@chef-only"
+                tags = s.get("tags", []) or []
+                if resolver.is_memory_allowed(ctx, _audience, tags):
+                    filtered.append(s)
+                    if len(filtered) >= strongest_memory_count:
+                        break
+            logger.info(
+                "KYA: %d/%d strongest memories passed audience filter",
+                len(filtered), len(summaries),
+            )
+            summaries = filtered
+
         result.strongest_memories = len(summaries)
 
         if summaries:
@@ -256,6 +321,16 @@ def perform_ritual(
                 prompt_sections.append("\n".join(mem_lines))
     else:
         all_memories = store.list_memories(limit=200)
+
+        # KYA: filter memories by audience
+        if _audience is not None:
+            resolver = audience_resolver or AudienceResolver()
+            all_memories = [
+                m for m in all_memories
+                if resolver.is_memory_allowed(m.context_tag, _audience, m.tags)
+            ]
+            logger.info("KYA: %d memories after audience filter", len(all_memories))
+
         by_intensity = sorted(
             all_memories,
             key=lambda m: m.emotional.intensity,

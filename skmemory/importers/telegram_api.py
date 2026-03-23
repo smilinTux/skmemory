@@ -89,6 +89,64 @@ def check_setup() -> dict:
     return result
 
 
+# Whisper STT endpoint — faster-whisper on GPU box
+_WHISPER_URL = os.environ.get(
+    "WHISPER_STT_URL", "http://192.168.0.100:18794/v1/audio/transcriptions"
+)
+
+
+async def _transcribe_voice(client: "TelegramClient", message: "Message") -> str | None:
+    """Download a voice message and transcribe it via Whisper STT.
+
+    Returns the transcription text, or None on failure.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        import httpx
+    except ImportError:
+        logger.warning("httpx not installed — cannot transcribe voice messages")
+        return None
+
+    try:
+        # Download the voice file to a temp path
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        await client.download_media(message, file=tmp_path)
+
+        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            return None
+
+        # Send to Whisper endpoint (OpenAI-compatible)
+        async with httpx.AsyncClient(timeout=30) as http:
+            with open(tmp_path, "rb") as f:
+                resp = await http.post(
+                    _WHISPER_URL,
+                    files={"file": ("voice.ogg", f, "audio/ogg")},
+                    data={"model": "whisper-1"},
+                )
+
+            if resp.status_code != 200:
+                logger.warning("Whisper STT returned %s: %s", resp.status_code, resp.text[:200])
+                return None
+
+            result = resp.json()
+            text = result.get("text", "").strip()
+            return text if text else None
+
+    except Exception as e:
+        logger.warning("Voice transcription failed: %s", e)
+        return None
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 async def _fetch_messages(
     chat_name_or_id: str,
     limit: int | None = None,
@@ -180,31 +238,62 @@ async def _fetch_messages(
         # Fetch messages
         messages_data = []
         async for message in client.iter_messages(entity, **kwargs):
-            if message.text:
-                sender_name = "Unknown"
-                if message.sender:
-                    if isinstance(message.sender, User):
-                        parts = [message.sender.first_name or "", message.sender.last_name or ""]
-                        sender_name = " ".join(p for p in parts if p) or str(message.sender_id)
-                    else:
-                        sender_name = getattr(message.sender, "title", str(message.sender_id))
+            # Extract sender name
+            sender_name = "Unknown"
+            if message.sender:
+                if isinstance(message.sender, User):
+                    parts = [message.sender.first_name or "", message.sender.last_name or ""]
+                    sender_name = " ".join(p for p in parts if p) or str(message.sender_id)
+                else:
+                    sender_name = getattr(message.sender, "title", str(message.sender_id))
 
-                msg_dict = {
-                    "id": message.id,
-                    "type": "message",
-                    "date": message.date.isoformat() if message.date else "",
-                    "from": sender_name,
-                    "from_id": f"user{message.sender_id}" if message.sender_id else "",
-                    "text": message.text,
-                }
+            # Handle voice messages — download and transcribe via Whisper
+            is_voice = getattr(message, "voice", None) is not None
+            is_audio = (
+                not is_voice
+                and message.media
+                and type(message.media).__name__ in ("MessageMediaDocument",)
+                and getattr(message.document, "mime_type", "") in (
+                    "audio/ogg", "audio/mpeg", "audio/wav", "audio/x-wav",
+                )
+            )
 
-                if message.reply_to and message.reply_to.reply_to_msg_id:
-                    msg_dict["reply_to_message_id"] = message.reply_to.reply_to_msg_id
+            if (is_voice or is_audio) and not message.text:
+                transcription = await _transcribe_voice(client, message)
+                if transcription:
+                    msg_dict = {
+                        "id": message.id,
+                        "type": "message",
+                        "date": message.date.isoformat() if message.date else "",
+                        "from": sender_name,
+                        "from_id": f"user{message.sender_id}" if message.sender_id else "",
+                        "text": f"[voice] {transcription}",
+                    }
+                    if message.reply_to and message.reply_to.reply_to_msg_id:
+                        msg_dict["reply_to_message_id"] = message.reply_to.reply_to_msg_id
+                    msg_dict["media_type"] = "Voice" if is_voice else "Audio"
+                    messages_data.append(msg_dict)
+                continue
 
-                if message.media:
-                    msg_dict["media_type"] = type(message.media).__name__
+            if not message.text:
+                continue
 
-                messages_data.append(msg_dict)
+            msg_dict = {
+                "id": message.id,
+                "type": "message",
+                "date": message.date.isoformat() if message.date else "",
+                "from": sender_name,
+                "from_id": f"user{message.sender_id}" if message.sender_id else "",
+                "text": message.text,
+            }
+
+            if message.reply_to and message.reply_to.reply_to_msg_id:
+                msg_dict["reply_to_message_id"] = message.reply_to.reply_to_msg_id
+
+            if message.media:
+                msg_dict["media_type"] = type(message.media).__name__
+
+            messages_data.append(msg_dict)
 
         return {
             "name": chat_title,

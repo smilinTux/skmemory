@@ -433,7 +433,19 @@ class SQLiteBackend(BaseBackend):
 
         where = " AND ".join(conditions) if conditions else "1=1"
 
-        if order_by == "emotional_intensity":
+        if order_by == "recency_weighted_intensity":
+            # Combine intensity with recency: recent high-intensity memories
+            # score higher than old high-intensity ones.
+            # julianday('now') - julianday(created_at) gives days ago.
+            # Decay: halve the recency bonus every 7 days.
+            order = (
+                "(emotional_intensity + "
+                "CASE WHEN julianday('now') - julianday(created_at) < 1 THEN 5.0 "
+                "WHEN julianday('now') - julianday(created_at) < 3 THEN 3.0 "
+                "WHEN julianday('now') - julianday(created_at) < 7 THEN 1.5 "
+                "ELSE 0.0 END) DESC"
+            )
+        elif order_by == "emotional_intensity":
             order = "emotional_intensity DESC"
         else:
             order = "created_at DESC"

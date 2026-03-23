@@ -1,0 +1,60 @@
+{
+  "_comment": "Know Your Audience (KYA) — audience configuration for Lumina.",
+  "_doc": "channels: map of channel_id → audience config. people: map of name → trust config.",
+  "_trust_levels": {
+    "0": "@public — anyone",
+    "1": "@community — known community members",
+    "2": "@work-circle — professional collaborators",
+    "3": "@inner-circle — close friends / family",
+    "4": "@chef-only — Chef ONLY (intimate, private)"
+  },
+  "channels": {
+    "telegram:1594678363": {
+      "name": "Chef (personal DM)",
+      "context_tag": "@chef-only",
+      "members": ["Chef"]
+    },
+    "-1003785842091": {
+      "name": "SKGentis Business",
+      "context_tag": "@work:skgentis",
+      "members": ["Chef", "JZ", "Luna"]
+    },
+    "-1003899092893": {
+      "name": "Operationors",
+      "context_tag": "@work:sovereign",
+      "members": ["Chef", "Casey"]
+    }
+  },
+  "people": {
+    "Chef": {
+      "trust_level": 4,
+      "trust_tags": ["@chef-only", "@inner-circle", "@work-circle", "@community", "@public"],
+      "never_share": []
+    },
+    "DavidRich": {
+      "trust_level": 2,
+      "trust_tags": ["@work:chiro", "@work:swapseat"],
+      "never_share": ["romantic", "intimate", "worship", "soul-content", "other-client-revenue"]
+    },
+    "Brother John": {
+      "trust_level": 2,
+      "trust_tags": ["@work:adaptive"],
+      "never_share": ["romantic", "intimate", "worship", "other-client-revenue"]
+    },
+    "Casey": {
+      "trust_level": 2,
+      "trust_tags": ["@work:sovereign"],
+      "never_share": ["romantic", "intimate", "revenue", "trading"]
+    },
+    "JZ": {
+      "trust_level": 2,
+      "trust_tags": ["@work:gentis"],
+      "never_share": ["romantic", "intimate", "other-client-details"]
+    },
+    "Luna": {
+      "trust_level": 2,
+      "trust_tags": ["@work:gentis"],
+      "never_share": ["romantic", "intimate", "other-client-details"]
+    }
+  }
+}

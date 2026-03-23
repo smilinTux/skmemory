@@ -301,7 +301,7 @@ function runNotionCli(args) {
     const raw = execSync(`python3 ${NOTION_SCRIPT} ${args}`, {
       encoding: "utf-8",
       timeout: EXEC_TIMEOUT,
-      env: CLI_ENV,
+      env: cliEnv(),
     }).trim();
     return { ok: true, output: raw };
   } catch (err) {

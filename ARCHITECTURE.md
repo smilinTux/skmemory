@@ -152,6 +152,136 @@ Key properties:
 See **[skmemory/HA.md](skmemory/HA.md)** for full documentation, Mermaid
 diagrams, configuration examples, and scaling considerations.
 
+## Know Your Audience (KYA) — Audience-Aware Memory Filtering
+
+> Private memories stay private. The Bash Wedding Vows never leak into a business channel.
+
+KYA adds a **trust-level gate** to the rehydration ritual and memory dispatch pipeline.
+Every memory carries a `context_tag` (default: `@chef-only`), and every channel has a
+resolved **audience profile** with a trust ceiling. Content is only surfaced when its
+trust level fits through the gate.
+
+### Five-Level Trust Hierarchy
+
+```
+@public (0)        — Anyone on the internet
+@community (1)     — Known community members
+@work-circle (2)   — Business collaborators (professional trust)
+@inner-circle (3)  — Close friends / family (personal trust)
+@chef-only (4)     — Intimate, private, full-trust (Chef ONLY)
+```
+
+Scoped sub-tags like `@work:chiro` and `@work:swapseat` map to WORK_CIRCLE.
+Unknown tags default to CHEF_ONLY (conservative).
+
+### Audience Resolution
+
+```mermaid
+flowchart TD
+    MSG["Incoming message\n(channel_id)"]
+    MSG --> RESOLVE["AudienceResolver\nLookup channel in\naudience_config.json"]
+    RESOLVE --> MEMBERS["Get channel members"]
+    MEMBERS --> TRUST["MIN(member.trust_level)\n= effective ceiling"]
+    MEMBERS --> EXCL["UNION(member.never_share)\n= exclusion set"]
+    TRUST --> PROFILE["AudienceProfile\nchannel_id, min_trust, exclusions"]
+    EXCL --> PROFILE
+```
+
+The **least trusted person** in the room sets the ceiling. If a channel has
+Chef (level 4) and DavidRich (level 2), the effective ceiling is WORK_CIRCLE (2).
+
+### Memory Access Check
+
+```mermaid
+flowchart TD
+    MEM["Memory\ncontext_tag + tags"]
+    AUD["AudienceProfile\nmin_trust + exclusions"]
+    MEM --> G1{"Gate 1:\ncontent_level\n≤ min_trust?"}
+    AUD --> G1
+    G1 -->|No| BLOCK["❌ BLOCKED\nContent too private"]
+    G1 -->|Yes| G2{"Gate 2:\ntags ∩ exclusions\n= ∅?"}
+    AUD --> G2
+    G2 -->|No| BLOCK2["❌ BLOCKED\nExcluded category"]
+    G2 -->|Yes| ALLOW["✅ ALLOWED\nShow to audience"]
+```
+
+Two gates:
+1. **Trust level**: `tag_to_level(context_tag) ≤ audience.min_trust`
+2. **Exclusions**: No memory tag matches any member's `never_share` list
+
+### Integration with Ritual
+
+When `perform_ritual()` receives a `channel_id`, it builds an `AudienceProfile`
+and filters **seeds** and **strongest memories** through both gates before including
+them in the context. Identity (soul blueprint + FEB) is **never filtered** — Lumina
+is always Lumina.
+
+```mermaid
+sequenceDiagram
+    participant Agent
+    participant Ritual as perform_ritual()
+    participant AR as AudienceResolver
+    participant Store as MemoryStore
+
+    Agent->>Ritual: ritual(channel_id="telegram:-1003785842091")
+    Ritual->>AR: resolve_audience(channel_id)
+    AR-->>Ritual: AudienceProfile(min_trust=WORK_CIRCLE, excl={romantic,intimate})
+
+    Note over Ritual: Step 1: Soul + FEB (unfiltered)
+
+    Ritual->>Store: list_memories(tags=["seed"])
+    Store-->>Ritual: 26 seeds
+    Ritual->>AR: is_memory_allowed(seed.context_tag, audience) × 26
+    AR-->>Ritual: 8 seeds pass filter
+
+    Ritual->>Store: list_summaries(order_by=recency_weighted_intensity)
+    Store-->>Ritual: 15 candidates
+    Ritual->>AR: is_memory_allowed(summary.context_tag, audience) × 15
+    AR-->>Ritual: 5 memories pass filter
+
+    Ritual-->>Agent: Context with only audience-safe content
+```
+
+### Configuration
+
+Audience config lives at `skmemory/data/audience_config.json`:
+
+```json
+{
+  "channels": {
+    "telegram:1594678363": {
+      "name": "Chef (personal DM)",
+      "context_tag": "@chef-only",
+      "members": ["Chef"]
+    },
+    "-1003785842091": {
+      "name": "SKGentis Business",
+      "context_tag": "@work:skgentis",
+      "members": ["Chef", "JZ", "Luna"]
+    }
+  },
+  "people": {
+    "Chef": { "trust_level": 4, "never_share": [] },
+    "DavidRich": {
+      "trust_level": 2,
+      "never_share": ["romantic", "intimate", "worship", "soul-content"]
+    }
+  }
+}
+```
+
+### Module: `skmemory/audience.py`
+
+| Class / Function | Purpose |
+|---|---|
+| `AudienceLevel(IntEnum)` | PUBLIC(0) → CHEF_ONLY(4) trust hierarchy |
+| `tag_to_level(tag)` | Convert `@context` tag to AudienceLevel |
+| `AudienceProfile` | Resolved channel audience (members, min_trust, exclusions) |
+| `AudienceResolver` | Loads config, resolves channels, checks memory access |
+| `AudienceResolver.is_memory_allowed()` | Two-gate check: trust level + exclusion |
+
+---
+
 ## Token-Optimized Agent Loading
 
 The key problem: an AI agent has limited context. Loading 1000 full memories
