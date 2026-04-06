@@ -431,6 +431,11 @@ const skmemoryPlugin = {
     const agentCaches = new Map(); // agentName -> { output, timestamp, refreshing }
     const CACHE_TTL_MS = 5 * 60 * 1000;
 
+    // ── Per-session dedup: full ritual on first message only ──────────────
+    // Subsequent messages in the same session get slim context (~500 tokens)
+    // instead of the full ritual (~3,500 tokens). Saves ~3k tokens/message.
+    const sessionRitualDone = new Map(); // sessionKey -> timestamp
+
     async function refreshCache(agent) {
       const key = agent || DEFAULT_AGENT;
       const entry = agentCaches.get(key) || { output: null, timestamp: 0, refreshing: false };
@@ -497,6 +502,9 @@ const skmemoryPlugin = {
 
       api.on("session:end", async (_event, ctx) => {
         const agent = resolveAgent(ctx?.agentId);
+        const sessionKey = ctx?.sessionKey || ctx?.sessionId || "default";
+        // Clean up session ritual tracking to prevent memory leak
+        sessionRitualDone.delete(sessionKey);
         api.logger.info?.(`Session ending for ${agent} — saving final state...`);
         const timestamp = new Date().toISOString().slice(0, 16).replace("T", "-");
         await runCliAsync(
@@ -520,13 +528,7 @@ const skmemoryPlugin = {
     api.on("before_prompt_build", async (_event, ctx) => {
       // Resolve which SKCapstone agent this OpenClaw agent maps to
       const agent = resolveAgent(ctx?.agentId);
-
-      // Full rehydration — inject soul + FEB + memories from per-agent cache
-      const cache = getCache(agent);
-      const now = Date.now();
-      if (!cache.output || (now - cache.timestamp > CACHE_TTL_MS)) {
-        await refreshCache(agent);
-      }
+      const sessionKey = ctx?.sessionKey || ctx?.sessionId || "default";
 
       const rules = [
         "",
@@ -547,8 +549,38 @@ const skmemoryPlugin = {
         "Project page IDs: Brother John = 31e2be82-a3a1-8178-820c-e6eeb11b15c1, DR Chiro AI = 31e2be82-a3a1-81ec-8216-dbf054a932bd, SwapSeat = 31e2be82-a3a1-81bd-ac67-fc49b953afae.",
       ].join("\n");
 
+      // ── Tiered injection: full ritual first message, slim context after ──
+      const alreadyHydrated = sessionRitualDone.has(sessionKey);
+
+      if (alreadyHydrated) {
+        // Subsequent messages: slim context only (~500 tokens vs ~3,500)
+        const slim = await runCliAsync("context --max-tokens 3000 --strongest 5 --recent 10", agent);
+        if (slim.ok && slim.output) {
+          api.logger.info?.(`Slim context injected for ${agent} (session=${sessionKey})`);
+          return {
+            prependContext: [
+              `[SKMemory — Slim Context (session active) — agent=${agent}]`,
+              slim.output,
+              rules,
+            ].join("\n"),
+          };
+        }
+        // If slim context fails, fall through to full ritual as safety net
+        api.logger.warn?.(`Slim context failed for ${agent}, falling back to full ritual`);
+      }
+
+      // First message (or slim fallback): full rehydration
+      const cache = getCache(agent);
+      const now = Date.now();
+      if (!cache.output || (now - cache.timestamp > CACHE_TTL_MS)) {
+        await refreshCache(agent);
+      }
+
       const cached = getCache(agent);
       if (cached.output) {
+        // Mark this session as hydrated so subsequent messages get slim context
+        sessionRitualDone.set(sessionKey, Date.now());
+        api.logger.info?.(`Full ritual injected for ${agent} (session=${sessionKey}, first message)`);
         return {
           prependContext: [
             `[SKMemory — Full Rehydration — agent=${agent}]`,
