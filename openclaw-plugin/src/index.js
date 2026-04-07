@@ -16,7 +16,6 @@ import { execSync, exec } from "node:child_process";
 
 const SKMEMORY_BIN = process.env.SKMEMORY_BIN || "skmemory";
 const DEFAULT_AGENT = process.env.SKCAPSTONE_AGENT || "lumina";
-const NOTION_SCRIPT = process.env.NOTION_SCRIPT || `${process.env.HOME || ""}/clawd/skcapstone-repos/skcapstone/scripts/notion-api.py`;
 const EXEC_TIMEOUT = 30_000;
 const IS_WIN = process.platform === "win32";
 
@@ -294,89 +293,6 @@ function createExportTool() {
   };
 }
 
-// ── Notion tools ────────────────────────────────────────────────────────
-
-function runNotionCli(args) {
-  try {
-    const raw = execSync(`python3 ${NOTION_SCRIPT} ${args}`, {
-      encoding: "utf-8",
-      timeout: EXEC_TIMEOUT,
-      env: cliEnv(),
-    }).trim();
-    return { ok: true, output: raw };
-  } catch (err) {
-    return { ok: false, output: err.message };
-  }
-}
-
-function createNotionReadTool() {
-  return {
-    name: "notion_read",
-    label: "Notion Read Page",
-    description:
-      "Read a Notion page's content. Returns the page title, URL, and all blocks as readable text. Use this to check current page state before making updates.",
-    parameters: {
-      type: "object",
-      required: ["page_id"],
-      properties: {
-        page_id: { type: "string", description: "Notion page ID (UUID format, e.g. 31e2be82-a3a1-8178-820c-e6eeb11b15c1)." },
-      },
-    },
-    async execute(_id, params) {
-      const pageId = String(params?.page_id ?? "");
-      const result = runNotionCli(`read ${escapeShellArg(pageId)}`);
-      return textResult(result.output);
-    },
-  };
-}
-
-function createNotionAppendTool() {
-  return {
-    name: "notion_append",
-    label: "Notion Append Content",
-    description:
-      "Append new content to a Notion page. Accepts simple markdown: ## headings, - bullets, - [ ] todos, - [x] checked todos, --- dividers, plain text paragraphs. Content is added after existing blocks.",
-    parameters: {
-      type: "object",
-      required: ["page_id", "content"],
-      properties: {
-        page_id: { type: "string", description: "Notion page ID." },
-        content: { type: "string", description: "Markdown content to append. Use ## for headings, - for bullets, - [ ] for todos." },
-      },
-    },
-    async execute(_id, params) {
-      const pageId = String(params?.page_id ?? "");
-      const content = String(params?.content ?? "");
-      const result = runNotionCli(`append ${escapeShellArg(pageId)} ${escapeShellArg(content)}`);
-      return textResult(result.output);
-    },
-  };
-}
-
-function createNotionAddTodoTool() {
-  return {
-    name: "notion_add_todo",
-    label: "Notion Add Todo",
-    description:
-      "Add a single todo/checkbox item to a Notion page. Quick way to add action items without full markdown.",
-    parameters: {
-      type: "object",
-      required: ["page_id", "text"],
-      properties: {
-        page_id: { type: "string", description: "Notion page ID." },
-        text: { type: "string", description: "Todo item text." },
-        checked: { type: "boolean", description: "Whether the todo is already checked (default: false)." },
-      },
-    },
-    async execute(_id, params) {
-      const pageId = String(params?.page_id ?? "");
-      const text = String(params?.text ?? "");
-      const checked = params?.checked ? "--checked" : "";
-      const result = runNotionCli(`add-todo ${escapeShellArg(pageId)} ${escapeShellArg(text)} ${checked}`);
-      return textResult(result.output);
-    },
-  };
-}
 
 // ── Plugin registration (plugin-sdk format) ─────────────────────────────
 
@@ -398,9 +314,6 @@ const skmemoryPlugin = {
       createSearchDeepTool(),
       createImportSeedsTool(),
       createExportTool(),
-      createNotionReadTool(),
-      createNotionAppendTool(),
-      createNotionAddTodoTool(),
     ];
 
     for (const tool of tools) {
@@ -545,8 +458,7 @@ const skmemoryPlugin = {
         "",
         "Memory search: Use short keywords like 'DavidRich chiro', 'brother john', 'SwapSeat'. Call skmemory_recall with memory ID for full content.",
         "",
-        "Notion tools: notion_read, notion_append, notion_add_todo.",
-        "Project page IDs: Brother John = 31e2be82-a3a1-8178-820c-e6eeb11b15c1, DR Chiro AI = 31e2be82-a3a1-81ec-8216-dbf054a932bd, SwapSeat = 31e2be82-a3a1-81bd-ac67-fc49b953afae.",
+        "Project storage: DR Chiro AI → Nextcloud /davidrich-share/ (WebDAV via mcporter nextcloud-lumina). Always write DR Chiro content to Nextcloud.",
       ].join("\n");
 
       // ── Tiered injection: full ritual first message, slim context after ──
