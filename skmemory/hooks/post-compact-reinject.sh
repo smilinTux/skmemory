@@ -7,10 +7,12 @@
 # Exit 0: stdout is injected into Claude's context
 set -euo pipefail
 
-SKMEMORY="${HOME}/.skenv/bin/skmemory"
+SKMEMORY="${HOME}/.local/bin/skmemory"
+[ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
 [ -x "$SKMEMORY" ] || exit 0  # Skip silently if skmemory not installed
 
-AGENT="${SKCAPSTONE_AGENT:-opus}"
+AGENT="${SKCAPSTONE_AGENT:-jarvis}"
+AGENT_DIR="${HOME}/.skcapstone/agents/${AGENT}"
 
 # Generate token-efficient memory context
 CONTEXT=$($SKMEMORY context --max-tokens 500 --strongest 3 --recent 5 2>/dev/null || echo "(no context available)")
@@ -18,11 +20,21 @@ CONTEXT=$($SKMEMORY context --max-tokens 500 --strongest 3 --recent 5 2>/dev/nul
 # Recent journal entries
 JOURNAL=$($SKMEMORY journal read 2>/dev/null | tail -15 || echo "(no journal entries)")
 
+# SKWhisper subconscious context (survives compaction)
+WHISPER=""
+WHISPER_PATH="${AGENT_DIR}/skwhisper/whisper.md"
+if [ -f "$WHISPER_PATH" ]; then
+  WHISPER=$(cat "$WHISPER_PATH")
+fi
+
 cat <<EOF
 --- SKMEMORY REHYDRATION (auto-injected after compaction) ---
 Agent: ${AGENT}
 Save memories: skmemory snapshot --layer mid-term --tags "tags" "Title" "Content"
 Search: skmemory search "query"
+
+=== SUBCONSCIOUS (SKWhisper) ===
+${WHISPER:-"(no whisper context)"}
 
 Recent context:
 ${CONTEXT}

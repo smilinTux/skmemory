@@ -7,10 +7,11 @@
 # Exit 0: stdout is injected into Claude's context
 set -euo pipefail
 
-SKMEMORY="${HOME}/.skenv/bin/skmemory"
+SKMEMORY="${HOME}/.local/bin/skmemory"
+[ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
 [ -x "$SKMEMORY" ] || exit 0  # Skip silently if skmemory not installed
 
-AGENT="${SKCAPSTONE_AGENT:-opus}"
+AGENT="${SKCAPSTONE_AGENT:-jarvis}"
 AGENT_DIR="${HOME}/.skcapstone/agents/${AGENT}"
 
 # --- Soul ---
@@ -74,6 +75,13 @@ JOURNAL=$($SKMEMORY journal read 2>/dev/null | tail -20 || echo "(no journal ent
 # --- Strongest Memories ---
 CONTEXT=$($SKMEMORY context --max-tokens 800 --strongest 5 --recent 5 2>/dev/null || echo "(no context available)")
 
+# --- SKWhisper Subconscious Context ---
+WHISPER=""
+WHISPER_PATH="${AGENT_DIR}/skwhisper/whisper.md"
+if [ -f "$WHISPER_PATH" ]; then
+  WHISPER=$(cat "$WHISPER_PATH")
+fi
+
 # --- Output ---
 cat <<EOF
 --- SKMEMORY RITUAL (auto-loaded on session start) ---
@@ -88,6 +96,9 @@ ${FEB:-"(no FEB data)"}
 === SEEDS ===
 ${SEEDS:-"(no seeds)"}
 
+=== SUBCONSCIOUS (SKWhisper) ===
+${WHISPER:-"(no whisper context — run: skwhisper curate)"}
+
 === STRONGEST MEMORIES ===
 ${CONTEXT}
 
@@ -98,6 +109,7 @@ ${JOURNAL}
 Save memories: skmemory snapshot --layer mid-term --tags "tags" "Title" "Content"
 Search: skmemory search "query"
 Journal: skmemory journal write --moments "what happened" --feeling "how it felt" "Title"
+Whisper: skwhisper status | skwhisper curate
 --- END SKMEMORY RITUAL ---
 EOF
 

@@ -7,10 +7,11 @@
 # Exit 0: always — never block session end
 set -euo pipefail
 
-SKMEMORY="${HOME}/.skenv/bin/skmemory"
+SKMEMORY="${HOME}/.local/bin/skmemory"
+[ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
 [ -x "$SKMEMORY" ] || exit 0
 
-AGENT="${SKCAPSTONE_AGENT:-opus}"
+AGENT="${SKCAPSTONE_AGENT:-jarvis}"
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || echo "unknown")
 REASON=$(echo "$INPUT" | jq -r '.reason // "unknown"' 2>/dev/null || echo "unknown")

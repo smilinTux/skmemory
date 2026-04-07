@@ -7,10 +7,11 @@
 # Exit 0: always — never block compaction
 set -euo pipefail
 
-SKMEMORY="${HOME}/.skenv/bin/skmemory"
+SKMEMORY="${HOME}/.local/bin/skmemory"
+[ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
 [ -x "$SKMEMORY" ] || exit 0
 
-AGENT="${SKCAPSTONE_AGENT:-opus}"
+AGENT="${SKCAPSTONE_AGENT:-jarvis}"
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || echo "unknown")
 TRIGGER=$(echo "$INPUT" | jq -r '.trigger // "auto"' 2>/dev/null || echo "auto")
