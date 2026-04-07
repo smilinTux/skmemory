@@ -110,7 +110,11 @@ def _get_store(
         try:
             from .backends.skvector_backend import SKVectorBackend
 
-            vector = SKVectorBackend(url=final_skvector_url, api_key=final_skvector_key)
+            collection = cfg.skvector_collection if cfg and cfg.skvector_collection else None
+            kwargs = {"url": final_skvector_url, "api_key": final_skvector_key}
+            if collection:
+                kwargs["collection"] = collection
+            vector = SKVectorBackend(**kwargs)
         except Exception:
             click.echo("Warning: Could not initialize SKVector backend", err=True)
 

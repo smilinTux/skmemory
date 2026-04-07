@@ -48,10 +48,14 @@ class SKMemoryConfig(BaseModel):
 
     skvector_url: str | None = None
     skvector_key: str | None = None
+    skvector_collection: str | None = None
     skgraph_url: str | None = None
     backends_enabled: list[str] = Field(default_factory=list)
     docker_compose_file: str | None = None
     setup_completed_at: str | None = None
+
+    # Additional read-only recall collections (for cross-project search)
+    recall_collections: list[str] = Field(default_factory=list)
 
     # Multi-endpoint HA support
     skvector_endpoints: list[EndpointConfig] = Field(default_factory=list)
