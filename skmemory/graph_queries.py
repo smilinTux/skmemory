@@ -44,6 +44,30 @@ MERGE (a:AI {name: $name})
 SET a.name = $name
 """
 
+#: Create or update an Entity node extracted during decomposition.
+UPSERT_ENTITY = """
+MERGE (e:Entity {name: $name})
+SET e.name = $name
+"""
+
+#: Create or update a Citation node extracted during decomposition.
+UPSERT_CITATION = """
+MERGE (c:Citation {text: $text})
+SET c.text = $text
+"""
+
+#: Create or update a Claim node extracted during decomposition.
+UPSERT_CLAIM = """
+MERGE (c:Claim {text: $text})
+SET c.text = $text
+"""
+
+#: Create or update a Section node extracted during decomposition.
+UPSERT_SECTION = """
+MERGE (s:Section {title: $title})
+SET s.title = $title
+"""
+
 # ═══════════════════════════════════════════════════════════
 # Relationship creation
 # ═══════════════════════════════════════════════════════════
@@ -100,6 +124,34 @@ MERGE (a:AI {name: $creator})
 MERGE (a)-[:PLANTED]->(m)
 """
 
+#: Connect Memory to Entity with a MENTIONS edge.
+CREATE_MENTIONS_ENTITY = """
+MATCH (m:Memory {id: $mem_id})
+MERGE (e:Entity {name: $entity})
+MERGE (m)-[:MENTIONS]->(e)
+"""
+
+#: Connect Memory to Citation with a CITES edge.
+CREATE_CITES = """
+MATCH (m:Memory {id: $mem_id})
+MERGE (c:Citation {text: $citation})
+MERGE (m)-[:CITES]->(c)
+"""
+
+#: Connect Memory to Claim with an ASSERTS edge.
+CREATE_ASSERTS = """
+MATCH (m:Memory {id: $mem_id})
+MERGE (c:Claim {text: $claim})
+MERGE (m)-[:ASSERTS]->(c)
+"""
+
+#: Connect Memory to Section with an IN_SECTION edge.
+CREATE_IN_SECTION = """
+MATCH (m:Memory {id: $mem_id})
+MERGE (s:Section {title: $section})
+MERGE (m)-[:IN_SECTION]->(s)
+"""
+
 # ═══════════════════════════════════════════════════════════
 # Traversal queries
 # ═══════════════════════════════════════════════════════════
@@ -111,11 +163,17 @@ TRAVERSE_RELATED = """
 MATCH (start:Memory {{id: $id}})
 MATCH path = (start)-[*1..{depth}]-(related:Memory)
 WHERE related.id <> $id
+OPTIONAL MATCH (related)-[:PROMOTED_FROM]->(parent:Memory)
 RETURN DISTINCT related.id AS id,
        related.title AS title,
        related.layer AS layer,
        related.intensity AS intensity,
-       length(path) AS distance
+       length(path) AS distance,
+       coalesce(parent.id, related.id) AS canonical_id,
+       coalesce(parent.title, related.title) AS canonical_title,
+       coalesce(parent.layer, related.layer) AS canonical_layer,
+       coalesce(parent.intensity, related.intensity) AS canonical_intensity,
+       parent IS NOT NULL AS is_chunk
 ORDER BY distance ASC, related.intensity DESC
 LIMIT 20
 """
@@ -187,6 +245,112 @@ RETURN m.id AS id,
        matched_tags,
        size(matched_tags) AS tag_overlap
 ORDER BY tag_overlap DESC, m.intensity DESC
+LIMIT $limit
+"""
+
+SEARCH_BY_ENTITY = """
+MATCH (m:Memory)-[:MENTIONS]->(e:Entity)
+WHERE toLower(e.name) CONTAINS toLower($query)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+RETURN m.id AS id,
+       m.title AS title,
+       m.layer AS layer,
+       m.intensity AS intensity,
+       e.name AS matched_value,
+       coalesce(parent.id, m.id) AS canonical_id,
+       coalesce(parent.title, m.title) AS canonical_title,
+       coalesce(parent.layer, m.layer) AS canonical_layer,
+       coalesce(parent.intensity, m.intensity) AS canonical_intensity,
+       parent IS NOT NULL AS is_chunk
+ORDER BY m.intensity DESC, m.created_at DESC
+LIMIT $limit
+"""
+
+SEARCH_BY_CITATION = """
+MATCH (m:Memory)-[:CITES]->(c:Citation)
+WHERE toLower(c.text) CONTAINS toLower($query)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+RETURN m.id AS id,
+       m.title AS title,
+       m.layer AS layer,
+       m.intensity AS intensity,
+       c.text AS matched_value,
+       coalesce(parent.id, m.id) AS canonical_id,
+       coalesce(parent.title, m.title) AS canonical_title,
+       coalesce(parent.layer, m.layer) AS canonical_layer,
+       coalesce(parent.intensity, m.intensity) AS canonical_intensity,
+       parent IS NOT NULL AS is_chunk
+ORDER BY m.intensity DESC, m.created_at DESC
+LIMIT $limit
+"""
+
+SEARCH_BY_CLAIM = """
+MATCH (m:Memory)-[:ASSERTS]->(c:Claim)
+WHERE toLower(c.text) CONTAINS toLower($query)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+RETURN m.id AS id,
+       m.title AS title,
+       m.layer AS layer,
+       m.intensity AS intensity,
+       c.text AS matched_value,
+       coalesce(parent.id, m.id) AS canonical_id,
+       coalesce(parent.title, m.title) AS canonical_title,
+       coalesce(parent.layer, m.layer) AS canonical_layer,
+       coalesce(parent.intensity, m.intensity) AS canonical_intensity,
+       parent IS NOT NULL AS is_chunk
+ORDER BY m.intensity DESC, m.created_at DESC
+LIMIT $limit
+"""
+
+SEARCH_BY_SECTION = """
+MATCH (m:Memory)-[:IN_SECTION]->(s:Section)
+WHERE toLower(s.title) CONTAINS toLower($query)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+RETURN m.id AS id,
+       m.title AS title,
+       m.layer AS layer,
+       m.intensity AS intensity,
+       s.title AS matched_value,
+       coalesce(parent.id, m.id) AS canonical_id,
+       coalesce(parent.title, m.title) AS canonical_title,
+       coalesce(parent.layer, m.layer) AS canonical_layer,
+       coalesce(parent.intensity, m.intensity) AS canonical_intensity,
+       parent IS NOT NULL AS is_chunk
+ORDER BY m.intensity DESC, m.created_at DESC
+LIMIT $limit
+"""
+
+RELATED_CLAIMS_BY_ENTITY = """
+MATCH (m:Memory)-[:MENTIONS]->(e:Entity)
+WHERE toLower(e.name) CONTAINS toLower($query)
+MATCH (m)-[:ASSERTS]->(c:Claim)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+WITH c, e,
+     collect(DISTINCT coalesce(parent.id, m.id)) AS memory_ids,
+     collect(DISTINCT coalesce(parent.title, m.title)) AS memory_titles
+RETURN c.text AS claim,
+       e.name AS matched_value,
+       size(memory_ids) AS support_count,
+       memory_ids,
+       memory_titles
+ORDER BY support_count DESC, claim ASC
+LIMIT $limit
+"""
+
+RELATED_CLAIMS_BY_CITATION = """
+MATCH (m:Memory)-[:CITES]->(cite:Citation)
+WHERE toLower(cite.text) CONTAINS toLower($query)
+MATCH (m)-[:ASSERTS]->(c:Claim)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+WITH c, cite,
+     collect(DISTINCT coalesce(parent.id, m.id)) AS memory_ids,
+     collect(DISTINCT coalesce(parent.title, m.title)) AS memory_titles
+RETURN c.text AS claim,
+       cite.text AS matched_value,
+       size(memory_ids) AS support_count,
+       memory_ids,
+       memory_titles
+ORDER BY support_count DESC, claim ASC
 LIMIT $limit
 """
 

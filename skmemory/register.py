@@ -1,7 +1,7 @@
 """SK* skill, MCP server, and OpenClaw plugin auto-registration.
 
 Detects the user's development environments (OpenClaw, Claude Code, Cursor,
-VS Code, OpenCode CLI, mcporter) and registers SKILL.md symlinks, MCP
+VS Code, OpenCode CLI, Codex, mcporter) and registers SKILL.md symlinks, MCP
 server entries, and OpenClaw plugin manifests so everything works out-of-the-box.
 
 This module is the shared engine — individual packages call it, and
@@ -39,6 +39,7 @@ def detect_environments() -> list[str]:
       - cursor: ~/.cursor/ directory
       - vscode: ~/.vscode/ or ~/.config/Code/ directory
       - opencode: ~/.opencode/ or opencode binary
+      - codex: ~/.codex/ directory
       - mcporter: mcporter.json in known locations
 
     Returns:
@@ -67,6 +68,10 @@ def detect_environments() -> list[str]:
     # OpenCode CLI
     if (home / ".opencode").is_dir() or shutil.which("opencode"):
         envs.append("opencode")
+
+    # Codex
+    if (home / ".codex").is_dir():
+        envs.append("codex")
 
     # mcporter
     mcporter_paths = [
@@ -130,6 +135,55 @@ def register_skill(
         return result
 
     # Create symlink — prefer relative path
+    try:
+        rel = os.path.relpath(skill_md_path, skill_dir)
+        target.symlink_to(rel)
+    except (ValueError, OSError):
+        target.symlink_to(skill_md_path)
+
+    result["action"] = "created"
+    return result
+
+
+def register_codex_skill(
+    name: str,
+    skill_md_path: Path,
+) -> dict:
+    """Register a skill by symlinking its SKILL.md into ~/.codex/skills.
+
+    Args:
+        name: Package/skill name (e.g. "skmemory").
+        skill_md_path: Absolute path to the source SKILL.md file.
+
+    Returns:
+        Dict describing what was done.
+    """
+    codex_root = Path.home() / ".codex" / "skills"
+    skill_dir = codex_root / name
+    target = skill_dir / "SKILL.md"
+
+    result: dict = {"name": name, "action": "skip", "path": str(target)}
+
+    if not skill_md_path.exists():
+        result["action"] = "error"
+        result["error"] = f"Source SKILL.md not found: {skill_md_path}"
+        return result
+
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    if target.is_symlink():
+        try:
+            if target.resolve() == skill_md_path.resolve():
+                result["action"] = "exists"
+                return result
+        except OSError:
+            pass
+        target.unlink()
+
+    if target.exists():
+        result["action"] = "exists"
+        return result
+
     try:
         rel = os.path.relpath(skill_md_path, skill_dir)
         target.symlink_to(rel)
@@ -211,6 +265,7 @@ def register_mcp(
       - cursor: ~/.cursor/mcp.json
       - vscode: (skipped — requires workspace .vscode/)
       - opencode: ~/.opencode/mcp.json
+      - codex: not yet supported for MCP config writing here
       - mcporter: ~/clawd/config/mcporter.json or ~/.config/mcporter/mcporter.json
 
     Args:
@@ -225,6 +280,9 @@ def register_mcp(
     """
     if environments is None:
         environments = detect_environments()
+
+    supported_envs = {"claude-code", "cursor", "opencode", "mcporter"}
+    environments = [env for env in environments if env in supported_envs]
 
     home = Path.home()
     results: dict = {}
@@ -537,12 +595,18 @@ def register_package(
     result: dict = {"name": name, "environments": environments}
 
     if dry_run:
+        mcp_envs = [env for env in environments if env in {"claude-code", "cursor", "opencode", "mcporter"}]
         result["skill"] = {
             "action": "dry-run",
             "path": str((workspace or Path.home() / "clawd") / "skills" / name / "SKILL.md"),
         }
+        if "codex" in environments:
+            result["codex_skill"] = {
+                "action": "dry-run",
+                "path": str(Path.home() / ".codex" / "skills" / name / "SKILL.md"),
+            }
         if mcp_command:
-            result["mcp"] = {env: "dry-run" for env in environments}
+            result["mcp"] = {env: "dry-run" for env in mcp_envs}
         if install_hooks:
             result["hooks"] = {"action": "dry-run"}
         if openclaw_plugin_path and "openclaw" in environments:
@@ -551,6 +615,9 @@ def register_package(
 
     # Register skill
     result["skill"] = register_skill(name, skill_md_path, workspace)
+
+    if "codex" in environments:
+        result["codex_skill"] = register_codex_skill(name, skill_md_path)
 
     # Register MCP server
     if mcp_command is not None:

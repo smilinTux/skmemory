@@ -624,6 +624,8 @@ def run_setup_wizard(
     skip_deps: bool = False,
     non_interactive: bool = False,
     deployment_mode: str | None = None,
+    embedding_model: str | None = None,
+    vector_dim: int | None = None,
     echo: Callable | None = None,
     input_fn: Callable | None = None,
 ) -> dict:
@@ -636,6 +638,8 @@ def run_setup_wizard(
         non_interactive: Don't prompt — use defaults (implies local mode).
         deployment_mode: ``"local"`` (Docker), ``"remote"`` (SaaS / custom URL),
             or ``None`` to ask interactively.
+        embedding_model: SKVector embedding model to persist in config.
+        vector_dim: SKVector vector dimension override to persist in config.
         echo: Callable for output (default: print).
         input_fn: Callable for text input (default: built-in ``input``).
 
@@ -698,6 +702,14 @@ def run_setup_wizard(
                 skvector_url = raw
                 key_raw = input_fn("SKVector API key (press Enter if none): ").strip()
                 skvector_key = key_raw or None
+                if not embedding_model and not non_interactive:
+                    model_raw = input_fn(
+                        "SKVector embedding model [bge-legal-v1]: "
+                    ).strip()
+                    embedding_model = model_raw or "bge-legal-v1"
+                if not vector_dim and not non_interactive:
+                    dim_raw = input_fn("SKVector vector dimension [1024]: ").strip()
+                    vector_dim = int(dim_raw) if dim_raw else 1024
 
         if enable_skgraph:
             raw = input_fn("SKGraph URL (e.g. redis://myserver:6379): ").strip()
@@ -728,6 +740,8 @@ def run_setup_wizard(
         cfg = SKMemoryConfig(
             skvector_url=skvector_url,
             skvector_key=skvector_key,
+            skvector_embedding_model=embedding_model or "bge-legal-v1",
+            skvector_vector_dim=vector_dim or 1024,
             skgraph_url=skgraph_url,
             backends_enabled=backends_remote,
             setup_completed_at=datetime.now(timezone.utc).isoformat(),
@@ -888,6 +902,8 @@ def run_setup_wizard(
 
     cfg = SKMemoryConfig(
         skvector_url="http://localhost:6333" if enable_skvector else None,
+        skvector_embedding_model=((embedding_model or "bge-legal-v1") if enable_skvector else None),
+        skvector_vector_dim=((vector_dim or 1024) if enable_skvector else None),
         skgraph_url="redis://localhost:6379" if enable_skgraph else None,
         backends_enabled=backends_enabled,
         docker_compose_file=str(compose_file),

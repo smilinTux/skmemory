@@ -46,6 +46,8 @@ class TestConfig:
         config = SKMemoryConfig(
             skvector_url="http://localhost:6333",
             skvector_key="secret",
+            skvector_embedding_model="bge-legal-v1",
+            skvector_vector_dim=1024,
             skgraph_url="redis://localhost:6379",
             backends_enabled=["skvector", "skgraph"],
             docker_compose_file="/some/path/docker-compose.yml",
@@ -58,6 +60,8 @@ class TestConfig:
         assert loaded is not None
         assert loaded.skvector_url == "http://localhost:6333"
         assert loaded.skvector_key == "secret"
+        assert loaded.skvector_embedding_model == "bge-legal-v1"
+        assert loaded.skvector_vector_dim == 1024
         assert loaded.skgraph_url == "redis://localhost:6379"
         assert loaded.backends_enabled == ["skvector", "skgraph"]
         assert loaded.setup_completed_at == "2026-02-28T12:00:00+00:00"
@@ -89,6 +93,8 @@ class TestConfig:
         config = SKMemoryConfig()
         assert config.skvector_url is None
         assert config.skvector_key is None
+        assert config.skvector_embedding_model is None
+        assert config.skvector_vector_dim is None
         assert config.skgraph_url is None
         assert config.backends_enabled == []
         assert config.docker_compose_file is None
@@ -100,20 +106,30 @@ class TestConfig:
         monkeypatch.setenv("SKMEMORY_SKVECTOR_URL", "http://env:6333")
         monkeypatch.setenv("SKMEMORY_SKVECTOR_KEY", "env-key")
         monkeypatch.setenv("SKMEMORY_SKGRAPH_URL", "redis://env:6379")
+        monkeypatch.setenv("SKMEMORY_SKVECTOR_EMBEDDING_MODEL", "env-model")
+        monkeypatch.setenv("SKMEMORY_SKVECTOR_VECTOR_DIM", "768")
 
-        skvector_url, skvector_key, skgraph_url = merge_env_and_config(
+        skvector_url, skvector_key, skgraph_url, embedding_model, vector_dim = (
+            merge_env_and_config(
             cli_skvector_url="http://cli:6333",
             cli_skvector_key="cli-key",
             cli_skgraph_url="redis://cli:6379",
+            cli_skvector_embedding_model="cli-model",
+            cli_skvector_vector_dim=1536,
+        )
         )
         assert skvector_url == "http://cli:6333"
         assert skvector_key == "cli-key"
         assert skgraph_url == "redis://cli:6379"
+        assert embedding_model == "cli-model"
+        assert vector_dim == 1536
 
     def test_merge_env_overrides_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("SKMEMORY_SKVECTOR_URL", "http://env:6333")
+        monkeypatch.setenv("SKMEMORY_SKVECTOR_EMBEDDING_MODEL", "env-model")
+        monkeypatch.setenv("SKMEMORY_SKVECTOR_VECTOR_DIM", "768")
         monkeypatch.delenv("SKMEMORY_SKVECTOR_KEY", raising=False)
         monkeypatch.delenv("SKMEMORY_SKGRAPH_URL", raising=False)
 
@@ -121,42 +137,62 @@ class TestConfig:
         cfg = SKMemoryConfig(
             skvector_url="http://config:6333",
             skvector_key="config-key",
+            skvector_embedding_model="config-model",
+            skvector_vector_dim=1024,
             skgraph_url="redis://config:6379",
         )
         with mock.patch("skmemory.config.load_config", return_value=cfg):
-            skvector_url, skvector_key, skgraph_url = merge_env_and_config()
+            skvector_url, skvector_key, skgraph_url, embedding_model, vector_dim = (
+                merge_env_and_config()
+            )
 
         assert skvector_url == "http://env:6333"  # env wins
         assert skvector_key == "config-key"  # falls through to config
         assert skgraph_url == "redis://config:6379"  # falls through to config
+        assert embedding_model == "env-model"
+        assert vector_dim == 768
 
     def test_merge_config_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SKMEMORY_SKVECTOR_URL", raising=False)
         monkeypatch.delenv("SKMEMORY_SKVECTOR_KEY", raising=False)
         monkeypatch.delenv("SKMEMORY_SKGRAPH_URL", raising=False)
+        monkeypatch.delenv("SKMEMORY_SKVECTOR_EMBEDDING_MODEL", raising=False)
+        monkeypatch.delenv("SKMEMORY_SKVECTOR_VECTOR_DIM", raising=False)
 
         cfg = SKMemoryConfig(
             skvector_url="http://config:6333",
+            skvector_embedding_model="config-model",
+            skvector_vector_dim=1024,
             skgraph_url="redis://config:6379",
         )
         with mock.patch("skmemory.config.load_config", return_value=cfg):
-            skvector_url, skvector_key, skgraph_url = merge_env_and_config()
+            skvector_url, skvector_key, skgraph_url, embedding_model, vector_dim = (
+                merge_env_and_config()
+            )
 
         assert skvector_url == "http://config:6333"
         assert skvector_key is None
         assert skgraph_url == "redis://config:6379"
+        assert embedding_model == "config-model"
+        assert vector_dim == 1024
 
     def test_merge_all_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SKMEMORY_SKVECTOR_URL", raising=False)
         monkeypatch.delenv("SKMEMORY_SKVECTOR_KEY", raising=False)
         monkeypatch.delenv("SKMEMORY_SKGRAPH_URL", raising=False)
+        monkeypatch.delenv("SKMEMORY_SKVECTOR_EMBEDDING_MODEL", raising=False)
+        monkeypatch.delenv("SKMEMORY_SKVECTOR_VECTOR_DIM", raising=False)
 
         with mock.patch("skmemory.config.load_config", return_value=None):
-            skvector_url, skvector_key, skgraph_url = merge_env_and_config()
+            skvector_url, skvector_key, skgraph_url, embedding_model, vector_dim = (
+                merge_env_and_config()
+            )
 
         assert skvector_url is None
         assert skvector_key is None
         assert skgraph_url is None
+        assert embedding_model is None
+        assert vector_dim is None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -642,6 +678,12 @@ class TestSetupWizard:
 
     def test_wizard_skvector_only(self, tmp_path: Path) -> None:
         output = []
+        captured = {}
+
+        def capture_config(cfg):
+            captured["config"] = cfg
+            return tmp_path / "config.yaml"
+
         with (
             mock.patch(
                 "skmemory.setup_wizard.detect_platform", return_value=self._mock_platform()
@@ -663,7 +705,7 @@ class TestSetupWizard:
                     args=[], returncode=0, stdout="", stderr=""
                 ),
             ),
-            mock.patch("skmemory.setup_wizard.save_config", return_value=tmp_path / "config.yaml"),
+            mock.patch("skmemory.setup_wizard.save_config", side_effect=capture_config),
         ):
             result = run_setup_wizard(
                 enable_skvector=True,
@@ -675,6 +717,8 @@ class TestSetupWizard:
         assert result["success"] is True
         assert result["services"] == ["skvector"]
         assert "skgraph" not in result["health"]
+        assert captured["config"].skvector_embedding_model == "bge-legal-v1"
+        assert captured["config"].skvector_vector_dim == 1024
 
     def test_wizard_no_backends_selected(self) -> None:
         output = []
@@ -752,6 +796,36 @@ class TestSetupCLI:
             call_kwargs.kwargs.get("enable_skgraph") is False
             or call_kwargs[1].get("enable_skgraph") is False
         )
+
+    def test_setup_wizard_cli_passes_embedding_options(self) -> None:
+        from skmemory.cli import cli
+
+        runner = CliRunner()
+        with mock.patch("skmemory.setup_wizard.run_setup_wizard") as mock_wizard:
+            mock_wizard.return_value = {
+                "success": True,
+                "services": [],
+                "health": {},
+                "config_path": None,
+                "errors": [],
+            }
+            result = runner.invoke(
+                cli,
+                [
+                    "setup",
+                    "wizard",
+                    "--yes",
+                    "--embedding-model",
+                    "bge-legal-v1",
+                    "--vector-dim",
+                    "1024",
+                ],
+            )
+
+        assert result.exit_code == 0
+        _, kwargs = mock_wizard.call_args
+        assert kwargs["embedding_model"] == "bge-legal-v1"
+        assert kwargs["vector_dim"] == 1024
 
     def test_setup_wizard_cli_failure(self) -> None:
         from skmemory.cli import cli

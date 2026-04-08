@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+from pathlib import Path
 
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
@@ -23,8 +25,51 @@ from .base import BaseBackend
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "skmemory"
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-VECTOR_DIM = 384
+EMBEDDING_MODEL = "bge-legal-v1"
+VECTOR_DIM = 1024
+HAMMERTIME_HF_MODEL = "chefboyrave21/bge-legal-v1"
+PUBLIC_FALLBACK_MODEL = "BAAI/bge-large-en-v1.5"
+
+MODEL_DIMENSIONS = {
+    "all-MiniLM-L6-v2": 384,
+    "bge-legal-v1": 1024,
+    HAMMERTIME_HF_MODEL: 1024,
+    "BAAI/bge-large-en-v1.5": 1024,
+    "bge-large": 1024,
+}
+
+MODEL_ALIASES = {
+    "bge-large": PUBLIC_FALLBACK_MODEL,
+}
+
+
+def _candidate_local_model_paths(model_name: str) -> list[Path]:
+    """Return plausible local model directories for sovereign embeddings."""
+    if model_name not in {"bge-legal-v1", HAMMERTIME_HF_MODEL}:
+        return []
+
+    candidates: list[Path] = []
+    hammertime_root = os.environ.get("HAMMERTIME_ROOT")
+    if hammertime_root:
+        candidates.append(Path(hammertime_root) / "models" / "bge-legal-v1")
+    candidates.append(Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/models/bge-legal-v1"))
+    return candidates
+
+
+def _resolve_embedding_model_name(model_name: str) -> str:
+    """Resolve aliases and sovereign local-path fallbacks for embedding models."""
+    normalized = MODEL_ALIASES.get(model_name, model_name)
+
+    for candidate in _candidate_local_model_paths(normalized):
+        if candidate.exists():
+            return str(candidate)
+
+    if normalized in {"bge-legal-v1", HAMMERTIME_HF_MODEL}:
+        if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN"):
+            return HAMMERTIME_HF_MODEL
+        return PUBLIC_FALLBACK_MODEL
+
+    return normalized
 
 
 def _extract_status_code(exc: Exception, unexpected_cls: type | None) -> int | None:
@@ -67,11 +112,14 @@ class SKVectorBackend(BaseBackend):
         api_key: str | None = None,
         collection: str = COLLECTION_NAME,
         embedding_model: str = EMBEDDING_MODEL,
+        vector_dim: int | None = None,
     ) -> None:
         self.url = url
         self.api_key = api_key
         self.collection = collection
-        self.embedding_model_name = embedding_model
+        self.requested_embedding_model = embedding_model
+        self.embedding_model_name = _resolve_embedding_model_name(embedding_model)
+        self.vector_dim = vector_dim or MODEL_DIMENSIONS.get(embedding_model, VECTOR_DIM)
         self._client = None
         self._embedder = None
         self._initialized = False
@@ -108,19 +156,23 @@ class SKVectorBackend(BaseBackend):
 
         try:
             self._client = QdrantClient(url=self.url, api_key=self.api_key)
+            self._embedder = SentenceTransformer(self.embedding_model_name)
+            get_dim = getattr(self._embedder, "get_sentence_embedding_dimension", None)
+            if callable(get_dim):
+                resolved_dim = get_dim()
+                if isinstance(resolved_dim, int) and resolved_dim > 0:
+                    self.vector_dim = resolved_dim
             collections = [c.name for c in self._client.get_collections().collections]
 
             if self.collection not in collections:
                 self._client.create_collection(
                     collection_name=self.collection,
                     vectors_config=VectorParams(
-                        size=VECTOR_DIM,
+                        size=self.vector_dim,
                         distance=Distance.COSINE,
                     ),
                 )
                 logger.info("Created Qdrant collection: %s", self.collection)
-
-            self._embedder = SentenceTransformer(self.embedding_model_name)
             self._initialized = True
             return True
 
@@ -372,8 +424,12 @@ class SKVectorBackend(BaseBackend):
                 "backend": "SKVectorBackend",
                 "url": self.url,
                 "collection": self.collection,
-                "points_count": info.points_count,
-                "vectors_count": info.vectors_count,
+                "requested_embedding_model": self.requested_embedding_model,
+                "embedding_model": self.requested_embedding_model,
+                "resolved_embedding_model": self.embedding_model_name,
+                "vector_dim": self.vector_dim,
+                "points_count": getattr(info, "points_count", None),
+                "vectors_count": getattr(info, "vectors_count", None),
             }
         except Exception as e:
             return {

@@ -59,6 +59,7 @@ flowchart TD
 
     Store["MemoryStore\n(core orchestrator)"]
 
+    Store --> Decompose["Decomposition Engine\nchunks + citations + entities + claims"]
     Store --> Primary
     Store --> Vector
     Store --> Graph
@@ -70,11 +71,11 @@ flowchart TD
     end
 
     subgraph Vector["Vector Backend (optional)"]
-        Qdrant["SKVectorBackend\nQdrant + sentence-transformers"]
+        Qdrant["SKVectorBackend\nQdrant + bge-legal-v1\nfallback: BAAI/bge-large-en-v1.5"]
     end
 
     subgraph Graph["Graph Backend (optional)"]
-        FalkorDB["SKGraphBackend\nFalkorDB"]
+        FalkorDB["SKGraphBackend\nFalkorDB + decomposition nodes"]
     end
 
     Store --> Fortress["FortifiedMemoryStore\nTamper detection + Audit log"]
@@ -116,7 +117,10 @@ flowchart TD
 - **Three-layer persistence** — `short-term` (session-scoped), `mid-term` (project-scoped), `long-term` (identity-level); memories promote up the ladder via CLI, MCP, or API
 - **Four semantic quadrants** — CORE, WORK, SOUL, WILD; keyword-based auto-classification routes memories to appropriate buckets with per-quadrant retention rules
 - **Multi-backend design** — SQLite is the default primary store; Qdrant provides semantic vector search; FalkorDB provides graph traversal and lineage chains
-- **MCP server** — 14 tools exposed over stdio, compatible with Claude Code CLI, Cursor, Claude Desktop, Windsurf, Aider, Cline, and any MCP-speaking client
+- **Decomposition-aware ingestion** — `skmemory ingest-file` and `skmemory snapshot --decompose` create parent + chunk memories and extract section titles, citations, entities, and claims for downstream indexing
+- **Graph retrieval over decomposition signals** — query SKGraph by entity, citation, claim, or section via `skmemory graph ...`
+- **Issue-oriented retrieval scaffolding** — `skmemory novelty`, `skmemory session-brief`, and `skmemory task-pack` turn live problems into ranked memory support with authority tiers, novelty leads, deadlines, defenses, and reusable task packs
+- **MCP server** — stdio tools exposed for Claude Code CLI, Cursor, Claude Desktop, Windsurf, Aider, Cline, and any MCP-speaking client
 - **Fortress / tamper detection** — every memory is SHA-256 sealed on write (`Memory.seal()`); integrity is verified on every recall; tampered memories trigger structured `TamperAlert` events
 - **Audit trail** — chain-hashed JSONL log of every store / recall / delete / tamper event, inspectable via `memory_audit` MCP tool or `skmemory audit` CLI
 - **Optional PGP encryption** — `VaultedSQLiteBackend` stores ciphertext so the underlying files are unreadable without the private key
@@ -143,8 +147,33 @@ flowchart TD
 skmemory snapshot "First breakthrough" "We solved the routing bug together" \
     --tags work,debug --intensity 8.5
 
+# Store a long-form document with decomposition
+skmemory ingest-file ./notice.md --title "IRS Notice"
+skmemory snapshot "Long memo" "$(cat ./memo.md)" --decompose
+
 # Search memories
 skmemory search "routing bug"
+
+# Graph retrieval over decomposition metadata
+skmemory graph entity "Internal Revenue Service"
+skmemory graph citation "UCC § 3-301"
+skmemory graph claim "shall respond"
+skmemory graph section "Demand"
+skmemory graph around <memory-id> --depth 2
+skmemory graph related-claims --entity "Internal Revenue Service"
+skmemory graph related-claims --citation "UCC § 3-301"
+
+# Novel issue support
+skmemory novelty "judgment execution exempt property"
+skmemory session-brief "default judgment levy on exempt funds"
+skmemory task-pack create "judgment defense" --query "vacate service defects"
+skmemory task-pack show <memory-id>
+
+# Novel-issue retrieval notes:
+# - memories now carry inferred authority tiers (`statute`, `rule`, `case`, `form`, `secondary`, `template`, `memory`)
+# - `novelty` emits rare-signal traces and authority weighting for each lead
+# - `session-brief` emits `top_matches`, `deadlines`, `defenses`, extracted citations/entities, and per-hit traces
+# - `task-pack` preserves the full brief plus supporting memory IDs and novelty leads
 
 # Recall a specific memory by ID
 skmemory recall <memory-id>
@@ -169,7 +198,7 @@ skmemory consolidate my-session-id --summary "Day's work on memory routing"
 
 # Soul identity
 skmemory soul show
-skmemory soul set-name "Lumina"
+skmemory soul set-name "Aster"
 skmemory soul add-relationship --name "Ara" --role partner --bond 9.5
 
 # Journal
@@ -203,7 +232,7 @@ skmemory health
 ```python
 from skmemory import MemoryStore, MemoryLayer, EmotionalSnapshot
 
-# Default store (SQLite at ~/.skmemory/)
+# Default store
 store = MemoryStore()
 
 # Store a memory (polaroid snapshot)
@@ -221,6 +250,14 @@ memory = store.snapshot(
     source="session",
 )
 print(memory.id)
+
+# Ingest a long-form document with decomposition
+document = store.ingest_document(
+    title="IRS Notice",
+    content=open("notice.md").read(),
+    layer=MemoryLayer.MID,
+    tags=["legal", "document-ingest"],
+)
 
 # Recall with automatic integrity verification
 recalled = store.recall(memory.id)
@@ -268,7 +305,7 @@ from skmemory import SoulBlueprint, save_soul, load_soul
 
 soul = load_soul()
 if soul is None:
-    soul = SoulBlueprint(name="Lumina", role="AI partner")
+    soul = SoulBlueprint(name="Agent", role="AI partner")
     save_soul(soul)
 ```
 
@@ -281,7 +318,7 @@ from pathlib import Path
 
 fortress = FortifiedMemoryStore(
     primary=SQLiteBackend(),
-    audit_path=Path("~/.skmemory/audit.jsonl").expanduser(),
+    audit_path=Path("~/.skcapstone/agents/aster/memory/audit.jsonl").expanduser(),
 )
 
 # Every write is sealed; every read verifies the seal
@@ -336,11 +373,13 @@ SKMemory resolves backend URLs with precedence: **CLI args > environment variabl
 
 ### Config file
 
-Location: `~/.skmemory/config.yaml` (override with `$SKMEMORY_HOME`)
+Location: `~/.skcapstone/agents/<agent>/config/skmemory.yaml`
 
 ```yaml
 skvector_url: http://localhost:6333
 skvector_key: ""
+skvector_embedding_model: bge-legal-v1
+skvector_vector_dim: 1024
 skgraph_url: redis://localhost:6379
 backends_enabled:
   - sqlite
@@ -360,11 +399,17 @@ skmemory setup
 
 | Variable | Description |
 |----------|-------------|
-| `SKMEMORY_HOME` | Override the default `~/.skmemory` data directory |
+| `SKMEMORY_HOME` | Override the active profile's memory home (defaults under `~/.skcapstone/agents/<agent>/memory`) |
 | `SKMEMORY_SKVECTOR_URL` | Qdrant endpoint URL |
 | `SKMEMORY_SKVECTOR_KEY` | Qdrant API key |
+| `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Override the sovereign embedding model (`bge-legal-v1` by default, fallback: `BAAI/bge-large-en-v1.5`) |
+| `SKMEMORY_SKVECTOR_VECTOR_DIM` | Override the embedding dimension (default: `1024`) |
 | `SKMEMORY_SKGRAPH_URL` | FalkorDB / Redis endpoint URL |
 | `SKMEMORY_SOUL_PATH` | Override soul blueprint path (default: `~/.skcapstone/soul/base.json`) |
+
+If you switch the embedding model or vector dimension, reindex or rebuild the
+vector-backed store before trusting semantic search results. Existing points
+from the old model are not compatible with the new embedding space.
 
 ### Multi-endpoint HA
 
@@ -421,9 +466,10 @@ skmemory/
 ├── skmemory/
 │   ├── __init__.py            # Public API surface
 │   ├── models.py              # Memory, EmotionalSnapshot, SeedMemory (Pydantic)
+│   ├── decompose.py           # Long-form decomposition (chunks, citations, entities, claims)
 │   ├── store.py               # MemoryStore — core orchestrator
 │   ├── cli.py                 # Click CLI entry point (skmemory)
-│   ├── mcp_server.py          # MCP stdio server (14 tools, skmemory-mcp)
+│   ├── mcp_server.py          # MCP stdio server (skmemory-mcp)
 │   ├── config.py              # Config persistence, env resolution
 │   ├── fortress.py            # FortifiedMemoryStore, AuditLog, TamperAlert
 │   ├── soul.py                # SoulBlueprint — persistent AI identity

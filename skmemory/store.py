@@ -9,12 +9,15 @@ or by search, and the polaroid comes back with everything intact.
 from __future__ import annotations
 
 import logging
+import re
+from collections import Counter
 from datetime import datetime, timezone
 
 from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
 from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
+from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
 from .models import (
     EmotionalSnapshot,
     Memory,
@@ -22,11 +25,58 @@ from .models import (
     MemoryRole,
     SeedMemory,
 )
+from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
 
 logger = logging.getLogger("skmemory.store")
 
 MAX_CONTENT_LENGTH = 10000
 CONTENT_OVERFLOW_STRATEGY = "split"  # "truncate" or "split"
+DECOMPOSE_MIN_LENGTH = 1200
+TASK_PACK_TAG = "task-pack"
+
+
+def _unique_list(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        if not item:
+            continue
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(item)
+    return ordered
+
+def _memory_signal_set(memory: Memory) -> set[str]:
+    signals: set[str] = set()
+    for value in memory.tags:
+        signals.add(value.casefold())
+    decomposition = memory.metadata.get("decomposition", {})
+    for key in ("entities", "citations", "claims", "section_titles"):
+        for value in decomposition.get(key, []):
+            if value:
+                signals.add(str(value).casefold())
+    if decomposition.get("section_title"):
+        signals.add(str(decomposition["section_title"]).casefold())
+    return signals
+
+
+def _extract_query_terms(query: str) -> list[str]:
+    return [term for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9§.\-]{2,}", query.casefold()) if len(term) > 2]
+
+
+def _extract_inline_citations(text: str) -> list[str]:
+    patterns = [
+        r"\b\d+\s+ILCS\s+[\dA-Za-z./()-]+",
+        r"\b\d+\s+U\.?S\.?C\.?\s*[§]?\s*[\dA-Za-z./()-]+",
+        r"\bUCC\s*[§]?\s*[\dA-Za-z./()-]+",
+        r"\b\d+\s+CFR\s+[§]?\s*[\dA-Za-z./()-]+",
+    ]
+    found: list[str] = []
+    for pattern in patterns:
+        found.extend(match.strip() for match in re.findall(pattern, text, flags=re.IGNORECASE))
+    return _unique_list(found)
 
 
 class MemoryStore:
@@ -52,6 +102,7 @@ class MemoryStore:
         use_sqlite: bool = True,
         max_content_length: int = MAX_CONTENT_LENGTH,
         content_overflow_strategy: str = CONTENT_OVERFLOW_STRATEGY,
+        decompose_min_length: int = DECOMPOSE_MIN_LENGTH,
     ) -> None:
         if primary is not None:
             self.primary = primary
@@ -63,6 +114,23 @@ class MemoryStore:
         self.graph = graph
         self.max_content_length = max_content_length
         self.content_overflow_strategy = content_overflow_strategy
+        self.decompose_min_length = decompose_min_length
+
+    def _enrich_metadata(
+        self,
+        title: str,
+        source: str,
+        source_ref: str,
+        tags: list[str] | None,
+        metadata: dict | None,
+    ) -> dict:
+        return prepare_metadata(
+            title=title,
+            source=source,
+            source_ref=source_ref,
+            tags=tags,
+            metadata=metadata,
+        )
 
     def snapshot(
         self,
@@ -77,6 +145,7 @@ class MemoryStore:
         source_ref: str = "",
         related_ids: list[str] | None = None,
         metadata: dict | None = None,
+        decompose: bool = False,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -98,6 +167,22 @@ class MemoryStore:
         Returns:
             Memory: The stored memory with its assigned ID.
         """
+        metadata = self._enrich_metadata(title, source, source_ref, tags, metadata)
+
+        if decompose or len(content) >= self.decompose_min_length:
+            return self.ingest_document(
+                title=title,
+                content=content,
+                layer=layer,
+                role=role,
+                tags=tags,
+                emotional=emotional,
+                source=source,
+                source_ref=source_ref,
+                related_ids=related_ids,
+                metadata=metadata,
+            )
+
         # Handle content overflow
         if len(content) > self.max_content_length:
             if self.content_overflow_strategy == "split":
@@ -132,7 +217,7 @@ class MemoryStore:
             source=source,
             source_ref=source_ref,
             related_ids=related_ids or [],
-            metadata=metadata or {},
+            metadata=metadata,
         )
 
         memory.seal()
@@ -152,6 +237,139 @@ class MemoryStore:
                 logger.warning("Graph indexing failed for memory %s: %s", memory.id, exc)
 
         return memory
+
+    def ingest_document(
+        self,
+        title: str,
+        content: str,
+        *,
+        layer: MemoryLayer = MemoryLayer.SHORT,
+        role: MemoryRole = MemoryRole.GENERAL,
+        tags: list[str] | None = None,
+        emotional: EmotionalSnapshot | None = None,
+        source: str = "document",
+        source_ref: str = "",
+        related_ids: list[str] | None = None,
+        metadata: dict | None = None,
+        chunk_target: int = CHUNK_TARGET,
+        chunk_overlap: int = CHUNK_OVERLAP,
+    ) -> Memory:
+        """Store a long-form document with decomposition-aware child chunks."""
+        metadata = self._enrich_metadata(title, source, source_ref, tags, metadata)
+
+        decomposition = decompose_content(
+            content,
+            chunk_target=chunk_target,
+            chunk_overlap=chunk_overlap,
+        )
+        base_tags = list(tags or [])
+        all_related = list(related_ids or [])
+        child_ids: list[str] = []
+        prepared_metadata = prepare_metadata(
+            title=title,
+            source=source,
+            source_ref=source_ref,
+            tags=base_tags,
+            metadata=metadata,
+        )
+
+        for chunk in decomposition.chunks:
+            chunk_memory = Memory(
+                title=(
+                    f"{title} [chunk {chunk.chunk_index + 1}/{chunk.total_chunks}]"
+                    if chunk.total_chunks > 1
+                    else title
+                ),
+                content=chunk.text,
+                layer=layer,
+                role=role,
+                tags=_unique_list(
+                    base_tags
+                    + ["decomposed", "content-chunk"]
+                    + [f"section:{chunk.section_title}"] * (1 if chunk.section_title else 0)
+                ),
+                emotional=emotional or EmotionalSnapshot(),
+                source=source,
+                source_ref=source_ref,
+                related_ids=[],
+                metadata={
+                    **prepared_metadata,
+                    "decomposition": {
+                        "chunk_id": chunk.chunk_id,
+                        "chunk_index": chunk.chunk_index,
+                        "total_chunks": chunk.total_chunks,
+                        "section_title": chunk.section_title,
+                        "citations": chunk.citations,
+                        "entities": chunk.entities,
+                        "claims": chunk.claims,
+                    },
+                },
+            )
+            chunk_memory.seal()
+            self.primary.save(chunk_memory)
+            child_ids.append(chunk_memory.id)
+
+        all_related.extend(child_ids)
+
+        parent = Memory(
+            title=title,
+            content=content if len(content) <= self.max_content_length else (content[:200] + "..."),
+            summary=content[:200] + ("..." if len(content) > 200 else ""),
+            layer=layer,
+            role=role,
+            tags=_unique_list(base_tags + ["decomposed", "document-parent"]),
+            emotional=emotional or EmotionalSnapshot(),
+            source=source,
+            source_ref=source_ref,
+            related_ids=all_related,
+            metadata={
+                **prepared_metadata,
+                "decomposition": decomposition.model_dump(exclude={"chunks"}),
+                "chunk_memory_ids": child_ids,
+                "original_length": len(content),
+            },
+        )
+        parent.seal()
+        self.primary.save(parent)
+
+        for idx, child_id in enumerate(child_ids):
+            child = self.primary.load(child_id)
+            if child is None:
+                continue
+            child.parent_id = parent.id
+            neighbours: list[str] = [parent.id]
+            if idx > 0:
+                neighbours.append(child_ids[idx - 1])
+            if idx + 1 < len(child_ids):
+                neighbours.append(child_ids[idx + 1])
+            child.related_ids = _unique_list(neighbours)
+            child.metadata["decomposition"]["parent_id"] = parent.id
+            child.seal()
+            self.primary.save(child)
+            if self.vector:
+                try:
+                    self.vector.save(child)
+                except Exception as exc:
+                    logger.warning("Vector indexing failed for chunk %s: %s", child.id, exc)
+            if self.graph:
+                try:
+                    self.graph.index_memory(child)
+                except Exception as exc:
+                    logger.warning("Graph indexing failed for chunk %s: %s", child.id, exc)
+
+        if self.vector:
+            try:
+                self.vector.save(parent)
+            except Exception as exc:
+                logger.warning("Vector indexing failed for document %s: %s", parent.id, exc)
+
+        if self.graph:
+            try:
+                self.graph.index_memory(parent)
+            except Exception as exc:
+                logger.warning("Graph indexing failed for document %s: %s", parent.id, exc)
+
+        return parent
 
     def _snapshot_split(
         self,
@@ -296,6 +514,221 @@ class MemoryStore:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
         return self.primary.search_text(query, limit=limit)
+
+    def novelty_search(self, query: str, limit: int = 10) -> list[dict]:
+        """Surface potentially novel or under-linked memories for a query."""
+        memories = self.search(query, limit=max(limit * 3, limit))
+        query_terms = set(_extract_query_terms(query))
+        signal_counts: Counter[str] = Counter()
+        for memory in memories:
+            signal_counts.update(_memory_signal_set(memory))
+
+        scored: list[dict] = []
+        for memory in memories:
+            signals = _memory_signal_set(memory)
+            rare_signals = [signal for signal in signals if signal_counts[signal] == 1]
+            authority_tier = str(memory.metadata.get("authority_tier", "memory"))
+            authority_bonus = {
+                "statute": 0.25,
+                "rule": 0.2,
+                "form": 0.1,
+                "secondary": 0.05,
+                "case": 0.12,
+                "template": -0.05,
+                "memory": 0.0,
+            }.get(authority_tier, 0.0)
+            score = round(
+                len(rare_signals) * 1.2
+                + min(memory.emotional.intensity, 8.0) * 0.05
+                + authority_bonus,
+                3,
+            )
+            score = max(
+                score,
+                novelty_score(
+                    query,
+                    title=memory.title,
+                    tags=memory.tags,
+                    metadata=memory.metadata,
+                ),
+            )
+            scored.append(
+                {
+                    "id": memory.id,
+                    "title": memory.title,
+                    "authority_tier": authority_tier,
+                    "authority_weight": authority_weight(authority_tier),
+                    "novelty_score": score,
+                    "rare_signals": rare_signals[:8],
+                    "query_overlap": sorted(query_terms & signals)[:8],
+                    "tags": memory.tags,
+                    "summary": memory.summary or memory.content[:220],
+                    "trace": _unique_list(
+                        [f"authority:{authority_tier}"]
+                        + [f"rare:{signal}" for signal in rare_signals[:4]]
+                    )[:6],
+                }
+            )
+
+        scored.sort(key=lambda item: (-item["novelty_score"], item["title"].casefold()))
+        return scored[:limit]
+
+    def create_task_pack(
+        self,
+        task: str,
+        *,
+        query: str | None = None,
+        limit: int = 8,
+        layer: MemoryLayer = MemoryLayer.MID,
+        role: MemoryRole = MemoryRole.GENERAL,
+        tags: list[str] | None = None,
+    ) -> Memory:
+        """Capture a reusable task pack tying one problem to its strongest memories."""
+        query_text = query or task
+        brief = self.build_session_brief(query_text, limit=limit)
+        novelty = brief["novelty"]
+        related_ids = [item["id"] for item in brief["top_matches"]]
+        summary_lines = [f"Task: {task}", f"Query: {query_text}", "", "Top matches:"]
+        for item in brief["top_matches"]:
+            summary_lines.append(
+                f"- {item['title']} [{item['authority_tier']}] score={item['ranking_score']}"
+            )
+        if brief["deadlines"]:
+            summary_lines.extend(["", "Deadlines / hearing rights:"])
+            summary_lines.extend(f"- {item}" for item in brief["deadlines"][:4])
+        if brief["defenses"]:
+            summary_lines.extend(["", "Defense tracks:"])
+            summary_lines.extend(f"- {item}" for item in brief["defenses"][:4])
+        if novelty:
+            summary_lines.extend(["", "Novel leads:"])
+            for item in novelty[:3]:
+                summary_lines.append(f"- {item['title']}: {', '.join(item['rare_signals'][:3]) or 'low-linked signal'}")
+        return self.snapshot(
+            title=f"Task Pack: {task}",
+            content="\n".join(summary_lines),
+            layer=layer,
+            role=role,
+            tags=_unique_list(list(tags or []) + [TASK_PACK_TAG]),
+            source="task-pack",
+            related_ids=related_ids,
+            metadata={
+                "authority_tier": "memory",
+                "task_pack": {
+                    "task": task,
+                    "query": query_text,
+                    "brief": brief,
+                    "memory_ids": related_ids,
+                    "novelty": novelty,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                },
+            },
+            decompose=False,
+        )
+
+    def build_session_brief(self, task: str, limit: int = 6) -> dict:
+        """Build a structured session brief for a live issue."""
+        direct_hits = self.search(task, limit=limit)
+        novelty_hits = self.novelty_search(task, limit=min(5, limit))
+        query_terms = set(_extract_query_terms(task))
+        missing_facts: list[str] = []
+        deadlines: list[str] = []
+        defenses: list[str] = []
+        top_matches: list[dict] = []
+        task_lower = task.casefold()
+        if "judgment" in task_lower:
+            missing_facts.append("Need judgment date, court, and whether it was default or contested.")
+        if "repossess" in task_lower or "levy" in task_lower or "execution" in task_lower:
+            missing_facts.append("Need the exact enforcement instrument: repossession notice, levy, writ of execution, or garnishment.")
+        if "exempt" in task_lower:
+            missing_facts.append("Need jurisdiction and property/funds categories to test exemptions and objection deadlines.")
+
+        for memory in direct_hits:
+            authority_tier = str(memory.metadata.get("authority_tier", "memory"))
+            summary = memory.summary or memory.content[:220]
+            overlap = sorted(query_terms & _memory_signal_set(memory))
+            ranking_score = round(
+                authority_weight(authority_tier)
+                + 0.2 * len(overlap)
+                + min(memory.emotional.intensity, 8.0) * 0.03,
+                3,
+            )
+            top_matches.append(
+                {
+                    "id": memory.id,
+                    "title": memory.title,
+                    "authority_tier": authority_tier,
+                    "ranking_score": ranking_score,
+                    "summary": summary,
+                    "tags": memory.tags,
+                    "trace": _unique_list(
+                        [f"authority:{authority_tier}"]
+                        + [f"query_overlap:{item}" for item in overlap[:4]]
+                        + [
+                            f"citation:{item}"
+                            for item in memory.metadata.get("decomposition", {}).get("citations", [])[:3]
+                        ]
+                    )[:8],
+                }
+            )
+            lowered = f"{memory.title} {summary}".casefold()
+            if any(token in lowered for token in ("deadline", "hearing", "objection", "within", "notice", "response")):
+                deadlines.append(summary)
+            if any(token in lowered for token in ("vacate", "service", "jurisdiction", "default", "void", "exempt")):
+                defenses.append(summary)
+
+        top_matches.sort(key=lambda item: (-item["ranking_score"], item["title"].casefold()))
+
+        return {
+            "task": task,
+            "authority_summary": summarize_authorities(direct_hits),
+            "top_matches": top_matches[:limit],
+            "facts": [
+                {
+                    "id": memory.id,
+                    "title": memory.title,
+                    "authority_tier": memory.metadata.get("authority_tier", "memory"),
+                    "summary": memory.summary or memory.content[:220],
+                    "tags": memory.tags,
+                }
+                for memory in direct_hits
+            ],
+            "novelty": novelty_hits,
+            "deadlines": _unique_list(deadlines)[:6],
+            "defenses": _unique_list(defenses)[:6],
+            "citations": sorted(
+                {
+                    citation
+                    for memory in direct_hits
+                    for citation in (
+                        memory.metadata.get("decomposition", {}).get("citations", [])
+                        + _extract_inline_citations(
+                            " ".join(
+                                [
+                                    memory.title,
+                                    memory.summary or "",
+                                    memory.content,
+                                ]
+                            )
+                        )
+                    )
+                    if citation
+                }
+            )[:12],
+            "entities": sorted(
+                {
+                    entity
+                    for memory in direct_hits
+                    for entity in memory.metadata.get("decomposition", {}).get("entities", [])
+                    if entity
+                }
+            )[:12],
+            "missing_facts": missing_facts,
+            "recommended_queries": _unique_list(
+                [task]
+                + [f"{task} {item['rare_signals'][0]}" for item in novelty_hits if item["rare_signals"]]
+                + [f"{task} authority", f"{task} deadline", f"{task} exemption"]
+            )[:8],
+        }
 
     def forget(self, memory_id: str) -> bool:
         """Delete a memory from all backends.
@@ -484,6 +917,7 @@ class MemoryStore:
                 "source_count": len(session_memories),
                 "consolidated_at": datetime.now(timezone.utc).isoformat(),
             },
+            decompose=False,
         )
 
     def load_context(

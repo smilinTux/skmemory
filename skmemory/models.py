@@ -82,6 +82,31 @@ class EmotionalSnapshot(BaseModel):
         return f"{labels_str}@{self.intensity:.1f}/{self.valence:+.1f}"
 
 
+class DecomposedChunk(BaseModel):
+    """A decomposed text chunk ready for vector and graph indexing."""
+
+    chunk_id: str
+    text: str
+    chunk_index: int
+    total_chunks: int
+    section_title: str = ""
+    citations: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    claims: list[str] = Field(default_factory=list)
+
+
+class DecompositionResult(BaseModel):
+    """Structured decomposition metadata for long-form content."""
+
+    chunk_target: int = 900
+    chunk_overlap: int = 200
+    section_titles: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    claims: list[str] = Field(default_factory=list)
+    chunks: list[DecomposedChunk] = Field(default_factory=list)
+
+
 class Memory(BaseModel):
     """A single memory unit -- one polaroid in the album.
 

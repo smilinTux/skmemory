@@ -18,7 +18,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
-from .agents import AGENTS_BASE_DIR, get_agent_paths
+from .agents import AGENTS_BASE_DIR, get_agent_paths, get_default_template_agent
 
 # Dynamic agent-aware paths
 # Uses ~/.skcapstone/agents/{active_agent}/ based on SKMEMORY_AGENT env var
@@ -30,7 +30,8 @@ try:
     CONFIG_PATH = default_paths["config_yaml"]
 except ValueError:
     # Fallback if no agents exist — use platform-aware AGENTS_BASE_DIR
-    SKMEMORY_HOME = AGENTS_BASE_DIR / "lumina-template"
+    default_template = get_default_template_agent() or "template"
+    SKMEMORY_HOME = AGENTS_BASE_DIR / default_template
     CONFIG_DIR = SKMEMORY_HOME / "config"
     CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
 
@@ -49,7 +50,10 @@ class SKMemoryConfig(BaseModel):
     skvector_url: str | None = None
     skvector_key: str | None = None
     skvector_collection: str | None = None
+    skvector_embedding_model: str | None = None
+    skvector_vector_dim: int | None = None
     skgraph_url: str | None = None
+    skgraph_graph_name: str | None = None
     backends_enabled: list[str] = Field(default_factory=list)
     docker_compose_file: str | None = None
     setup_completed_at: str | None = None
@@ -111,7 +115,9 @@ def merge_env_and_config(
     cli_skvector_url: str | None = None,
     cli_skvector_key: str | None = None,
     cli_skgraph_url: str | None = None,
-) -> tuple[str | None, str | None, str | None]:
+    cli_skvector_embedding_model: str | None = None,
+    cli_skvector_vector_dim: int | None = None,
+) -> tuple[str | None, str | None, str | None, str | None, int | None]:
     """Resolve backend URLs with precedence: CLI > env > config > None.
 
     Args:
@@ -120,7 +126,8 @@ def merge_env_and_config(
         cli_skgraph_url: URL passed via ``--skgraph-url`` (future).
 
     Returns:
-        Tuple of (skvector_url, skvector_key, skgraph_url).
+        Tuple of (skvector_url, skvector_key, skgraph_url,
+        skvector_embedding_model, skvector_vector_dim).
     """
     cfg = load_config()
 
@@ -139,8 +146,25 @@ def merge_env_and_config(
         or os.environ.get("SKMEMORY_SKGRAPH_URL")
         or (cfg.skgraph_url if cfg else None)
     )
+    skvector_embedding_model = (
+        cli_skvector_embedding_model
+        or os.environ.get("SKMEMORY_SKVECTOR_EMBEDDING_MODEL")
+        or (cfg.skvector_embedding_model if cfg else None)
+    )
+    env_vector_dim = os.environ.get("SKMEMORY_SKVECTOR_VECTOR_DIM")
+    skvector_vector_dim = (
+        cli_skvector_vector_dim
+        or (int(env_vector_dim) if env_vector_dim else None)
+        or (cfg.skvector_vector_dim if cfg else None)
+    )
 
-    return skvector_url, skvector_key, skgraph_url
+    return (
+        skvector_url,
+        skvector_key,
+        skgraph_url,
+        skvector_embedding_model,
+        skvector_vector_dim,
+    )
 
 
 def build_endpoint_list(

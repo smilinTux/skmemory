@@ -13,6 +13,8 @@ import pytest
 
 from skmemory.backends.skvector_backend import (
     COLLECTION_NAME,
+    EMBEDDING_MODEL,
+    MODEL_DIMENSIONS,
     VECTOR_DIM,
     SKVectorBackend,
     _extract_status_code,
@@ -89,6 +91,8 @@ class TestInitialization:
         """Backend starts uninitialized."""
         qb = SKVectorBackend()
         assert qb._initialized is False
+        assert qb.requested_embedding_model == EMBEDDING_MODEL
+        assert qb.vector_dim == VECTOR_DIM
 
     def test_init_fails_without_qdrant(self):
         """Fails gracefully without qdrant-client."""
@@ -99,6 +103,18 @@ class TestInitialization:
     def test_already_initialized_shortcuts(self, backend):
         """Second init call returns immediately."""
         assert backend._ensure_initialized() is True
+
+    def test_model_alias_sets_expected_vector_dim(self):
+        """Known model aliases should default to the right dimension."""
+        qb = SKVectorBackend(embedding_model="bge-large")
+        assert qb.embedding_model_name == "BAAI/bge-large-en-v1.5"
+        assert qb.vector_dim == MODEL_DIMENSIONS["bge-large"]
+
+    def test_default_model_prefers_local_hammertime_path(self):
+        """The default sovereign model should resolve to the local HammerTime path here."""
+        qb = SKVectorBackend()
+        assert qb.requested_embedding_model == "bge-legal-v1"
+        assert "hammerTime/models/bge-legal-v1" in qb.embedding_model_name
 
 
 # ═══════════════════════════════════════════════════════════
@@ -228,6 +244,22 @@ class TestHealth:
         health = backend.health_check()
         assert health["ok"] is True
         assert health["points_count"] == 42
+        assert health["vectors_count"] == 42
+        assert health["embedding_model"] == EMBEDDING_MODEL
+        assert "resolved_embedding_model" in health
+        assert health["vector_dim"] == VECTOR_DIM
+
+    def test_health_ok_without_vectors_count(self, backend, mock_qdrant_client):
+        """Health check tolerates older collection info without vectors_count."""
+        collection_info = MagicMock()
+        collection_info.points_count = 42
+        del collection_info.vectors_count
+        mock_qdrant_client.get_collection.return_value = collection_info
+
+        health = backend.health_check()
+        assert health["ok"] is True
+        assert health["points_count"] == 42
+        assert health["vectors_count"] is None
 
     def test_health_not_initialized(self):
         """Uninitialized backend returns ok=False."""

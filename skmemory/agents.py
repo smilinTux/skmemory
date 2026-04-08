@@ -29,15 +29,40 @@ def _agents_base() -> Path:
 # Base directory for all agents
 AGENTS_BASE_DIR = _agents_base()
 
-# Template directory name (ignored by default)
-TEMPLATE_AGENT = "lumina-template"
+# Default template directory name used when a specific source is not provided.
+DEFAULT_TEMPLATE_AGENT = "lumina-template"
+
+
+def list_template_agents() -> list[str]:
+    """Discover all template agent directories."""
+    if not AGENTS_BASE_DIR.exists():
+        return []
+
+    return sorted(
+        entry.name
+        for entry in AGENTS_BASE_DIR.iterdir()
+        if entry.is_dir() and is_template_agent(entry.name)
+    )
+
+
+def get_default_template_agent() -> str | None:
+    """Return the preferred template agent name, if one exists."""
+    preferred = get_agent_dir(DEFAULT_TEMPLATE_AGENT)
+    if preferred.exists():
+        return DEFAULT_TEMPLATE_AGENT
+
+    templates = list_template_agents()
+    if templates:
+        return templates[0]
+
+    return None
 
 
 def list_agents() -> list[str]:
     """Discover all non-template agents in ~/.skcapstone/agents/
 
     Scans the agents directory and returns all agent names
-    except the template agent.
+    except template directories.
 
     Returns:
         list[str]: Sorted list of agent names (e.g., ['lumina', 'john'])
@@ -47,7 +72,7 @@ def list_agents() -> list[str]:
 
     agents = []
     for entry in AGENTS_BASE_DIR.iterdir():
-        if entry.is_dir() and entry.name != TEMPLATE_AGENT:
+        if entry.is_dir() and not is_template_agent(entry.name):
             # Check if it has a valid config
             config_file = entry / "config" / "skmemory.yaml"
             if config_file.exists():
@@ -96,9 +121,9 @@ def is_template_agent(agent_name: str) -> bool:
         agent_name: Name of the agent
 
     Returns:
-        bool: True if this is the template agent
+        bool: True if this is a template agent directory
     """
-    return agent_name == TEMPLATE_AGENT
+    return agent_name.endswith("-template")
 
 
 def get_active_agent() -> str | None:
@@ -141,7 +166,8 @@ def get_agent_paths(agent_name: str | None = None) -> dict[str, Path]:
 
     if agent_name is None:
         raise ValueError(
-            "No agent configured. Create one by copying ~/.skcapstone/agents/lumina-template"
+            "No agent configured. Create one by copying an agent template under "
+            "~/.skcapstone/agents/*-template"
         )
 
     base = get_agent_dir(agent_name)
@@ -179,17 +205,23 @@ def ensure_agent_dirs(agent_name: str) -> Path:
     return paths["base"]
 
 
-def copy_template(target_name: str, source: str = TEMPLATE_AGENT) -> Path:
+def copy_template(target_name: str, source: str | None = None) -> Path:
     """Create a new agent by copying the template.
 
     Args:
         target_name: Name for the new agent
-        source: Template to copy from (default: lumina-template)
+        source: Template to copy from. Defaults to the preferred available
+            template.
 
     Returns:
         Path: New agent's base directory
     """
     import shutil
+
+    if source is None:
+        source = get_default_template_agent()
+    if source is None:
+        raise ValueError("No agent template found under ~/.skcapstone/agents/*-template")
 
     source_dir = get_agent_dir(source)
     target_dir = get_agent_dir(target_name)

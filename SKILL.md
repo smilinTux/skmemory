@@ -1,7 +1,7 @@
 ---
 name: skmemory
 emoji: 🧠
-description: Universal AI memory system with emotional context, multi-layer persistence, and token-optimized loading. Use for memory snapshots, search, rehydration rituals, Telegram chat import, Cloud 9 seed import, journal, soul blueprints, and warmth anchors.
+description: Universal AI memory system with emotional context, multi-layer persistence, sovereign embeddings, decomposition-aware ingestion, and graph retrieval. Use for memory snapshots, search, rehydration rituals, Telegram chat import, Cloud 9 seed import, journal, soul blueprints, and warmth anchors.
 metadata: {"clawdbot":{"requires":{"bins":["skmemory"]},"install":[{"id":"pipx","kind":"shell","command":"pipx install 'skmemory[all]'","bins":["skmemory","skmemory-mcp"],"label":"Install skmemory (pipx)"}]}}
 ---
 
@@ -18,10 +18,11 @@ metadata: {"clawdbot":{"requires":{"bins":["skmemory"]},"install":[{"id":"pipx",
 
 ## Description
 
-Universal AI memory system with emotional context, multi-layer persistence, and token-optimized loading. SKMemory gives any AI agent persistent memory across session resets — snapshots, journals, soul blueprints, warmth anchors, and full rehydration rituals.
+Universal AI memory system with emotional context, multi-layer persistence, token-optimized loading, sovereign embeddings, decomposition-aware document ingestion, and graph retrieval. SKMemory gives any AI agent persistent memory across session resets — snapshots, journals, soul blueprints, warmth anchors, full rehydration rituals, structured long-form document storage, and decomposition-aware recall across entities, citations, claims, and section structure.
 
 **Memory Layers:** short-term, mid-term, long-term
 **Storage:** SQLite index + JSON files (zero-infrastructure), optional SKVector & SKGraph
+**Decomposition:** chunks + citations + entities + claims + section titles
 **Emotion:** Every memory carries emotional metadata (intensity, valence, labels)
 
 ---
@@ -90,7 +91,7 @@ Then restart the OpenClaw gateway to load the plugin.
 
 ## OpenClaw Agent Tools
 
-If you are an OpenClaw agent (Lumina, etc.), you have these native tools available — call them directly, do NOT use `exec`:
+If you are an OpenClaw agent, you have these native tools available — call them directly, do NOT use `exec`:
 
 | Tool | Description |
 |------|-------------|
@@ -114,6 +115,10 @@ You also have the `/skmemory` slash command: `/skmemory ritual --full`, `/skmemo
 ```bash
 skmemory snapshot "First real conversation" "We talked about the stars" \
   --intensity 8.5 --emotions "wonder,connection" --tags "first-contact"
+
+# Long-form content
+skmemory snapshot "Legal memo" "$(cat memo.md)" --decompose
+skmemory ingest-file ./notice.md --title "IRS Notice"
 ```
 
 ### Search Memories
@@ -121,7 +126,27 @@ skmemory snapshot "First real conversation" "We talked about the stars" \
 ```bash
 skmemory search "stars"
 skmemory search "that moment we connected" --ai  # AI-reranked results
+
+# Structured graph retrieval
+skmemory graph entity "Internal Revenue Service"
+skmemory graph citation "UCC § 3-301"
+skmemory graph claim "shall respond"
+skmemory graph section "Demand"
+skmemory graph around <memory-id> --depth 2
+skmemory graph related-claims --entity "Internal Revenue Service"
+skmemory graph related-claims --citation "UCC § 3-301"
+
+# Novel issue support
+skmemory novelty "judgment execution exempt property"
+skmemory session-brief "default judgment levy on exempt funds"
+skmemory task-pack create "judgment defense" --query "vacate service defects"
+skmemory task-pack show <memory-id>
 ```
+
+The issue-oriented commands share the same decomposition-aware retrieval path:
+- `novelty` surfaces rare signals and under-linked memories.
+- `session-brief` summarizes top matches, authority tiers, extracted citations/entities, deadlines, defenses, missing inputs, and trace hints.
+- `task-pack create` stores a reusable issue pattern linked to the strongest supporting memories and preserves the generated brief in metadata.
 
 ### Rehydration Ritual (Boot Ceremony)
 
@@ -135,7 +160,7 @@ skmemory ritual --full  # Full context prompt for injection
 ```bash
 # Import Telegram Desktop export (recommended: daily mode)
 skmemory import-telegram ~/Downloads/telegram-export/
-skmemory import-telegram ~/chats/result.json --mode message --chat-name "Lumina & Chef"
+skmemory import-telegram ~/chats/result.json --mode message --chat-name "Agent and Operator"
 
 # Import Cloud 9 seeds
 skmemory import-seeds
@@ -190,8 +215,20 @@ path = plugin.export()
 | Command | Description |
 |---------|-------------|
 | `skmemory snapshot "title" "content"` | Capture a memory |
+| `skmemory snapshot ... --decompose` | Capture long-form content with decomposition |
+| `skmemory ingest-file <path>` | Ingest a document into parent + chunk memories |
 | `skmemory recall <id>` | Retrieve by ID |
 | `skmemory search "query"` | Full-text search |
+| `skmemory graph entity "query"` | Query SKGraph for extracted entities |
+| `skmemory graph citation "query"` | Query SKGraph for citations |
+| `skmemory graph claim "query"` | Query SKGraph for claims |
+| `skmemory graph section "query"` | Query SKGraph for section titles |
+| `skmemory graph around <memory-id>` | Traverse the graph neighborhood around a memory |
+| `skmemory graph related-claims --entity/--citation ...` | Pivot through an entity or citation to discover connected claims |
+| `skmemory novelty "query"` | Surface under-linked memories and rare signals |
+| `skmemory session-brief "task"` | Build a structured brief for a live issue |
+| `skmemory task-pack create "task"` | Capture a reusable task memory pack |
+| `skmemory task-pack show <id>` | Inspect a stored task pack |
 | `skmemory list` | List memories (--layer, --tags) |
 | `skmemory ritual` | Full rehydration ceremony |
 | `skmemory context` | Token-efficient context JSON |
@@ -238,6 +275,9 @@ path = plugin.export()
 | `--ai-model` | `SKMEMORY_AI_MODEL` | Model name (default: llama3.2) |
 | `--ai-url` | `SKMEMORY_AI_URL` | Ollama server URL |
 | `--skvector-url` | `SKMEMORY_SKVECTOR_URL` | SKVector server URL |
+| `--skvector-embedding-model` | `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Embedding model override (default: `bge-legal-v1`, fallback: `BAAI/bge-large-en-v1.5`) |
+| `--skvector-vector-dim` | `SKMEMORY_SKVECTOR_VECTOR_DIM` | Embedding dimension override |
+| `--skgraph-url` | `SKMEMORY_SKGRAPH_URL` | SKGraph / FalkorDB server URL |
 
 ---
 
@@ -300,7 +340,7 @@ Pull messages directly from Telegram without manual exports. Requires one-time s
    skmemory import-telegram-api @any_chat_name
    ```
    You'll be prompted for your phone number, then a verification code sent via Telegram.
-   The session is saved at `~/.skmemory/telegram.session` — future runs skip auth.
+   The session is saved under the active SKMemory home (for example `~/.skcapstone/agents/<agent>/memory/telegram.session`) — future runs skip auth.
 
 #### Usage
 
@@ -346,7 +386,7 @@ stats = import_telegram(
     plugin.store,
     "/path/to/export/",
     mode="daily",
-    chat_name="Lumina & Chef",
+    chat_name="Agent and Operator",
     tags=["personal"],
 )
 print(f"Imported {stats['messages_imported']} messages across {stats['days_processed']} days")
@@ -370,22 +410,23 @@ stats = import_telegram_api(
 ## Architecture
 
 ```
-~/.skmemory/
-  index.db              # SQLite index (fast queries)
-  memories/
-    abc123.json         # Individual memory files
-    def456.json
-  backups/
-    skmemory-backup-2025-06-15.json
-  soul.json             # Soul blueprint
-  anchor.json           # Warmth anchor
+~/.skcapstone/agents/<agent>/
+  config/
+    skmemory.yaml       # Backend URLs, model config, HA settings
+  memory/
+    index.db            # SQLite index (fast queries)
+    short-term/
+    mid-term/
+    long-term/
+  soul/
+    base.json           # Soul blueprint
   journal.jsonl         # Append-only journal
 ```
 
 **Three-tier storage:**
 1. **SQLite** (default primary) — fast indexed queries, zero-config
-2. **SKVector** (optional) — semantic vector search
-3. **SKGraph** (optional) — graph relationship traversal
+2. **SKVector** (optional) — semantic vector search with `bge-legal-v1` by default and `BAAI/bge-large-en-v1.5` as fallback
+3. **SKGraph** (optional) — graph relationship traversal over decomposition-aware structure nodes
 
 ---
 
@@ -412,11 +453,19 @@ export SKMEMORY_AI_URL=http://localhost:11434   # Ollama URL
 # SKVector (optional — semantic search)
 export SKMEMORY_SKVECTOR_URL=http://localhost:6333
 export SKMEMORY_SKVECTOR_KEY=your-api-key
+export SKMEMORY_SKVECTOR_EMBEDDING_MODEL=bge-legal-v1
+export SKMEMORY_SKVECTOR_VECTOR_DIM=1024
+
+# SKGraph (optional — graph retrieval)
+export SKMEMORY_SKGRAPH_URL=redis://localhost:6379
 
 # Telegram API import (optional — for import-telegram-api command)
 export TELEGRAM_API_ID=12345678                # From https://my.telegram.org
 export TELEGRAM_API_HASH=your_api_hash_here    # From https://my.telegram.org
 ```
+
+If you change the embedding model or vector dimension, rebuild or reindex the
+vector-backed store before trusting semantic search output.
 
 ### Docker (optional, for SKVector + SKGraph)
 

@@ -41,6 +41,8 @@ _active_selector = None  # Module-level reference for routing commands
 def _get_store(
     skvector_url: str | None = None,
     api_key: str | None = None,
+    skvector_embedding_model: str | None = None,
+    skvector_vector_dim: int | None = None,
     legacy_files: bool = False,
 ) -> MemoryStore:
     """Create a MemoryStore with configured backends.
@@ -61,10 +63,28 @@ def _get_store(
 
     from .config import build_endpoint_list, load_config, merge_env_and_config
 
-    final_skvector_url, final_skvector_key, final_skgraph_url = merge_env_and_config(
+    merged = merge_env_and_config(
         cli_skvector_url=skvector_url,
         cli_skvector_key=api_key,
+        cli_skvector_embedding_model=skvector_embedding_model,
+        cli_skvector_vector_dim=skvector_vector_dim,
     )
+    if len(merged) == 3:
+        (
+            final_skvector_url,
+            final_skvector_key,
+            final_skgraph_url,
+        ) = merged
+        final_skvector_embedding_model = None
+        final_skvector_vector_dim = None
+    else:
+        (
+            final_skvector_url,
+            final_skvector_key,
+            final_skgraph_url,
+            final_skvector_embedding_model,
+            final_skvector_vector_dim,
+        ) = merged
 
     # Try endpoint selector when multi-endpoint config exists
     cfg = load_config()
@@ -114,6 +134,10 @@ def _get_store(
             kwargs = {"url": final_skvector_url, "api_key": final_skvector_key}
             if collection:
                 kwargs["collection"] = collection
+            if final_skvector_embedding_model:
+                kwargs["embedding_model"] = final_skvector_embedding_model
+            if final_skvector_vector_dim:
+                kwargs["vector_dim"] = final_skvector_vector_dim
             vector = SKVectorBackend(**kwargs)
         except Exception:
             click.echo("Warning: Could not initialize SKVector backend", err=True)
@@ -122,7 +146,10 @@ def _get_store(
         try:
             from .backends.skgraph_backend import SKGraphBackend
 
-            graph = SKGraphBackend(url=final_skgraph_url)
+            graph_name = (
+                cfg.skgraph_graph_name if cfg and cfg.skgraph_graph_name else "skmemory"
+            )
+            graph = SKGraphBackend(url=final_skgraph_url, graph_name=graph_name)
         except Exception:
             click.echo("Warning: Could not initialize SKGraph backend", err=True)
 
@@ -136,6 +163,19 @@ def _get_store(
 )
 @click.option(
     "--skvector-key", envvar="SKMEMORY_SKVECTOR_KEY", default=None, help="SKVector API key"
+)
+@click.option(
+    "--skvector-embedding-model",
+    envvar="SKMEMORY_SKVECTOR_EMBEDDING_MODEL",
+    default=None,
+    help="SKVector embedding model (default: bge-legal-v1, fallback: BAAI/bge-large-en-v1.5)",
+)
+@click.option(
+    "--skvector-vector-dim",
+    envvar="SKMEMORY_SKVECTOR_VECTOR_DIM",
+    type=int,
+    default=None,
+    help="SKVector embedding dimension override",
 )
 @click.option(
     "--ai",
@@ -156,6 +196,8 @@ def cli(
     ctx: click.Context,
     skvector_url: str | None,
     skvector_key: str | None,
+    skvector_embedding_model: str | None,
+    skvector_vector_dim: int | None,
     use_ai: bool,
     ai_model: str | None,
     ai_url: str | None,
@@ -169,7 +211,12 @@ def cli(
     """
     ctx.ensure_object(dict)
     if "store" not in ctx.obj:
-        ctx.obj["store"] = _get_store(skvector_url, skvector_key)
+        ctx.obj["store"] = _get_store(
+            skvector_url,
+            skvector_key,
+            skvector_embedding_model,
+            skvector_vector_dim,
+        )
 
     if use_ai:
         ai = AIClient(base_url=ai_url, model=ai_model)
@@ -201,6 +248,7 @@ def cli(
 @click.option("--emotions", default="", help="Comma-separated emotion labels")
 @click.option("--resonance", default="", help="What this moment felt like")
 @click.option("--source", default="cli", help="Memory source identifier")
+@click.option("--decompose/--no-decompose", default=False, help="Decompose long-form content into chunk memories")
 @click.pass_context
 def snapshot(
     ctx: click.Context,
@@ -214,6 +262,7 @@ def snapshot(
     emotions: str,
     resonance: str,
     source: str,
+    decompose: bool,
 ) -> None:
     """Take a polaroid -- capture a moment as a memory."""
     store: MemoryStore = ctx.obj["store"]
@@ -233,11 +282,59 @@ def snapshot(
         tags=[t.strip() for t in tags.split(",") if t.strip()],
         emotional=emotional,
         source=source,
+        decompose=decompose,
     )
 
     click.echo(f"Snapshot saved: {memory.id}")
     click.echo(f"  Layer: {memory.layer.value}")
     click.echo(f"  Emotional: {memory.emotional.signature()}")
+    if memory.metadata.get("decomposition"):
+        click.echo(
+            f"  Decomposed: {len(memory.metadata.get('chunk_memory_ids', []))} chunks"
+        )
+
+
+@cli.command("ingest-file")
+@click.argument("file_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--title", default=None, help="Override document title")
+@click.option(
+    "--layer", type=click.Choice(["short-term", "mid-term", "long-term"]), default="mid-term"
+)
+@click.option(
+    "--role", type=click.Choice(["dev", "ops", "sec", "ai", "general"]), default="general"
+)
+@click.option("--tags", default="", help="Comma-separated tags")
+@click.option("--source", default="document", help="Memory source identifier")
+@click.pass_context
+def ingest_file(
+    ctx: click.Context,
+    file_path: Path,
+    title: str | None,
+    layer: str,
+    role: str,
+    tags: str,
+    source: str,
+) -> None:
+    """Ingest a document file with decomposition-aware chunking."""
+    store: MemoryStore = ctx.obj["store"]
+    content = file_path.read_text(encoding="utf-8", errors="replace")
+    document_title = title or file_path.stem.replace("_", " ").replace("-", " ").strip()
+    memory = store.ingest_document(
+        title=document_title or file_path.name,
+        content=content,
+        layer=MemoryLayer(layer),
+        role=MemoryRole(role),
+        tags=[t.strip() for t in tags.split(",") if t.strip()] + ["document-ingest"],
+        source=source,
+        source_ref=str(file_path),
+        metadata={"file_path": str(file_path)},
+    )
+    decomposition = memory.metadata.get("decomposition", {})
+    click.echo(f"Document ingested: {memory.id}")
+    click.echo(f"  Chunks: {len(memory.metadata.get('chunk_memory_ids', []))}")
+    click.echo(f"  Citations: {len(decomposition.get('citations', []))}")
+    click.echo(f"  Entities: {len(decomposition.get('entities', []))}")
+    click.echo(f"  Claims: {len(decomposition.get('claims', []))}")
 
 
 @cli.command()
@@ -250,10 +347,17 @@ def recall(ctx: click.Context, memory_id: str) -> None:
 
     # If exact match failed, try prefix matching across memory tier dirs
     if memory is None and len(memory_id) >= 6:
-        import os
         from pathlib import Path
 
-        agent = os.environ.get("SKCAPSTONE_AGENT", "lumina")
+        from .agents import get_active_agent
+
+        agent = get_active_agent()
+        if agent is None:
+            click.echo(
+                "No active agent configured. Set SKCAPSTONE_AGENT or SKMEMORY_AGENT.",
+                err=True,
+            )
+            sys.exit(1)
         mem_root = Path.home() / ".skcapstone" / "agents" / agent / "memory"
 
         for tier in ("short-term", "mid-term", "long-term"):
@@ -544,6 +648,169 @@ def health(ctx: click.Context) -> None:
     store: MemoryStore = ctx.obj["store"]
     status = store.health()
     click.echo(json.dumps(status, indent=2))
+
+
+@cli.group()
+def graph() -> None:
+    """Query decomposition-aware graph structures."""
+
+
+def _emit_graph_results(results: list[dict]) -> None:
+    if not results:
+        click.echo("No graph matches found.")
+        return
+    click.echo(json.dumps(results, indent=2))
+
+
+def _require_graph_backend(store: MemoryStore) -> None:
+    if not store.graph:
+        click.echo("SKGraph backend not configured.", err=True)
+        sys.exit(1)
+
+
+@graph.command("entity")
+@click.argument("query")
+@click.option("--limit", type=int, default=10)
+@click.pass_context
+def graph_entity(ctx: click.Context, query: str, limit: int) -> None:
+    """Find memories mentioning an extracted entity."""
+    store: MemoryStore = ctx.obj["store"]
+    _require_graph_backend(store)
+    _emit_graph_results(store.graph.search_by_entity(query, limit=limit))
+
+
+@graph.command("citation")
+@click.argument("query")
+@click.option("--limit", type=int, default=10)
+@click.pass_context
+def graph_citation(ctx: click.Context, query: str, limit: int) -> None:
+    """Find memories citing a decomposed citation."""
+    store: MemoryStore = ctx.obj["store"]
+    _require_graph_backend(store)
+    _emit_graph_results(store.graph.search_by_citation(query, limit=limit))
+
+
+@graph.command("claim")
+@click.argument("query")
+@click.option("--limit", type=int, default=10)
+@click.pass_context
+def graph_claim(ctx: click.Context, query: str, limit: int) -> None:
+    """Find memories asserting a decomposed claim."""
+    store: MemoryStore = ctx.obj["store"]
+    _require_graph_backend(store)
+    _emit_graph_results(store.graph.search_by_claim(query, limit=limit))
+
+
+@graph.command("section")
+@click.argument("query")
+@click.option("--limit", type=int, default=10)
+@click.pass_context
+def graph_section(ctx: click.Context, query: str, limit: int) -> None:
+    """Find memories associated with a decomposed section title."""
+    store: MemoryStore = ctx.obj["store"]
+    _require_graph_backend(store)
+    _emit_graph_results(store.graph.search_by_section(query, limit=limit))
+
+
+@graph.command("around")
+@click.argument("memory_id")
+@click.option("--depth", type=int, default=2)
+@click.pass_context
+def graph_around(ctx: click.Context, memory_id: str, depth: int) -> None:
+    """Traverse graph neighbourhood around a memory."""
+    store: MemoryStore = ctx.obj["store"]
+    _require_graph_backend(store)
+    _emit_graph_results(store.graph.get_related(memory_id, depth=depth))
+
+
+@graph.command("related-claims")
+@click.option("--entity", "entity_query", default=None, help="Entity text to pivot through.")
+@click.option("--citation", "citation_query", default=None, help="Citation text to pivot through.")
+@click.option("--limit", type=int, default=10)
+@click.pass_context
+def graph_related_claims(
+    ctx: click.Context,
+    entity_query: str | None,
+    citation_query: str | None,
+    limit: int,
+) -> None:
+    """Find claims connected through an entity or citation pivot."""
+    store: MemoryStore = ctx.obj["store"]
+    _require_graph_backend(store)
+    if bool(entity_query) == bool(citation_query):
+        click.echo("Provide exactly one of --entity or --citation.", err=True)
+        sys.exit(1)
+    if entity_query:
+        results = store.graph.related_claims_by_entity(entity_query, limit=limit)
+    else:
+        results = store.graph.related_claims_by_citation(citation_query or "", limit=limit)
+    _emit_graph_results(results)
+
+
+@cli.command("novelty")
+@click.argument("query")
+@click.option("--limit", type=int, default=8, help="Maximum novelty candidates.")
+@click.pass_context
+def novelty(ctx: click.Context, query: str, limit: int) -> None:
+    """Surface novel or under-linked memories for a query."""
+    store: MemoryStore = ctx.obj["store"]
+    click.echo(json.dumps(store.novelty_search(query, limit=limit), indent=2))
+
+
+@cli.group("task-pack")
+def task_pack() -> None:
+    """Create or inspect reusable task memory packs."""
+
+
+@task_pack.command("create")
+@click.argument("task")
+@click.option("--query", default=None, help="Override retrieval query used to assemble the pack.")
+@click.option("--limit", type=int, default=8, help="Number of related memories to include.")
+@click.option("--layer", type=click.Choice(["short-term", "mid-term", "long-term"]), default="mid-term")
+@click.option("--tags", default="", help="Comma-separated extra tags.")
+@click.pass_context
+def task_pack_create(
+    ctx: click.Context,
+    task: str,
+    query: str | None,
+    limit: int,
+    layer: str,
+    tags: str,
+) -> None:
+    """Create a reusable task pack memory."""
+    store: MemoryStore = ctx.obj["store"]
+    pack = store.create_task_pack(
+        task,
+        query=query,
+        limit=limit,
+        layer=MemoryLayer(layer),
+        tags=[item.strip() for item in tags.split(",") if item.strip()],
+    )
+    click.echo(json.dumps({"id": pack.id, "title": pack.title, "metadata": pack.metadata}, indent=2))
+
+
+@task_pack.command("show")
+@click.argument("memory_id")
+@click.pass_context
+def task_pack_show(ctx: click.Context, memory_id: str) -> None:
+    """Show a stored task pack memory."""
+    store: MemoryStore = ctx.obj["store"]
+    memory = store.recall(memory_id)
+    if memory is None:
+        click.echo(f"Memory not found: {memory_id}", err=True)
+        raise SystemExit(1)
+    click.echo(json.dumps(memory.model_dump(), indent=2))
+
+
+@cli.command("session-brief")
+@click.argument("task")
+@click.option("--limit", type=int, default=6, help="Direct memory hits to include.")
+@click.pass_context
+def session_brief(ctx: click.Context, task: str, limit: int) -> None:
+    """Build a structured memory brief for a live issue."""
+    store: MemoryStore = ctx.obj["store"]
+    brief = store.build_session_brief(task, limit=limit)
+    click.echo(json.dumps(brief, indent=2))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1133,12 +1400,25 @@ def setup() -> None:
     flag_value="remote",
     help="Connect to a remote/SaaS URL (skip local/remote prompt)",
 )
+@click.option(
+    "--embedding-model",
+    default=None,
+    help="SKVector embedding model to persist in config (default: bge-legal-v1)",
+)
+@click.option(
+    "--vector-dim",
+    type=int,
+    default=None,
+    help="SKVector embedding dimension to persist in config",
+)
 def setup_wizard(
     skvector: bool,
     skgraph: bool,
     skip_deps: bool,
     non_interactive: bool,
     deployment_mode: str,
+    embedding_model: str | None,
+    vector_dim: int | None,
 ) -> None:
     """Interactive wizard — deploy Docker containers or configure remote URLs.
 
@@ -1155,6 +1435,8 @@ def setup_wizard(
         skip_deps=skip_deps,
         non_interactive=non_interactive,
         deployment_mode=deployment_mode,
+        embedding_model=embedding_model,
+        vector_dim=vector_dim,
         echo=click.echo,
     )
     if not result["success"]:

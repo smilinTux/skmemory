@@ -77,6 +77,29 @@ class TestSnapshot:
         assert mem.layer == MemoryLayer.LONG
         assert mem.role == MemoryRole.SEC
 
+    def test_snapshot_with_decomposition_creates_chunk_children(self, store: MemoryStore) -> None:
+        """Decomposition stores a parent plus chunk child memories."""
+        content = (
+            "# Notice\n\n"
+            "The Internal Revenue Service shall respond promptly under 26 U.S.C. § 6903. "
+            "Chef Casey therefore claims the filing is effective. "
+        ) * 20
+        parent = store.snapshot(
+            title="Long notice",
+            content=content,
+            layer=MemoryLayer.MID,
+            decompose=True,
+        )
+
+        assert "decomposition" in parent.metadata
+        chunk_ids = parent.metadata["chunk_memory_ids"]
+        assert len(chunk_ids) >= 2
+        chunk = store.recall(chunk_ids[0])
+        assert chunk is not None
+        assert chunk.parent_id == parent.id
+        assert "decomposed" in chunk.tags
+        assert chunk.metadata["decomposition"]["citations"]
+
 
 class TestRecall:
     """Tests for the recall (read) operation."""
@@ -110,6 +133,61 @@ class TestSearch:
         store.snapshot(title="Unrelated", content="Nothing here")
         results = store.search("quantum entanglement")
         assert len(results) == 0
+
+    def test_authority_tier_inferred_from_source_ref(self, store: MemoryStore) -> None:
+        """Snapshots infer authority metadata from file/source hints."""
+        mem = store.snapshot(
+            title="UCC remedy note",
+            content="Holder rights under UCC § 3-301 remain relevant.",
+            source_ref="reference/ucc/UCC_Complete.md",
+        )
+        assert mem.metadata["authority_tier"] == "statute"
+
+    def test_novelty_search_surfaces_rare_signals(self, store: MemoryStore) -> None:
+        """Novelty search rewards under-linked entities and citations."""
+        store.snapshot(
+            title="Common note",
+            content="IRS Form 56 remains in play for the estate.",
+            decompose=True,
+        )
+        store.snapshot(
+            title="Rare signal note",
+            content="Unique vessel registry claim under 46 U.S.C. § 31301 appears once here.",
+            decompose=True,
+        )
+
+        results = store.novelty_search("vessel registry claim", limit=3)
+        assert results
+        assert results[0]["novelty_score"] >= 0
+        assert "trace" in results[0]
+        assert "Rare signal note" in {item["title"] for item in results}
+
+    def test_create_task_pack_links_related_memories(self, store: MemoryStore) -> None:
+        """Task packs store linked memories and pack metadata."""
+        mem = store.snapshot(title="Default judgment note", content="Vacate service defects and check hearing date.")
+        pack = store.create_task_pack("Judgment defense", query="default judgment", limit=3)
+
+        assert "task_pack" in pack.metadata
+        assert pack.metadata["task_pack"]["task"] == "Judgment defense"
+        assert mem.id in pack.related_ids
+        assert "task-pack" in pack.tags
+
+    def test_build_session_brief_returns_missing_facts(self, store: MemoryStore) -> None:
+        """Session briefs should call out missing factual inputs for live issues."""
+        store.snapshot(
+            title="Execution memo",
+            content="Need the writ, levy date, and exemption deadlines under 735 ILCS 5/12-1001.",
+            source_ref="reference/state/illinois-exemptions.md",
+            decompose=True,
+        )
+        brief = store.build_session_brief("judgment execution exempt property", limit=3)
+        assert brief["facts"]
+        assert brief["top_matches"]
+        assert brief["missing_facts"]
+        assert brief["authority_summary"]
+        assert brief["citations"]
+        assert "trace" in brief["top_matches"][0]
+        assert any("exemption" in item.casefold() for item in brief["missing_facts"])
 
 
 class TestForget:

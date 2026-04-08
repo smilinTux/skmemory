@@ -279,24 +279,34 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="memory_graph",
             description=(
-                "Graph operations: traverse connections, get lineage, find clusters. "
-                "Requires SKGraph backend (FalkorDB)."
+                "Graph operations: traverse connections, get lineage, find clusters, "
+                "and pivot through entities or citations to related claims. Requires "
+                "SKGraph backend (FalkorDB)."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["traverse", "lineage", "clusters"],
+                        "enum": ["traverse", "around", "lineage", "clusters", "related_claims"],
                         "description": "Graph operation to perform.",
                     },
                     "memory_id": {
                         "type": "string",
-                        "description": "Memory ID (required for traverse/lineage).",
+                        "description": "Memory ID (required for traverse/around/lineage).",
                     },
                     "depth": {
                         "type": "integer",
-                        "description": "Traversal depth (default: 2, for traverse only).",
+                        "description": "Traversal depth (default: 2, for traverse/around only).",
+                    },
+                    "pivot_type": {
+                        "type": "string",
+                        "enum": ["entity", "citation"],
+                        "description": "Pivot type for related_claims.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Entity or citation text for related_claims.",
                     },
                 },
                 "required": ["action"],
@@ -626,10 +636,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     "SKGraph backend not configured. "
                     "Install falkordb and configure the graph backend."
                 )
-            if action == "traverse":
+            if action in {"traverse", "around"}:
                 mid = arguments.get("memory_id")
                 if not mid:
-                    return _error_response("memory_id required for traverse")
+                    return _error_response("memory_id required for traverse/around")
                 depth = int(arguments.get("depth", 2))
                 results = store.graph.get_related(mid, depth=depth)
                 return _json_response(results)
@@ -642,6 +652,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             elif action == "clusters":
                 clusters = store.graph.find_clusters()
                 return _json_response(clusters)
+            elif action == "related_claims":
+                pivot_type = arguments.get("pivot_type")
+                query = arguments.get("query", "")
+                if pivot_type not in {"entity", "citation"}:
+                    return _error_response("pivot_type must be 'entity' or 'citation'")
+                if not query:
+                    return _error_response("query required for related_claims")
+                if pivot_type == "entity":
+                    results = store.graph.related_claims_by_entity(query)
+                else:
+                    results = store.graph.related_claims_by_citation(query)
+                return _json_response(results)
             else:
                 return _error_response(f"Unknown graph action: {action}")
 

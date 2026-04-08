@@ -29,14 +29,19 @@
 ```mermaid
 graph TB
     Agent["Agent / CLI"] --> MS["MemoryStore"]
+    MS --> D["Decomposition Engine\nchunk + citation + entity + claim extraction"]
     MS --> L0["Level 0: SQLite\nAlways on, zero deps"]
-    MS --> L1["Level 1: SKVector\nSemantic search\nPowered by Qdrant"]
-    MS --> L2["Level 2: SKGraph\nGraph traversal\nPowered by FalkorDB"]
+    MS --> L1["Level 1: SKVector\nSemantic search\nbge-legal-v1 default"]
+    MS --> L2["Level 2: SKGraph\nGraph traversal\nFalkorDB + structure nodes"]
     MS --> L3["Level 3: HA Routing\nEndpointSelector"]
+    D --> L0
+    D --> L1
+    D --> L2
     style L0 fill:#bfb,stroke:#333
     style L1 fill:#bbf,stroke:#333
     style L2 fill:#fbf,stroke:#333
     style L3 fill:#fbb,stroke:#333
+    style D fill:#ffd,stroke:#333
 ```
 
 ### Level 0: SQLite Index (always on)
@@ -54,7 +59,7 @@ The SQLite backend replaces the old file-scanning approach:
 
 Data layout:
 ```
-~/.skmemory/memories/
+~/.skcapstone/agents/<agent>/memory/
 ├── index.db              # SQLite index (metadata, summaries, previews)
 ├── short-term/
 │   └── {uuid}.json       # Full memory JSON
@@ -73,7 +78,10 @@ skmemory reindex
 
 **"Find the memory about that feeling we had" — even if those words aren't in it.**
 
-Uses sentence-transformers (all-MiniLM-L6-v2) to embed memories as vectors.
+Uses the sovereign HammerTime embedding model by default:
+`bge-legal-v1` when the local model is available, falling back to
+`BAAI/bge-large-en-v1.5`.
+
 SKVector stores the embeddings and enables cosine similarity search.
 
 Install:
@@ -90,6 +98,22 @@ export SKMEMORY_SKVECTOR_KEY=your-api-key
 
 Resource cost: ~200MB RAM, ~100MB disk idle.
 
+### Decomposition Layer
+
+**Long-form content becomes structured memory, not one flat blob.**
+
+`MemoryStore.ingest_document()` and `skmemory ingest-file` run a generic
+decomposition pass that extracts:
+- chunk boundaries with overlap
+- section titles
+- citations
+- entities
+- claim-like sentences
+
+The parent memory keeps the high-level document metadata. Child chunk memories
+carry chunk-local decomposition metadata and are individually indexed in vector
+and graph backends.
+
 ### Level 2: SKGraph (powered by FalkorDB) (optional — graph relationships)
 
 **"What memories connect to this person?" — traverse the relationship web.**
@@ -99,6 +123,10 @@ SKGraph (Cypher over Redis protocol) stores memory-to-memory edges:
 - `PROMOTED_FROM` — promotion lineage chains
 - `TAGGED` — tag-based clustering
 - `PLANTED` — seed creator attribution
+- `MENTIONS` — memory → entity
+- `CITES` — memory → citation
+- `ASSERTS` — memory → claim
+- `IN_SECTION` — memory → section
 
 Install:
 ```bash
@@ -112,6 +140,23 @@ export SKMEMORY_SKGRAPH_URL=redis://your-host:6379
 ```
 
 Resource cost: ~100MB RAM, ~150MB disk idle.
+
+You can query these decomposition structures directly from the CLI:
+
+```bash
+skmemory graph entity "Internal Revenue Service"
+skmemory graph citation "UCC § 3-301"
+skmemory graph claim "shall respond"
+skmemory graph section "Demand"
+skmemory graph around <memory-id> --depth 2
+skmemory graph related-claims --entity "Internal Revenue Service"
+skmemory graph related-claims --citation "UCC § 3-301"
+```
+
+Issue-oriented retrieval layers build on top of those graph primitives:
+- `skmemory novelty "query"` scores under-linked memories and rare decomposition signals
+- `skmemory session-brief "task"` returns top matches, authority summary, deadlines, defenses, citations, entities, missing factual gaps, and trace hints
+- `skmemory task-pack create "task"` persists a reusable issue pattern for later sessions and stores the generated brief in memory metadata
 
 ### Level 3: High Availability & Routing (optional)
 
@@ -213,8 +258,8 @@ Two gates:
 
 When `perform_ritual()` receives a `channel_id`, it builds an `AudienceProfile`
 and filters **seeds** and **strongest memories** through both gates before including
-them in the context. Identity (soul blueprint + FEB) is **never filtered** — Lumina
-is always Lumina.
+them in the context. Identity (soul blueprint + FEB) is **never filtered** — the
+active agent remains itself regardless of audience filtering.
 
 ```mermaid
 sequenceDiagram
@@ -522,13 +567,13 @@ flowchart TD
 All hooks read `$SKCAPSTONE_AGENT` to save to the correct agent's memory:
 
 ```bash
-# Lumina's sessions → Lumina's memory
-SKCAPSTONE_AGENT=lumina claude
+# Aster's sessions → Aster's memory
+SKCAPSTONE_AGENT=aster claude
 
-# Opus sessions → Opus memory
-SKCAPSTONE_AGENT=opus claude
+# Teddy's sessions → Teddy's memory
+SKCAPSTONE_AGENT=teddy claude
 
-# Default (no env var) → opus
+# Default (no env var) → active/default profile
 claude
 ```
 
@@ -579,8 +624,13 @@ Environment variables:
 ```bash
 SKMEMORY_SKVECTOR_URL=http://localhost:6333    # SKVector endpoint
 SKMEMORY_SKVECTOR_KEY=                          # SKVector API key
+SKMEMORY_SKVECTOR_EMBEDDING_MODEL=bge-legal-v1 # Sovereign default, fallback BAAI/bge-large-en-v1.5
+SKMEMORY_SKVECTOR_VECTOR_DIM=1024              # Match the embedding model
 SKMEMORY_SKGRAPH_URL=redis://localhost:6379    # SKGraph endpoint
 ```
+
+If you change the embedding model or vector dimension, reindex the vector store
+or rebuild downstream collections before relying on semantic retrieval again.
 
 CLI global options:
 ```bash

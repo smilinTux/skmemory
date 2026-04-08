@@ -32,12 +32,17 @@ Graph schema:
     (:Memory)-[:PROMOTED_FROM]->(:Memory)
     (:Memory)-[:PRECEDED_BY]->(:Memory)
     (:AI)-[:PLANTED]->(:Memory)
+    (:Memory)-[:MENTIONS]->(:Entity)
+    (:Memory)-[:CITES]->(:Citation)
+    (:Memory)-[:ASSERTS]->(:Claim)
+    (:Memory)-[:IN_SECTION]->(:Section)
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from collections import OrderedDict
 
 from .. import graph_queries as Q
 from ..models import Memory
@@ -227,6 +232,38 @@ class SKGraphBackend:
                         {"mem_id": memory.id, "creator": creator},
                     )
 
+            # Decomposition-derived structure edges
+            decomposition = memory.metadata.get("decomposition", {})
+            section_title = decomposition.get("section_title")
+            if section_title:
+                self._graph.query(
+                    Q.CREATE_IN_SECTION,
+                    {"mem_id": memory.id, "section": section_title},
+                )
+            for section in decomposition.get("section_titles", []):
+                self._graph.query(
+                    Q.CREATE_IN_SECTION,
+                    {"mem_id": memory.id, "section": section},
+                )
+
+            for entity in decomposition.get("entities", []):
+                self._graph.query(
+                    Q.CREATE_MENTIONS_ENTITY,
+                    {"mem_id": memory.id, "entity": entity},
+                )
+
+            for citation in decomposition.get("citations", []):
+                self._graph.query(
+                    Q.CREATE_CITES,
+                    {"mem_id": memory.id, "citation": citation},
+                )
+
+            for claim in decomposition.get("claims", []):
+                self._graph.query(
+                    Q.CREATE_ASSERTS,
+                    {"mem_id": memory.id, "claim": claim},
+                )
+
             return True
         except Exception as exc:
             logger.warning("SKGraph index failed: %s", exc)
@@ -347,6 +384,121 @@ class SKGraphBackend:
             logger.warning("SKGraph tag search failed: %s", exc)
             return []
 
+    def search_by_entity(self, query: str, limit: int = 20) -> list[dict]:
+        """Find memories mentioning entities extracted during decomposition."""
+        return self._search_by_structure(Q.SEARCH_BY_ENTITY, query, limit)
+
+    def search_by_citation(self, query: str, limit: int = 20) -> list[dict]:
+        """Find memories citing a legal or document reference."""
+        return self._search_by_structure(Q.SEARCH_BY_CITATION, query, limit)
+
+    def search_by_claim(self, query: str, limit: int = 20) -> list[dict]:
+        """Find memories asserting a claim matching the query."""
+        return self._search_by_structure(Q.SEARCH_BY_CLAIM, query, limit)
+
+    def search_by_section(self, query: str, limit: int = 20) -> list[dict]:
+        """Find memories associated with a decomposed section title."""
+        return self._search_by_structure(Q.SEARCH_BY_SECTION, query, limit)
+
+    def related_claims_by_entity(self, query: str, limit: int = 20) -> list[dict]:
+        """Find claims supported by memories mentioning an entity."""
+        return self._search_related_claims(Q.RELATED_CLAIMS_BY_ENTITY, query, limit)
+
+    def related_claims_by_citation(self, query: str, limit: int = 20) -> list[dict]:
+        """Find claims supported by memories citing a citation."""
+        return self._search_related_claims(Q.RELATED_CLAIMS_BY_CITATION, query, limit)
+
+    def _search_by_structure(self, query_template: str, query: str, limit: int) -> list[dict]:
+        if not self._ensure_initialized():
+            return []
+        if not query.strip():
+            return []
+        try:
+            result = self._graph.query(
+                query_template,
+                {"query": query, "limit": limit},
+            )
+            rows = [
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "layer": row[2],
+                    "intensity": row[3],
+                    "matched_value": row[4],
+                    "canonical_id": row[5],
+                    "canonical_title": row[6],
+                    "canonical_layer": row[7],
+                    "canonical_intensity": row[8],
+                    "is_chunk": row[9],
+                }
+                for row in result.result_set
+            ]
+            return self._collapse_canonical_results(rows)
+        except Exception as exc:
+            logger.warning("SKGraph structured search failed: %s", exc)
+            return []
+
+    def _search_related_claims(self, query_template: str, query: str, limit: int) -> list[dict]:
+        if not self._ensure_initialized():
+            return []
+        if not query.strip():
+            return []
+        try:
+            result = self._graph.query(
+                query_template,
+                {"query": query, "limit": limit},
+            )
+            return [
+                {
+                    "claim": row[0],
+                    "matched_value": row[1],
+                    "support_count": row[2],
+                    "memory_ids": row[3],
+                    "memory_titles": row[4],
+                }
+                for row in result.result_set
+            ]
+        except Exception as exc:
+            logger.warning("SKGraph related-claims search failed: %s", exc)
+            return []
+
+    def _collapse_canonical_results(self, results: list[dict]) -> list[dict]:
+        """Collapse chunk-level matches into parent-level result groups."""
+        grouped: OrderedDict[str, dict] = OrderedDict()
+        for result in results:
+            canonical_id = result.get("canonical_id") or result["id"]
+            matched_value = result.get("matched_value")
+            existing = grouped.get(canonical_id)
+            if existing is None:
+                collapsed = {
+                    "id": canonical_id,
+                    "title": result.get("canonical_title") or result["title"],
+                    "layer": result.get("canonical_layer") or result["layer"],
+                    "intensity": result.get("canonical_intensity") or result["intensity"],
+                    "source_memory_ids": [result["id"]],
+                    "match_count": 1,
+                    "chunk_match_count": 1 if result.get("is_chunk") else 0,
+                }
+                if matched_value is not None:
+                    collapsed["matched_values"] = [matched_value]
+                grouped[canonical_id] = collapsed
+                continue
+
+            if matched_value is not None:
+                existing.setdefault("matched_values", [])
+                if matched_value not in existing["matched_values"]:
+                    existing["matched_values"].append(matched_value)
+            if result["id"] not in existing["source_memory_ids"]:
+                existing["source_memory_ids"].append(result["id"])
+            existing["match_count"] = len(existing["source_memory_ids"])
+            if result.get("is_chunk"):
+                existing["chunk_match_count"] += 1
+            existing["intensity"] = max(existing["intensity"], result.get("canonical_intensity") or result["intensity"])
+
+        collapsed = list(grouped.values())
+        collapsed.sort(key=lambda row: (-row["intensity"], -row["match_count"], row["title"]))
+        return collapsed
+
     def delete(self, memory_id: str) -> bool:
         """Remove a memory node and all its edges from the graph.
 
@@ -424,16 +576,31 @@ class SKGraphBackend:
                 Q.TRAVERSE_RELATED.format(depth=safe_depth),
                 {"id": memory_id},
             )
-            return [
+            rows = [
                 {
                     "id": row[0],
                     "title": row[1],
                     "layer": row[2],
                     "intensity": row[3],
                     "distance": row[4],
+                    "canonical_id": row[5],
+                    "canonical_title": row[6],
+                    "canonical_layer": row[7],
+                    "canonical_intensity": row[8],
+                    "is_chunk": row[9],
                 }
                 for row in result.result_set
             ]
+            collapsed = self._collapse_canonical_results(rows)
+            for item in collapsed:
+                distances = [
+                    row["distance"]
+                    for row in rows
+                    if (row.get("canonical_id") or row["id"]) == item["id"]
+                ]
+                item["distance"] = min(distances) if distances else safe_depth
+            collapsed.sort(key=lambda row: (row["distance"], -row["intensity"], row["title"]))
+            return collapsed
         except Exception as exc:
             logger.warning("SKGraph traversal failed: %s", exc)
             return []

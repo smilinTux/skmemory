@@ -12,7 +12,10 @@ SKMEMORY="${HOME}/.local/bin/skmemory"
 [ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
 [ -x "$SKMEMORY" ] || exit 0
 
-AGENT="${SKCAPSTONE_AGENT:-jarvis}"
+AGENT="${SKCAPSTONE_AGENT:-${SKMEMORY_AGENT:-}}"
+if [[ -z "$AGENT" && -d "$HOME/.skcapstone/agents" ]]; then
+  AGENT="$(find "$HOME/.skcapstone/agents" -mindepth 1 -maxdepth 1 -type d ! -name '*-template' -printf '%f\n' | sort | head -n1)"
+fi
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null || echo "unknown")
 TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")

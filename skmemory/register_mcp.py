@@ -8,7 +8,7 @@ Usage:
     python -m skmemory.register_mcp --env opencode
     python -m skmemory.register_mcp --env claude
     python -m skmemory.register_mcp --env openclaw
-    python -m skmemory.register_mcp --agent lumina
+    python -m skmemory.register_mcp --agent teddy
 """
 
 from __future__ import annotations
@@ -22,7 +22,14 @@ from pathlib import Path
 
 def get_agent_name() -> str:
     """Get agent name from environment or default."""
-    return os.environ.get("SKMEMORY_AGENT") or os.environ.get("SKCAPSTONE_AGENT") or "lumina"
+    from .agents import get_active_agent
+
+    return (
+        os.environ.get("SKMEMORY_AGENT")
+        or os.environ.get("SKCAPSTONE_AGENT")
+        or get_active_agent()
+        or ""
+    )
 
 
 def register_opencode(agent: str, dry_run: bool = False) -> bool:
@@ -146,7 +153,7 @@ def main():
         help="Target environment (default: all)",
     )
     parser.add_argument(
-        "--agent", default=None, help="Agent name (default: SKMEMORY_AGENT env var or 'lumina')"
+        "--agent", default=None, help="Agent name (default: active agent)"
     )
     parser.add_argument(
         "--dry-run", action="store_true", help="Show what would be done without making changes"

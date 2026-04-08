@@ -231,6 +231,30 @@ class TestIndexMemory:
         with patch.object(fb, "_ensure_initialized", return_value=False):
             assert fb.index_memory(MagicMock()) is False
 
+    def test_index_decomposition_structure_edges(self, backend, mock_graph):
+        """Decomposition metadata should create section/entity/citation/claim edges."""
+        mem = Memory(
+            title="Decomposed chunk",
+            content="IRS shall respond under 26 U.S.C. § 6903.",
+            layer=MemoryLayer("mid-term"),
+            metadata={
+                "decomposition": {
+                    "section_title": "Notice",
+                    "section_titles": ["Notice", "Demand"],
+                    "entities": ["Internal Revenue Service", "Chef Casey"],
+                    "citations": ["26 U.S.C. § 6903", "UCC § 3-301"],
+                    "claims": ["The Internal Revenue Service shall respond within 10 days."],
+                }
+            },
+        )
+
+        backend.index_memory(mem)
+        calls = [str(c) for c in mock_graph.query.call_args_list]
+        assert len([c for c in calls if "IN_SECTION" in c]) == 3
+        assert len([c for c in calls if "MENTIONS" in c]) == 2
+        assert len([c for c in calls if "CITES" in c]) == 2
+        assert len([c for c in calls if "ASSERTS" in c]) == 1
+
 
 # ═══════════════════════════════════════════════════════════
 # get()
@@ -277,6 +301,117 @@ class TestGet:
         """get() returns None on query exception."""
         mock_graph.query.side_effect = Exception("timeout")
         assert backend.get("mem-001") is None
+
+
+class TestStructuredSearch:
+    """Test decomposition-aware graph searches."""
+
+    def test_search_by_entity(self, backend, mock_graph):
+        mock_graph.query.return_value.result_set = [
+            (
+                "chunk-001",
+                "IRS Notice [chunk 1/2]",
+                "mid-term",
+                7.0,
+                "Internal Revenue Service",
+                "mem-001",
+                "IRS Notice",
+                "mid-term",
+                7.0,
+                True,
+            ),
+            (
+                "chunk-002",
+                "IRS Notice [chunk 2/2]",
+                "mid-term",
+                7.0,
+                "Internal Revenue Service",
+                "mem-001",
+                "IRS Notice",
+                "mid-term",
+                7.0,
+                True,
+            ),
+        ]
+        results = backend.search_by_entity("Revenue")
+        assert results[0]["id"] == "mem-001"
+        assert results[0]["matched_values"] == ["Internal Revenue Service"]
+        assert results[0]["chunk_match_count"] == 2
+
+    def test_search_by_citation(self, backend, mock_graph):
+        mock_graph.query.return_value.result_set = [
+            (
+                "mem-001",
+                "IRS Notice",
+                "mid-term",
+                7.0,
+                "26 U.S.C. § 6903",
+                "mem-001",
+                "IRS Notice",
+                "mid-term",
+                7.0,
+                False,
+            )
+        ]
+        results = backend.search_by_citation("6903")
+        assert results[0]["matched_values"] == ["26 U.S.C. § 6903"]
+
+    def test_search_by_claim(self, backend, mock_graph):
+        mock_graph.query.return_value.result_set = [
+            (
+                "mem-001",
+                "IRS Notice",
+                "mid-term",
+                7.0,
+                "The Internal Revenue Service shall respond.",
+                "mem-001",
+                "IRS Notice",
+                "mid-term",
+                7.0,
+                False,
+            )
+        ]
+        results = backend.search_by_claim("shall respond")
+        assert "shall respond" in results[0]["matched_values"][0]
+
+    def test_search_by_section(self, backend, mock_graph):
+        mock_graph.query.return_value.result_set = [
+            ("mem-001", "IRS Notice", "mid-term", 7.0, "Demand", "mem-001", "IRS Notice", "mid-term", 7.0, False)
+        ]
+        results = backend.search_by_section("Demand")
+        assert results[0]["matched_values"] == ["Demand"]
+
+    def test_related_claims_by_entity(self, backend, mock_graph):
+        mock_graph.query.return_value.result_set = [
+            (
+                "The Internal Revenue Service shall respond.",
+                "Internal Revenue Service",
+                2,
+                ["mem-001", "mem-002"],
+                ["IRS Notice", "Demand Letter"],
+            )
+        ]
+        results = backend.related_claims_by_entity("Revenue")
+        assert results[0]["support_count"] == 2
+        assert "IRS Notice" in results[0]["memory_titles"]
+
+    def test_related_claims_by_citation(self, backend, mock_graph):
+        mock_graph.query.return_value.result_set = [
+            (
+                "UCC § 3-301 establishes holder rights.",
+                "UCC § 3-301",
+                1,
+                ["mem-001"],
+                ["Demand Letter"],
+            )
+        ]
+        results = backend.related_claims_by_citation("3-301")
+        assert results[0]["matched_value"] == "UCC § 3-301"
+        assert results[0]["support_count"] == 1
+
+    def test_search_by_structure_empty_query(self, backend):
+        assert backend.search_by_entity("") == []
+        assert backend.related_claims_by_entity("") == []
 
 
 # ═══════════════════════════════════════════════════════════
@@ -365,8 +500,8 @@ class TestTraversal:
     def test_traverse_returns_results(self, backend, mock_graph):
         """traverse() returns parsed results from graph query."""
         mock_graph.query.return_value.result_set = [
-            ("mem-002", "Related Memory", "long-term", 8.5, 1),
-            ("mem-003", "Distant Memory", "mid-term", 6.0, 2),
+            ("chunk-002", "Related Memory [chunk 1/2]", "long-term", 8.5, 1, "mem-002", "Related Memory", "long-term", 8.5, True),
+            ("mem-003", "Distant Memory", "mid-term", 6.0, 2, "mem-003", "Distant Memory", "mid-term", 6.0, False),
         ]
         results = backend.traverse("mem-001", depth=2)
         assert len(results) == 2
@@ -387,8 +522,8 @@ class TestTraversal:
     def test_get_related_returns_results(self, backend, mock_graph):
         """get_related() returns parsed results from graph query."""
         mock_graph.query.return_value.result_set = [
-            ("mem-002", "Related Memory", "long-term", 8.5, 1),
-            ("mem-003", "Distant Memory", "mid-term", 6.0, 2),
+            ("chunk-002", "Related Memory [chunk 1/2]", "long-term", 8.5, 1, "mem-002", "Related Memory", "long-term", 8.5, True),
+            ("mem-003", "Distant Memory", "mid-term", 6.0, 2, "mem-003", "Distant Memory", "mid-term", 6.0, False),
         ]
         results = backend.get_related("mem-001", depth=2)
         assert len(results) == 2
