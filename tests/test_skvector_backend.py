@@ -110,11 +110,16 @@ class TestInitialization:
         assert qb.embedding_model_name == "BAAI/bge-large-en-v1.5"
         assert qb.vector_dim == MODEL_DIMENSIONS["bge-large"]
 
-    def test_default_model_prefers_local_hammertime_path(self):
-        """The default sovereign model should resolve to the local HammerTime path here."""
+    def test_default_model_prefers_local_hammertime_path(self, tmp_path, monkeypatch):
+        """The default sovereign model should resolve to the local HammerTime path when present."""
+        # Create a fake hammerTime model dir so the path-resolution logic can find it
+        fake_model = tmp_path / "models" / "bge-legal-v1"
+        fake_model.mkdir(parents=True)
+        monkeypatch.setenv("HAMMERTIME_ROOT", str(tmp_path))
         qb = SKVectorBackend()
         assert qb.requested_embedding_model == "bge-legal-v1"
-        assert "hammerTime/models/bge-legal-v1" in qb.embedding_model_name
+        # Resolves to a local path containing the model directory
+        assert "models" in qb.embedding_model_name and "bge-legal-v1" in qb.embedding_model_name
 
 
 # ═══════════════════════════════════════════════════════════
