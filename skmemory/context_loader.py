@@ -49,7 +49,14 @@ class MemoryContext:
             sections.append(f"## Today's Memories ({len(self.today_memories)})")
             for mem in self.today_memories[:20]:  # Limit to 20
                 content = mem.get("content", "")[:200]  # Truncate if needed
-                sections.append(f"- {mem.get('title', 'Untitled')}: {content}")
+                line = f"- {mem.get('title', 'Untitled')}: {content}"
+                sections.append(line)
+                # Add related context if present
+                if mem.get("related_context"):
+                    for rel in mem["related_context"]:
+                        sections.append(f"  → {rel['edge']}: {rel['title']} [{rel['layer']}]")
+                if mem.get("entities"):
+                    sections.append(f"  entities: {', '.join(mem['entities'])}")
 
         # Yesterday's summaries
         if self.yesterday_summaries:
@@ -296,8 +303,11 @@ class LazyMemoryLoader:
         Returns:
             MemoryContext with today (full), yesterday (summaries), historical (count)
         """
+        today = self._load_today()
+        self._ensure_backends()
+        today = self._enrich_with_graph_context(today)
         return MemoryContext(
-            today_memories=self._load_today(),
+            today_memories=today,
             yesterday_summaries=self._load_yesterday_summaries(),
             historical_count=self._count_historical(),
         )
@@ -398,6 +408,14 @@ class LazyMemoryLoader:
             self._graph_backend = _build_skgraph_backend(skgraph_cfg)
 
         self._recall_collections = _load_recall_collections(config_dir)
+
+        # Resolve recall_collections through env aliasing
+        env = (skvector_cfg or {}).get("env", "prod")
+        if env != "prod":
+            self._recall_collections = [
+                f"{col}-{env}" if not col.endswith(f"-{env}") else col
+                for col in self._recall_collections
+            ]
 
     def deep_search(self, query: str, max_results: int = 10) -> list[dict]:
         """Search ALL memory tiers including vector and graph backends.
@@ -512,17 +530,90 @@ class LazyMemoryLoader:
             except Exception as e:
                 logger.warning("SKGraph deep_search failed: %s", e)
 
-        # Sort by relevance across all backends
-        results = sorted(
-            results,
-            key=lambda x: (
-                x.get("content", "").lower().count(query.lower()),
-                x.get("title", "").lower().count(query.lower()),
-            ),
-            reverse=True,
+        # Compute fusion scores and sort
+        query_terms = [w.lower() for w in query.split() if len(w) > 2]
+        for r in results:
+            r["_fusion_score"] = self._compute_fusion_score(r, query, query_terms)
+
+        # Sort by fusion score descending
+        results = sorted(results, key=lambda x: x.get("_fusion_score", 0), reverse=True)
+        return results[:max_results]
+
+    def _compute_fusion_score(self, result: dict, query: str, query_terms: list[str]) -> float:
+        """Compute hybrid fusion score combining text match, authority, and recency."""
+        import math
+        from datetime import datetime, timezone
+
+        # 1. Text overlap score (BM25-ish: title > content)
+        title = result.get("title", "").lower()
+        content = (result.get("content", "") or result.get("content_preview", "")).lower()
+        title_hits = sum(1 for t in query_terms if t in title)
+        content_hits = sum(1 for t in query_terms if t in content)
+        text_score = min(1.0, (title_hits * 0.4 + content_hits * 0.1) / max(1, len(query_terms)))
+
+        # 2. Authority weight
+        from .retrieval import AUTHORITY_WEIGHTS
+        tier = result.get("authority_tier", "memory")
+        authority_score = AUTHORITY_WEIGHTS.get(tier, 0.35)
+
+        # 3. Time decay (half-life: 7d short, 30d mid, 365d long)
+        half_life = {
+            "short-term": 7, "short": 7,
+            "mid-term": 30, "mid": 30,
+            "long-term": 365, "long": 365,
+        }.get(result.get("layer", "short-term"), 30)
+        try:
+            created = result.get("created_at", "")
+            if created:
+                dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+                age_days = (datetime.now(timezone.utc) - dt).days
+                decay = math.pow(0.5, age_days / half_life)
+            else:
+                decay = 1.0
+        except Exception:
+            decay = 1.0
+
+        # 4. Backend bonus (vector results carry semantic signal)
+        backend = result.get("source_backend", "sqlite")
+        backend_bonus = {"skvector": 0.15, "skgraph": 0.05, "sqlite": 0.0}.get(
+            backend.split(":")[0], 0.0
         )
 
-        return results[:max_results]
+        # Weighted fusion
+        return (0.35 * text_score + 0.30 * authority_score + 0.20 * decay + 0.15) + backend_bonus
+
+    def _enrich_with_graph_context(self, memories: list[dict]) -> list[dict]:
+        """Add graph neighbourhood to top memories for richer context."""
+        if self._graph_backend is None:
+            return memories
+        for mem in memories[:5]:  # only top 5 to avoid token bloat
+            try:
+                graph_ctx = self._graph_backend.get_context_graph(mem["id"], depth=1)
+                if graph_ctx.get("related"):
+                    mem["related_context"] = [
+                        {"title": r["title"], "layer": r["layer"], "edge": r["edge_type"]}
+                        for r in graph_ctx["related"][:3]
+                    ]
+                if graph_ctx.get("entities"):
+                    mem["entities"] = graph_ctx["entities"][:5]
+            except Exception:
+                pass
+        return memories
+
+    def sync_backends(self) -> dict:
+        """Sync all flat-file memories to vector and graph backends.
+
+        Returns dict with stats: indexed, skipped, removed, errors per backend.
+        """
+        self._ensure_backends()
+        stats = {}
+
+        if self._vector_backend is not None:
+            mem_dir = self.paths["base"] / "memory"
+            result = self._vector_backend.sync_all(mem_dir, self.agent_name or "default")
+            stats["skvector"] = result
+
+        return stats
 
     def _search_sqlite(self, query: str) -> list[dict]:
         """Search SQLite for memories matching query."""
