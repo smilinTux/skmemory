@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import yaml
 
@@ -66,36 +67,76 @@ class MemoryContext:
         return "\n".join(sections)
 
 
-def _load_skvector_config(config_dir: Path) -> dict | None:
-    """Load agent's skvector.yaml if it exists and is enabled."""
-    path = config_dir / "skvector.yaml"
-    if not path.exists():
-        return None
+def _read_yaml_file(path: Path) -> dict | None:
+    """Load a YAML file, return dict or None on missing/error."""
     try:
         with open(path) as f:
-            cfg = yaml.safe_load(f)
-        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
-            return None
-        return cfg
+            data = yaml.safe_load(f)
+        return data if isinstance(data, dict) else None
     except Exception as e:
-        logger.warning("Could not load skvector.yaml: %s", e)
+        logger.warning("Could not load %s: %s", path.name, e)
         return None
+
+
+def _load_skvector_config(config_dir: Path) -> dict | None:
+    """Load skvector config: try skvector.yaml first, then skmemory.yaml inline."""
+    # 1. Dedicated skvector.yaml
+    path = config_dir / "skvector.yaml"
+    if path.exists():
+        cfg = _read_yaml_file(path)
+        if cfg and cfg.get("enabled", False):
+            return cfg
+
+    # 2. Fallback: inline backends.skvector section in skmemory.yaml
+    skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
+    inline = skmem.get("backends", {}).get("skvector", {})
+    if not inline or not inline.get("enabled", False):
+        return None
+
+    # If inline points to an external config file, resolve and load it
+    ext_cfg_path = inline.get("config")
+    if ext_cfg_path:
+        resolved = Path(ext_cfg_path).expanduser()
+        if resolved.exists():
+            ext = _read_yaml_file(resolved)
+            if ext and ext.get("enabled", False):
+                return ext
+
+    # Return inline section itself (may have host/port/url directly)
+    return inline if (inline.get("host") or inline.get("url")) else None
 
 
 def _load_skgraph_config(config_dir: Path) -> dict | None:
-    """Load agent's skgraph.yaml if it exists and is enabled."""
+    """Load skgraph config: try skgraph.yaml first, then skmemory.yaml inline."""
+    # 1. Dedicated skgraph.yaml
     path = config_dir / "skgraph.yaml"
-    if not path.exists():
+    if path.exists():
+        cfg = _read_yaml_file(path)
+        if cfg and cfg.get("enabled", False):
+            return cfg
+
+    # 2. Fallback: inline backends.skgraph section in skmemory.yaml
+    skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
+    inline = skmem.get("backends", {}).get("skgraph", {})
+    if not inline or not inline.get("enabled", False):
         return None
-    try:
-        with open(path) as f:
-            cfg = yaml.safe_load(f)
-        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
-            return None
-        return cfg
-    except Exception as e:
-        logger.warning("Could not load skgraph.yaml: %s", e)
-        return None
+
+    # If inline points to an external config file, resolve and load it
+    ext_cfg_path = inline.get("config")
+    if ext_cfg_path:
+        resolved = Path(ext_cfg_path).expanduser()
+        if resolved.exists():
+            ext = _read_yaml_file(resolved)
+            if ext and ext.get("enabled", False):
+                return ext
+
+    return inline if (inline.get("host") or inline.get("url")) else None
+
+
+def _load_recall_collections(config_dir: Path) -> list[str]:
+    """Return recall_collections list from skmemory.yaml (for cross-index search)."""
+    skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
+    return skmem.get("recall_collections", [])
 
 
 def _make_ollama_embed_fn(model: str, base_url: str):
@@ -121,18 +162,56 @@ def _make_ollama_embed_fn(model: str, base_url: str):
     return embed
 
 
+def _skvector_url(cfg: dict) -> str:
+    """Resolve the Qdrant URL from config dict.  Accepts either a top-level
+    ``url`` field or the ``host`` / ``port`` / ``https`` combination."""
+    if "url" in cfg:
+        return cfg["url"]
+    host = cfg.get("host", "localhost")
+    port = cfg.get("port", 6333)
+    scheme = "https" if cfg.get("https", False) else "http"
+    return f"{scheme}://{host}:{port}"
+
+
+def _skgraph_url(cfg: dict) -> str:
+    """Resolve the FalkorDB/Redis URL from config dict.
+
+    Accepts:
+    - Top-level ``url`` field (used as-is)
+    - ``host`` / ``port`` / ``password`` combination (password is
+      URL-decoded so YAML authors don't need to double-encode)
+    """
+    if "url" in cfg:
+        return cfg["url"]
+    host = cfg.get("host", "localhost")
+    port = cfg.get("port", 6379)
+    raw_password = cfg.get("password") or cfg.get("passwd")
+    if raw_password:
+        # Decode URL-encoded chars (e.g. %2B → +, %2F → /, %3D → =)
+        password = unquote(str(raw_password))
+        # Re-encode only the characters that break URL parsing
+        safe_password = password.replace("@", "%40").replace(":", "%3A")
+        return f"redis://:{safe_password}@{host}:{port}"
+    return f"redis://{host}:{port}"
+
+
 def _build_skvector_backend(skvector_cfg: dict) -> Any | None:
-    """Instantiate SKVectorBackend from an agent skvector.yaml dict."""
+    """Instantiate SKVectorBackend from config dict.
+
+    Accepts both ``url`` and ``host``/``port``/``https`` styles.
+    Embedding provider ``ollama`` injects an Ollama embed_fn so
+    sentence-transformers is not required.
+    """
     try:
         from .backends.skvector_backend import SKVectorBackend
 
-        host = skvector_cfg.get("host", "localhost")
-        port = skvector_cfg.get("port", 6333)
-        use_https = skvector_cfg.get("https", False)
-        scheme = "https" if use_https else "http"
-        url = f"{scheme}://{host}:{port}"
-        api_key = skvector_cfg.get("api_key") or skvector_cfg.get("api-key")
-        collection = skvector_cfg.get("collection_name", "skmemory")
+        url = _skvector_url(skvector_cfg)
+        api_key = (
+            skvector_cfg.get("api_key")
+            or skvector_cfg.get("api-key")
+            or skvector_cfg.get("apiKey")
+        )
+        collection = skvector_cfg.get("collection_name") or skvector_cfg.get("collection", "skmemory")
         embed_cfg = skvector_cfg.get("embedding", {})
         provider = embed_cfg.get("provider", "sentence_transformers")
         model = embed_cfg.get("model", "all-MiniLM-L6-v2")
@@ -154,20 +233,17 @@ def _build_skvector_backend(skvector_cfg: dict) -> Any | None:
 
 
 def _build_skgraph_backend(skgraph_cfg: dict) -> Any | None:
-    """Instantiate SKGraphBackend from an agent skgraph.yaml dict."""
+    """Instantiate SKGraphBackend from config dict.
+
+    Accepts both ``url`` and ``host``/``port``/``password`` styles.
+    URL-encoded passwords (e.g. ``eiCn%2BMz0%3D``) are decoded before
+    being embedded in the connection URL.
+    """
     try:
         from .backends.skgraph_backend import SKGraphBackend
 
-        host = skgraph_cfg.get("host", "localhost")
-        port = skgraph_cfg.get("port", 6379)
-        password = skgraph_cfg.get("password")
-        graph_name = skgraph_cfg.get("graph_name", "skmemory")
-
-        if password:
-            url = f"redis://:{password}@{host}:{port}"
-        else:
-            url = f"redis://{host}:{port}"
-
+        url = _skgraph_url(skgraph_cfg)
+        graph_name = skgraph_cfg.get("graph_name") or skgraph_cfg.get("graph", "skmemory")
         return SKGraphBackend(url=url, graph_name=graph_name)
     except Exception as e:
         logger.warning("Could not build SKGraphBackend: %s", e)
@@ -184,6 +260,7 @@ class LazyMemoryLoader:
         self.db = SQLiteBackend(str(self.paths["base"] / "memory"))
         self._vector_backend = None
         self._graph_backend = None
+        self._recall_collections: list[str] = []
         self._backends_loaded = False
 
     def load_active_context(self) -> MemoryContext:
@@ -293,6 +370,8 @@ class LazyMemoryLoader:
         if skgraph_cfg:
             self._graph_backend = _build_skgraph_backend(skgraph_cfg)
 
+        self._recall_collections = _load_recall_collections(config_dir)
+
     def deep_search(self, query: str, max_results: int = 10) -> list[dict]:
         """Search ALL memory tiers including vector and graph backends.
 
@@ -314,7 +393,7 @@ class LazyMemoryLoader:
                 r.setdefault("source_backend", "sqlite")
                 results.append(r)
 
-        # 2. SKVector semantic search (if configured)
+        # 2. SKVector semantic search (primary collection + recall_collections)
         if self._vector_backend is not None:
             try:
                 vector_hits = self._vector_backend.search_text(query, limit=max_results)
@@ -333,6 +412,29 @@ class LazyMemoryLoader:
                         })
             except Exception as e:
                 logger.warning("SKVector deep_search failed: %s", e)
+
+            # Also search recall_collections (cross-agent/cross-project indexes)
+            for recall_col in self._recall_collections:
+                try:
+                    saved_col = self._vector_backend.collection
+                    self._vector_backend.collection = recall_col
+                    recall_hits = self._vector_backend.search_text(query, limit=max_results)
+                    self._vector_backend.collection = saved_col
+                    for mem in recall_hits:
+                        if mem.id not in seen_ids:
+                            seen_ids.add(mem.id)
+                            results.append({
+                                "id": mem.id,
+                                "title": mem.title,
+                                "content": mem.content,
+                                "summary": getattr(mem, "summary", None),
+                                "tags": mem.tags,
+                                "layer": mem.layer.value if hasattr(mem.layer, "value") else str(mem.layer),
+                                "created_at": mem.created_at,
+                                "source_backend": f"skvector:{recall_col}",
+                            })
+                except Exception as e:
+                    logger.warning("SKVector recall_collection '%s' search failed: %s", recall_col, e)
 
         # 3. SKGraph title + tag search (if configured)
         if self._graph_backend is not None:
