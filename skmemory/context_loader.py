@@ -414,27 +414,55 @@ class LazyMemoryLoader:
                 logger.warning("SKVector deep_search failed: %s", e)
 
             # Also search recall_collections (cross-agent/cross-project indexes)
-            for recall_col in self._recall_collections:
-                try:
-                    saved_col = self._vector_backend.collection
-                    self._vector_backend.collection = recall_col
-                    recall_hits = self._vector_backend.search_text(query, limit=max_results)
-                    self._vector_backend.collection = saved_col
-                    for mem in recall_hits:
-                        if mem.id not in seen_ids:
-                            seen_ids.add(mem.id)
-                            results.append({
-                                "id": mem.id,
-                                "title": mem.title,
-                                "content": mem.content,
-                                "summary": getattr(mem, "summary", None),
-                                "tags": mem.tags,
-                                "layer": mem.layer.value if hasattr(mem.layer, "value") else str(mem.layer),
-                                "created_at": mem.created_at,
-                                "source_backend": f"skvector:{recall_col}",
-                            })
-                except Exception as e:
-                    logger.warning("SKVector recall_collection '%s' search failed: %s", recall_col, e)
+            # Uses the same Qdrant endpoint + api_key but a different collection name.
+            # Does NOT mutate self._vector_backend.collection — queries directly.
+            if self._recall_collections and self._vector_backend._ensure_initialized():
+                embedding = self._vector_backend._embed(query)
+                if embedding:
+                    for recall_col in self._recall_collections:
+                        try:
+                            scored_points = self._vector_backend._client.search(
+                                collection_name=recall_col,
+                                query_vector=embedding,
+                                limit=max_results,
+                            )
+                            for sp in scored_points:
+                                payload = sp.payload or {}
+                                raw = payload.get("memory_json")
+                                if raw:
+                                    try:
+                                        from .models import Memory
+                                        mem = Memory.model_validate_json(raw)
+                                        if mem.id not in seen_ids:
+                                            seen_ids.add(mem.id)
+                                            results.append({
+                                                "id": mem.id,
+                                                "title": mem.title,
+                                                "content": mem.content,
+                                                "summary": getattr(mem, "summary", None),
+                                                "tags": mem.tags,
+                                                "layer": mem.layer.value if hasattr(mem.layer, "value") else str(mem.layer),
+                                                "created_at": mem.created_at,
+                                                "source_backend": f"skvector:{recall_col}",
+                                            })
+                                    except Exception:
+                                        # Payload from foreign collection may not be a Memory
+                                        # Fall back to raw payload fields
+                                        mem_id = payload.get("id", str(sp.id))
+                                        if mem_id not in seen_ids:
+                                            seen_ids.add(mem_id)
+                                            results.append({
+                                                "id": mem_id,
+                                                "title": payload.get("title", ""),
+                                                "content": payload.get("content", payload.get("text", "")),
+                                                "summary": payload.get("summary"),
+                                                "tags": payload.get("tags", []),
+                                                "layer": payload.get("layer", "unknown"),
+                                                "created_at": payload.get("created_at", ""),
+                                                "source_backend": f"skvector:{recall_col}",
+                                            })
+                        except Exception as e:
+                            logger.warning("SKVector recall_collection '%s' failed: %s", recall_col, e)
 
         # 3. SKGraph title + tag search (if configured)
         if self._graph_backend is not None:
