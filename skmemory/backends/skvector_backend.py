@@ -18,6 +18,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+from typing import Callable
 
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
@@ -113,6 +114,7 @@ class SKVectorBackend(BaseBackend):
         collection: str = COLLECTION_NAME,
         embedding_model: str = EMBEDDING_MODEL,
         vector_dim: int | None = None,
+        embed_fn: Callable[[str], list[float]] | None = None,
     ) -> None:
         self.url = url
         self.api_key = api_key
@@ -122,6 +124,7 @@ class SKVectorBackend(BaseBackend):
         self.vector_dim = vector_dim or MODEL_DIMENSIONS.get(embedding_model, VECTOR_DIM)
         self._client = None
         self._embedder = None
+        self._embed_fn = embed_fn  # optional external embedding function (e.g. Ollama)
         self._initialized = False
         self._last_error: str | None = None
 
@@ -142,26 +145,33 @@ class SKVectorBackend(BaseBackend):
             return False
 
         try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError:
-            logger.warning("sentence-transformers not installed: pip install skmemory[skvector]")
-            return False
-
-        try:
             from qdrant_client.http.exceptions import (
                 UnexpectedResponse,
             )
         except ImportError:
             UnexpectedResponse = None
 
+        # If an external embed_fn is provided, skip SentenceTransformer loading.
+        if self._embed_fn is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError:
+                logger.warning(
+                    "sentence-transformers not installed: pip install skmemory[skvector]"
+                )
+                return False
+
         try:
             self._client = QdrantClient(url=self.url, api_key=self.api_key)
-            self._embedder = SentenceTransformer(self.embedding_model_name)
-            get_dim = getattr(self._embedder, "get_sentence_embedding_dimension", None)
-            if callable(get_dim):
-                resolved_dim = get_dim()
-                if isinstance(resolved_dim, int) and resolved_dim > 0:
-                    self.vector_dim = resolved_dim
+
+            if self._embed_fn is None:
+                self._embedder = SentenceTransformer(self.embedding_model_name)
+                get_dim = getattr(self._embedder, "get_sentence_embedding_dimension", None)
+                if callable(get_dim):
+                    resolved_dim = get_dim()
+                    if isinstance(resolved_dim, int) and resolved_dim > 0:
+                        self.vector_dim = resolved_dim
+
             collections = [c.name for c in self._client.get_collections().collections]
 
             if self.collection not in collections:
@@ -196,12 +206,17 @@ class SKVectorBackend(BaseBackend):
     def _embed(self, text: str) -> list[float]:
         """Generate an embedding vector for text.
 
+        Uses the injected embed_fn if provided (e.g. Ollama), otherwise
+        falls back to the sentence-transformers model.
+
         Args:
             text: The text to embed.
 
         Returns:
             list[float]: The embedding vector.
         """
+        if self._embed_fn is not None:
+            return self._embed_fn(text)
         if self._embedder is None:
             return []
         return self._embedder.encode(text).tolist()

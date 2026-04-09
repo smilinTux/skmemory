@@ -20,6 +20,10 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 from .agents import get_agent_paths
 from .backends.sqlite_backend import SQLiteBackend
@@ -62,6 +66,114 @@ class MemoryContext:
         return "\n".join(sections)
 
 
+def _load_skvector_config(config_dir: Path) -> dict | None:
+    """Load agent's skvector.yaml if it exists and is enabled."""
+    path = config_dir / "skvector.yaml"
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            cfg = yaml.safe_load(f)
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return None
+        return cfg
+    except Exception as e:
+        logger.warning("Could not load skvector.yaml: %s", e)
+        return None
+
+
+def _load_skgraph_config(config_dir: Path) -> dict | None:
+    """Load agent's skgraph.yaml if it exists and is enabled."""
+    path = config_dir / "skgraph.yaml"
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            cfg = yaml.safe_load(f)
+        if not isinstance(cfg, dict) or not cfg.get("enabled", False):
+            return None
+        return cfg
+    except Exception as e:
+        logger.warning("Could not load skgraph.yaml: %s", e)
+        return None
+
+
+def _make_ollama_embed_fn(model: str, base_url: str):
+    """Return an embedding function that calls the Ollama /api/embeddings endpoint."""
+    import urllib.request
+
+    def embed(text: str) -> list[float]:
+        body = json.dumps({"model": model, "prompt": text}).encode()
+        req = urllib.request.Request(
+            f"{base_url.rstrip('/')}/api/embeddings",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            return data.get("embedding", [])
+        except Exception as e:
+            logger.warning("Ollama embedding failed: %s", e)
+            return []
+
+    return embed
+
+
+def _build_skvector_backend(skvector_cfg: dict) -> Any | None:
+    """Instantiate SKVectorBackend from an agent skvector.yaml dict."""
+    try:
+        from .backends.skvector_backend import SKVectorBackend
+
+        host = skvector_cfg.get("host", "localhost")
+        port = skvector_cfg.get("port", 6333)
+        use_https = skvector_cfg.get("https", False)
+        scheme = "https" if use_https else "http"
+        url = f"{scheme}://{host}:{port}"
+        api_key = skvector_cfg.get("api_key") or skvector_cfg.get("api-key")
+        collection = skvector_cfg.get("collection_name", "skmemory")
+        embed_cfg = skvector_cfg.get("embedding", {})
+        provider = embed_cfg.get("provider", "sentence_transformers")
+        model = embed_cfg.get("model", "all-MiniLM-L6-v2")
+        embed_fn = None
+
+        if provider == "ollama":
+            ollama_url = embed_cfg.get("url", "http://localhost:11434")
+            embed_fn = _make_ollama_embed_fn(model, ollama_url)
+
+        return SKVectorBackend(
+            url=url,
+            api_key=api_key,
+            collection=collection,
+            embed_fn=embed_fn,
+        )
+    except Exception as e:
+        logger.warning("Could not build SKVectorBackend: %s", e)
+        return None
+
+
+def _build_skgraph_backend(skgraph_cfg: dict) -> Any | None:
+    """Instantiate SKGraphBackend from an agent skgraph.yaml dict."""
+    try:
+        from .backends.skgraph_backend import SKGraphBackend
+
+        host = skgraph_cfg.get("host", "localhost")
+        port = skgraph_cfg.get("port", 6379)
+        password = skgraph_cfg.get("password")
+        graph_name = skgraph_cfg.get("graph_name", "skmemory")
+
+        if password:
+            url = f"redis://:{password}@{host}:{port}"
+        else:
+            url = f"redis://{host}:{port}"
+
+        return SKGraphBackend(url=url, graph_name=graph_name)
+    except Exception as e:
+        logger.warning("Could not build SKGraphBackend: %s", e)
+        return None
+
+
 class LazyMemoryLoader:
     """Efficiently loads memories based on date tiers."""
 
@@ -70,6 +182,9 @@ class LazyMemoryLoader:
         self.paths = get_agent_paths(agent_name)
         self.today = datetime.now().date()
         self.db = SQLiteBackend(str(self.paths["base"] / "memory"))
+        self._vector_backend = None
+        self._graph_backend = None
+        self._backends_loaded = False
 
     def load_active_context(self) -> MemoryContext:
         """Load token-optimized context for current session.
@@ -163,8 +278,23 @@ class LazyMemoryLoader:
         words = content.split()[:30]  # First 30 words
         return " ".join(words) + "..." if len(words) >= 30 else content
 
+    def _ensure_backends(self) -> None:
+        """Lazy-load vector and graph backends from agent config (once)."""
+        if self._backends_loaded:
+            return
+        self._backends_loaded = True
+        config_dir = self.paths["config"]
+
+        skvector_cfg = _load_skvector_config(config_dir)
+        if skvector_cfg:
+            self._vector_backend = _build_skvector_backend(skvector_cfg)
+
+        skgraph_cfg = _load_skgraph_config(config_dir)
+        if skgraph_cfg:
+            self._graph_backend = _build_skgraph_backend(skgraph_cfg)
+
     def deep_search(self, query: str, max_results: int = 10) -> list[dict]:
-        """Search ALL memory tiers (on demand, token-heavy).
+        """Search ALL memory tiers including vector and graph backends.
 
         Args:
             query: Search query
@@ -173,18 +303,59 @@ class LazyMemoryLoader:
         Returns:
             List of full memory details
         """
+        self._ensure_backends()
+        seen_ids: set[str] = set()
         results = []
 
-        # Search SQLite (title, content, tags)
-        results.extend(self._search_sqlite(query))
+        # 1. SQLite full-text search (always available)
+        for r in self._search_sqlite(query):
+            if r["id"] not in seen_ids:
+                seen_ids.add(r["id"])
+                r.setdefault("source_backend", "sqlite")
+                results.append(r)
 
-        # TODO: Add SKVector search if enabled
-        # results.extend(self._search_skvector(query))
+        # 2. SKVector semantic search (if configured)
+        if self._vector_backend is not None:
+            try:
+                vector_hits = self._vector_backend.search_text(query, limit=max_results)
+                for mem in vector_hits:
+                    if mem.id not in seen_ids:
+                        seen_ids.add(mem.id)
+                        results.append({
+                            "id": mem.id,
+                            "title": mem.title,
+                            "content": mem.content,
+                            "summary": getattr(mem, "summary", None),
+                            "tags": mem.tags,
+                            "layer": mem.layer.value if hasattr(mem.layer, "value") else str(mem.layer),
+                            "created_at": mem.created_at,
+                            "source_backend": "skvector",
+                        })
+            except Exception as e:
+                logger.warning("SKVector deep_search failed: %s", e)
 
-        # TODO: Add SKGraph search if enabled
-        # results.extend(self._search_skgraph(query))
+        # 3. SKGraph title + tag search (if configured)
+        if self._graph_backend is not None:
+            try:
+                graph_hits = self._graph_backend.search(query, limit=max_results)
+                for hit in graph_hits:
+                    if hit["id"] not in seen_ids:
+                        seen_ids.add(hit["id"])
+                        hit["source_backend"] = "skgraph"
+                        results.append(hit)
+                # Also search by tags (split query into words)
+                tags = [w for w in query.split() if len(w) > 2]
+                if tags:
+                    tag_hits = self._graph_backend.search_by_tags(tags, limit=max_results)
+                    for hit in tag_hits:
+                        if hit["id"] not in seen_ids:
+                            seen_ids.add(hit["id"])
+                            hit["source_backend"] = "skgraph_tags"
+                            results.append(hit)
+            except Exception as e:
+                logger.warning("SKGraph deep_search failed: %s", e)
 
-        # Sort by relevance (simple: contains query)
+        # Sort by relevance across all backends
         results = sorted(
             results,
             key=lambda x: (
