@@ -7,6 +7,7 @@ list, delete, and health check operations.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,7 @@ from skmemory.backends.skvector_backend import (
     MODEL_DIMENSIONS,
     VECTOR_DIM,
     SKVectorBackend,
+    VectorStateTracker,
     _extract_status_code,
 )
 from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
@@ -132,12 +134,16 @@ class TestSave:
 
     def test_save_calls_upsert(self, backend, mock_qdrant_client, sample_memory):
         """save() creates a point and upserts it."""
+        # scroll returns empty so dedup guard passes
+        mock_qdrant_client.scroll.return_value = ([], None)
         result = backend.save(sample_memory)
         assert result == sample_memory.id
         mock_qdrant_client.upsert.assert_called_once()
 
     def test_save_generates_embedding(self, backend, mock_embedder, sample_memory):
         """save() generates an embedding from the memory text."""
+        mock_qdrant_client_local = backend._client
+        mock_qdrant_client_local.scroll.return_value = ([], None)
         backend.save(sample_memory)
         mock_embedder.encode.assert_called_once()
 
@@ -146,6 +152,32 @@ class TestSave:
         qb = SKVectorBackend()
         result = qb.save(sample_memory)
         assert result == sample_memory.id
+
+    def test_save_skips_duplicate_content(self, backend, mock_qdrant_client, sample_memory):
+        """save() skips re-embedding when identical content already exists."""
+        # Simulate a duplicate: scroll returns a point with same content_hash but different id
+        dup_point = MagicMock()
+        existing_memory = Memory(
+            title="Existing",
+            content=sample_memory.content,  # same content
+        )
+        dup_point.payload = {"memory_json": existing_memory.model_dump_json()}
+        mock_qdrant_client.scroll.return_value = ([dup_point], None)
+
+        result = backend.save(sample_memory)
+        assert result == sample_memory.id
+        mock_qdrant_client.upsert.assert_not_called()
+
+    def test_save_does_not_skip_same_id_resave(self, backend, mock_qdrant_client, sample_memory):
+        """save() re-embeds when the same memory id is saved again (update)."""
+        # scroll returns same memory_id => not a duplicate, allow upsert
+        dup_point = MagicMock()
+        dup_point.payload = {"memory_json": sample_memory.model_dump_json()}
+        mock_qdrant_client.scroll.return_value = ([dup_point], None)
+
+        result = backend.save(sample_memory)
+        assert result == sample_memory.id
+        mock_qdrant_client.upsert.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -161,16 +193,16 @@ class TestSearch:
         backend.search_text("moments of connection")
         mock_embedder.encode.assert_called_once_with("moments of connection")
 
-    def test_search_text_calls_qdrant_search(self, backend, mock_qdrant_client):
-        """search_text uses Qdrant's search endpoint."""
+    def test_search_text_calls_qdrant_query_points(self, backend, mock_qdrant_client):
+        """search_text uses Qdrant's query_points endpoint."""
         backend.search_text("test query", limit=5)
-        mock_qdrant_client.search.assert_called_once()
+        mock_qdrant_client.query_points.assert_called_once()
 
     def test_search_text_returns_memories(self, backend, mock_qdrant_client, sample_memory):
         """search_text parses results into Memory objects."""
         scored_point = MagicMock()
         scored_point.payload = {"memory_json": sample_memory.model_dump_json()}
-        mock_qdrant_client.search.return_value = [scored_point]
+        mock_qdrant_client.query_points.return_value.points = [scored_point]
 
         results = backend.search_text("secret recipe")
         assert len(results) == 1
@@ -178,8 +210,25 @@ class TestSearch:
 
     def test_search_text_empty_results(self, backend, mock_qdrant_client):
         """search_text returns empty list when nothing matches."""
-        mock_qdrant_client.search.return_value = []
+        mock_qdrant_client.query_points.return_value.points = []
         assert backend.search_text("nonexistent") == []
+
+    def test_search_text_with_layer_filter(self, backend, mock_qdrant_client):
+        """search_text passes layer filter to Qdrant when specified."""
+        mock_qdrant_client.query_points.return_value.points = []
+        backend.search_text("query", layer="long-term")
+        call_kwargs = mock_qdrant_client.query_points.call_args
+        assert call_kwargs is not None
+        # query_filter should be set when layer is provided
+        assert "query_filter" in call_kwargs.kwargs or call_kwargs.args
+
+    def test_search_text_no_filter_when_none_params(self, backend, mock_qdrant_client):
+        """search_text passes no filter when all filter params are None."""
+        mock_qdrant_client.query_points.return_value.points = []
+        backend.search_text("query")
+        call_kwargs = mock_qdrant_client.query_points.call_args
+        assert call_kwargs is not None
+        assert call_kwargs.kwargs.get("query_filter") is None
 
     def test_search_not_initialized(self):
         """search_text returns empty when not initialized."""
@@ -361,3 +410,198 @@ class TestEmbedding:
         assert payload["layer"] == "long-term"
         assert "cloud9" in payload["tags"]
         assert payload["emotional_intensity"] == 10.0
+        # Change 1: verify new top-level fields
+        assert "content_preview" in payload
+        assert payload["content_preview"] == sample_memory.content[:500]
+        assert "content_hash" in payload
+        assert payload["content_hash"] == sample_memory.content_hash()
+        assert "is_chunk" in payload
+        assert payload["is_chunk"] is False  # no parent_id
+        assert "chunk_index" in payload
+        assert "total_chunks" in payload
+        assert "parent_id" in payload
+        assert payload["parent_id"] == ""
+        assert "section_title" in payload
+        assert "authority_tier" in payload
+        assert payload["authority_tier"] == "memory"
+        assert "role" in payload
+        assert payload["role"] == "general"
+
+
+# ═══════════════════════════════════════════════════════════
+# VectorStateTracker
+# ═══════════════════════════════════════════════════════════
+
+
+class TestVectorStateTracker:
+    """Test the VectorStateTracker state persistence."""
+
+    def test_record_and_is_current(self, tmp_path):
+        """record() then is_current() returns True for matching hash."""
+        tracker = VectorStateTracker(tmp_path / "vector-state.json")
+        tracker.record("mem-1", "abc123", 99)
+        assert tracker.is_current("mem-1", "abc123") is True
+
+    def test_is_current_wrong_hash(self, tmp_path):
+        """is_current() returns False when hash changed."""
+        tracker = VectorStateTracker(tmp_path / "vector-state.json")
+        tracker.record("mem-1", "abc123", 99)
+        assert tracker.is_current("mem-1", "differenthash") is False
+
+    def test_is_current_unknown_id(self, tmp_path):
+        """is_current() returns False for unseen memory_id."""
+        tracker = VectorStateTracker(tmp_path / "vector-state.json")
+        assert tracker.is_current("unknown", "abc") is False
+
+    def test_remove_deletes_entry(self, tmp_path):
+        """remove() deletes the tracked entry."""
+        tracker = VectorStateTracker(tmp_path / "vector-state.json")
+        tracker.record("mem-1", "abc123", 99)
+        tracker.remove("mem-1")
+        assert tracker.is_current("mem-1", "abc123") is False
+        assert "mem-1" not in tracker.all_ids()
+
+    def test_persists_across_instances(self, tmp_path):
+        """State survives re-instantiation (disk persistence)."""
+        state_file = tmp_path / "vector-state.json"
+        t1 = VectorStateTracker(state_file)
+        t1.record("mem-A", "hash1", 42)
+
+        t2 = VectorStateTracker(state_file)
+        assert t2.is_current("mem-A", "hash1") is True
+
+    def test_all_ids(self, tmp_path):
+        """all_ids() returns the set of tracked IDs."""
+        tracker = VectorStateTracker(tmp_path / "vector-state.json")
+        tracker.record("m1", "h1", 1)
+        tracker.record("m2", "h2", 2)
+        assert tracker.all_ids() == {"m1", "m2"}
+
+    def test_corrupted_state_recovers(self, tmp_path):
+        """Corrupted state file falls back to empty state."""
+        state_file = tmp_path / "vector-state.json"
+        state_file.write_text("not valid json")
+        tracker = VectorStateTracker(state_file)
+        assert tracker.all_ids() == set()
+
+
+# ═══════════════════════════════════════════════════════════
+# Remove (cascade delete)
+# ═══════════════════════════════════════════════════════════
+
+
+class TestRemove:
+    """Test remove() with chunk cascade delete."""
+
+    def test_remove_deletes_main_and_chunks(self, backend, mock_qdrant_client):
+        """remove() calls delete twice: main point + chunk filter."""
+        result = backend.remove("test-memory-id")
+        assert result is True
+        assert mock_qdrant_client.delete.call_count == 2
+
+    def test_remove_not_initialized(self):
+        """remove() returns False when not initialized."""
+        qb = SKVectorBackend()
+        assert qb.remove("any-id") is False
+
+    def test_remove_updates_tracker(self, tmp_path, mock_qdrant_client, mock_embedder):
+        """remove() updates state tracker when configured."""
+        state_file = tmp_path / "vector-state.json"
+        backend = SKVectorBackend(url="http://mock:6333", state_path=state_file)
+        backend._client = mock_qdrant_client
+        backend._embedder = mock_embedder
+        backend._initialized = True
+
+        tracker = backend._tracker
+        tracker.record("mem-X", "hashX", 123)
+        assert tracker.is_current("mem-X", "hashX") is True
+
+        backend.remove("mem-X")
+        assert tracker.is_current("mem-X", "hashX") is False
+
+
+# ═══════════════════════════════════════════════════════════
+# is_indexed()
+# ═══════════════════════════════════════════════════════════
+
+
+class TestIsIndexed:
+    """Test the is_indexed() helper."""
+
+    def test_is_indexed_without_tracker(self, backend):
+        """is_indexed returns False when no tracker configured."""
+        assert backend.is_indexed("any", "hash") is False
+
+    def test_is_indexed_with_tracker(self, tmp_path, mock_qdrant_client, mock_embedder):
+        """is_indexed returns True when tracker has matching entry."""
+        state_file = tmp_path / "vector-state.json"
+        b = SKVectorBackend(url="http://mock:6333", state_path=state_file)
+        b._client = mock_qdrant_client
+        b._embedder = mock_embedder
+        b._initialized = True
+        b._tracker.record("mem-Z", "hashZ", 99)
+        assert b.is_indexed("mem-Z", "hashZ") is True
+        assert b.is_indexed("mem-Z", "differenthash") is False
+
+
+# ═══════════════════════════════════════════════════════════
+# sync_all()
+# ═══════════════════════════════════════════════════════════
+
+
+class TestSyncAll:
+    """Test the incremental sync_all() method."""
+
+    def _write_memory_file(self, directory: Path, memory: Memory):
+        """Helper: write a memory to a tier directory."""
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{memory.id}.json").write_text(memory.model_dump_json())
+
+    def test_sync_all_indexes_new_memories(self, tmp_path, mock_qdrant_client, mock_embedder):
+        """sync_all() indexes memories not yet in the tracker."""
+        state_file = tmp_path / "vector-state.json"
+        b = SKVectorBackend(url="http://mock:6333", state_path=state_file)
+        b._client = mock_qdrant_client
+        b._embedder = mock_embedder
+        b._initialized = True
+        mock_qdrant_client.scroll.return_value = ([], None)
+
+        mem = Memory(title="Sync test", content="Content to sync")
+        self._write_memory_file(tmp_path / "short-term", mem)
+
+        stats = b.sync_all(tmp_path, "test-agent")
+        assert stats["indexed"] == 1
+        assert stats["skipped"] == 0
+        assert stats["errors"] == 0
+
+    def test_sync_all_skips_current_memories(self, tmp_path, mock_qdrant_client, mock_embedder):
+        """sync_all() skips memories where content_hash matches tracker."""
+        state_file = tmp_path / "vector-state.json"
+        b = SKVectorBackend(url="http://mock:6333", state_path=state_file)
+        b._client = mock_qdrant_client
+        b._embedder = mock_embedder
+        b._initialized = True
+
+        mem = Memory(title="Already indexed", content="Same content")
+        self._write_memory_file(tmp_path / "short-term", mem)
+        # Pre-populate tracker with matching hash
+        b._tracker.record(mem.id, mem.content_hash(), 1)
+
+        stats = b.sync_all(tmp_path, "test-agent")
+        assert stats["skipped"] == 1
+        assert stats["indexed"] == 0
+
+    def test_sync_all_removes_stale_entries(self, tmp_path, mock_qdrant_client, mock_embedder):
+        """sync_all() removes tracker entries with no matching flat file."""
+        state_file = tmp_path / "vector-state.json"
+        b = SKVectorBackend(url="http://mock:6333", state_path=state_file)
+        b._client = mock_qdrant_client
+        b._embedder = mock_embedder
+        b._initialized = True
+
+        # Tracker has an entry for a memory that no longer exists on disk
+        b._tracker.record("deleted-mem-id", "stale-hash", 99)
+
+        stats = b.sync_all(tmp_path, "test-agent")
+        assert stats["removed"] == 1
+        assert b._tracker.get("deleted-mem-id") is None
