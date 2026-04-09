@@ -400,11 +400,11 @@ class SKVectorBackend(BaseBackend):
         if not embedding:
             return []
 
-        results = self._client.search(
+        results = self._client.query_points(
             collection_name=self.collection,
-            query_vector=embedding,
+            query=embedding,
             limit=limit,
-        )
+        ).points
 
         memories = []
         for scored_point in results:

@@ -448,11 +448,11 @@ class LazyMemoryLoader:
                 if embedding:
                     for recall_col in self._recall_collections:
                         try:
-                            scored_points = self._vector_backend._client.search(
+                            scored_points = self._vector_backend._client.query_points(
                                 collection_name=recall_col,
-                                query_vector=embedding,
+                                query=embedding,
                                 limit=max_results,
-                            )
+                            ).points
                             for sp in scored_points:
                                 payload = sp.payload or {}
                                 raw = payload.get("memory_json")
