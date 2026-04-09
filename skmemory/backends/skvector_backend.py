@@ -218,7 +218,9 @@ class SKVectorBackend(BaseBackend):
 
             if self._embed_fn is None:
                 self._embedder = SentenceTransformer(self.embedding_model_name)
-                get_dim = getattr(self._embedder, "get_sentence_embedding_dimension", None)
+                # get_embedding_dimension (new API) or get_sentence_embedding_dimension (legacy)
+                get_dim = getattr(self._embedder, "get_embedding_dimension",
+                          getattr(self._embedder, "get_sentence_embedding_dimension", None))
                 if callable(get_dim):
                     resolved_dim = get_dim()
                     if isinstance(resolved_dim, int) and resolved_dim > 0:
