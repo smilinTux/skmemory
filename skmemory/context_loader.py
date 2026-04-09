@@ -79,7 +79,8 @@ def _read_yaml_file(path: Path) -> dict | None:
 
 
 def _load_skvector_config(config_dir: Path) -> dict | None:
-    """Load skvector config: try skvector.yaml first, then skmemory.yaml inline."""
+    """Load skvector config: try skvector.yaml first, then skmemory.yaml inline,
+    then skmemory.yaml flat keys (legacy migration path)."""
     # 1. Dedicated skvector.yaml
     path = config_dir / "skvector.yaml"
     if path.exists():
@@ -87,27 +88,43 @@ def _load_skvector_config(config_dir: Path) -> dict | None:
         if cfg and cfg.get("enabled", False):
             return cfg
 
-    # 2. Fallback: inline backends.skvector section in skmemory.yaml
     skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
+
+    # 2. Fallback: inline backends.skvector section in skmemory.yaml
     inline = skmem.get("backends", {}).get("skvector", {})
-    if not inline or not inline.get("enabled", False):
-        return None
+    if inline and inline.get("enabled", False):
+        ext_cfg_path = inline.get("config")
+        if ext_cfg_path:
+            resolved = Path(ext_cfg_path).expanduser()
+            if resolved.exists():
+                ext = _read_yaml_file(resolved)
+                if ext and ext.get("enabled", False):
+                    return ext
+        if inline.get("host") or inline.get("url"):
+            return inline
 
-    # If inline points to an external config file, resolve and load it
-    ext_cfg_path = inline.get("config")
-    if ext_cfg_path:
-        resolved = Path(ext_cfg_path).expanduser()
-        if resolved.exists():
-            ext = _read_yaml_file(resolved)
-            if ext and ext.get("enabled", False):
-                return ext
+    # 3. Legacy flat keys: skvector_url / skvector_key / ... in skmemory.yaml
+    #    Enabled when backends_enabled list includes 'skvector' (or key is present).
+    backends_enabled = skmem.get("backends_enabled", [])
+    url = skmem.get("skvector_url")
+    if url and ("skvector" in backends_enabled or skmem.get("skvector_key")):
+        return {
+            "enabled": True,
+            "url": url,
+            "api_key": skmem.get("skvector_key"),
+            "collection": skmem.get("skvector_collection", "skmemory"),
+            "embedding": {
+                "provider": "sentence_transformers",
+                "model": skmem.get("skvector_embedding_model", "all-MiniLM-L6-v2"),
+            },
+        }
 
-    # Return inline section itself (may have host/port/url directly)
-    return inline if (inline.get("host") or inline.get("url")) else None
+    return None
 
 
 def _load_skgraph_config(config_dir: Path) -> dict | None:
-    """Load skgraph config: try skgraph.yaml first, then skmemory.yaml inline."""
+    """Load skgraph config: try skgraph.yaml first, then skmemory.yaml inline,
+    then skmemory.yaml flat keys (legacy migration path)."""
     # 1. Dedicated skgraph.yaml
     path = config_dir / "skgraph.yaml"
     if path.exists():
@@ -115,22 +132,32 @@ def _load_skgraph_config(config_dir: Path) -> dict | None:
         if cfg and cfg.get("enabled", False):
             return cfg
 
-    # 2. Fallback: inline backends.skgraph section in skmemory.yaml
     skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
+
+    # 2. Fallback: inline backends.skgraph section in skmemory.yaml
     inline = skmem.get("backends", {}).get("skgraph", {})
-    if not inline or not inline.get("enabled", False):
-        return None
+    if inline and inline.get("enabled", False):
+        ext_cfg_path = inline.get("config")
+        if ext_cfg_path:
+            resolved = Path(ext_cfg_path).expanduser()
+            if resolved.exists():
+                ext = _read_yaml_file(resolved)
+                if ext and ext.get("enabled", False):
+                    return ext
+        if inline.get("host") or inline.get("url"):
+            return inline
 
-    # If inline points to an external config file, resolve and load it
-    ext_cfg_path = inline.get("config")
-    if ext_cfg_path:
-        resolved = Path(ext_cfg_path).expanduser()
-        if resolved.exists():
-            ext = _read_yaml_file(resolved)
-            if ext and ext.get("enabled", False):
-                return ext
+    # 3. Legacy flat keys: skgraph_url / skgraph_graph_name / ... in skmemory.yaml
+    backends_enabled = skmem.get("backends_enabled", [])
+    url = skmem.get("skgraph_url")
+    if url and ("skgraph" in backends_enabled or skmem.get("skgraph_graph_name")):
+        return {
+            "enabled": True,
+            "url": url,
+            "graph_name": skmem.get("skgraph_graph_name", "skmemory"),
+        }
 
-    return inline if (inline.get("host") or inline.get("url")) else None
+    return None
 
 
 def _load_recall_collections(config_dir: Path) -> list[str]:
