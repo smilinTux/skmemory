@@ -25,12 +25,16 @@ Directory layout (same as FileBackend):
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from ..config import SKMEMORY_HOME
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
+
+logger = logging.getLogger("skmemory.sqlite_backend")
 
 DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memory")
 
@@ -72,6 +76,18 @@ CREATE INDEX IF NOT EXISTS idx_date_layer ON memories(DATE(created_at), layer);
 CREATE INDEX IF NOT EXISTS idx_importance ON memories(importance DESC);
 CREATE INDEX IF NOT EXISTS idx_accessed ON memories(last_accessed DESC);
 CREATE INDEX IF NOT EXISTS idx_access_count ON memories(access_count DESC);
+CREATE INDEX IF NOT EXISTS idx_content_hash ON memories(content_hash);
+
+-- Sync failure tracking table
+CREATE TABLE IF NOT EXISTS sync_failures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    error TEXT,
+    failed_at TEXT NOT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sync_failures_memory ON sync_failures(memory_id);
 
 -- NEW: View for active context (today + recent summaries)
 CREATE VIEW IF NOT EXISTS active_memories AS
@@ -152,6 +168,10 @@ class SQLiteBackend(BaseBackend):
                     "ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0",
                 ),
                 ("last_accessed", "ALTER TABLE memories ADD COLUMN last_accessed TEXT"),
+                (
+                    "content_hash",
+                    "ALTER TABLE memories ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
+                ),
             ]
             for col, ddl in migrations:
                 if col not in existing:
@@ -444,6 +464,12 @@ class SQLiteBackend(BaseBackend):
                 "WHEN julianday('now') - julianday(created_at) < 3 THEN 3.0 "
                 "WHEN julianday('now') - julianday(created_at) < 7 THEN 1.5 "
                 "ELSE 0.0 END) DESC"
+            )
+        elif order_by == "recency_weighted":
+            # Time-decay ranking: importance decays by layer-specific half-life
+            order = (
+                "(importance * POWER(0.5, CAST(julianday('now') - julianday(created_at) AS REAL) / "
+                "CASE layer WHEN 'short-term' THEN 7 WHEN 'mid-term' THEN 30 ELSE 365 END)) DESC"
             )
         elif order_by == "emotional_intensity":
             order = "emotional_intensity DESC"
@@ -811,6 +837,55 @@ class SQLiteBackend(BaseBackend):
                 "backend": "SQLiteBackend",
                 "error": str(e),
             }
+
+    def find_by_content_hash(self, content_hash: str) -> "Memory | None":
+        """Find an existing memory by content hash. Returns None if not found."""
+        try:
+            conn = self._get_conn()
+            cursor = conn.execute(
+                "SELECT file_path FROM memories WHERE content_hash = ? LIMIT 1",
+                (content_hash,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            # Load the full memory from its flat file
+            file_path = Path(row[0])
+            if file_path.exists():
+                return Memory.model_validate_json(file_path.read_text())
+        except Exception as e:
+            logger.warning("find_by_content_hash failed: %s", e)
+        return None
+
+    def record_sync_failure(self, memory_id: str, backend: str, error: str):
+        """Record a sync failure for a memory to a backend."""
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO sync_failures (memory_id, backend, error, failed_at, retry_count) VALUES (?, ?, ?, ?, 0)",
+            (memory_id, backend, error, datetime.utcnow().isoformat())
+        )
+        conn.commit()
+
+    def get_sync_failures(self, backend: str | None = None, limit: int = 100) -> list[dict]:
+        """Get sync failures, optionally filtered by backend."""
+        conn = self._get_conn()
+        if backend:
+            cursor = conn.execute(
+                "SELECT memory_id, backend, error, failed_at, retry_count FROM sync_failures WHERE backend = ? ORDER BY failed_at DESC LIMIT ?",
+                (backend, limit)
+            )
+        else:
+            cursor = conn.execute(
+                "SELECT memory_id, backend, error, failed_at, retry_count FROM sync_failures ORDER BY failed_at DESC LIMIT ?",
+                (limit,)
+            )
+        return [{"memory_id": r[0], "backend": r[1], "error": r[2], "failed_at": r[3], "retry_count": r[4]} for r in cursor.fetchall()]
+
+    def clear_sync_failure(self, memory_id: str, backend: str):
+        """Clear a sync failure record after successful sync."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM sync_failures WHERE memory_id = ? AND backend = ?", (memory_id, backend))
+        conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""

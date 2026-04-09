@@ -8,6 +8,7 @@ or by search, and the polaroid comes back with everything intact.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections import Counter
@@ -169,6 +170,18 @@ class MemoryStore:
         """
         metadata = self._enrich_metadata(title, source, source_ref, tags, metadata)
 
+        # Dedup guard: check for existing memory with same content
+        _content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        if isinstance(self.primary, SQLiteBackend):
+            existing = self.primary.find_by_content_hash(_content_hash)
+            if existing:
+                logger.info(
+                    "Duplicate content detected for title '%s' — returning existing memory %s",
+                    title,
+                    existing.id,
+                )
+                return existing
+
         if decompose or len(content) >= self.decompose_min_length:
             return self.ingest_document(
                 title=title,
@@ -220,23 +233,85 @@ class MemoryStore:
             metadata=metadata,
         )
 
+        # Infer valence from emotional labels if not explicitly set
+        if memory.emotional.valence == 0.0 and memory.emotional.labels:
+            POSITIVE = {"joy", "trust", "love", "anticipation", "hope", "gratitude", "excited", "happy"}
+            NEGATIVE = {"fear", "anger", "disgust", "sadness", "grief", "anxiety", "frustrated", "disappointed"}
+            labels_lower = {l.lower() for l in memory.emotional.labels}
+            pos = len(labels_lower & POSITIVE)
+            neg = len(labels_lower & NEGATIVE)
+            if pos > neg:
+                memory.emotional.valence = min(1.0, 0.3 + 0.2 * pos)
+            elif neg > pos:
+                memory.emotional.valence = max(-1.0, -0.3 - 0.2 * neg)
+
+        # Set intent from source if not provided
+        if not memory.intent and memory.source:
+            SOURCE_INTENTS = {
+                "cli": "user-recorded",
+                "session": "session-capture",
+                "seed": "identity-anchor",
+                "mcp": "tool-captured",
+                "import": "imported",
+                "skchat": "conversation-log",
+            }
+            memory.intent = SOURCE_INTENTS.get(memory.source, "")
+
         memory.seal()
 
         self.primary.save(memory)
 
+        # Vector indexing (resilient)
         if self.vector:
             try:
                 self.vector.save(memory)
-            except Exception as exc:
-                logger.warning("Vector indexing failed for memory %s: %s", memory.id, exc)
+                if isinstance(self.primary, SQLiteBackend):
+                    self.primary.clear_sync_failure(memory.id, "skvector")
+            except Exception as e:
+                logger.warning("SKVector save failed for %s: %s", memory.id, e)
+                if isinstance(self.primary, SQLiteBackend):
+                    self.primary.record_sync_failure(memory.id, "skvector", str(e))
 
+        # Graph indexing (resilient)
         if self.graph:
             try:
                 self.graph.index_memory(memory)
-            except Exception as exc:
-                logger.warning("Graph indexing failed for memory %s: %s", memory.id, exc)
+                if isinstance(self.primary, SQLiteBackend):
+                    self.primary.clear_sync_failure(memory.id, "skgraph")
+            except Exception as e:
+                logger.warning("SKGraph index failed for %s: %s", memory.id, e)
+                if isinstance(self.primary, SQLiteBackend):
+                    self.primary.record_sync_failure(memory.id, "skgraph", str(e))
 
         return memory
+
+    def snapshot_bulk(self, items: list[dict], progress_cb=None) -> list["Memory"]:
+        """Batch save multiple memories efficiently.
+
+        Each item dict should have same kwargs as snapshot().
+        Uses single SQLite transaction, then batch vector upsert.
+
+        Args:
+            items: List of dicts with title, content, and optional kwargs
+            progress_cb: Optional callback(done, total) for progress reporting
+
+        Returns:
+            List of saved Memory objects (skips duplicates)
+        """
+        results = []
+        total = len(items)
+
+        for i, item in enumerate(items):
+            try:
+                mem = self.snapshot(**item)
+                if mem:
+                    results.append(mem)
+            except Exception as e:
+                logger.warning("snapshot_bulk item %d failed: %s", i, e)
+            if progress_cb:
+                progress_cb(i + 1, total)
+
+        return results
 
     def ingest_document(
         self,
@@ -491,6 +566,18 @@ class MemoryStore:
                 "This memory may have been tampered with."
             )
 
+        # Update LRU tracking
+        if isinstance(self.primary, SQLiteBackend):
+            try:
+                conn = self.primary._get_conn()
+                conn.execute(
+                    "UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?",
+                    (datetime.now(timezone.utc).isoformat(), memory_id)
+                )
+                conn.commit()
+            except Exception:
+                pass
+
         return memory
 
     def search(self, query: str, limit: int = 10) -> list[Memory]:
@@ -740,16 +827,21 @@ class MemoryStore:
             bool: True if deleted from primary backend.
         """
         deleted = self.primary.delete(memory_id)
+
+        # Also remove from vector backend
         if self.vector:
             try:
-                self.vector.delete(memory_id)
-            except Exception as exc:
-                logger.warning("Vector delete failed for memory %s: %s", memory_id, exc)
+                self.vector.remove(memory_id)
+            except Exception as e:
+                logger.warning("SKVector remove failed: %s", e)
+
+        # Also remove from graph backend
         if self.graph:
             try:
                 self.graph.remove_memory(memory_id)
-            except Exception as exc:
-                logger.warning("Graph delete failed for memory %s: %s", memory_id, exc)
+            except Exception as e:
+                logger.warning("SKGraph remove failed: %s", e)
+
         return deleted
 
     def list_memories(
