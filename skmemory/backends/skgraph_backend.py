@@ -77,6 +77,8 @@ class SKGraphBackend:
         self._db = None
         self._graph = None
         self._initialized = False
+        self._last_by_source: dict[str, str] = {}  # source -> last memory_id written
+        self._cursors_loaded = False
 
     # ─────────────────────────────────────────────────────────
     # Initialisation
@@ -102,10 +104,29 @@ class SKGraphBackend:
             self._graph = self._db.select_graph(self.graph_name)
             self._initialized = True
             logger.debug("SKGraph connected: %s / %s", self.url, self.graph_name)
+            self._initialize_source_cursors()
             return True
         except Exception as exc:
             logger.warning("SKGraph connection failed: %s", exc)
             return False
+
+    def _initialize_source_cursors(self):
+        """Load latest memory ID per source from existing graph data."""
+        if self._cursors_loaded:
+            return
+        self._cursors_loaded = True
+        try:
+            result = self._graph.query(
+                "MATCH (m:Memory)-[:FROM_SOURCE]->(s:Source) "
+                "WITH s.name as source, m ORDER BY m.created_at DESC "
+                "WITH source, collect(m.id)[0] as latest_id "
+                "RETURN source, latest_id"
+            )
+            for row in result.result_set:
+                if row[0] and row[1]:
+                    self._last_by_source[row[0]] = row[1]
+        except Exception as e:
+            logger.warning("Could not initialize source cursors: %s", e)
 
     # ─────────────────────────────────────────────────────────
     # Write operations
@@ -174,12 +195,18 @@ class SKGraphBackend:
                 },
             )
 
-            # PROMOTED_FROM edge (promotion lineage)
+            # PROMOTED_FROM + SUPERSEDES edges (promotion lineage)
             if memory.parent_id:
-                self._graph.query(
-                    Q.CREATE_PROMOTED_FROM,
-                    {"child_id": memory.id, "parent_id": memory.parent_id},
-                )
+                try:
+                    self._graph.query(
+                        "MATCH (child:Memory {id: $child_id}) "
+                        "MERGE (parent:Memory {id: $parent_id}) "
+                        "MERGE (child)-[:PROMOTED_FROM]->(parent) "
+                        "MERGE (child)-[:SUPERSEDES]->(parent)",
+                        {"child_id": memory.id, "parent_id": memory.parent_id},
+                    )
+                except Exception as e:
+                    logger.warning("PROMOTED_FROM/SUPERSEDES edge failed: %s", e)
 
             # RELATED_TO edges (explicit relationships)
             for related_id in memory.related_ids:
@@ -201,24 +228,27 @@ class SKGraphBackend:
                 {"a_id": memory.id},
             )
 
+            # Richer RELATED_TO wiring (siblings, same session)
+            self._wire_related(memory.id, memory)
+
             # FROM_SOURCE edge
             self._graph.query(
                 Q.CREATE_FROM_SOURCE,
                 {"mem_id": memory.id, "source": memory.source},
             )
 
-            # PRECEDED_BY temporal edge — link to the most recent prior
-            # memory from the same source so sessions form a chain.
-            prev_result = self._graph.query(
-                Q.FIND_PREVIOUS_FROM_SOURCE,
-                {"source": memory.source, "exclude_id": memory.id},
-            )
-            if prev_result.result_set:
-                prev_id = prev_result.result_set[0][0]
-                self._graph.query(
-                    Q.CREATE_PRECEDED_BY,
-                    {"later_id": memory.id, "earlier_id": prev_id},
-                )
+            # Strict linear chain: use in-memory tracker, not a graph query
+            prior_id = self._last_by_source.get(memory.source)
+            if prior_id and prior_id != memory.id:
+                try:
+                    self._graph.query(
+                        "MATCH (later:Memory {id: $later_id}), (earlier:Memory {id: $earlier_id}) "
+                        "MERGE (later)-[:PRECEDED_BY]->(earlier)",
+                        {"later_id": memory.id, "earlier_id": prior_id}
+                    )
+                except Exception as e:
+                    logger.warning("PRECEDED_BY edge failed: %s", e)
+            self._last_by_source[memory.source] = memory.id
 
             # PLANTED edge for AI seed memories
             if memory.source == "seed":
@@ -264,10 +294,151 @@ class SKGraphBackend:
                     {"mem_id": memory.id, "claim": claim},
                 )
 
+            # For non-decomposed memories, extract entities inline
+            if not memory.metadata.get("decomposition") and len(memory.content) > 50:
+                self._extract_and_index_entities(memory.id, memory.content)
+
             return True
         except Exception as exc:
             logger.warning("SKGraph index failed: %s", exc)
             return False
+
+    def _wire_related(self, memory_id: str, memory: "Memory") -> None:
+        """Create weighted RELATED_TO edges from multiple signals."""
+        signals = []
+
+        # Signal 2: Siblings (same parent_id)
+        if memory.parent_id:
+            try:
+                result = self._graph.query(
+                    "MATCH (sibling:Memory {parent_id: $parent_id}) WHERE sibling.id <> $my_id RETURN sibling.id",
+                    {"parent_id": memory.parent_id, "my_id": memory_id}
+                )
+                for row in result.result_set:
+                    signals.append((row[0], "sibling", 0.9))
+            except Exception:
+                pass
+
+        # Signal 3: Same source_ref (same session)
+        if memory.source_ref:
+            try:
+                result = self._graph.query(
+                    "MATCH (m:Memory) WHERE m.source_ref = $ref AND m.id <> $my_id RETURN m.id LIMIT 5",
+                    {"ref": memory.source_ref, "my_id": memory_id}
+                )
+                for row in result.result_set:
+                    signals.append((row[0], "same_session", 0.7))
+            except Exception:
+                pass
+
+        # Create edges with weight and reason properties
+        for (other_id, reason, weight) in signals:
+            try:
+                self._graph.query(
+                    "MATCH (a:Memory {id: $a_id}), (b:Memory {id: $b_id}) "
+                    "MERGE (a)-[r:RELATED_TO]->(b) "
+                    "SET r.weight = $weight, r.reason = $reason",
+                    {"a_id": memory_id, "b_id": other_id, "weight": weight, "reason": reason}
+                )
+            except Exception as e:
+                logger.warning("RELATED_TO wire failed: %s", e)
+
+    def _extract_and_index_entities(self, memory_id: str, content: str) -> None:
+        """Extract entities from short memory content and create MENTIONS edges."""
+        import re
+        # Reuse entity extraction pattern from decompose.py
+        entity_pattern = re.compile(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,3})\b')
+        SKIP_WORDS = {"The", "This", "That", "These", "Those", "When", "Where", "What"}
+
+        entities = []
+        for match in entity_pattern.finditer(content):
+            entity = match.group(1).strip()
+            if entity not in SKIP_WORDS and len(entity) > 3:
+                entities.append(entity)
+
+        # Deduplicate
+        entities = list(dict.fromkeys(entities))[:10]  # max 10 entities
+
+        for entity in entities:
+            try:
+                self._graph.query(
+                    "MATCH (m:Memory {id: $mem_id}) "
+                    "MERGE (e:Entity {name: $entity}) "
+                    "MERGE (m)-[:MENTIONS]->(e)",
+                    {"mem_id": memory_id, "entity": entity}
+                )
+            except Exception as e:
+                logger.warning("Entity index failed for '%s': %s", entity, e)
+
+    def update_emotional(self, memory_id: str, intensity: float, valence: float, labels: list[str]) -> bool:
+        """Update emotional fields on an existing Memory node.
+
+        Args:
+            memory_id: The memory ID to update.
+            intensity: New emotional intensity (0-10).
+            valence: New emotional valence (-1 to 1).
+            labels: New emotion labels list.
+
+        Returns:
+            bool: True if updated successfully, False on failure.
+        """
+        if not self._ensure_initialized():
+            return False
+        try:
+            self._graph.query(
+                "MATCH (m:Memory {id: $id}) SET m.intensity = $intensity, m.valence = $valence, m.labels = $labels",
+                {"id": memory_id, "intensity": intensity, "valence": valence, "labels": labels}
+            )
+            return True
+        except Exception as e:
+            logger.warning("update_emotional failed: %s", e)
+            return False
+
+    def get_context_graph(self, memory_id: str, depth: int = 2) -> dict:
+        """Return N-hop neighbourhood as structured context dict.
+
+        Args:
+            memory_id: Center memory ID to build context around.
+            depth: How many hops to traverse (default: 2).
+
+        Returns:
+            dict: Context with center_id, related memories, tags, and entities.
+        """
+        if not self._ensure_initialized():
+            return {}
+        try:
+            result = self._graph.query(
+                "MATCH path = (center:Memory {id: $id})-[*1.." + str(depth) + "]-(neighbor:Memory) "
+                "WITH neighbor, min(length(path)) as distance, "
+                "     [r in relationships(path) | type(r)] as edge_types "
+                "RETURN neighbor.id, neighbor.title, neighbor.layer, distance, edge_types[0] "
+                "ORDER BY distance ASC LIMIT 20",
+                {"id": memory_id}
+            )
+            related = []
+            for row in result.result_set:
+                related.append({
+                    "id": row[0], "title": row[1], "layer": row[2],
+                    "distance": row[3], "edge_type": row[4]
+                })
+
+            # Get tags and entities for center
+            tag_result = self._graph.query(
+                "MATCH (m:Memory {id: $id})-[:TAGGED]->(t:Tag) RETURN t.name",
+                {"id": memory_id}
+            )
+            tags = [r[0] for r in tag_result.result_set]
+
+            entity_result = self._graph.query(
+                "MATCH (m:Memory {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.name LIMIT 10",
+                {"id": memory_id}
+            )
+            entities = [r[0] for r in entity_result.result_set]
+
+            return {"center_id": memory_id, "related": related, "tags": tags, "entities": entities}
+        except Exception as e:
+            logger.warning("get_context_graph failed: %s", e)
+            return {}
 
     # ─────────────────────────────────────────────────────────
     # Read operations

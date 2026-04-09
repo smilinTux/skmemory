@@ -173,35 +173,12 @@ class TestIndexMemory:
         assert len(source_calls) >= 1
 
     def test_index_creates_preceded_by_edge_when_prior_exists(self, backend, mock_graph):
-        """PRECEDED_BY edge is created when a prior memory from same source exists."""
-        # Simulate a previous memory from same source being found
-        prior_result = MagicMock()
-        prior_result.result_set = [("prior-mem-id", "2026-01-01T00:00:00")]
+        """PRECEDED_BY edge is created when a prior memory from same source exists (in-memory tracker)."""
+        # Seed the in-memory tracker with a prior memory from same source
+        prior_id = "prior-mem-id"
+        backend._last_by_source["mcp"] = prior_id
 
-        empty_result = MagicMock()
-        empty_result.result_set = []
-
-        # Query call order for a non-seed memory without tags:
-        # 1. UPSERT_MEMORY
-        # 2. (no PROMOTED_FROM — no parent)
-        # 3. (no RELATED_TO — no related_ids)
-        # 4. (no TAGGED — no tags)
-        # 5. CREATE_SHARED_TAG_RELATED
-        # 6. CREATE_FROM_SOURCE
-        # 7. FIND_PREVIOUS_FROM_SOURCE -> returns prior
-        # 8. CREATE_PRECEDED_BY
-        call_count = [0]
-
-        def side_effect(query, params=None):
-            call_count[0] += 1
-            result = MagicMock()
-            if "FIND_PREVIOUS_FROM_SOURCE" in query or (params and "exclude_id" in params):
-                result.result_set = [["prior-mem-id", "2026-01-01T00:00:00"]]
-            else:
-                result.result_set = []
-            return result
-
-        mock_graph.query.side_effect = side_effect
+        mock_graph.query.return_value = MagicMock(result_set=[])
 
         mem = Memory(
             title="New Session Memory",
