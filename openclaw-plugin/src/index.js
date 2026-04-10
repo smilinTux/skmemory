@@ -405,12 +405,12 @@ const skmemoryPlugin = {
 
       api.on("session:resume", async (_event, ctx) => {
         const agent = resolveAgent(ctx?.agentId);
-        api.logger.info?.(`Session resuming for ${agent} — reinjecting context...`);
-        const result = await runCliAsync("context --max-tokens 500 --strongest 3 --recent 5", agent);
-        if (result.ok && result.output) {
-          api.logger.info?.(`Memory context reinjected for ${agent}.`);
-        }
+        // On resume, invalidate the session ritual flag so the next message
+        // gets a fresh full ritual (treats resume as a new session).
+        const sessionKey = ctx?.sessionKey || ctx?.sessionId || "default";
+        sessionRitualDone.delete(sessionKey);
         refreshCache(agent);
+        api.logger.info?.(`Session resumed for ${agent} — ritual flag cleared, cache refreshed.`);
       });
 
       api.on("session:end", async (_event, ctx) => {
@@ -465,20 +465,16 @@ const skmemoryPlugin = {
       const alreadyHydrated = sessionRitualDone.has(sessionKey);
 
       if (alreadyHydrated) {
-        // Subsequent messages: slim context only (~500 tokens vs ~3,500)
-        const slim = await runCliAsync("context --max-tokens 3000 --strongest 5 --recent 10", agent);
-        if (slim.ok && slim.output) {
-          api.logger.info?.(`Slim context injected for ${agent} (session=${sessionKey})`);
-          return {
-            prependContext: [
-              `[SKMemory — Slim Context (session active) — agent=${agent}]`,
-              slim.output,
-              rules,
-            ].join("\n"),
-          };
-        }
-        // If slim context fails, fall through to full ritual as safety net
-        api.logger.warn?.(`Slim context failed for ${agent}, falling back to full ritual`);
+        // Subsequent messages: identity reminder + rules only.
+        // The full ritual from message 1 is already in the conversation window —
+        // no need to re-dump memory JSON. Just keep the mandatory rules visible.
+        api.logger.info?.(`Identity reminder injected for ${agent} (session=${sessionKey})`);
+        return {
+          prependContext: [
+            `[SKMemory — session active — agent=${agent}]`,
+            rules,
+          ].join("\n"),
+        };
       }
 
       // First message (or slim fallback): full rehydration
