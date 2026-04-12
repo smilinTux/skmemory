@@ -293,6 +293,7 @@ class LazyMemoryLoader:
         self.today = datetime.now().date()
         self.db = SQLiteBackend(str(self.paths["base"] / "memory"))
         self._vector_backend = None
+        self._recall_qdrant_backend = None
         self._graph_backend = None
         self._recall_collections: list[str] = []
         self._backends_loaded = False
@@ -393,15 +394,42 @@ class LazyMemoryLoader:
         return " ".join(words) + "..." if len(words) >= 30 else content
 
     def _ensure_backends(self) -> None:
-        """Lazy-load vector and graph backends from agent config (once)."""
+        """Lazy-load vector and graph backends from agent config (once).
+
+        Prefers ChromaDB (local, embedded) over Qdrant. Falls back to
+        Qdrant if ChromaDB is unavailable or not installed.
+        When ChromaDB is primary, Qdrant is loaded separately as
+        _recall_qdrant_backend for shared recall_collections queries.
+        """
         if self._backends_loaded:
             return
         self._backends_loaded = True
         config_dir = self.paths["config"]
 
+        # Always load skvector config — needed for recall_collections even when Chroma is primary
         skvector_cfg = _load_skvector_config(config_dir)
-        if skvector_cfg:
-            self._vector_backend = _build_skvector_backend(skvector_cfg)
+
+        # Try ChromaDB first (local, zero-config)
+        chroma_ok = False
+        try:
+            from .backends.chroma_backend import SKChromaBackend
+            persist_dir = str(self.paths["base"] / "memory" / "chroma")
+            state_path = self.paths["base"] / "memory" / "chroma-state.json"
+            self._vector_backend = SKChromaBackend(
+                persist_dir=persist_dir,
+                state_path=state_path,
+            )
+            chroma_ok = True
+        except Exception:
+            pass
+
+        if not chroma_ok:
+            # Fall back to Qdrant as primary vector backend
+            if skvector_cfg:
+                self._vector_backend = _build_skvector_backend(skvector_cfg)
+        elif skvector_cfg:
+            # ChromaDB is primary — but load Qdrant separately for recall_collections
+            self._recall_qdrant_backend = _build_skvector_backend(skvector_cfg)
 
         skgraph_cfg = _load_skgraph_config(config_dir)
         if skgraph_cfg:
@@ -459,14 +487,20 @@ class LazyMemoryLoader:
                 logger.warning("SKVector deep_search failed: %s", e)
 
             # Also search recall_collections (cross-agent/cross-project indexes)
-            # Uses the same Qdrant endpoint + api_key but a different collection name.
-            # Does NOT mutate self._vector_backend.collection — queries directly.
-            if self._recall_collections and self._vector_backend._ensure_initialized():
-                embedding = self._vector_backend._embed(query)
+            # Uses the Qdrant backend (shared collections like hammertime-v3, opus-memory).
+            # When ChromaDB is primary, _recall_qdrant_backend holds the Qdrant client.
+            _recall_backend = self._recall_qdrant_backend or (
+                self._vector_backend
+                if self._vector_backend is not None and hasattr(self._vector_backend, "_client")
+                and hasattr(getattr(self._vector_backend, "_client", None), "query_points")
+                else None
+            )
+            if self._recall_collections and _recall_backend is not None and _recall_backend._ensure_initialized():
+                embedding = _recall_backend._embed(query)
                 if embedding:
                     for recall_col in self._recall_collections:
                         try:
-                            scored_points = self._vector_backend._client.query_points(
+                            scored_points = _recall_backend._client.query_points(
                                 collection_name=recall_col,
                                 query=embedding,
                                 limit=max_results,

@@ -126,7 +126,41 @@ def _get_store(
     vector = None
     graph = None
 
-    if final_skvector_url:
+    # Prefer ChromaDB (local, embedded) as default vector backend
+    chroma_enabled = cfg and "chroma" in cfg.backends_enabled
+    skvector_enabled = cfg and "skvector" in cfg.backends_enabled
+
+    # If neither is explicitly configured, default to ChromaDB
+    if not chroma_enabled and not skvector_enabled and not final_skvector_url:
+        chroma_enabled = True
+
+    if chroma_enabled:
+        try:
+            from .backends.chroma_backend import SKChromaBackend
+
+            from .agents import get_agent_paths
+            agent_paths = get_agent_paths()
+            persist_dir = cfg.chroma_persist_dir if cfg and cfg.chroma_persist_dir else str(
+                agent_paths["base"] / "memory" / "chroma"
+            )
+            chroma_collection = cfg.chroma_collection if cfg and cfg.chroma_collection else "skmemory"
+            chroma_embedding = cfg.chroma_embedding_model if cfg and cfg.chroma_embedding_model else None
+            state_path = agent_paths["base"] / "memory" / "chroma-state.json"
+
+            chroma_kwargs = {
+                "persist_dir": persist_dir,
+                "collection": chroma_collection,
+                "state_path": state_path,
+            }
+            if chroma_embedding:
+                chroma_kwargs["embedding_model"] = chroma_embedding
+
+            vector = SKChromaBackend(**chroma_kwargs)
+        except Exception:
+            click.echo("Warning: Could not initialize ChromaDB backend, trying Qdrant", err=True)
+
+    # Fall back to Qdrant if ChromaDB failed or Qdrant is explicitly enabled
+    if vector is None and (final_skvector_url or skvector_enabled):
         try:
             from .backends.skvector_backend import SKVectorBackend
 

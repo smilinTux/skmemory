@@ -35,6 +35,10 @@ dependencies = [
 seed = [
     "skseed>=0.1.0",
 ]
+chroma = [
+    "chromadb>=0.5.0",
+    "sentence-transformers>=2.2.0",
+]
 skvector = [
     "qdrant-client>=1.7.0",
     "sentence-transformers>=2.2.0",
@@ -47,6 +51,7 @@ telegram = [
 ]
 all = [
     "skseed>=0.1.0",
+    "chromadb>=0.5.0",
     "qdrant-client>=1.7.0",
     "sentence-transformers>=2.2.0",
     "falkordb>=1.0.0",

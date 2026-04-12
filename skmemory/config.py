@@ -47,6 +47,12 @@ class EndpointConfig(BaseModel):
 class SKMemoryConfig(BaseModel):
     """Persistent configuration for SKMemory backends."""
 
+    # ChromaDB (default local vector backend)
+    chroma_persist_dir: str | None = None
+    chroma_collection: str | None = None
+    chroma_embedding_model: str | None = None
+
+    # Qdrant (for shared/remote collections like hammertime)
     skvector_url: str | None = None
     skvector_key: str | None = None
     skvector_collection: str | None = None
