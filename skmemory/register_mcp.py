@@ -25,7 +25,8 @@ def get_agent_name() -> str:
     from .agents import get_active_agent
 
     return (
-        os.environ.get("SKMEMORY_AGENT")
+        os.environ.get("SKAGENT")
+        or os.environ.get("SKMEMORY_AGENT")
         or os.environ.get("SKCAPSTONE_AGENT")
         or get_active_agent()
         or ""
@@ -50,6 +51,7 @@ def register_opencode(agent: str, dry_run: bool = False) -> bool:
                 "command": "python",
                 "args": ["-m", "skmemory.mcp_server"],
                 "env": {
+                    "SKAGENT": agent,
                     "SKMEMORY_AGENT": agent,
                     "SKMEMORY_HOME": str(Path.home() / ".skcapstone" / "agents" / agent),
                 },
@@ -57,7 +59,7 @@ def register_opencode(agent: str, dry_run: bool = False) -> bool:
             "skcapstone": {
                 "command": "python",
                 "args": ["-m", "skcapstone.mcp_server"],
-                "env": {"SKCAPSTONE_AGENT": agent},
+                "env": {"SKAGENT": agent, "SKCAPSTONE_AGENT": agent},
             },
         },
         "skills": [
@@ -92,6 +94,7 @@ def register_claude(agent: str, dry_run: bool = False) -> bool:
                 "command": "python",
                 "args": ["-m", "skmemory.mcp_server"],
                 "env": {
+                    "SKAGENT": agent,
                     "SKMEMORY_AGENT": agent,
                     "SKMEMORY_HOME": str(Path.home() / ".skcapstone" / "agents" / agent),
                 },
@@ -99,7 +102,7 @@ def register_claude(agent: str, dry_run: bool = False) -> bool:
             "skcapstone": {
                 "command": "python",
                 "args": ["-m", "skcapstone.mcp_server"],
-                "env": {"SKCAPSTONE_AGENT": agent},
+                "env": {"SKAGENT": agent, "SKCAPSTONE_AGENT": agent},
             },
         }
     }

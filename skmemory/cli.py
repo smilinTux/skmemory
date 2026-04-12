@@ -354,7 +354,7 @@ def recall(ctx: click.Context, memory_id: str) -> None:
         agent = get_active_agent()
         if agent is None:
             click.echo(
-                "No active agent configured. Set SKCAPSTONE_AGENT or SKMEMORY_AGENT.",
+                "No active agent configured. Set SKAGENT (or SKCAPSTONE_AGENT / SKMEMORY_AGENT).",
                 err=True,
             )
             sys.exit(1)
@@ -2425,6 +2425,7 @@ def feb_context_cmd(feb_path: str | None, agent: str | None):
             if agent:
                 import os
 
+                os.environ["SKAGENT"] = agent
                 os.environ["SKCAPSTONE_AGENT"] = agent
             feb = load_strongest_feb()
 

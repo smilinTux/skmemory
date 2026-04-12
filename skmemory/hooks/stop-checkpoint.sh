@@ -12,7 +12,7 @@ SKMEMORY="${HOME}/.local/bin/skmemory"
 [ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
 [ -x "$SKMEMORY" ] || exit 0
 
-AGENT="${SKCAPSTONE_AGENT:-${SKMEMORY_AGENT:-}}"
+AGENT="${SKAGENT:-${SKCAPSTONE_AGENT:-${SKMEMORY_AGENT:-}}}"
 if [[ -z "$AGENT" && -d "$HOME/.skcapstone/agents" ]]; then
   AGENT="$(find "$HOME/.skcapstone/agents" -mindepth 1 -maxdepth 1 -type d ! -name '*-template' -printf '%f\n' | sort | head -n1)"
 fi

@@ -15,7 +15,7 @@
 import { execSync, exec } from "node:child_process";
 
 const SKMEMORY_BIN = process.env.SKMEMORY_BIN || "skmemory";
-const DEFAULT_AGENT = process.env.SKCAPSTONE_AGENT || "lumina";
+const DEFAULT_AGENT = process.env.SKAGENT || process.env.SKCAPSTONE_AGENT || "lumina";
 const EXEC_TIMEOUT = 30_000;
 const IS_WIN = process.platform === "win32";
 
@@ -48,6 +48,7 @@ function skenvPath() {
 function cliEnv(agent) {
   return {
     ...process.env,
+    SKAGENT: agent || DEFAULT_AGENT,
     SKCAPSTONE_AGENT: agent || DEFAULT_AGENT,
     PATH: `${skenvPath()}${IS_WIN ? ";" : ":"}${process.env.PATH}`,
   };
