@@ -26,7 +26,10 @@ from .models import (
     MemoryRole,
     SeedMemory,
 )
+from .agents import get_agent_paths
+from .query_sanitizer import sanitize_query
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
+from .wal import WriteAheadLog
 
 logger = logging.getLogger("skmemory.store")
 
@@ -116,6 +119,19 @@ class MemoryStore:
         self.max_content_length = max_content_length
         self.content_overflow_strategy = content_overflow_strategy
         self.decompose_min_length = decompose_min_length
+
+        # Write-ahead log — resilient init so missing agent config doesn't block
+        try:
+            agent_paths = get_agent_paths()
+            wal_path = agent_paths["base"] / "memory" / "wal" / "write_log.jsonl"
+        except Exception:
+            import tempfile
+            wal_path = (
+                __import__("pathlib").Path(tempfile.gettempdir())
+                / "skmemory_wal"
+                / "write_log.jsonl"
+            )
+        self._wal = WriteAheadLog(wal_path)
 
     def _enrich_metadata(
         self,
@@ -259,7 +275,13 @@ class MemoryStore:
 
         memory.seal()
 
-        self.primary.save(memory)
+        self._wal.log_pending("snapshot", memory.id, title, layer.value)
+        try:
+            self.primary.save(memory)
+            self._wal.log_done("snapshot", memory.id)
+        except Exception as exc:
+            self._wal.log_failed("snapshot", memory.id, str(exc))
+            raise
 
         # Vector indexing (resilient)
         if self.vector:
@@ -580,7 +602,15 @@ class MemoryStore:
 
         return memory
 
-    def search(self, query: str, limit: int = 10) -> list[Memory]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        tags: list[str] | None = None,
+        layer: str | None = None,
+        source: str | None = None,
+    ) -> list[Memory]:
         """Search memories by text.
 
         Uses vector backend if available, falls back to text search.
@@ -588,13 +618,19 @@ class MemoryStore:
         Args:
             query: Search query string.
             limit: Maximum results.
+            tags: Optional tag filter (AND logic).
+            layer: Optional layer filter ("short-term", "mid-term", "long-term").
+            source: Optional source filter.
 
         Returns:
             list[Memory]: Matching memories ranked by relevance.
         """
+        query = sanitize_query(query)
         if self.vector:
             try:
-                results = self.vector.search_text(query, limit=limit)
+                results = self.vector.search_text(
+                    query, limit=limit, layer=layer, tags=tags, source=source
+                )
                 if results:
                     return results
             except Exception as exc:
@@ -826,7 +862,13 @@ class MemoryStore:
         Returns:
             bool: True if deleted from primary backend.
         """
-        deleted = self.primary.delete(memory_id)
+        self._wal.log_pending("forget", memory_id, "", "")
+        try:
+            deleted = self.primary.delete(memory_id)
+            self._wal.log_done("forget", memory_id)
+        except Exception as exc:
+            self._wal.log_failed("forget", memory_id, str(exc))
+            raise
 
         # Also remove from vector backend
         if self.vector:
@@ -886,7 +928,13 @@ class MemoryStore:
             return None
 
         promoted = source.promote(target, summary=summary)
-        self.primary.save(promoted)
+        self._wal.log_pending("promote", promoted.id, promoted.title, target.value)
+        try:
+            self.primary.save(promoted)
+            self._wal.log_done("promote", promoted.id)
+        except Exception as exc:
+            self._wal.log_failed("promote", promoted.id, str(exc))
+            raise
 
         if self.vector:
             try:
