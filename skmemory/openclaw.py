@@ -48,9 +48,28 @@ class SKMemoryPlugin:
         base_path: str | None = None,
         skvector_url: str | None = None,
         skvector_key: str | None = None,
+        use_chroma: bool = True,
     ) -> None:
         vector = None
-        if skvector_url:
+
+        # Prefer ChromaDB (local, embedded) by default
+        if use_chroma:
+            try:
+                from .backends.chroma_backend import SKChromaBackend
+                from .agents import get_agent_paths
+
+                agent_paths = get_agent_paths()
+                persist_dir = str(agent_paths["memory"] / "chroma")
+                state_path = agent_paths["memory"] / "chroma-state.json"
+                vector = SKChromaBackend(
+                    persist_dir=persist_dir,
+                    state_path=state_path,
+                )
+            except Exception:
+                pass
+
+        # Fall back to Qdrant for shared collections
+        if vector is None and skvector_url:
             try:
                 from .backends.skvector_backend import SKVectorBackend
 
