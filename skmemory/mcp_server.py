@@ -55,7 +55,17 @@ _store: MemoryStore | None = None
 def _get_store() -> MemoryStore:
     global _store
     if _store is None:
-        _store = MemoryStore()
+        vector = None
+        try:
+            from .backends.chroma_backend import SKChromaBackend
+            from .agents import get_agent_paths
+            agent_paths = get_agent_paths()
+            persist_dir = str(agent_paths["memory"] / "chroma")
+            state_path = agent_paths["memory"] / "chroma-state.json"
+            vector = SKChromaBackend(persist_dir=persist_dir, state_path=state_path)
+        except Exception:
+            pass
+        _store = MemoryStore(vector=vector)
     return _store
 
 
@@ -125,7 +135,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="memory_search",
-            description="Full-text search across all SKMemory layers.",
+            description="Full-text search across all SKMemory layers with optional metadata filters.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -133,6 +143,20 @@ async def list_tools() -> list[Tool]:
                     "limit": {
                         "type": "integer",
                         "description": "Max results (default: 10).",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter results to memories matching ALL specified tags.",
+                    },
+                    "layer": {
+                        "type": "string",
+                        "enum": ["short-term", "mid-term", "long-term"],
+                        "description": "Filter results to a specific memory layer.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "Filter results by source (e.g. 'manual', 'mcp', 'claude-code-hook').",
                     },
                 },
                 "required": ["query"],
@@ -558,7 +582,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "memory_search":
             query = arguments["query"]
             limit = int(arguments.get("limit", 10))
-            memories = store.search(query, limit=limit)
+            tags = arguments.get("tags") or None
+            layer = arguments.get("layer") or None
+            source = arguments.get("source") or None
+            memories = store.search(query, limit=limit, tags=tags, layer=layer, source=source)
             return _json_response([_memory_dict(m) for m in memories])
 
         elif name == "memory_recall":
