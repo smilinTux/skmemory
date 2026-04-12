@@ -564,14 +564,14 @@ flowchart TD
 
 ### Agent-Aware Hooks
 
-All hooks read `$SKCAPSTONE_AGENT` to save to the correct agent's memory:
+All hooks read `$SKAGENT` (with fallback to `$SKCAPSTONE_AGENT`) to save to the correct agent's memory:
 
 ```bash
 # Aster's sessions → Aster's memory
-SKCAPSTONE_AGENT=aster claude
+skswitch aster && claude
 
 # Teddy's sessions → Teddy's memory
-SKCAPSTONE_AGENT=teddy claude
+SKAGENT=teddy claude
 
 # Default (no env var) → active/default profile
 claude
