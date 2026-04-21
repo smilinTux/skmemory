@@ -4,6 +4,38 @@
 
 **Total completed: 87** across 8 agents
 
+## 2026-04-04 — skmemory v0.9.5 (MemPalace)
+
+### [NEW] ChromaDB Local Vector Backend (SKChroma)
+
+- **`skmemory/backends/chroma_backend.py`** — `SKChromaBackend`: embedded ChromaDB,
+  zero-config local vector search, per-agent scoped collections, replaces Qdrant as
+  the default Level 1 backend for per-agent memory
+- ChromaDB is now the **default** local semantic backend (`pip install skmemory[chroma]`)
+- SKVector (Qdrant) remains supported as an optional remote backend (`pip install skmemory[skvector]`)
+- Architecture updated to reflect Level 1a (SKChroma, local) / Level 1b (SKVector, remote)
+
+### [NEW] MemPalace Infrastructure
+
+- **`skmemory/query_sanitizer.py`** — `sanitize_query()`: 4-step cascade strips
+  system-prompt bloat from AI queries before embedding (passthrough → last `?` sentence
+  → last sentence → 500-char tail truncation). Prevents context pollution in ChromaDB.
+- **`skmemory/wal.py`** — Write-ahead log for all memory writes. Crash-safe audit trail,
+  PENDING → COMMITTED lifecycle, auto-replay on startup.
+- **`skmemory/extractor.py`** — `MemoryExtractor`: auto-pull decisions, preferences,
+  milestones, and technical facts from conversation text into mid-term memory snapshots.
+- **`skmemory/hooks/claude_code_hooks.py`** — Claude Code `Stop` + `PreCompact` hooks
+  for automatic session memory capture without manual curation.
+- **`skmemory/hooks/`** — Shell wrappers: `session-end-save.sh`, `pre-compact-save.sh`,
+  `session-start-ritual.sh`, `stop-checkpoint.sh`, `post-compact-reinject.sh`
+- **`IMPLEMENTATION_SPEC.md`** — Full MemPalace integration spec (530 lines)
+
+### [OPS] Infrastructure
+
+- Removed stray `=0.5.0` pip log artifact from repo root
+- `ARCHITECTURE.md` updated with ChromaDB storage tier diagram, MemPalace section,
+  and mermaid diagrams for WAL, query sanitizer, extractor, scoped search, and hooks
+
 ## 2026-03-18 — skmemory v0.9.1
 
 ### [NEW] Feature

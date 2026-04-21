@@ -5,43 +5,53 @@
 ## Storage Tiers
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Agent / CLI                       │
-│          skmemory context --max-tokens 3000          │
-├─────────────────────────────────────────────────────┤
-│                  MemoryStore                         │
-│         (facade — delegates to backends)             │
-├──────────┬──────────────┬───────────────────────────┤
-│ Level 0  │   Level 1    │       Level 2             │
-│ SQLite   │   SKVector   │       SKGraph             │
-│ (always) │   (optional) │       (optional)           │
-│          │              │                           │
-│ Index +  │  Semantic    │  Graph traversal           │
-│ JSON     │  vector      │  Lineage chains            │
-│ files    │  search      │  Memory clusters           │
-├──────────┼──────────────┼───────────────────────────┤
-│ 0 deps   │ Docker or    │  Docker or                │
-│ Ships    │ cloud.       │  managed                  │
-│ w/Python │ qdrant.io    │  service                  │
-└──────────┴──────────────┴───────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                      Agent / CLI                              │
+│            skmemory context --max-tokens 3000                 │
+├──────────────────────────────────────────────────────────────┤
+│                     MemoryStore                               │
+│           (facade — delegates to backends)                    │
+├──────────┬───────────────────────────┬───────────────────────┤
+│ Level 0  │        Level 1            │       Level 2         │
+│ SQLite   │  SKChroma  │  SKVector    │       SKGraph         │
+│ (always) │  (local,   │  (remote,   │       (optional)      │
+│          │  default)  │  optional)  │                       │
+│ Index +  │ Embedded   │  Qdrant     │  Graph traversal      │
+│ JSON     │ ChromaDB   │  cloud/     │  Lineage chains       │
+│ files    │ zero deps  │  self-host  │  Memory clusters      │
+├──────────┼────────────┼─────────────┼───────────────────────┤
+│ 0 deps   │ pip chroma │ Docker or   │  Docker or            │
+│ Ships    │ in-process │ cloud       │  managed              │
+│ w/Python │ per-agent  │ qdrant.io   │  service              │
+└──────────┴────────────┴─────────────┴───────────────────────┘
 ```
 
 ```mermaid
 graph TB
     Agent["Agent / CLI"] --> MS["MemoryStore"]
+    MS --> WAL["Write-Ahead Log\nAudit trail + crash recovery"]
+    MS --> QS["Query Sanitizer\n4-step cascade"]
     MS --> D["Decomposition Engine\nchunk + citation + entity + claim extraction"]
     MS --> L0["Level 0: SQLite\nAlways on, zero deps"]
-    MS --> L1["Level 1: SKVector\nSemantic search\nbge-legal-v1 default"]
+    MS --> L1a["Level 1a: SKChroma\nLocal embedded ChromaDB\nDefault semantic search\nZero infrastructure"]
+    MS --> L1b["Level 1b: SKVector\nRemote Qdrant\nOptional — cloud/self-host"]
     MS --> L2["Level 2: SKGraph\nGraph traversal\nFalkorDB + structure nodes"]
     MS --> L3["Level 3: HA Routing\nEndpointSelector"]
+    WAL --> L0
+    QS --> L1a
+    QS --> L1b
     D --> L0
-    D --> L1
+    D --> L1a
+    D --> L1b
     D --> L2
     style L0 fill:#bfb,stroke:#333
-    style L1 fill:#bbf,stroke:#333
+    style L1a fill:#bbf,stroke:#333
+    style L1b fill:#aad,stroke:#333,stroke-dasharray:5
     style L2 fill:#fbf,stroke:#333
     style L3 fill:#fbb,stroke:#333
     style D fill:#ffd,stroke:#333
+    style WAL fill:#ffe,stroke:#333
+    style QS fill:#efe,stroke:#333
 ```
 
 ### Level 0: SQLite Index (always on)
@@ -74,7 +84,42 @@ The JSON files remain the source of truth. The index is rebuildable:
 skmemory reindex
 ```
 
-### Level 1: SKVector (powered by Qdrant) (optional — semantic search)
+### Level 1a: SKChroma (local, default — semantic search)
+
+**Zero-config embedded vector search. Works out of the box, no Docker required.**
+
+SKChroma uses [ChromaDB](https://www.trychroma.com/) in embedded (in-process) mode.
+It runs inside the same Python process as the agent — no server, no Docker, no config.
+Each agent gets its own collection scoped to their agent name. The collection is built
+from the Syncthing-synced flat JSON files, same source of truth as SQLite.
+
+```mermaid
+flowchart TD
+    QS["Query Sanitizer\nsanitize_query(raw)"]
+    QS --> CLEAN["Cleaned query\n≤200 chars\nreal intent only"]
+    CLEAN --> CHR["ChromaDB Collection\n<agent>_memories"]
+    CHR --> EMB["all-MiniLM-L6-v2\n(sentence-transformers)"]
+    EMB --> VEC["Cosine similarity\nn_results=10"]
+    VEC --> TIER["Tier filter\nshort/mid/long"]
+    TIER --> OUT["Ranked results\n+ distance scores"]
+```
+
+Query sanitization prevents system-prompt pollution in embeddings.
+Raw AI queries are often bloated with rules and instructions — the sanitizer
+strips them to the actual intent before embedding.
+
+Install:
+```bash
+pip install skmemory[chroma]
+# or for everything:
+pip install skmemory[all]
+```
+
+No other config needed. Collection auto-initializes on first use.
+
+Resource cost: ~50MB RAM, ~30MB disk per agent (idle).
+
+### Level 1b: SKVector (powered by Qdrant) (optional — remote semantic search)
 
 **"Find the memory about that feeling we had" — even if those words aren't in it.**
 
@@ -82,7 +127,9 @@ Uses the sovereign HammerTime embedding model by default:
 `bge-legal-v1` when the local model is available, falling back to
 `BAAI/bge-large-en-v1.5`.
 
-SKVector stores the embeddings and enables cosine similarity search.
+SKVector stores the embeddings and enables cosine similarity search across
+a remote Qdrant cluster. Use this when you need multi-machine search or
+higher index capacity than ChromaDB's embedded mode.
 
 Install:
 ```bash
@@ -196,6 +243,140 @@ Key properties:
 
 See **[skmemory/HA.md](skmemory/HA.md)** for full documentation, Mermaid
 diagrams, configuration examples, and scaling considerations.
+
+---
+
+## MemPalace — Intelligent Memory Infrastructure
+
+MemPalace is the collection of subsystems that make memory writes safe and
+memory queries accurate: a write-ahead log, query sanitizer, conversation
+extractor, scoped search, and Claude Code hooks.
+
+### Write-Ahead Log (WAL)
+
+**Every memory write is logged before it hits storage. Crash-safe. Auditable.**
+
+`skmemory/wal.py` — wraps all `MemoryStore` writes in a WAL entry that is
+flushed to `~/.skcapstone/agents/<agent>/memory/wal.jsonl` before the actual
+write completes. On startup the WAL is replayed to recover any incomplete writes.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant WAL as WriteAheadLog
+    participant MS as MemoryStore
+    participant FS as Flat JSON + SQLite
+
+    C->>WAL: log_write(memory)
+    WAL->>FS: append wal.jsonl (PENDING)
+    WAL->>MS: snapshot(memory)
+    MS->>FS: write {uuid}.json + index
+    WAL->>FS: mark wal entry COMMITTED
+    Note over WAL,FS: On crash replay: re-apply PENDING entries
+```
+
+Operations logged: `snapshot`, `promote`, `archive`, `gc`, `update_metadata`.
+
+### Query Sanitizer
+
+**Strip system-prompt bloat before embedding. Keep the real intent.**
+
+Raw AI queries often arrive as multi-paragraph context dumps. Embedding those
+directly pollutes the ChromaDB collection with system-prompt noise. The sanitizer
+cascades through four steps:
+
+```mermaid
+flowchart TD
+    RAW["Raw query\n(may be huge)"]
+    RAW --> S1{"≤ 200 chars?"}
+    S1 -->|Yes| OUT["Pass through unchanged"]
+    S1 -->|No| S2{"Last '?' sentence\n≤ 200 chars?"}
+    S2 -->|Yes| OUT
+    S2 -->|No| S3{"Last sentence\n≤ 200 chars?"}
+    S3 -->|Yes| OUT
+    S3 -->|No| S4["Tail truncate\nto 500 chars"]
+    S4 --> OUT
+```
+
+Module: `skmemory/query_sanitizer.py` — `sanitize_query(raw: str) -> str`
+
+### Conversation Extractor
+
+**Automatically pull decisions, preferences, and milestones from conversations.**
+
+`skmemory/extractor.py` — `MemoryExtractor` scans conversation text for
+extractable insights and creates memory snapshots without human curation.
+
+```mermaid
+flowchart LR
+    CONV["Conversation text\n(session turns)"]
+    CONV --> EX["MemoryExtractor"]
+    EX --> DEC["Decisions\n'we decided...'"]
+    EX --> PREF["Preferences\n'I prefer...'"]
+    EX --> MILE["Milestones\n'first time...'"]
+    EX --> TECH["Technical facts\n'port 18780...'"]
+    DEC & PREF & MILE & TECH --> SNAP["skmemory snapshot\nmid-term"]
+```
+
+Used by `session-to-memory.py` (archive hook) and Claude Code Stop/PreCompact hooks.
+
+### Scoped Search
+
+**ChromaDB search with per-agent isolation and tier filtering.**
+
+`SKChromaBackend.search(query, agent, tier)` — scoped to a single agent's
+collection, with optional memory tier filtering (short/mid/long). The query
+sanitizer runs automatically before embedding.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant SC as SKChromaBackend
+    participant QS as QuerySanitizer
+    participant CHR as ChromaDB
+
+    A->>SC: search("my query", agent="lumina", tier="mid-term")
+    SC->>QS: sanitize_query("my query")
+    QS-->>SC: "my query" (or truncated)
+    SC->>CHR: collection.query(query_texts=[clean], where={tier, agent})
+    CHR-->>SC: [(id, distance, metadata)]
+    SC-->>A: List[MemorySummary] ranked by relevance
+```
+
+### Claude Code Hooks
+
+**Auto-save memory at session end and before compaction. No manual curation.**
+
+`skmemory/hooks/claude_code_hooks.py` — implements two hooks:
+
+| Hook | Trigger | Action |
+|---|---|---|
+| `Stop` | Session ends | Extract turns → Haiku digest → mid-term snapshot |
+| `PreCompact` | Context approaching limit | Save current context summary before compaction |
+
+Shell wrappers for `.claude/hooks/` configuration:
+
+```
+skmemory/hooks/
+├── session-end-save.sh       # Stop hook — save on exit
+├── pre-compact-save.sh       # PreCompact hook — save before context trim
+├── session-start-ritual.sh   # PostSessionStart — inject ritual
+├── stop-checkpoint.sh        # Stop — lightweight checkpoint
+└── post-compact-reinject.sh  # PostCompact — reinject identity
+```
+
+To wire into Claude Code:
+```bash
+# .claude/settings.json
+{
+  "hooks": {
+    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "~/.skenv/bin/python -m skmemory.hooks.claude_code_hooks stop"}]}],
+    "PreCompact": [{"matcher": "", "hooks": [{"type": "command", "command": "~/.skenv/bin/python -m skmemory.hooks.claude_code_hooks precompact"}]}]
+  }
+}
+```
+
+---
 
 ## Know Your Audience (KYA) — Audience-Aware Memory Filtering
 
