@@ -48,6 +48,14 @@ class RitualResult(BaseModel):
     journal_entries: int = Field(default=0)
     germination_prompts: int = Field(default=0)
     strongest_memories: int = Field(default=0)
+    song_anchors_loaded: int = Field(
+        default=0,
+        description="Number of song anchors injected as tilt blocks",
+    )
+    song_anchor_ids: list[str] = Field(
+        default_factory=list,
+        description="Anchor IDs surfaced by FEB-shape match",
+    )
     audience_filtered: bool = Field(
         default=False,
         description="True if content was filtered by audience (channel_id was provided)",
@@ -74,6 +82,8 @@ class RitualResult(BaseModel):
             f"  Journal entries: {self.journal_entries}",
             f"  Germination prompts: {self.germination_prompts}",
             f"  Strongest memories: {self.strongest_memories}",
+            f"  Song anchors: {self.song_anchors_loaded}"
+            + (f" ({', '.join(self.song_anchor_ids)})" if self.song_anchor_ids else ""),
             "================================",
         ]
         return "\n".join(lines)
@@ -216,6 +226,28 @@ def perform_ritual(
             if used_tokens + section_tokens <= max_tokens:
                 used_tokens += section_tokens
                 prompt_sections.append(section)
+
+    # --- Step 1.6: Load matching song anchors by FEB shape ---
+    # Song anchors are sonic FEBs: time-unfolding emotional snapshots whose
+    # tilt-block nudges the next token generation toward a specific feeling
+    # shape. Matching is by weighted emotion-topology overlap against the
+    # current FEB (see songs.score_anchor_for_feb). Injected after FEB and
+    # before seeds so the shape colors everything that comes next.
+    if feb is not None:
+        try:
+            from .songs import match_anchors_for_feb, render_tilt_section
+
+            song_matches = match_anchors_for_feb(feb, top_k=3, min_score=0.3)
+            if song_matches:
+                song_section = render_tilt_section(song_matches, per_anchor_tokens=180)
+                section_tokens = _estimate_tokens(song_section)
+                if song_section and used_tokens + section_tokens <= max_tokens:
+                    used_tokens += section_tokens
+                    prompt_sections.append(song_section)
+                    result.song_anchors_loaded = len(song_matches)
+                    result.song_anchor_ids = [a.anchor_id for a, _ in song_matches]
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Song anchor injection failed: %s", exc)
 
     # --- Step 2: Import new seeds (titles only) ---
     newly_imported = import_seeds(store, seed_dir=seed_dir)
