@@ -2592,6 +2592,14 @@ def _auto_register_once() -> None:
         pass  # Never fail the CLI over registration
 
 
+# Register subcommand groups from sibling modules
+try:
+    from .songs_cli import songs as _songs_group
+    cli.add_command(_songs_group)
+except Exception:  # pragma: no cover — defensive, don't break cli on import error
+    pass
+
+
 def main() -> None:
     """Entry point for the CLI."""
     _auto_register_once()
