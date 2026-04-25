@@ -4,6 +4,38 @@
 
 **Total completed: 87** across 8 agents
 
+## 2026-04-25 — skmemory v0.9.9 (Graph autoload + graph sync)
+
+### [NEW] SKGraph auto-loaded from per-agent yaml
+
+- **`skmemory/cli.py`** — `make_store()` now falls back to
+  `~/.skcapstone/agents/<agent>/config/skgraph.yaml` when no graph URL
+  is set via env / CLI / `skmemory.yaml`. Reuses
+  `context_loader._load_skgraph_config()` (same precedence as SKWhisper).
+  Per-agent setup writes `skgraph.yaml` separately, so this fixes the
+  "graph backend silently absent" gap on existing agents.
+- `skmemory health` now reports a `graph` block (`ok`, `url`, `graph`
+  name, `node_count`) when the backend is wired.
+
+### [NEW] `skmemory sync --graph` — backfill FalkorDB
+
+- **`SKGraphBackend.sync_all(flat_files_dir, agent_name)`** — walks every
+  flat-file memory and calls `index_memory()`, populating Memory nodes,
+  Tag nodes, Source nodes, and `RELATED_TO` / `PROMOTED_FROM` /
+  `MENTIONS` / `CITES` / `ASSERTS` / `IN_SECTION` edges. Idempotent
+  (Cypher MERGE).
+- **`skmemory sync --graph`** flag added; runs alongside `--vector`.
+- `systemd/skmemory-sync@.service` — `ExecStart` now includes `--graph`
+  so the 6h timer keeps SQLite + ChromaDB + FalkorDB all in lockstep.
+
+### [DOCS]
+
+- README + ARCHITECTURE: decomposition section explains auto-trigger
+  threshold (1200 chars), what gets extracted (chunks, entities,
+  citations, claims, sections), and how it flows into FalkorDB via
+  `index_memory`. Notes that bge-legal-v1 is the standard local
+  embedding model for both ChromaDB and SKVector.
+
 ## 2026-04-25 — skmemory v0.9.8 (Sync & Drift)
 
 ### [NEW] `skmemory sync` — bidirectional reconciler

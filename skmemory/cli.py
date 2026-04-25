@@ -176,12 +176,41 @@ def _get_store(
         except Exception:
             click.echo("Warning: Could not initialize SKVector backend", err=True)
 
+    # Fallback: if no URL set via env/CLI/skmemory.yaml, look for a
+    # dedicated ~/.skcapstone/agents/<agent>/config/skgraph.yaml file.
+    # Mirrors the SKWhisper context_loader convention.
+    if not final_skgraph_url:
+        try:
+            from .agents import get_agent_paths
+            from .context_loader import _load_skgraph_config
+
+            sg_cfg = _load_skgraph_config(get_agent_paths()["config"])
+            if sg_cfg:
+                if sg_cfg.get("url"):
+                    final_skgraph_url = sg_cfg["url"]
+                elif sg_cfg.get("host"):
+                    proto = "rediss" if sg_cfg.get("tls") else "redis"
+                    final_skgraph_url = f"{proto}://{sg_cfg['host']}:{sg_cfg.get('port', 6379)}"
+                if sg_cfg.get("graph_name") and (not cfg or not cfg.skgraph_graph_name):
+                    # tuck graph_name into a local var read below
+                    _autoloaded_graph_name = sg_cfg["graph_name"]
+                else:
+                    _autoloaded_graph_name = None
+            else:
+                _autoloaded_graph_name = None
+        except Exception:
+            _autoloaded_graph_name = None
+    else:
+        _autoloaded_graph_name = None
+
     if final_skgraph_url:
         try:
             from .backends.skgraph_backend import SKGraphBackend
 
             graph_name = (
-                cfg.skgraph_graph_name if cfg and cfg.skgraph_graph_name else "skmemory"
+                (cfg.skgraph_graph_name if cfg and cfg.skgraph_graph_name else None)
+                or _autoloaded_graph_name
+                or "skmemory"
             )
             graph = SKGraphBackend(url=final_skgraph_url, graph_name=graph_name)
         except Exception:
@@ -997,19 +1026,22 @@ def export_flat(ctx: click.Context, show_ids: bool) -> None:
 @cli.command("sync")
 @click.option("--quiet", "-q", is_flag=True, help="Only print if changes were made (cron-friendly).")
 @click.option("--vector", is_flag=True, help="Also re-sync flat-file memories into ChromaDB.")
+@click.option("--graph", is_flag=True, help="Also re-sync flat-file memories into FalkorDB (SKGraph).")
 @click.pass_context
-def sync_cmd(ctx: click.Context, quiet: bool, vector: bool) -> None:
+def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None:
     """Reconcile SQLite ↔ flat files (bidirectional, idempotent).
 
-    Two-phase reconciler:
+    Phases:
       1. export-flat — write any SQLite-only memories out as JSON.
       2. reindex     — pick up any flat-only files into the SQLite index
                        (safe mode: orphans are pre-exported in step 1, so
                        nothing is destroyed).
+      3. (--vector)  — backfill ChromaDB from flat files.
+      4. (--graph)   — backfill FalkorDB graph nodes + relationships
+                       (Tag, Source, RELATED_TO, PROMOTED_FROM, MENTIONS,
+                       CITES, ASSERTS, IN_SECTION) from flat files.
 
-    Pass --vector to also backfill ChromaDB. Pass --quiet for cron use:
-    no output unless something actually changed.
-
+    Pass --quiet for cron use: no output unless something actually changed.
     Designed to be safe to run on a timer (see skmemory-sync@.service).
     """
     from .agents import get_agent_paths
@@ -1038,9 +1070,26 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool) -> None:
         except Exception as e:
             click.echo(f"chroma sync failed: {e}", err=True)
 
+    # Phase 4 (optional): SKGraph (FalkorDB) backfill
+    graph_stats = None
+    if graph:
+        try:
+            if store.graph is not None:
+                paths = get_agent_paths()
+                graph_stats = store.graph.sync_all(paths["base"] / "memory", agent)
+            else:
+                click.echo(
+                    "graph sync skipped: SKGraph backend not configured "
+                    "(check ~/.skcapstone/agents/<agent>/config/skgraph.yaml).",
+                    err=True,
+                )
+        except Exception as e:
+            click.echo(f"graph sync failed: {e}", err=True)
+
     changed = (
         orphan_stats["exported"] > 0
         or (chroma_stats and (chroma_stats["indexed"] > 0 or chroma_stats["removed"] > 0))
+        or (graph_stats and graph_stats["indexed"] > 0)
     )
     if quiet and not changed:
         return
@@ -1052,6 +1101,10 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool) -> None:
         + (
             f" chroma_indexed={chroma_stats['indexed']} chroma_removed={chroma_stats['removed']} chroma_errors={chroma_stats['errors']}"
             if chroma_stats else ""
+        )
+        + (
+            f" graph_indexed={graph_stats['indexed']} graph_errors={graph_stats['errors']}"
+            if graph_stats else ""
         )
     )
 
