@@ -910,16 +910,33 @@ def routing_probe() -> None:
 
 @cli.command()
 @click.option("--vector", is_flag=True, help="Also sync flat-file memories into the ChromaDB vector index.")
+@click.option("--force", is_flag=True, help="Skip the safety export of SQLite-only memories before rebuilding (DESTRUCTIVE).")
 @click.pass_context
-def reindex(ctx: click.Context, vector: bool) -> None:
+def reindex(ctx: click.Context, vector: bool, force: bool) -> None:
     """Rebuild the SQLite index from JSON files on disk.
 
     Use after manual file edits or migration from an older version.
     Pass --vector to additionally backfill the ChromaDB vector store from
     flat files (useful when chroma was added after memories already existed).
+
+    SAFETY: by default, any memories in SQLite without a corresponding flat
+    file are exported to disk first so they survive the rebuild. Pass
+    --force to skip that step (the old destructive behavior — only use if
+    you know all SQLite-only entries are stale).
     """
     store: MemoryStore = ctx.obj["store"]
-    count = store.reindex()
+
+    if not force:
+        # Pre-export orphans so they survive the rebuild
+        orphan_stats = store.export_orphans_to_flat()
+        if orphan_stats["exported"]:
+            click.echo(
+                f"Safety: exported {orphan_stats['exported']} SQLite-only "
+                f"memories to flat files before reindex "
+                f"(skipped={orphan_stats['skipped']}, errors={orphan_stats['errors']})."
+            )
+
+    count = store.reindex(force=force)
     if count < 0:
         click.echo("Reindex only works with SQLite backend.", err=True)
         sys.exit(1)
@@ -953,6 +970,28 @@ def reindex(ctx: click.Context, vector: bool) -> None:
         except Exception as e:
             click.echo(f"ChromaDB sync failed: {e}", err=True)
             sys.exit(1)
+
+
+@cli.command("export-flat")
+@click.option("--show-ids", is_flag=True, help="Print every exported memory ID.")
+@click.pass_context
+def export_flat(ctx: click.Context, show_ids: bool) -> None:
+    """Materialize SQLite-only memories as flat JSON files.
+
+    Walks the SQLite index and writes any memory missing a flat .json file
+    out to ``<base>/<layer>/<id>.json``. Idempotent and non-destructive —
+    safe to run anytime. Use this before a destructive ``reindex --force``,
+    or whenever ``health`` shows SQLite count > flat-file count.
+    """
+    store: MemoryStore = ctx.obj["store"]
+    stats = store.export_orphans_to_flat()
+    click.echo(
+        f"export-flat: exported={stats['exported']} skipped={stats['skipped']} "
+        f"errors={stats['errors']}"
+    )
+    if show_ids and stats["orphan_ids"]:
+        for mid in stats["orphan_ids"]:
+            click.echo(f"  + {mid}")
 
 
 @cli.command("export")

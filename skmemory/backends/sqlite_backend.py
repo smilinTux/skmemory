@@ -760,14 +760,102 @@ class SQLiteBackend(BaseBackend):
 
         return count
 
-    def reindex(self) -> int:
+    def export_orphans_to_flat(self) -> dict:
+        """Write any SQLite-only memories out as flat JSON files.
+
+        SQLite-only = present in the index but with no flat .json file at
+        ``base_path/<layer>/<id>.json`` (or 12-char shortform). Reconstructs
+        each orphan from its SQLite row and writes a Memory JSON. Note:
+        SQLite stores ``content_preview`` (~150 chars), not full content —
+        recovered memories carry ``metadata.recovered_from_sqlite_preview =
+        True`` so consumers know the content was truncated at recovery time.
+
+        Safe: non-destructive, idempotent.
+
+        Returns:
+            dict: ``{"exported": N, "skipped": M, "errors": K, "orphan_ids": [...]}``.
+        """
+        from .file_backend import FileBackend
+
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT id, title, layer, role, tags, source, source_ref, summary, "
+            "content_preview, emotional_intensity, emotional_valence, "
+            "emotional_labels, importance, parent_id, related_ids, "
+            "created_at, updated_at FROM memories"
+        ).fetchall()
+
+        fb = FileBackend(base_path=str(self.base_path))
+        stats = {"exported": 0, "skipped": 0, "errors": 0, "orphan_ids": []}
+
+        for row in rows:
+            (
+                memory_id, title, layer, role, tags, source, source_ref,
+                summary, content_preview, e_intensity, e_valence,
+                e_labels, importance, parent_id, related_ids,
+                created_at, updated_at,
+            ) = row
+
+            full_path = self.base_path / layer / f"{memory_id}.json"
+            short_path = self.base_path / layer / f"{memory_id[:12].replace('-', '')}.json"
+            if full_path.exists() or short_path.exists():
+                stats["skipped"] += 1
+                continue
+
+            try:
+                mem = Memory(
+                    id=memory_id,
+                    title=title or "Recovered memory",
+                    content=(content_preview or "") + "\n\n[recovered from SQLite preview — full content lost]",
+                    summary=summary or "",
+                    layer=layer,
+                    role=role or "general",
+                    tags=[t for t in (tags or "").split(",") if t.strip()],
+                    source=source or "manual",
+                    source_ref=source_ref or "",
+                    emotional={
+                        "intensity": e_intensity or 0.0,
+                        "valence": e_valence or 0.0,
+                        "labels": [l for l in (e_labels or "").split(",") if l.strip()],
+                    },
+                    related_ids=[r for r in (related_ids or "").split(",") if r.strip()],
+                    parent_id=parent_id or None,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    metadata={
+                        "recovered_from_sqlite_preview": True,
+                        "importance": importance or 0.5,
+                    },
+                )
+                fb.save(mem)
+                stats["exported"] += 1
+                stats["orphan_ids"].append(memory_id)
+            except Exception:
+                stats["errors"] += 1
+
+        return stats
+
+    def reindex(self, force: bool = False) -> int:
         """Rebuild the entire index from JSON files on disk.
 
+        DESTRUCTIVE: deletes every row in the index, then re-reads flat files.
+        Any SQLite-only memories (with no backing flat file) are dropped.
+
+        Safety: by default, ``export_orphans_to_flat()`` runs first to write
+        SQLite-only entries to disk, so they survive the rebuild. Pass
+        ``force=True`` to skip that step (the old destructive behavior).
+
         Use this after manual file edits or migration from FileBackend.
+
+        Args:
+            force: If True, skip orphan export before rebuilding.
 
         Returns:
             int: Number of memories indexed.
         """
+        if not force:
+            self.export_orphans_to_flat()
+
         conn = self._get_conn()
         conn.execute("DELETE FROM memories")
         conn.commit()
