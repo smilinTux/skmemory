@@ -7,6 +7,6 @@ Type=oneshot
 Environment=SKAGENT=%i
 Environment=SKCAPSTONE_AGENT=%i
 Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=%h/.skenv/bin/skmemory sync --quiet --vector
+ExecStart=%h/.skenv/bin/skmemory sync --quiet --vector --graph
 StandardOutput=append:%h/.skcapstone/agents/%i/logs/skmemory-sync.log
 StandardError=append:%h/.skcapstone/agents/%i/logs/skmemory-sync.log

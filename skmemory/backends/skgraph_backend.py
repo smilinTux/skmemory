@@ -901,6 +901,54 @@ class SKGraphBackend:
             logger.warning("SKGraph stats failed: %s", exc)
             return {"ok": False, "error": str(exc)}
 
+    def sync_all(self, flat_files_dir, agent_name: str) -> dict:
+        """Backfill the FalkorDB graph from flat-file memories on disk.
+
+        Walks ``<flat_files_dir>/{short,mid,long}-term/*.json`` and calls
+        ``index_memory()`` for each. Skips files that fail validation
+        (e.g. legacy schema). Idempotent — node/relationship MERGE
+        semantics in :class:`Q` queries handle re-indexing cleanly.
+
+        Args:
+            flat_files_dir: Path to the agent's memory directory.
+            agent_name: Used only for log lines.
+
+        Returns:
+            dict: ``{"indexed": N, "errors": K}``.
+        """
+        import json
+        from pathlib import Path
+        stats = {"indexed": 0, "errors": 0}
+
+        if not self._ensure_initialized():
+            logger.warning("SKGraph sync_all: backend not initialized for %s", agent_name)
+            return stats
+
+        flat_files_dir = Path(flat_files_dir)
+        for tier in ("short-term", "mid-term", "long-term"):
+            tier_dir = flat_files_dir / tier
+            if not tier_dir.exists():
+                continue
+            for json_file in tier_dir.glob("*.json"):
+                try:
+                    data = json.loads(json_file.read_text(encoding="utf-8"))
+                    memory = Memory.model_validate(data)
+                    if self.index_memory(memory):
+                        stats["indexed"] += 1
+                    else:
+                        stats["errors"] += 1
+                except Exception as exc:
+                    logger.warning(
+                        "SKGraph sync_all: failed on %s: %s", json_file.name, exc
+                    )
+                    stats["errors"] += 1
+
+        logger.info(
+            "SKGraph sync_all for '%s': indexed=%d errors=%d",
+            agent_name, stats["indexed"], stats["errors"],
+        )
+        return stats
+
     def health_check(self) -> dict:
         """Check FalkorDB backend connectivity and graph size.
 
