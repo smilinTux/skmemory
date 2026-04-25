@@ -128,8 +128,9 @@ Uses the sovereign HammerTime embedding model by default:
 `BAAI/bge-large-en-v1.5`.
 
 SKVector stores the embeddings and enables cosine similarity search across
-a remote Qdrant cluster. Use this when you need multi-machine search or
-higher index capacity than ChromaDB's embedded mode.
+a remote Qdrant cluster. Use this when you need multi-machine search,
+higher index capacity than ChromaDB's embedded mode, or **shared
+collections that multiple agents query (cross-agent recall)**.
 
 Install:
 ```bash
@@ -144,6 +145,43 @@ export SKMEMORY_SKVECTOR_KEY=your-api-key
 ```
 
 Resource cost: ~200MB RAM, ~100MB disk idle.
+
+#### Cross-collection recall (`recall_collections`)
+
+When ChromaDB is the local primary, SKVector still loads in parallel as the
+**recall backend** for shared/cross-agent collections. Configure per-agent
+in `~/.skcapstone/agents/<agent>/config/skmemory.yaml`:
+
+```yaml
+recall_collections:
+- lumina-memory
+- jarvis-memory
+- sovereign-memory
+- chef-docs
+```
+
+`LazyMemoryLoader.deep_search()` queries the local ChromaDB **plus** every
+collection listed in `recall_collections` (via the SKVector Qdrant client),
+dedupes by memory ID, and tags results with `source_backend` (`sqlite`,
+`skvector`, `skvector:<collection>`). A missing collection logs `404` and
+is skipped — never breaks the search.
+
+### Sync & drift (v0.9.6+)
+
+Because flat files are the source of truth and SQLite is the index, drift is
+possible if importers write one side without the other. The sync surface:
+
+- **`skmemory health`** — embeds a `sync` block: `{in_sync, sqlite_only,
+  flat_only, hint}`. Run anytime to check.
+- **`skmemory export-flat`** — rescues SQLite-only memories to flat files.
+  Idempotent. Memories carry `metadata.recovered_from_sqlite_preview = True`
+  so consumers know the content is the SQLite preview (~150 chars), not full.
+- **`skmemory sync [--quiet] [--vector]`** — bidirectional reconcile:
+  export-flat → safe reindex → optional ChromaDB backfill.
+- **`skmemory reindex`** — safe by default (pre-exports orphans). Pass
+  `--force` to skip the safety net (the old destructive behavior).
+- **`systemd/skmemory-sync@<agent>.timer`** — fires every 6h, runs the
+  full reconcile in the background. See `systemd/README.md`.
 
 ### Decomposition Layer
 

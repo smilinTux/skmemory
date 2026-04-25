@@ -4,6 +4,64 @@
 
 **Total completed: 87** across 8 agents
 
+## 2026-04-25 — skmemory v0.9.8 (Sync & Drift)
+
+### [NEW] `skmemory sync` — bidirectional reconciler
+
+- **`skmemory/cli.py`** — new `skmemory sync [--quiet] [--vector]` command:
+  one-shot reconcile of SQLite ↔ flat files. Two phases (`export-flat` to
+  rescue SQLite-only orphans, then safe `reindex` to pick up flat-only
+  files); optional `--vector` re-syncs ChromaDB as well. `--quiet`
+  suppresses output unless something changed (cron-friendly).
+- **`SQLiteBackend.drift_check()`** — counts `sqlite_only` (rows with no
+  flat file) and `flat_only` (files not indexed) per layer.
+  `health_check()` now embeds a `sync` block: `{in_sync, sqlite_only,
+  flat_only, hint}`. Run `skmemory health` to see it.
+
+### [NEW] Per-agent systemd timer
+
+- **`systemd/skmemory-sync@.service`** + **`.timer`** — templated unit,
+  fires 5 min after boot then every 6 h, runs `skmemory sync --quiet --vector`
+  for the named agent. Logs to `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log`.
+- **`systemd/README.md`** — install/enable docs.
+- Enable per agent: `systemctl --user enable --now skmemory-sync@<agent>.timer`
+
+## 2026-04-25 — skmemory v0.9.7 (Safe reindex + orphan recovery)
+
+### [NEW] `skmemory export-flat` — rescue SQLite-only memories
+
+- **`SQLiteBackend.export_orphans_to_flat()`** — walks every SQLite row,
+  reconstructs orphan `Memory`s from columns (`id`, `title`, `layer`, tags,
+  source, summary, content_preview, emotional state, importance, parents,
+  related_ids, timestamps), writes via `FileBackend`. Idempotent and
+  non-destructive.
+- Recovered memories carry `metadata.recovered_from_sqlite_preview = True`
+  so consumers know the content is the SQLite preview (~150 chars), not full
+  text — full content is gone once the flat file is.
+- New CLI: `skmemory export-flat [--show-ids]`.
+
+### [BREAKING-SAFE] `skmemory reindex` is now safe by default
+
+- **`SQLiteBackend.reindex(force=False)`** — by default, runs
+  `export_orphans_to_flat()` *before* deleting SQLite rows, so orphans
+  survive the rebuild. Pass `--force` to skip that step (preserves the
+  old destructive behavior for callers that explicitly want it).
+- Old behavior dropped any memory in SQLite without a backing flat file;
+  this caused real data loss in opus' profile (~632 entries) before the
+  safety net was added. New behavior: zero loss unless `--force` is set.
+
+## 2026-04-25 — skmemory v0.9.6 (Vector reindex CLI)
+
+### [NEW] `skmemory reindex --vector` backfills ChromaDB
+
+- **`skmemory/cli.py`** — `reindex` gains `--vector`: after rebuilding
+  the SQLite index, run `SKChromaBackend.sync_all()` against
+  `~/.skcapstone/agents/<agent>/memory` to backfill the chroma vector
+  store from flat files. Useful for older agents (opus, lumina, jarvis)
+  whose memories pre-date the chroma backend.
+- Synced `__version__` to match `pyproject.toml`: 0.9.3 → 0.9.6 (skmemory
+  CLI was reporting a stale version).
+
 ## 2026-04-04 — skmemory v0.9.5 (MemPalace)
 
 ### [NEW] ChromaDB Local Vector Backend (SKChroma)
