@@ -994,6 +994,68 @@ def export_flat(ctx: click.Context, show_ids: bool) -> None:
             click.echo(f"  + {mid}")
 
 
+@cli.command("sync")
+@click.option("--quiet", "-q", is_flag=True, help="Only print if changes were made (cron-friendly).")
+@click.option("--vector", is_flag=True, help="Also re-sync flat-file memories into ChromaDB.")
+@click.pass_context
+def sync_cmd(ctx: click.Context, quiet: bool, vector: bool) -> None:
+    """Reconcile SQLite ↔ flat files (bidirectional, idempotent).
+
+    Two-phase reconciler:
+      1. export-flat — write any SQLite-only memories out as JSON.
+      2. reindex     — pick up any flat-only files into the SQLite index
+                       (safe mode: orphans are pre-exported in step 1, so
+                       nothing is destroyed).
+
+    Pass --vector to also backfill ChromaDB. Pass --quiet for cron use:
+    no output unless something actually changed.
+
+    Designed to be safe to run on a timer (see skmemory-sync@.service).
+    """
+    from .agents import get_agent_paths
+    store: MemoryStore = ctx.obj["store"]
+    agent = get_agent_paths()["base"].name
+
+    # Phase 1: rescue SQLite-only orphans to flat files
+    orphan_stats = store.export_orphans_to_flat()
+
+    # Phase 2: pick up flat-only files (safe — orphans already exported)
+    indexed = store.reindex(force=False)
+
+    # Phase 3 (optional): chroma vector backfill
+    chroma_stats = None
+    if vector:
+        try:
+            from .backends.chroma_backend import SKChromaBackend
+            paths = get_agent_paths()
+            be = SKChromaBackend(
+                persist_dir=str(paths["base"] / "memory" / "chroma"),
+                collection="skmemory",
+                state_path=paths["base"] / "memory" / "chroma-state.json",
+            )
+            if be._ensure_initialized():
+                chroma_stats = be.sync_all(paths["base"] / "memory", agent)
+        except Exception as e:
+            click.echo(f"chroma sync failed: {e}", err=True)
+
+    changed = (
+        orphan_stats["exported"] > 0
+        or (chroma_stats and (chroma_stats["indexed"] > 0 or chroma_stats["removed"] > 0))
+    )
+    if quiet and not changed:
+        return
+
+    click.echo(
+        f"sync[{agent}]: exported={orphan_stats['exported']} "
+        f"sqlite_total={indexed} "
+        f"orphan_errors={orphan_stats['errors']}"
+        + (
+            f" chroma_indexed={chroma_stats['indexed']} chroma_removed={chroma_stats['removed']} chroma_errors={chroma_stats['errors']}"
+            if chroma_stats else ""
+        )
+    )
+
+
 @cli.command("export")
 @click.option(
     "--output",

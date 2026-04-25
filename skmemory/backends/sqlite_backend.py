@@ -903,14 +903,70 @@ class SQLiteBackend(BaseBackend):
             "index_path": str(self._db_path),
         }
 
+    def drift_check(self) -> dict:
+        """Compare SQLite row count vs. flat-file count per layer.
+
+        Returns counts and the two drift directions:
+            sqlite_only — rows whose file_path no longer exists (recoverable
+                via export_orphans_to_flat).
+            flat_only   — flat files whose id is not indexed in SQLite
+                (recoverable via reindex).
+
+        Returns:
+            dict: ``{"in_sync": bool, "sqlite_total", "flat_total",
+                    "sqlite_only", "flat_only", "by_layer": {...}}``.
+        """
+        conn = self._get_conn()
+        sqlite_ids: set[str] = set()
+        sqlite_orphans = 0
+        by_layer = {l.value: {"sqlite": 0, "flat": 0} for l in MemoryLayer}
+
+        for memory_id, layer, file_path in conn.execute(
+            "SELECT id, layer, file_path FROM memories"
+        ):
+            sqlite_ids.add(memory_id)
+            if layer in by_layer:
+                by_layer[layer]["sqlite"] += 1
+            if not Path(file_path).exists():
+                # Also tolerate the 12-char shortform path
+                short = self.base_path / layer / f"{memory_id[:12].replace('-', '')}.json"
+                if not short.exists():
+                    sqlite_orphans += 1
+
+        flat_ids: set[str] = set()
+        for layer in MemoryLayer:
+            tier = self.base_path / layer.value
+            if not tier.exists():
+                continue
+            for f in tier.glob("*.json"):
+                flat_ids.add(f.stem)
+                by_layer[layer.value]["flat"] += 1
+
+        # flat_only = files whose stem isn't in SQLite (allow shortform → fullform match)
+        sqlite_short = {sid[:12].replace("-", "") for sid in sqlite_ids}
+        flat_only = sum(
+            1 for stem in flat_ids
+            if stem not in sqlite_ids and stem not in sqlite_short
+        )
+
+        return {
+            "in_sync": sqlite_orphans == 0 and flat_only == 0,
+            "sqlite_total": len(sqlite_ids),
+            "flat_total": len(flat_ids),
+            "sqlite_only": sqlite_orphans,
+            "flat_only": flat_only,
+            "by_layer": by_layer,
+        }
+
     def health_check(self) -> dict:
         """Check SQLite backend health.
 
         Returns:
-            dict: Status with path, counts, and index info.
+            dict: Status with path, counts, index info, and drift summary.
         """
         try:
             s = self.stats()
+            drift = self.drift_check()
             return {
                 "ok": True,
                 "backend": "SQLiteBackend",
@@ -918,6 +974,15 @@ class SQLiteBackend(BaseBackend):
                 "total_memories": s["total"],
                 "by_layer": s["by_layer"],
                 "index_size_bytes": s["index_size_bytes"],
+                "sync": {
+                    "in_sync": drift["in_sync"],
+                    "sqlite_only": drift["sqlite_only"],
+                    "flat_only": drift["flat_only"],
+                    "hint": (
+                        None if drift["in_sync"]
+                        else "Run `skmemory sync` to reconcile."
+                    ),
+                },
             }
         except Exception as e:
             return {
