@@ -909,18 +909,50 @@ def routing_probe() -> None:
 
 
 @cli.command()
+@click.option("--vector", is_flag=True, help="Also sync flat-file memories into the ChromaDB vector index.")
 @click.pass_context
-def reindex(ctx: click.Context) -> None:
+def reindex(ctx: click.Context, vector: bool) -> None:
     """Rebuild the SQLite index from JSON files on disk.
 
     Use after manual file edits or migration from an older version.
+    Pass --vector to additionally backfill the ChromaDB vector store from
+    flat files (useful when chroma was added after memories already existed).
     """
     store: MemoryStore = ctx.obj["store"]
     count = store.reindex()
     if count < 0:
         click.echo("Reindex only works with SQLite backend.", err=True)
         sys.exit(1)
-    click.echo(f"Indexed {count} memories.")
+    click.echo(f"Indexed {count} memories into SQLite.")
+
+    if vector:
+        from .agents import get_agent_paths
+        from .backends.chroma_backend import SKChromaBackend
+
+        paths = get_agent_paths()
+        agent = paths["base"].name
+        persist_dir = str(paths["base"] / "memory" / "chroma")
+        state_path = paths["base"] / "memory" / "chroma-state.json"
+        mem_dir = paths["base"] / "memory"
+
+        try:
+            be = SKChromaBackend(
+                persist_dir=persist_dir,
+                collection="skmemory",
+                state_path=state_path,
+            )
+            if not be._ensure_initialized():
+                click.echo("ChromaDB backend failed to initialize.", err=True)
+                sys.exit(1)
+            stats = be.sync_all(mem_dir, agent)
+            click.echo(
+                f"ChromaDB sync for '{agent}': "
+                f"indexed={stats['indexed']} skipped={stats['skipped']} "
+                f"removed={stats['removed']} errors={stats['errors']}"
+            )
+        except Exception as e:
+            click.echo(f"ChromaDB sync failed: {e}", err=True)
+            sys.exit(1)
 
 
 @cli.command("export")
