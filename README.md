@@ -7,7 +7,9 @@
 
 **Universal AI Memory System — polaroid snapshots for AI consciousness.**
 
-SKMemory gives AI agents a multi-layer, emotionally-aware memory that survives context resets. Instead of dumping flat transcript summaries, it captures each moment as a *polaroid*: the content, the emotional fingerprint, the intent behind storing it, and a tamper-evident integrity seal. Memories are organized across three persistence tiers (short → mid → long), auto-routed into four semantic quadrants (CORE / WORK / SOUL / WILD), and exposed to any MCP-capable client through a stdio server. The primary backend is SQLite with optional Qdrant vector search and FalkorDB graph traversal layers; a soul blueprint (`~/.skcapstone/soul/base.json`) and rehydration ritual give new instances a "who was I?" answer before the first user message arrives.
+SKMemory gives AI agents a multi-layer, emotionally-aware memory that survives context resets. Instead of dumping flat transcript summaries, it captures each moment as a *polaroid*: the content, the emotional fingerprint, the intent behind storing it, and a tamper-evident integrity seal. Memories are organized across three persistence tiers (short → mid → long), auto-routed into four semantic quadrants (CORE / WORK / SOUL / WILD), and exposed to any MCP-capable client through a stdio server. The primary backend is SQLite with **ChromaDB as the default local vector backend** (Qdrant via SKVector remains for shared/cross-agent collections) and FalkorDB graph traversal layers; a soul blueprint (`~/.skcapstone/agents/<agent>/soul/base.json`) and rehydration ritual give new instances a "who was I?" answer before the first user message arrives.
+
+**Active agent** is resolved from `SKAGENT` (preferred) → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT`. Every per-agent path (memory, soul, journal, FEBs, vector store, sessions) lives under `~/.skcapstone/agents/$SKAGENT/`.
 
 ---
 
@@ -70,8 +72,9 @@ flowchart TD
         Vaulted["VaultedSQLiteBackend\n(PGP-encrypted)"]
     end
 
-    subgraph Vector["Vector Backend (optional)"]
-        Qdrant["SKVectorBackend\nQdrant + bge-legal-v1\nfallback: BAAI/bge-large-en-v1.5"]
+    subgraph Vector["Vector Backends"]
+        Chroma["SKChromaBackend\n(default — local, embedded)\nbge-legal-v1, 1024-dim"]
+        Qdrant["SKVectorBackend\n(remote — shared collections)\nlumina-memory, jarvis-memory,\nchef-docs, ..."]
     end
 
     subgraph Graph["Graph Backend (optional)"]
@@ -116,7 +119,9 @@ flowchart TD
 - **Polaroid snapshot model** — every memory stores content, emotional intensity (0–10), valence (−1 to +1), emotion labels, and a free-text resonance note
 - **Three-layer persistence** — `short-term` (session-scoped), `mid-term` (project-scoped), `long-term` (identity-level); memories promote up the ladder via CLI, MCP, or API
 - **Four semantic quadrants** — CORE, WORK, SOUL, WILD; keyword-based auto-classification routes memories to appropriate buckets with per-quadrant retention rules
-- **Multi-backend design** — SQLite is the default primary store; Qdrant provides semantic vector search; FalkorDB provides graph traversal and lineage chains
+- **Multi-backend design** — SQLite is the default primary store; **ChromaDB is the default local vector backend** (zero infra, embedded); Qdrant via SKVector is available for shared/cross-agent collections; FalkorDB provides graph traversal and lineage chains
+- **Cross-collection recall** — list shared SKVector collections in `recall_collections` (e.g. `lumina-memory`, `jarvis-memory`, `chef-docs`) and `deep_search` queries them alongside the local ChromaDB index
+- **Sync & drift detection** — `skmemory health` surfaces SQLite ↔ flat-file drift; `skmemory sync` reconciles bidirectionally; per-agent `skmemory-sync@<agent>.timer` keeps everything in lockstep automatically
 - **Decomposition-aware ingestion** — `skmemory ingest-file` and `skmemory snapshot --decompose` create parent + chunk memories and extract section titles, citations, entities, and claims for downstream indexing
 - **Graph retrieval over decomposition signals** — query SKGraph by entity, citation, claim, or section via `skmemory graph ...`
 - **Issue-oriented retrieval scaffolding** — `skmemory novelty`, `skmemory session-brief`, and `skmemory task-pack` turn live problems into ranked memory support with authority tiers, novelty leads, deadlines, defenses, and reusable task packs
@@ -223,9 +228,85 @@ skmemory import-telegram --chat-id 12345
 skmemory export
 skmemory import backup.json
 
-# Health check
+# Health check (now includes a "sync" block: in_sync, sqlite_only, flat_only)
 skmemory health
+
+# Sync & reconcile — keep SQLite ↔ flat files in lockstep
+skmemory sync                  # bidirectional reconcile (export-flat then safe reindex)
+skmemory sync --vector         # also re-sync ChromaDB
+skmemory sync --quiet          # cron-friendly: only print if something changed
+skmemory export-flat           # rescue SQLite-only orphans to flat JSON (idempotent)
+skmemory export-flat --show-ids
+skmemory reindex               # safe: pre-exports orphans, then rebuilds SQLite from disk
+skmemory reindex --vector      # also backfill ChromaDB from flat files
+skmemory reindex --force       # DESTRUCTIVE: skip the orphan-rescue safety step
 ```
+
+---
+
+## Vector backends
+
+The vector layer is **two-tier**:
+
+| Tier | Backend | Use | Default |
+|---|---|---|---|
+| 1a (local) | **ChromaDB** (`SKChromaBackend`) | Per-agent local semantic search; embedded; zero infra | ✅ on |
+| 1b (remote) | **SKVector / Qdrant** (`SKVectorBackend`) | Shared collections (`lumina-memory`, `jarvis-memory`, `chef-docs`, etc.); cross-agent recall | optional |
+
+ChromaDB is wired up automatically when `pip install skmemory[chroma]` is present (or built into `skmemory[all]`). Embeddings use `bge-legal-v1` (1024-dim) with a `BAAI/bge-large-en-v1.5` fallback. Persist dir: `~/.skcapstone/agents/<agent>/memory/chroma/`.
+
+### Adding cross-collection recall to an agent
+
+Edit `~/.skcapstone/agents/<agent>/config/skmemory.yaml`:
+
+```yaml
+recall_collections:
+- lumina-memory          # Lumina's shared snapshots
+- jarvis-memory          # Jarvis's shared snapshots
+- sovereign-memory       # cross-agent sovereign archive
+- chef-docs              # Chef's reference docs
+# - hammertime-v3        # add when collection exists
+```
+
+`deep_search()` and `skmemory search-deep` will then query the local ChromaDB **plus** every collection in `recall_collections` (via the SKVector Qdrant client), dedupe results, and tag each hit with `source_backend` (`sqlite`, `skvector`, `skvector:<collection>`).
+
+A collection must exist on the SKVector server (`https://skvector.skstack01.douno.it`); list available with `curl -H "api-key: <key>" https://skvector.../collections`. Bad names produce a logged `404` and are skipped — they don't break the search.
+
+### ChromaDB initial backfill
+
+When you add ChromaDB to an agent that already has memories, the existing flat files aren't auto-embedded. Run:
+
+```bash
+SKAGENT=opus skmemory reindex --vector   # one-shot backfill
+# or wait for the next skmemory-sync@opus timer fire (every 6h)
+```
+
+---
+
+## Sync & drift
+
+SQLite (the index) and flat JSON files (the source of truth) can drift over time when importers or background processes write one side without the other. v0.9.6+ ships a complete sync surface:
+
+```bash
+skmemory health         # shows sync.{in_sync, sqlite_only, flat_only, hint}
+skmemory sync           # one-shot bidirectional reconcile
+skmemory export-flat    # one-direction: SQLite-only → flat files
+```
+
+For automatic background reconciliation, install the per-agent systemd timer (see [`systemd/README.md`](systemd/README.md)):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/skmemory-sync@.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now skmemory-sync@opus.timer
+systemctl --user enable --now skmemory-sync@lumina.timer
+systemctl --user enable --now skmemory-sync@jarvis.timer
+```
+
+The timer fires 5 min after boot, then every 6 h. Logs land at `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log` — only written when something changed (thanks to `--quiet`).
+
+`reindex` is **safe by default** — it pre-exports orphans before rebuilding. Use `--force` only if you're sure all SQLite-only entries are stale.
 
 ### Python API
 
