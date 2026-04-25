@@ -1282,17 +1282,30 @@ class MemoryStore:
             return self.primary.prune_backups(keep=keep, backup_dir=backup_dir)
         return []
 
-    def reindex(self) -> int:
+    def reindex(self, force: bool = False) -> int:
         """Rebuild the SQLite index from JSON files.
 
-        Only works if the primary backend is SQLiteBackend.
+        Only works if the primary backend is SQLiteBackend. By default,
+        SQLite-only memories are exported to flat files first so they
+        survive the rebuild; pass ``force=True`` to skip that safety step.
 
         Returns:
             int: Number of memories indexed, or -1 if not applicable.
         """
         if isinstance(self.primary, SQLiteBackend):
-            return self.primary.reindex()
+            return self.primary.reindex(force=force)
         return -1
+
+    def export_orphans_to_flat(self) -> dict:
+        """Write any SQLite-only memories out as flat JSON files.
+
+        Useful before a destructive operation, or after an import that
+        wrote into SQLite without producing flat files. Returns
+        ``{"exported", "skipped", "errors", "orphan_ids"}``.
+        """
+        if isinstance(self.primary, SQLiteBackend):
+            return self.primary.export_orphans_to_flat()
+        return {"exported": 0, "skipped": 0, "errors": 0, "orphan_ids": []}
 
     def health(self) -> dict:
         """Check health of all backends.
