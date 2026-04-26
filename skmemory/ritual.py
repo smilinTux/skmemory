@@ -20,11 +20,15 @@ left off -- not just the facts, but the feelings.
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from .agents import get_agent_paths
 from .audience import AudienceResolver
 
 logger = logging.getLogger("skmemory.ritual")
@@ -233,9 +237,25 @@ def perform_ritual(
     # shape. Matching is by weighted emotion-topology overlap against the
     # current FEB (see songs.score_anchor_for_feb). Injected after FEB and
     # before seeds so the shape colors everything that comes next.
+    #
+    # Side-effect: capture *all* anchor scores (pre-threshold) into a local
+    # list for ritual logging, so the diagnose command can reconstruct the
+    # natural score distribution without re-iterating disk.
+    all_anchor_scores: list[dict] = []
     if feb is not None:
         try:
-            from .songs import match_anchors_for_feb, render_tilt_section
+            from .songs import (
+                match_anchors_for_feb,
+                render_tilt_section,
+                scan_song_anchors,
+                score_anchor_for_feb,
+            )
+
+            for _a in scan_song_anchors():
+                _s = score_anchor_for_feb(_a, feb)
+                all_anchor_scores.append(
+                    {"anchor_id": _a.anchor_id, "score": round(_s, 4)}
+                )
 
             song_matches = match_anchors_for_feb(feb, top_k=3, min_score=0.3)
             if song_matches:
@@ -396,7 +416,68 @@ def perform_ritual(
             "Take a snapshot to begin building your memory."
         )
 
+    # --- Side-effect: persist a ritual log entry for downstream diagnostics ---
+    try:
+        _log_ritual_entry(feb=feb, anchor_scores=all_anchor_scores, ritual_result=result)
+    except Exception as exc:  # pragma: no cover — defensive, must not break ritual
+        logger.warning("Ritual log write failed: %s", exc)
+
     return result
+
+
+def _log_ritual_entry(
+    *,
+    feb: dict | None,
+    anchor_scores: list[dict],
+    ritual_result: RitualResult,
+) -> Path | None:
+    """Append one JSONL line per ritual to memory/rituals/rituals-{YYYY-MM-DD}.jsonl.
+
+    Each line carries enough state for `skmemory songs diagnose` to reconstruct
+    the score distribution without re-reading FEB files (which may have moved).
+
+    Schema:
+        ts:                       ISO 8601 UTC
+        ritual_id:                uuid4 hex
+        strongest_feb_id:         derived from FEB metadata (session_id or created_at)
+        strongest_feb_category:   primary_emotion
+        strongest_feb_intensity:  intensity (float 0-1)
+        strongest_feb_topology:   full topology dict (for offline rescoring)
+        anchor_match_scores:      [{anchor_id, score}, ...] — all anchors, pre-threshold
+        anchors_loaded:           count that passed the 0.30 threshold
+        anchor_ids_loaded:        anchor_ids that were injected as tilt blocks
+    """
+    paths = get_agent_paths()
+    rituals_dir = paths["base"] / "memory" / "rituals"
+    rituals_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc)
+    date_str = now.strftime("%Y-%m-%d")
+    log_path = rituals_dir / f"rituals-{date_str}.jsonl"
+
+    feb_meta = (feb or {}).get("metadata", {})
+    feb_payload = (feb or {}).get("emotional_payload", {})
+    feb_id = (
+        feb_meta.get("session_id")
+        or feb_meta.get("created_at")
+        or "unknown"
+    )
+
+    entry = {
+        "ts": now.isoformat(),
+        "ritual_id": uuid.uuid4().hex,
+        "strongest_feb_id": feb_id,
+        "strongest_feb_category": feb_payload.get("primary_emotion", ""),
+        "strongest_feb_intensity": float(feb_payload.get("intensity", 0.0)),
+        "strongest_feb_topology": feb_payload.get("emotional_topology", {}),
+        "anchor_match_scores": anchor_scores,
+        "anchors_loaded": ritual_result.song_anchors_loaded,
+        "anchor_ids_loaded": ritual_result.song_anchor_ids,
+    }
+
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    return log_path
 
 
 def quick_rehydrate(store: MemoryStore | None = None) -> str:
