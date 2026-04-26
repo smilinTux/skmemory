@@ -2785,6 +2785,12 @@ try:
 except Exception:  # pragma: no cover — defensive, don't break cli on import error
     pass
 
+try:
+    from .anchors_cli import anchors as _anchors_group
+    cli.add_command(_anchors_group)
+except Exception:  # pragma: no cover — defensive, don't break cli on import error
+    pass
+
 
 def main() -> None:
     """Entry point for the CLI."""
