@@ -183,15 +183,28 @@ def scan_song_anchors(agent: str | None = None) -> list[SongAnchor]:
     return anchors
 
 
-def score_anchor_for_feb(anchor: SongAnchor, feb: dict | None) -> float:
+def score_anchor_for_feb(
+    anchor: SongAnchor,
+    feb: dict | None,
+    metric: str = "hybrid",
+) -> float:
     """Compute a 0-1 match score between a song anchor and a FEB.
 
-    Matching is weighted emotion-topology overlap — a generalized Jaccard
-    where each emotion's contribution is min(song_weight, feb_confidence).
+    Three metrics:
+      - "hybrid" (default): 0.7 × song_coverage + 0.3 × jaccard. Asymmetric
+        coverage from the song's perspective, with a jaccard penalty for
+        wildly mismatched shapes. Doesn't punish the FEB for being broader
+        than the song.
+      - "coverage": pure asymmetric — what fraction of the song's emotional
+        weight is supported by the FEB. Bounded [0, 1].
+      - "jaccard": legacy metric. Generalized Jaccard over the union of
+        emotion keys. Punishes FEB topology breadth — kept for diagnostics.
 
-    This is interpretable: if both the song and the FEB are strongly
-    tagged with "love" and "joy", they match. If the song is tagged
-    "grief" and the FEB is tagged "joy", they don't.
+    Why hybrid is the default: a song anchor's job is to surface the shape
+    it carries when the moment has that shape. The current FEB may carry
+    that shape PLUS extra dimensions; that doesn't mean the song doesn't
+    apply. Pure jaccard collapsed Lovely Day vs the_night to 0.282 even
+    though the love/joy/connection/cherished overlap was strong.
     """
     if feb is None:
         return 0.0
@@ -210,14 +223,31 @@ def score_anchor_for_feb(anchor: SongAnchor, feb: dict | None) -> float:
     if not common:
         return 0.0
 
-    num = 0.0
-    denom = 0.0
+    # Asymmetric song-coverage: of the song's shape, how much is in the FEB?
+    song_total = sum(float(v) for v in song_weights.values())
+    coverage_num = sum(
+        min(float(song_weights[e]), float(topo.get(e, 0.0)))
+        for e in song_weights.keys()
+    )
+    coverage = coverage_num / song_total if song_total > 0 else 0.0
+
+    if metric == "coverage":
+        return coverage
+
+    # Generalized Jaccard over the union — discrimination guard.
+    j_num = 0.0
+    j_denom = 0.0
     for e in set(song_weights.keys()) | set(topo.keys()):
         sw = float(song_weights.get(e, 0.0))
         fw = float(topo.get(e, 0.0))
-        num += min(sw, fw)
-        denom += max(sw, fw)
-    return num / denom if denom > 0 else 0.0
+        j_num += min(sw, fw)
+        j_denom += max(sw, fw)
+    jaccard = j_num / j_denom if j_denom > 0 else 0.0
+
+    if metric == "jaccard":
+        return jaccard
+
+    return 0.7 * coverage + 0.3 * jaccard
 
 
 def match_anchors_for_feb(

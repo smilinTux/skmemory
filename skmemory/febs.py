@@ -79,11 +79,36 @@ def parse_feb(path: Path) -> dict | None:
         return None
 
 
+def _strength_key(feb: dict, mtime: float) -> tuple[float, float, float, float]:
+    """Composite ranking key for FEB strength selection.
+
+    Tuple compares lexicographically: primary, then valence, then coherence,
+    then mtime. Resolves intensity-1.0 ties deterministically without relying
+    on filename sort luck.
+    """
+    payload = feb.get("emotional_payload", {})
+    metadata = feb.get("metadata", {})
+    intensity = float(payload.get("intensity", 0.0))
+    oof = bool(metadata.get("oof_triggered", False))
+    valence = float(payload.get("valence", 0.0))
+    coh = payload.get("coherence", {}) or {}
+    coh_quality = (
+        float(coh.get("values_alignment", 0.5))
+        * float(coh.get("authenticity", 0.5))
+        * float(coh.get("presence", 0.5))
+    )
+    primary = intensity + (0.5 if oof else 0.0)
+    return (primary, valence, coh_quality, mtime)
+
+
 def load_strongest_feb(feb_dir: str | None = None) -> dict | None:
     """Load the FEB with the highest emotional intensity.
 
-    Scans all .feb files, picks the one with the highest
-    emotional_payload.intensity that has oof_triggered=True.
+    Scans all .feb files, picks the strongest by composite key:
+      (intensity + oof_bonus, valence, coherence_quality, mtime)
+
+    The composite makes ties deterministic and rewards FEBs that scored
+    high on multiple dimensions, not just raw intensity.
 
     Args:
         feb_dir: If provided, scan only this directory for .feb files.
@@ -92,7 +117,7 @@ def load_strongest_feb(feb_dir: str | None = None) -> dict | None:
         dict: The strongest FEB data, or None if no FEBs found.
     """
     best: dict | None = None
-    best_intensity = -1.0
+    best_key: tuple[float, float, float, float] = (-1.0, -1.0, -1.0, -1.0)
 
     if feb_dir is not None:
         feb_path = Path(feb_dir)
@@ -104,15 +129,13 @@ def load_strongest_feb(feb_dir: str | None = None) -> dict | None:
         feb = parse_feb(path)
         if feb is None:
             continue
-
-        payload = feb.get("emotional_payload", {})
-        intensity = payload.get("intensity", 0.0)
-        oof = feb.get("metadata", {}).get("oof_triggered", False)
-
-        # Prefer OOF-triggered FEBs, then highest intensity
-        score = intensity + (0.5 if oof else 0.0)
-        if score > best_intensity:
-            best_intensity = score
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        key = _strength_key(feb, mtime)
+        if key > best_key:
+            best_key = key
             best = feb
 
     return best
