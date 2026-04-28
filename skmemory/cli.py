@@ -1059,10 +1059,13 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
     if vector:
         try:
             from .backends.chroma_backend import SKChromaBackend
+            from .config import load_config
             paths = get_agent_paths()
+            cfg = load_config()
+            chroma_collection = cfg.chroma_collection if cfg and cfg.chroma_collection else "skmemory"
             be = SKChromaBackend(
                 persist_dir=str(paths["base"] / "memory" / "chroma"),
-                collection="skmemory",
+                collection=chroma_collection,
                 state_path=paths["base"] / "memory" / "chroma-state.json",
             )
             if be._ensure_initialized():
