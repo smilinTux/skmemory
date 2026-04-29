@@ -63,7 +63,8 @@ def _get_store() -> MemoryStore:
             persist_dir = str(agent_paths["memory"] / "chroma")
             state_path = agent_paths["memory"] / "chroma-state.json"
             vector = SKChromaBackend(persist_dir=persist_dir, state_path=state_path)
-        except Exception:
+        except Exception as e:
+            logger.warning("mcp_server.py: %s", e)
             pass
         _store = MemoryStore(vector=vector)
     return _store

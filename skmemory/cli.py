@@ -120,7 +120,8 @@ def _get_store(
             best_skgraph = selector.select_skgraph()
             if best_skgraph:
                 final_skgraph_url = best_skgraph.url
-        except Exception:
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
             click.echo("Warning: EndpointSelector failed, using single URLs", err=True)
 
     vector = None
@@ -156,7 +157,8 @@ def _get_store(
                 chroma_kwargs["embedding_model"] = chroma_embedding
 
             vector = SKChromaBackend(**chroma_kwargs)
-        except Exception:
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
             click.echo("Warning: Could not initialize ChromaDB backend, trying Qdrant", err=True)
 
     # Fall back to Qdrant if ChromaDB failed or Qdrant is explicitly enabled
@@ -173,7 +175,8 @@ def _get_store(
             if final_skvector_vector_dim:
                 kwargs["vector_dim"] = final_skvector_vector_dim
             vector = SKVectorBackend(**kwargs)
-        except Exception:
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
             click.echo("Warning: Could not initialize SKVector backend", err=True)
 
     # Fallback: if no URL set via env/CLI/skmemory.yaml, look for a
@@ -198,7 +201,8 @@ def _get_store(
                     _autoloaded_graph_name = None
             else:
                 _autoloaded_graph_name = None
-        except Exception:
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
             _autoloaded_graph_name = None
     else:
         _autoloaded_graph_name = None
@@ -213,7 +217,8 @@ def _get_store(
                 or "skmemory"
             )
             graph = SKGraphBackend(url=final_skgraph_url, graph_name=graph_name)
-        except Exception:
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
             click.echo("Warning: Could not initialize SKGraph backend", err=True)
 
     return MemoryStore(primary=None, vector=vector, graph=graph, use_sqlite=not legacy_files)
@@ -997,6 +1002,7 @@ def reindex(ctx: click.Context, vector: bool, force: bool) -> None:
                 f"removed={stats['removed']} errors={stats['errors']}"
             )
         except Exception as e:
+            logger.warning("cli.py: %s", e)
             click.echo(f"ChromaDB sync failed: {e}", err=True)
             sys.exit(1)
 
@@ -1071,6 +1077,7 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
             if be._ensure_initialized():
                 chroma_stats = be.sync_all(paths["base"] / "memory", agent)
         except Exception as e:
+            logger.warning("cli.py: %s", e)
             click.echo(f"chroma sync failed: {e}", err=True)
 
     # Phase 4 (optional): SKGraph (FalkorDB) backfill
@@ -1087,6 +1094,7 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
                     err=True,
                 )
         except Exception as e:
+            logger.warning("cli.py: %s", e)
             click.echo(f"graph sync failed: {e}", err=True)
 
     changed = (
@@ -2164,6 +2172,7 @@ def import_telegram_api_cmd(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except Exception as e:
+        logger.warning("cli.py: %s", e)
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -2660,6 +2669,7 @@ def feb_context_cmd(feb_path: str | None, agent: str | None):
     except SystemExit:
         raise
     except Exception as e:
+        logger.warning("cli.py: %s", e)
         click.echo(f"Error loading FEB: {e}", err=True)
         raise click.Abort() from None
 
@@ -2683,6 +2693,7 @@ def show_context(ctx, agent: str | None):
         context_str = get_context_for_session(agent)
         click.echo(context_str)
     except Exception as e:
+        logger.warning("cli.py: %s", e)
         click.echo(f"Error loading context: {e}", err=True)
         raise click.Abort() from None
 
@@ -2728,6 +2739,7 @@ def search_deep(ctx, query: str, agent: str | None, limit: int):
             click.echo()
 
     except Exception as e:
+        logger.warning("cli.py: %s", e)
         click.echo(f"Error searching: {e}", err=True)
         raise click.Abort() from None
 
@@ -2761,6 +2773,7 @@ def promote(ctx, memory_id: str, to_layer: str, agent: str | None):
             raise click.Abort()
 
     except Exception as e:
+        logger.warning("cli.py: %s", e)
         click.echo(f"Error promoting memory: {e}", err=True)
         raise click.Abort() from None
 
@@ -2777,7 +2790,8 @@ def _auto_register_once() -> None:
             run_post_install()
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(f"registered {__import__('datetime').datetime.now().isoformat()}\n")
-    except Exception:
+    except Exception as e:
+        logger.warning("cli.py: %s", e)
         pass  # Never fail the CLI over registration
 
 

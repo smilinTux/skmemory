@@ -58,7 +58,8 @@ def _read_stdin_if_available() -> str:
         return ""
     try:
         return sys.stdin.read()
-    except Exception:
+    except Exception as e:
+        logger.warning("claude_code_hooks.py: %s", e)
         return ""
 
 
@@ -153,7 +154,8 @@ def install_hooks(settings_path: Path | None = None) -> bool:
     if settings_path.exists():
         try:
             settings = json.loads(settings_path.read_text())
-        except Exception:
+        except Exception as e:
+            logger.warning("claude_code_hooks.py: %s", e)
             settings = {}
 
     hooks = settings.setdefault("hooks", {})

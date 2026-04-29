@@ -52,7 +52,8 @@ class AIClient:
             req = urllib.request.Request(f"{self.base_url}/api/tags")
             with urllib.request.urlopen(req, timeout=5):
                 return True
-        except Exception:
+        except Exception as e:
+            logger.warning("ai_client.py: %s", e)
             return False
 
     def generate(self, prompt: str, system: str = "") -> str:
@@ -84,7 +85,8 @@ class AIClient:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 return result.get("response", "")
-        except Exception:
+        except Exception as e:
+            logger.warning("ai_client.py: %s", e)
             return ""
 
     def embed(self, text: str, model: str | None = None) -> list[float]:
@@ -114,7 +116,8 @@ class AIClient:
                 if embeddings and isinstance(embeddings[0], list):
                     return embeddings[0]
                 return embeddings
-        except Exception:
+        except Exception as e:
+            logger.warning("ai_client.py: %s", e)
             return []
 
     def embed_available(self) -> bool:
@@ -207,5 +210,6 @@ class AIClient:
                 if i not in seen:
                     reranked.append(c)
             return reranked
-        except Exception:
+        except Exception as e:
+            logger.warning("ai_client.py: %s", e)
             return candidates

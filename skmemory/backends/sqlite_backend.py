@@ -755,7 +755,8 @@ class SQLiteBackend(BaseBackend):
                 )
                 self._index_memory(memory, file_path)
                 count += 1
-            except Exception:
+            except Exception as e:
+                logger.warning("sqlite_backend.py: %s", e)
                 continue
 
         return count
@@ -830,7 +831,8 @@ class SQLiteBackend(BaseBackend):
                 fb.save(mem)
                 stats["exported"] += 1
                 stats["orphan_ids"].append(memory_id)
-            except Exception:
+            except Exception as e:
+                logger.warning("sqlite_backend.py: %s", e)
                 stats["errors"] += 1
 
         return stats
@@ -985,6 +987,7 @@ class SQLiteBackend(BaseBackend):
                 },
             }
         except Exception as e:
+            logger.warning("sqlite_backend.py: %s", e)
             return {
                 "ok": False,
                 "backend": "SQLiteBackend",

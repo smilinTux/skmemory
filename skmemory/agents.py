@@ -120,7 +120,8 @@ def get_agent_config(agent_name: str) -> dict | None:
     try:
         with open(config_path) as f:
             return yaml.safe_load(f)
-    except Exception:
+    except Exception as e:
+        logger.warning("agents.py: %s", e)
         return None
 
 

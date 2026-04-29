@@ -83,7 +83,8 @@ class ChromaStateTracker:
         if self.path.exists():
             try:
                 self._state = json.loads(self.path.read_text()).get("memories", {})
-            except Exception:
+            except Exception as e:
+                logger.warning("ChromaDB tracker failed to load state from %s: %s", self.path, e)
                 self._state = {}
 
     def _save(self):
@@ -264,7 +265,8 @@ class SKChromaBackend(BaseBackend):
             if not result["documents"] or not result["documents"][0]:
                 return None
             return Memory.model_validate_json(result["documents"][0])
-        except Exception:
+        except Exception as e:
+            logger.warning("ChromaDB get failed for memory %s: %s", memory_id, e)
             return None
 
     def delete(self, memory_id: str) -> bool:
@@ -279,7 +281,8 @@ class SKChromaBackend(BaseBackend):
             if self._tracker:
                 self._tracker.remove(memory_id)
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("ChromaDB delete failed for memory %s: %s", memory_id, e)
             return False
 
     def remove(self, memory_id: str) -> bool:
@@ -340,7 +343,8 @@ class SKChromaBackend(BaseBackend):
                 if doc:
                     try:
                         memories.append(Memory.model_validate_json(doc))
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("ChromaDB: skipping malformed memory document: %s", e)
                         continue
 
             memories.sort(key=lambda m: m.created_at, reverse=True)
@@ -403,7 +407,8 @@ class SKChromaBackend(BaseBackend):
                 if doc:
                     try:
                         memories.append(Memory.model_validate_json(doc))
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("ChromaDB: skipping malformed memory document: %s", e)
                         continue
             return memories
         except Exception as e:
@@ -489,6 +494,7 @@ class SKChromaBackend(BaseBackend):
                 "documents_count": count,
             }
         except Exception as e:
+            logger.warning("chroma_backend.py: %s", e)
             return {
                 "ok": False,
                 "backend": "SKChromaBackend",

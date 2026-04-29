@@ -318,7 +318,8 @@ def _load_soul_file(filepath: Path) -> SoulBlueprint | None:
         if data is None:
             return None
         return SoulBlueprint(**data)
-    except Exception:
+    except Exception as e:
+        logger.warning("soul.py: %s", e)
         return None
 
 

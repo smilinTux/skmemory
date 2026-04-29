@@ -124,7 +124,8 @@ class MemoryStore:
         try:
             agent_paths = get_agent_paths()
             wal_path = agent_paths["base"] / "memory" / "wal" / "write_log.jsonl"
-        except Exception:
+        except Exception as e:
+            logger.warning("store.py: %s", e)
             import tempfile
             wal_path = (
                 __import__("pathlib").Path(tempfile.gettempdir())
@@ -280,6 +281,7 @@ class MemoryStore:
             self.primary.save(memory)
             self._wal.log_done("snapshot", memory.id)
         except Exception as exc:
+            logger.warning("store.py: %s", exc)
             self._wal.log_failed("snapshot", memory.id, str(exc))
             raise
 
@@ -597,7 +599,8 @@ class MemoryStore:
                     (datetime.now(timezone.utc).isoformat(), memory_id)
                 )
                 conn.commit()
-            except Exception:
+            except Exception as e:
+                logger.warning("store.py: %s", e)
                 pass
 
         return memory
@@ -867,6 +870,7 @@ class MemoryStore:
             deleted = self.primary.delete(memory_id)
             self._wal.log_done("forget", memory_id)
         except Exception as exc:
+            logger.warning("store.py: %s", exc)
             self._wal.log_failed("forget", memory_id, str(exc))
             raise
 
@@ -933,6 +937,7 @@ class MemoryStore:
             self.primary.save(promoted)
             self._wal.log_done("promote", promoted.id)
         except Exception as exc:
+            logger.warning("store.py: %s", exc)
             self._wal.log_failed("promote", promoted.id, str(exc))
             raise
 
@@ -1318,11 +1323,13 @@ class MemoryStore:
             try:
                 status["vector"] = self.vector.health_check()
             except Exception as e:
+                logger.warning("store.py: %s", e)
                 status["vector"] = {"ok": False, "error": str(e)}
         if self.graph:
             try:
                 status["graph"] = self.graph.health_check()
             except Exception as e:
+                logger.warning("store.py: %s", e)
                 status["graph"] = {"ok": False, "error": str(e)}
         return status
 

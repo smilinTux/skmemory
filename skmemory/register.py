@@ -314,6 +314,7 @@ def register_mcp(
             action = _upsert_mcp_entry(path, name, command, args, env)
             results[env_name] = action
         except Exception as exc:
+            logger.warning("register.py: %s", exc)
             results[env_name] = f"error: {exc}"
 
     return results
@@ -440,6 +441,7 @@ def register_openclaw_plugin(
         _ensure_openclaw_plugin_enabled(actual_id)
         return "created"
     except Exception as exc:
+        logger.warning("register.py: %s", exc)
         return f"error: {exc}"
 
 
@@ -554,6 +556,7 @@ def register_hooks(
         return {"action": action}
 
     except Exception as exc:
+        logger.warning("register.py: %s", exc)
         return {"action": f"error: {exc}"}
 
 

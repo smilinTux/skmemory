@@ -109,7 +109,8 @@ class VectorStateTracker:
         if self.path.exists():
             try:
                 self._state = json.loads(self.path.read_text()).get("memories", {})
-            except Exception:
+            except Exception as e:
+                logger.warning("skvector_backend.py: %s", e)
                 self._state = {}
 
     def _save(self):
@@ -241,6 +242,7 @@ class SKVectorBackend(BaseBackend):
             return True
 
         except Exception as e:
+            logger.warning("skvector_backend.py: %s", e)
             status = _extract_status_code(e, UnexpectedResponse)
             if status in (401, 403):
                 hint = (
@@ -431,7 +433,8 @@ class SKVectorBackend(BaseBackend):
             if not points:
                 return None
             return Memory.model_validate_json(points[0].payload["memory_json"])
-        except Exception:
+        except Exception as e:
+            logger.warning("skvector_backend.py: %s", e)
             return None
 
     def delete(self, memory_id: str) -> bool:
@@ -461,7 +464,8 @@ class SKVectorBackend(BaseBackend):
                 points_selector=[self._id_to_point_id(memory_id)],
             )
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("skvector_backend.py: %s", e)
             return False
 
     def remove(self, memory_id: str) -> bool:
@@ -548,7 +552,8 @@ class SKVectorBackend(BaseBackend):
             try:
                 mem = Memory.model_validate_json(point.payload["memory_json"])
                 memories.append(mem)
-            except Exception:
+            except Exception as e:
+                logger.warning("skvector_backend.py: %s", e)
                 continue
 
         memories.sort(key=lambda m: m.created_at, reverse=True)
@@ -617,7 +622,8 @@ class SKVectorBackend(BaseBackend):
             try:
                 mem = Memory.model_validate_json(scored_point.payload["memory_json"])
                 memories.append(mem)
-            except Exception:
+            except Exception as e:
+                logger.warning("skvector_backend.py: %s", e)
                 continue
 
         return memories
@@ -726,6 +732,7 @@ class SKVectorBackend(BaseBackend):
                 "vectors_count": getattr(info, "vectors_count", None),
             }
         except Exception as e:
+            logger.warning("skvector_backend.py: %s", e)
             return {
                 "ok": False,
                 "backend": "SKVectorBackend",

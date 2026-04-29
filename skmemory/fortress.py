@@ -78,7 +78,8 @@ class AuditLog:
                     return "genesis"
                 last = json.loads(lines[-1])
                 return last.get("chain_hash", "genesis")
-        except Exception:
+        except Exception as e:
+            logger.warning("fortress.py: %s", e)
             return "genesis"
 
     def _next_chain_hash(self, record: dict) -> str:

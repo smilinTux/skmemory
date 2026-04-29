@@ -108,7 +108,8 @@ def load_config(path: Path = CONFIG_PATH) -> SKMemoryConfig | None:
         if not isinstance(data, dict):
             return None
         return SKMemoryConfig(**data)
-    except Exception:
+    except Exception as e:
+        logger.warning("config.py: %s", e)
         return None
 
 

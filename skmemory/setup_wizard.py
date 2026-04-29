@@ -208,7 +208,8 @@ def _open_url_in_browser(url: str) -> None:
             subprocess.run(["open", url], timeout=5, check=False)
         else:
             subprocess.run(["xdg-open", url], timeout=5, capture_output=True, check=False)
-    except Exception:
+    except Exception as e:
+        logger.warning("setup_wizard.py: %s", e)
         pass
 
 

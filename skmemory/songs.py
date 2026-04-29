@@ -101,7 +101,8 @@ class SongAnchor(BaseModel):
             return {}
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("songs.py: %s", e)
             return {}
 
     def to_tilt_block(self, tokens_max: int = 180) -> str:

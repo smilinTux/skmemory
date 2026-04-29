@@ -65,7 +65,8 @@ class SKMemoryPlugin:
                     persist_dir=persist_dir,
                     state_path=state_path,
                 )
-            except Exception:
+            except Exception as e:
+                logger.warning("openclaw.py: %s", e)
                 pass
 
         # Fall back to Qdrant for shared collections
@@ -74,7 +75,8 @@ class SKMemoryPlugin:
                 from .backends.skvector_backend import SKVectorBackend
 
                 vector = SKVectorBackend(url=skvector_url, api_key=skvector_key)
-            except Exception:
+            except Exception as e:
+                logger.warning("openclaw.py: %s", e)
                 pass
 
         primary = SQLiteBackend(base_path=base_path) if base_path else None
@@ -244,5 +246,6 @@ class SKMemoryPlugin:
 
             state["skmemory_version"] = __version__
             SKMEMORY_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        except Exception:
+        except Exception as e:
+            logger.warning("openclaw.py: %s", e)
             pass

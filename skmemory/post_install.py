@@ -28,7 +28,8 @@ def _is_registered() -> bool:
         data = json.loads(settings.read_text())
         hooks = data.get("hooks", {})
         return "PreCompact" in hooks and "SessionEnd" in hooks
-    except Exception:
+    except Exception as e:
+        logger.warning("post_install.py: %s", e)
         return False
 
 
@@ -77,6 +78,7 @@ def main() -> None:
     try:
         run_post_install()
     except Exception as exc:
+        logger.warning("post_install.py: %s", exc)
         # Never fail the install — registration is best-effort
         print(f"skmemory: post-install warning: {exc}", file=sys.stderr)
         sys.exit(0)

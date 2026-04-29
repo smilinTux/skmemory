@@ -371,7 +371,8 @@ def _import_per_message(
                     },
                 )
                 imported += 1
-            except Exception:
+            except Exception as e:
+                logger.warning("telegram.py: %s", e)
                 skipped += 1
 
     return {
@@ -408,7 +409,8 @@ def _import_daily(
             day = date_str[:10]
             if day:
                 by_day[day].append(msg)
-        except Exception:
+        except Exception as e:
+            logger.warning("telegram.py: %s", e)
             continue
 
     imported = 0
@@ -563,7 +565,8 @@ def _import_catchup(
                 },
             )
             stats["short_term"]["count"] += 1
-        except Exception:
+        except Exception as e:
+            logger.warning("telegram.py: %s", e)
             pass
 
     # --- Mid-term: daily summaries (last 7 days) ---

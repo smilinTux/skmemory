@@ -163,4 +163,5 @@ def list_cmd(agent: str | None, anchor_type: str | None) -> None:
                 if sig_status:
                     click.echo(f"     consent: {sig_status}")
             except Exception as e:
+                logger.warning("anchors_cli.py: %s", e)
                 click.echo(f"  ⚠  {d.name} (meta.json parse error: {e})")

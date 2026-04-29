@@ -420,7 +420,8 @@ class LazyMemoryLoader:
                 state_path=state_path,
             )
             chroma_ok = True
-        except Exception:
+        except Exception as e:
+            logger.warning("context_loader.py: %s", e)
             pass
 
         if not chroma_ok:
@@ -524,7 +525,8 @@ class LazyMemoryLoader:
                                                 "created_at": mem.created_at,
                                                 "source_backend": f"skvector:{recall_col}",
                                             })
-                                    except Exception:
+                                    except Exception as e:
+                                        logger.warning("context_loader.py: %s", e)
                                         # Payload from foreign collection may not be a Memory
                                         # Fall back to raw payload fields
                                         mem_id = payload.get("id", str(sp.id))
@@ -604,7 +606,8 @@ class LazyMemoryLoader:
                 decay = math.pow(0.5, age_days / half_life)
             else:
                 decay = 1.0
-        except Exception:
+        except Exception as e:
+            logger.warning("context_loader.py: %s", e)
             decay = 1.0
 
         # 4. Backend bonus (vector results carry semantic signal)
@@ -630,7 +633,8 @@ class LazyMemoryLoader:
                     ]
                 if graph_ctx.get("entities"):
                     mem["entities"] = graph_ctx["entities"][:5]
-            except Exception:
+            except Exception as e:
+                logger.warning("context_loader.py: %s", e)
                 pass
         return memories
 

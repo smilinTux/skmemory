@@ -316,8 +316,8 @@ class SKGraphBackend:
                 )
                 for row in result.result_set:
                     signals.append((row[0], "sibling", 0.9))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("skgraph: sibling signal query failed for %s: %s", memory_id, e)
 
         # Signal 3: Same source_ref (same session)
         if memory.source_ref:
@@ -328,8 +328,8 @@ class SKGraphBackend:
                 )
                 for row in result.result_set:
                     signals.append((row[0], "same_session", 0.7))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("skgraph: same_session signal query failed for %s: %s", memory_id, e)
 
         # Create edges with weight and reason properties
         for (other_id, reason, weight) in signals:
@@ -975,6 +975,7 @@ class SKGraphBackend:
                 "node_count": node_count,
             }
         except Exception as exc:
+            logger.warning("skgraph_backend.py: %s", exc)
             return {
                 "ok": False,
                 "backend": "SKGraphBackend",

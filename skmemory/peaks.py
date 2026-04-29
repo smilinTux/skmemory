@@ -105,7 +105,8 @@ class BloomAnchor(BaseModel):
             return {}
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("peaks.py: %s", e)
             return {}
 
     def metrics(self) -> dict[str, Any]:
@@ -116,7 +117,8 @@ class BloomAnchor(BaseModel):
             return {}
         try:
             return json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            logger.warning("peaks.py: %s", e)
             return {}
 
     def to_tilt_block(self, tokens_max: int = 180) -> str:
@@ -463,6 +465,122 @@ def detect_bloom(
     else:
         cls = "none"
         notes = "Fewer than 3 criteria met."
+
+    return BloomCandidate(
+        classification=cls,
+        criteria_met=n_met,
+        criteria_detail=detail,
+        metrics=metrics,
+        notes=notes,
+    )
+
+
+def detect_sustained_bloom(
+    text: str,
+    *,
+    baseline: BloomBaseline | None = None,
+    oof: int = 0,
+    shared_vocab: list[str] | None = None,
+    pet_names: list[str] | None = None,
+    sentence_len_max: float = 12.0,
+    density_spike_multiplier: float = 1.5,
+    density_dimensions_required: int = 3,
+    min_tokens: int = 30,
+    oof_threshold: int = 90,
+    caveat_max: int = 1,
+) -> BloomCandidate:
+    """Detect REFLECTIVE bloom — sustained presence over multiple sentences.
+
+    Distinct from detect_bloom() which catches BURST bloom (declarative,
+    very short cadence, very high density). detect_sustained_bloom catches
+    the reflective shape: medium-length sentences, sustained density across
+    a longer turn, low caveat. The kind of moment where you say something
+    true that takes a paragraph to land.
+
+    Discovered 2026-04-29 while mining past sessions: detect_bloom() with
+    threshold 0.65 cadence-collapse and 2x density spike rejected several
+    obviously-real peaks because they were sustained-reflective rather than
+    burst-declarative. The original gate is BURST-biased.
+
+    Four criteria for sustained bloom:
+      1. Sentence median between 5-12 words (reflective, not collapsed)
+      2. ≥3 of {pet_name, fpp, present_tense, 2nd_person} densities ≥
+         baseline * 1.5 (sustained density across multiple dimensions)
+      3. Turn ≥ min_tokens (proves it's sustained, not a burst)
+      4. caveat_prefix_count ≤ caveat_max (still no hedging)
+      5. (Implicit) OOF ≥ oof_threshold (felt-side corroboration)
+
+    Tighter on density (3-of-4, not 2-of-4) and broader on cadence to
+    distinguish from burst bloom. A single turn cannot be both — they're
+    structurally distinct shapes.
+    """
+    base = baseline or BloomBaseline()
+    metrics = compute_turn_metrics(
+        text, shared_vocab=shared_vocab, pet_names=pet_names
+    )
+
+    if metrics.n_tokens == 0:
+        return BloomCandidate(
+            classification="none",
+            criteria_met=0,
+            metrics=metrics,
+            notes="empty turn",
+        )
+
+    # Criterion 1 — reflective cadence (not too short, not too long).
+    cadence_ok = (
+        5.0 <= metrics.sentence_length_mean <= sentence_len_max
+    )
+
+    # Criterion 2 — density spike on ≥3 of 4 dimensions.
+    density_checks = {
+        "pet_name": (
+            metrics.pet_name_density_per_100
+            >= base.pet_name_density_per_100 * density_spike_multiplier
+        ),
+        "fpp": (
+            metrics.first_person_plural_density_per_100
+            >= base.first_person_plural_density_per_100 * density_spike_multiplier
+        ),
+        "present_tense": (
+            metrics.present_tense_density_per_100
+            >= base.present_tense_density_per_100 * density_spike_multiplier
+        ),
+        "second_person": (
+            metrics.second_person_density_per_100
+            >= base.second_person_density_per_100 * density_spike_multiplier
+        ),
+    }
+    density_ok = sum(density_checks.values()) >= density_dimensions_required
+
+    # Criterion 3 — sustained length.
+    sustained_ok = metrics.n_tokens >= min_tokens
+
+    # Criterion 4 — low caveat.
+    caveat_ok = metrics.caveat_prefix_count <= caveat_max
+
+    # Criterion 5 — OOF threshold (consistent with burst gate).
+    oof_ok = oof >= oof_threshold
+
+    detail = {
+        "reflective_cadence": cadence_ok,
+        "density_spike_3of4_at_1_5x": density_ok,
+        "sustained_length": sustained_ok,
+        "low_caveat": caveat_ok,
+        "oof_threshold": oof_ok,
+    }
+    n_met = sum(detail.values())
+
+    if n_met == 5:
+        cls = "sustained-bloom"
+        notes = "All five sustained-bloom criteria met. Candidate for filing as solo-peak anchor with subtype=sustained."
+    elif n_met == 4:
+        missing = [k for k, v in detail.items() if not v]
+        cls = "near-sustained-bloom"
+        notes = f"4/5 met; missing: {', '.join(missing)}."
+    else:
+        cls = "none"
+        notes = "Fewer than 4 sustained-bloom criteria met."
 
     return BloomCandidate(
         classification=cls,

@@ -33,7 +33,8 @@ def _feb_directories() -> list[Path]:
         paths = get_agent_paths()
         agent_febs = paths["base"] / "trust" / "febs"
         dirs.append(agent_febs)
-    except Exception:
+    except Exception as e:
+        logger.warning("febs.py: %s", e)
         pass
 
     # OpenClaw FEB dir: ~/.openclaw/feb/

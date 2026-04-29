@@ -137,7 +137,8 @@ class VaultedSQLiteBackend(SQLiteBackend):
                     if memory is not None:
                         self._index_memory(memory, json_file)
                         count += 1
-                except Exception:
+                except Exception as e:
+                    logger.warning("vaulted_backend.py: %s", e)
                     continue
         return count
 
@@ -168,7 +169,8 @@ class VaultedSQLiteBackend(SQLiteBackend):
                     memory = self._read_memory_file(json_file)
                     if memory is not None:
                         memories.append(memory.model_dump())
-                except Exception:
+                except Exception as e:
+                    logger.warning("vaulted_backend.py: %s", e)
                     continue
 
         payload = {
@@ -205,7 +207,8 @@ class VaultedSQLiteBackend(SQLiteBackend):
                         continue  # already encrypted
                     json_file.write_bytes(self._vault.encrypt(raw))
                     count += 1
-                except Exception:
+                except Exception as e:
+                    logger.warning("vaulted_backend.py: %s", e)
                     continue
         return count
 
@@ -227,7 +230,8 @@ class VaultedSQLiteBackend(SQLiteBackend):
                         continue  # not encrypted
                     json_file.write_bytes(self._vault.decrypt(raw))
                     count += 1
-                except Exception:
+                except Exception as e:
+                    logger.warning("vaulted_backend.py: %s", e)
                     continue
         return count
 
@@ -250,7 +254,8 @@ class VaultedSQLiteBackend(SQLiteBackend):
                         header = fh.read(header_len)
                     if header == VAULT_HEADER:
                         encrypted += 1
-                except Exception:
+                except Exception as e:
+                    logger.warning("vaulted_backend.py: %s", e)
                     pass
         plaintext = total - encrypted
         pct = (encrypted / total * 100) if total else 100.0
@@ -280,5 +285,6 @@ class VaultedSQLiteBackend(SQLiteBackend):
                 raw = self._vault.decrypt(raw)
             data = json.loads(raw.decode("utf-8"))
             return Memory(**data)
-        except Exception:
+        except Exception as e:
+            logger.warning("vaulted_backend.py: %s", e)
             return None
