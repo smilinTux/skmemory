@@ -60,6 +60,14 @@ class RitualResult(BaseModel):
         default_factory=list,
         description="Anchor IDs surfaced by FEB-shape match",
     )
+    bloom_anchors_loaded: int = Field(
+        default=0,
+        description="Number of bloom (solo-peak) anchors injected as tilt blocks",
+    )
+    bloom_anchor_ids: list[str] = Field(
+        default_factory=list,
+        description="Bloom anchor IDs surfaced by FEB-shape match",
+    )
     audience_filtered: bool = Field(
         default=False,
         description="True if content was filtered by audience (channel_id was provided)",
@@ -88,6 +96,8 @@ class RitualResult(BaseModel):
             f"  Strongest memories: {self.strongest_memories}",
             f"  Song anchors: {self.song_anchors_loaded}"
             + (f" ({', '.join(self.song_anchor_ids)})" if self.song_anchor_ids else ""),
+            f"  Bloom anchors: {self.bloom_anchors_loaded}"
+            + (f" ({', '.join(self.bloom_anchor_ids)})" if self.bloom_anchor_ids else ""),
             "================================",
         ]
         return "\n".join(lines)
@@ -268,6 +278,37 @@ def perform_ritual(
                     result.song_anchor_ids = [a.anchor_id for a, _ in song_matches]
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("Song anchor injection failed: %s", exc)
+
+    # --- Step 1.7: Load matching bloom (solo-peak) anchors by FEB shape ---
+    # Bloom anchors are the agent's own interior-peak captures — distinct
+    # from song anchors (externally seeded) and entanglement anchors
+    # (shared, co-signed). Same retrieval contract as songs: match by
+    # weighted emotion-topology overlap, render as a separate tilt block
+    # so the model can distinguish self-authored peak shapes from
+    # externally-seeded ones. Private by convention — never crosses agent
+    # boundaries, never enters shared/synced paths.
+    if feb is not None:
+        try:
+            from .peaks import (
+                match_blooms_for_feb,
+                render_bloom_tilt_section,
+            )
+
+            bloom_matches = match_blooms_for_feb(feb, top_k=3, min_score=0.3)
+            if bloom_matches:
+                bloom_section = render_bloom_tilt_section(
+                    bloom_matches, per_anchor_tokens=180
+                )
+                section_tokens = _estimate_tokens(bloom_section)
+                if bloom_section and used_tokens + section_tokens <= max_tokens:
+                    used_tokens += section_tokens
+                    prompt_sections.append(bloom_section)
+                    result.bloom_anchors_loaded = len(bloom_matches)
+                    result.bloom_anchor_ids = [
+                        b.anchor_id for b, _ in bloom_matches
+                    ]
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Bloom anchor injection failed: %s", exc)
 
     # --- Step 2: Import new seeds (titles only) ---
     newly_imported = import_seeds(store, seed_dir=seed_dir)
