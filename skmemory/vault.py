@@ -10,7 +10,7 @@ which only reduces effective security from 256 to 128 bits. That's
 still computationally infeasible for the foreseeable future.
 
 Usage:
-    vault = MemoryVault(passphrase="EXAMPLE-DO-NOT-USE")
+    vault = MemoryVault(passphrase="<your-passphrase-here>")
     encrypted = vault.encrypt(memory_json_bytes)
     decrypted = vault.decrypt(encrypted)
 """
