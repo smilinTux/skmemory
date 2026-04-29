@@ -15,7 +15,17 @@ import yaml
 
 
 def _agents_base() -> Path:
-    """Platform-aware base directory for all agents."""
+    """Platform-aware base directory for all agents.
+
+    Resolution order:
+    1. SKMEMORY_HOME env var — direct override (points at the agent base dir)
+    2. SKCAPSTONE_HOME env var — skcapstone-wide override
+    3. Windows LOCALAPPDATA convention
+    4. Default: ~/.skcapstone/agents/
+    """
+    skmemory_home = os.environ.get("SKMEMORY_HOME", "")
+    if skmemory_home:
+        return Path(skmemory_home)
     skcap_home = os.environ.get("SKCAPSTONE_HOME", "")
     if skcap_home:
         return Path(skcap_home) / "agents"

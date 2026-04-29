@@ -20,18 +20,34 @@ from pydantic import BaseModel, Field
 
 from .agents import AGENTS_BASE_DIR, get_agent_paths, get_default_template_agent
 
+# SKMEMORY_HOME — override the active-agent base directory entirely.
+# Set this env var to point skmemory at a custom location without
+# changing SKCAPSTONE_HOME or agent discovery logic.
+# Falls back to the active agent's base path resolved via get_agent_paths().
+SKMEMORY_HOME = Path(os.environ["SKMEMORY_HOME"]) if os.environ.get("SKMEMORY_HOME") else None
+
 # Dynamic agent-aware paths
 # Uses ~/.skcapstone/agents/{active_agent}/ based on SKMEMORY_AGENT env var
 # Falls back to first non-template agent, or creates from template
 try:
     default_paths = get_agent_paths()
-    SKMEMORY_HOME = default_paths["base"]
-    CONFIG_DIR = default_paths["config"]
-    CONFIG_PATH = default_paths["config_yaml"]
+    _agent_base = default_paths["base"]
+    if SKMEMORY_HOME is None:
+        SKMEMORY_HOME = _agent_base
+    # When SKMEMORY_HOME is overridden via env var, derive config paths from it
+    # so all reads and writes stay within the specified directory.
+    if SKMEMORY_HOME == _agent_base:
+        CONFIG_DIR = default_paths["config"]
+        CONFIG_PATH = default_paths["config_yaml"]
+    else:
+        CONFIG_DIR = SKMEMORY_HOME / "config"
+        CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
 except ValueError:
-    # Fallback if no agents exist — use platform-aware AGENTS_BASE_DIR
-    default_template = get_default_template_agent() or "template"
-    SKMEMORY_HOME = AGENTS_BASE_DIR / default_template
+    # Fallback if no agents exist — use platform-aware AGENTS_BASE_DIR.
+    # Preserve SKMEMORY_HOME if it was set via env var.
+    if SKMEMORY_HOME is None:
+        default_template = get_default_template_agent() or "template"
+        SKMEMORY_HOME = AGENTS_BASE_DIR / default_template
     CONFIG_DIR = SKMEMORY_HOME / "config"
     CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
 
