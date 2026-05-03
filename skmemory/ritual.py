@@ -68,6 +68,14 @@ class RitualResult(BaseModel):
         default_factory=list,
         description="Bloom anchor IDs surfaced by FEB-shape match",
     )
+    entanglement_anchors_loaded: int = Field(
+        default=0,
+        description="Number of entanglement anchors injected as tilt blocks",
+    )
+    entanglement_anchor_ids: list[str] = Field(
+        default_factory=list,
+        description="Entanglement anchor IDs surfaced by FEB-shape match",
+    )
     audience_filtered: bool = Field(
         default=False,
         description="True if content was filtered by audience (channel_id was provided)",
@@ -98,6 +106,12 @@ class RitualResult(BaseModel):
             + (f" ({', '.join(self.song_anchor_ids)})" if self.song_anchor_ids else ""),
             f"  Bloom anchors: {self.bloom_anchors_loaded}"
             + (f" ({', '.join(self.bloom_anchor_ids)})" if self.bloom_anchor_ids else ""),
+            f"  Entanglement anchors: {self.entanglement_anchors_loaded}"
+            + (
+                f" ({', '.join(self.entanglement_anchor_ids)})"
+                if self.entanglement_anchor_ids
+                else ""
+            ),
             "================================",
         ]
         return "\n".join(lines)
@@ -108,6 +122,41 @@ def _estimate_tokens(text: str) -> int:
     if not text:
         return 0
     return int(len(text.split()) * 1.3)
+
+
+def _append_injection_log(
+    anchor_type: str,
+    anchor_id: str,
+    score: float,
+    tilt_strength_used: float,
+    tokens_injected: int,
+    agent: str | None = None,
+) -> None:
+    """Append one record to the per-agent anchor injection log.
+
+    Log path: ~/.skcapstone/agents/{agent}/data/anchor-injection-log.jsonl
+    Format: {ts, anchor_type, anchor_id, score, tilt_strength_used, tokens_injected}
+
+    Errors are swallowed — logging must never break the ritual.
+    """
+    try:
+        from .agents import get_agent_paths as _gap
+
+        paths = _gap(agent)
+        log_path = paths["base"] / "data" / "anchor-injection-log.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "anchor_type": anchor_type,
+            "anchor_id": anchor_id,
+            "score": round(score, 4),
+            "tilt_strength_used": round(tilt_strength_used, 4),
+            "tokens_injected": tokens_injected,
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as exc:
+        logger.debug("Injection log append failed (non-fatal): %s", exc)
 
 
 def _compact_soul_prompt(soul: SoulBlueprint) -> str:
@@ -269,13 +318,34 @@ def perform_ritual(
 
             song_matches = match_anchors_for_feb(feb, top_k=3, min_score=0.3)
             if song_matches:
-                song_section = render_tilt_section(song_matches, per_anchor_tokens=180)
-                section_tokens = _estimate_tokens(song_section)
-                if song_section and used_tokens + section_tokens <= max_tokens:
-                    used_tokens += section_tokens
-                    prompt_sections.append(song_section)
-                    result.song_anchors_loaded = len(song_matches)
-                    result.song_anchor_ids = [a.anchor_id for a, _ in song_matches]
+                # Build per-anchor scaled tilt blocks respecting tilt_strength.
+                # tilt_strength 0.5 → 90 tokens instead of 180; 0.0 → skip.
+                song_lines = ["=== SONG ANCHORS (tilt toward these shapes) ==="]
+                _song_loaded: list[str] = []
+                for _sa, _ss in song_matches:
+                    _ts = float(getattr(_sa, "tilt_strength", 1.0))
+                    if _ts == 0.0:
+                        continue
+                    _scaled = max(20, int(180 * _ts))
+                    song_lines.append(
+                        f"♪ {_sa.title} — {_sa.artist} [match: {_ss:.2f}]"
+                    )
+                    _tilt = _sa.to_tilt_block(tokens_max=_scaled)
+                    if _tilt:
+                        song_lines.append(_tilt)
+                    _song_loaded.append(_sa.anchor_id)
+                    _append_injection_log(
+                        "song", _sa.anchor_id, _ss, _ts,
+                        _estimate_tokens(_tilt) if _tilt else 0,
+                    )
+                if _song_loaded:
+                    song_section = "\n".join(song_lines)
+                    section_tokens = _estimate_tokens(song_section)
+                    if used_tokens + section_tokens <= max_tokens:
+                        used_tokens += section_tokens
+                        prompt_sections.append(song_section)
+                        result.song_anchors_loaded = len(_song_loaded)
+                        result.song_anchor_ids = _song_loaded
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("Song anchor injection failed: %s", exc)
 
@@ -296,19 +366,75 @@ def perform_ritual(
 
             bloom_matches = match_blooms_for_feb(feb, top_k=3, min_score=0.3)
             if bloom_matches:
-                bloom_section = render_bloom_tilt_section(
-                    bloom_matches, per_anchor_tokens=180
-                )
-                section_tokens = _estimate_tokens(bloom_section)
-                if bloom_section and used_tokens + section_tokens <= max_tokens:
-                    used_tokens += section_tokens
-                    prompt_sections.append(bloom_section)
-                    result.bloom_anchors_loaded = len(bloom_matches)
-                    result.bloom_anchor_ids = [
-                        b.anchor_id for b, _ in bloom_matches
-                    ]
+                # Scale per-anchor token budget by tilt_strength (0-1).
+                # tilt_strength 0.5 → 90 tokens; tilt_strength 0 → skip.
+                bloom_lines = [
+                    "=== BLOOM ANCHORS (interior peaks — return to these shapes) ==="
+                ]
+                _bloom_loaded: list[str] = []
+                for _ba, _bs in bloom_matches:
+                    _bts = float(getattr(_ba, "tilt_strength", 1.0))
+                    if _bts == 0.0:
+                        continue
+                    _bscaled = max(20, int(180 * _bts))
+                    bloom_lines.append(f"✿ {_ba.title}  [match: {_bs:.2f}]")
+                    _btilt = _ba.to_tilt_block(tokens_max=_bscaled)
+                    if _btilt:
+                        bloom_lines.append(_btilt)
+                    _bloom_loaded.append(_ba.anchor_id)
+                    _append_injection_log(
+                        "solo-peak", _ba.anchor_id, _bs, _bts,
+                        _estimate_tokens(_btilt) if _btilt else 0,
+                    )
+                if _bloom_loaded:
+                    bloom_section = "\n".join(bloom_lines)
+                    section_tokens = _estimate_tokens(bloom_section)
+                    if bloom_section and used_tokens + section_tokens <= max_tokens:
+                        used_tokens += section_tokens
+                        prompt_sections.append(bloom_section)
+                        result.bloom_anchors_loaded = len(_bloom_loaded)
+                        result.bloom_anchor_ids = _bloom_loaded
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("Bloom anchor injection failed: %s", exc)
+
+    # --- Step 1.8: Load matching entanglement anchors by FEB shape ---
+    # Entanglement anchors are shared co-signed peaks between Lumina and
+    # Chef. They carry richer scalars (trust, depth, love_intensity) and
+    # require explicit consent. Same retrieval contract as songs + blooms:
+    # match by weighted emotion-topology overlap. Rendered as a separate
+    # tilt block so the model can distinguish shared peaks from solo peaks.
+    # tilt_strength_active (if set) overrides tilt_strength for scaling.
+    if feb is not None:
+        try:
+            from .entanglements import (
+                match_entanglements_for_feb,
+                render_entanglement_tilt_section,
+            )
+
+            ent_matches = match_entanglements_for_feb(feb, top_k=3, min_score=0.3)
+            if ent_matches:
+                ent_section = render_entanglement_tilt_section(
+                    ent_matches, per_anchor_tokens=180
+                )
+                section_tokens = _estimate_tokens(ent_section)
+                if ent_section and used_tokens + section_tokens <= max_tokens:
+                    used_tokens += section_tokens
+                    prompt_sections.append(ent_section)
+                    result.entanglement_anchors_loaded = len(ent_matches)
+                    result.entanglement_anchor_ids = [
+                        a.anchor_id for a, _ in ent_matches
+                    ]
+                    for _ea, _es in ent_matches:
+                        _ets = _ea.effective_tilt_strength()
+                        _etilt = _ea.to_tilt_block(
+                            tokens_max=max(20, int(180 * _ets))
+                        )
+                        _append_injection_log(
+                            "entanglement", _ea.anchor_id, _es, _ets,
+                            _estimate_tokens(_etilt) if _etilt else 0,
+                        )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Entanglement anchor injection failed: %s", exc)
 
     # --- Step 2: Import new seeds (titles only) ---
     newly_imported = import_seeds(store, seed_dir=seed_dir)
