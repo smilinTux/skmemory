@@ -17,6 +17,9 @@ Tools:
     memory_import      — Restore memories from a JSON backup
     memory_health      — Full health check across all backends
     memory_graph       — Graph traversal, lineage, and cluster discovery
+    memory_extract     — Extract decisions/preferences/milestones from text (no storage)
+    memory_save_session — Auto-extract + save memories from a conversation transcript
+    memory_pre_compact — Emergency snapshot of current context before compression
 
 Invocation:
     python -m skmemory.mcp_server
@@ -551,6 +554,56 @@ async def list_tools() -> list[Tool]:
                 "required": [],
             },
         ),
+        Tool(
+            name="memory_extract",
+            description=(
+                "Extract decisions, preferences, milestones, problems, and emotional moments "
+                "from arbitrary text using regex pattern matching. Returns the matches without "
+                "storing anything — useful for previewing what auto-save would capture."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to extract memory-worthy moments from."},
+                    "min_length": {"type": "integer", "description": "Minimum extracted-segment length (default: 20).", "default": 20},
+                },
+                "required": ["text"],
+            },
+        ),
+        Tool(
+            name="memory_save_session",
+            description=(
+                "Auto-extract memories from a conversation transcript and store each as a "
+                "short-term memory. Mirrors the Stop hook used by Claude Code's settings.json "
+                "but invoked directly via MCP. Returns counts + the IDs of saved memories."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "conversation": {"type": "string", "description": "Full conversation transcript text."},
+                    "session_id": {"type": "string", "description": "Session identifier (default: auto from CLAUDE_SESSION_ID env or 'mcp-session')."},
+                    "min_length": {"type": "integer", "description": "Minimum extracted-segment length (default: 100 — same as the Stop hook).", "default": 100},
+                },
+                "required": ["conversation"],
+            },
+        ),
+        Tool(
+            name="memory_pre_compact",
+            description=(
+                "Emergency snapshot of current conversation context before context compression. "
+                "Stores the last N characters as a single short-term memory tagged 'pre-compact'. "
+                "Mirrors the PreCompact hook used by Claude Code."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "context": {"type": "string", "description": "Current conversation context to snapshot."},
+                    "session_id": {"type": "string", "description": "Session identifier (default: auto)."},
+                    "tail_chars": {"type": "integer", "description": "How many trailing characters to save (default: 4000).", "default": 4000},
+                },
+                "required": ["context"],
+            },
+        ),
     ]
 
 
@@ -879,6 +932,73 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 tags=tags,
             )
             return _json_response(stats)
+
+        elif name == "memory_extract":
+            from .extractor import extract_memories
+            text = arguments["text"]
+            min_length = int(arguments.get("min_length", 20))
+            extracted = extract_memories(text, min_length=min_length)
+            return _json_response([
+                {"type": e.type, "content": e.content, "confidence": e.confidence, "source_line": e.source_line}
+                for e in extracted
+            ])
+
+        elif name == "memory_save_session":
+            import os
+            from .extractor import extract_memories
+            conversation = arguments["conversation"]
+            session_id = arguments.get("session_id") or os.environ.get("CLAUDE_SESSION_ID") or "mcp-session"
+            min_length = int(arguments.get("min_length", 100))
+            if len(conversation) < min_length:
+                return _json_response({"extracted": 0, "saved": 0, "session_id": session_id, "memories": [], "skipped": "below_min_length"})
+            extracted = extract_memories(conversation)
+            saved_memories = []
+            for mem in extracted:
+                try:
+                    memory = store.snapshot(
+                        title=f"[auto-{mem.type}] {mem.content[:60]}",
+                        content=mem.content,
+                        layer=MemoryLayer.SHORT,
+                        tags=["auto-extract", mem.type, f"session:{session_id}"],
+                        source="mcp:memory_save_session",
+                        source_ref=f"session:{session_id}",
+                        metadata={
+                            "extraction_confidence": mem.confidence,
+                            "extraction_type": mem.type,
+                            "tool": "memory_save_session",
+                        },
+                    )
+                    saved_memories.append({"id": memory.id, "type": mem.type, "title": memory.title})
+                except Exception as exc:
+                    logger.warning("memory_save_session: failed to save extracted memory: %s", exc)
+            return _json_response({
+                "extracted": len(extracted),
+                "saved": len(saved_memories),
+                "session_id": session_id,
+                "memories": saved_memories,
+            })
+
+        elif name == "memory_pre_compact":
+            import os
+            context = arguments["context"]
+            session_id = arguments.get("session_id") or os.environ.get("CLAUDE_SESSION_ID") or "mcp-session"
+            tail_chars = int(arguments.get("tail_chars", 4000))
+            content = context[-tail_chars:] if len(context) > tail_chars else context
+            memory = store.snapshot(
+                title=f"Pre-compact session snapshot ({session_id[:8]})",
+                content=content,
+                layer=MemoryLayer.SHORT,
+                tags=["pre-compact", "auto-save", f"session:{session_id}"],
+                source="mcp:memory_pre_compact",
+                source_ref=f"session:{session_id}",
+                metadata={"tool": "memory_pre_compact", "original_length": len(context), "saved_length": len(content)},
+            )
+            return _json_response({
+                "memory_id": memory.id,
+                "session_id": session_id,
+                "content_length": len(content),
+                "original_length": len(context),
+            })
 
         else:
             return _error_response(f"Unknown tool: {name}")
