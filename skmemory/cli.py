@@ -44,6 +44,7 @@ def _get_store(
     skvector_embedding_model: str | None = None,
     skvector_vector_dim: int | None = None,
     legacy_files: bool = False,
+    no_vector: bool = False,
 ) -> MemoryStore:
     """Create a MemoryStore with configured backends.
 
@@ -127,13 +128,19 @@ def _get_store(
     vector = None
     graph = None
 
-    # Prefer ChromaDB (local, embedded) as default vector backend
-    chroma_enabled = cfg and "chroma" in cfg.backends_enabled
-    skvector_enabled = cfg and "skvector" in cfg.backends_enabled
+    if no_vector:
+        # Flat JSON + SQLite only — skip the 1.8GB SentenceTransformer load.
+        # Used by session-end hooks where semantic search isn't needed.
+        chroma_enabled = False
+        skvector_enabled = False
+    else:
+        # Prefer ChromaDB (local, embedded) as default vector backend
+        chroma_enabled = cfg and "chroma" in cfg.backends_enabled
+        skvector_enabled = cfg and "skvector" in cfg.backends_enabled
 
-    # If neither is explicitly configured, default to ChromaDB
-    if not chroma_enabled and not skvector_enabled and not final_skvector_url:
-        chroma_enabled = True
+        # If neither is explicitly configured, default to ChromaDB
+        if not chroma_enabled and not skvector_enabled and not final_skvector_url:
+            chroma_enabled = True
 
     if chroma_enabled:
         try:
@@ -259,6 +266,14 @@ def _get_store(
     help="Ollama model name (default: llama3.2)",
 )
 @click.option("--ai-url", envvar="SKMEMORY_AI_URL", default=None, help="Ollama server URL")
+@click.option(
+    "--no-vector",
+    "no_vector",
+    is_flag=True,
+    envvar="SKMEMORY_NO_VECTOR",
+    default=False,
+    help="Skip vector backend init (flat JSON + SQLite only). Saves ~1.8GB RAM for breadcrumb writes.",
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
@@ -269,6 +284,7 @@ def cli(
     use_ai: bool,
     ai_model: str | None,
     ai_url: str | None,
+    no_vector: bool,
 ) -> None:
     """SKMemory - Universal AI Memory System.
 
@@ -284,6 +300,7 @@ def cli(
             skvector_key,
             skvector_embedding_model,
             skvector_vector_dim,
+            no_vector=no_vector,
         )
 
     if use_ai:
