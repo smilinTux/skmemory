@@ -4,6 +4,20 @@
 
 **Total completed: 87** across 8 agents
 
+## Unreleased
+
+### Planned
+
+- **Two-gate admission for legacy/external ingest** —
+  `skmemory/admission/` (constants, gate1, gate2, rerun) lands on
+  `feature/admission-and-closure`. Notion importer prototype wired
+  through both gates; review queue at
+  `~/.skcapstone/agents/<agent>/memory/.admission_review/queue.jsonl`.
+  Live producers (`save_memory`, ritual writes, song-anchor updates)
+  unaffected. Drift test pairs `skmemory/admission/constants.py` with
+  `docs/admission_policy.md`. Phase 2 (closure synthesis) follows on
+  the same branch.
+
 ## 2026-04-25 — skmemory v0.9.9 (Graph autoload + graph sync)
 
 ### [NEW] SKGraph auto-loaded from per-agent yaml
