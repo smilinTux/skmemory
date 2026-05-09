@@ -26,6 +26,7 @@ Install by adding to ~/.claude/settings.json:
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
@@ -35,9 +36,41 @@ from pathlib import Path
 
 logger = logging.getLogger("skmemory.hooks")
 
+_HOOK_LOCK_FILE = "/tmp/skmemory-hook.lock"
+
+
+def _acquire_hook_lock(timeout: int = 30) -> "IO | None":
+    """Serialize concurrent hook calls to prevent memory pile-up.
+
+    Multiple sessions ending simultaneously each spawn a fresh Python process
+    that would load the full embedding model (~1.8GB). Serializing with a
+    file lock keeps peak RSS bounded to one process at a time.
+
+    Returns the open lock file handle (caller must keep it alive), or None
+    if the lock could not be acquired within timeout seconds.
+    """
+    import time
+    fh = open(_HOOK_LOCK_FILE, "w")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fh
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                fh.close()
+                return None
+            time.sleep(0.5)
+
 
 def _get_store():
-    """Lazy import to avoid circular deps and heavy startup cost."""
+    """Lazy import to avoid circular deps and heavy startup cost.
+
+    Constructs MemoryStore with no vector backend (flat JSON + SQLite only).
+    This is intentional — hook breadcrumbs don't need semantic search.
+    skwhisper digest --backlog handles vector indexing asynchronously.
+    Avoids the ~1.8GB SentenceTransformer load the CLI would trigger.
+    """
     from ..store import MemoryStore
     return MemoryStore()
 
@@ -80,6 +113,11 @@ def handle_stop() -> None:
     if not extracted:
         return
 
+    _lock = _acquire_hook_lock()
+    if _lock is None:
+        logger.warning("handle_stop: could not acquire hook lock within 30s, skipping")
+        return
+
     store = _get_store()
     session_id = _get_session_id()
 
@@ -116,6 +154,11 @@ def handle_precompact() -> None:
 
     conversation = _read_stdin_if_available()
     if not conversation or len(conversation) < 200:
+        return
+
+    _lock = _acquire_hook_lock()
+    if _lock is None:
+        logger.warning("handle_precompact: could not acquire hook lock within 30s, skipping")
         return
 
     store = _get_store()

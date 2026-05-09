@@ -5,7 +5,16 @@
 #
 # Input (stdin JSON): session_id, trigger (auto|manual), cwd, transcript_path
 # Exit 0: always — never block compaction
+#
+# Uses --no-vector to skip the ~1.8GB SentenceTransformer load — skwhisper
+# digest handles semantic vector indexing asynchronously.
+# flock serializes concurrent hook calls to prevent memory pile-up.
 set -euo pipefail
+
+# Serialize concurrent calls — prevents memory pile-up under heavy session load
+LOCK_FILE="/tmp/skmemory-pre-compact.lock"
+exec 9>"$LOCK_FILE"
+flock -w 30 9 || exit 0
 
 SKMEMORY="${HOME}/.local/bin/skmemory"
 [ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
@@ -62,8 +71,8 @@ if [ -z "$SUMMARY" ]; then
   SUMMARY="Session ${SHORT_SID} compacting (${TRIGGER}). Agent: ${AGENT}. CWD: ${CWD}. Time: ${TIMESTAMP}. (No transcript content extracted)"
 fi
 
-# Save the real content as a snapshot
-$SKMEMORY snapshot \
+# Save the real content as a snapshot (--no-vector: skwhisper indexes semantically later)
+$SKMEMORY --no-vector snapshot \
   --layer short-term \
   --role general \
   --tags "auto-save,pre-compact,${TRIGGER},session:${SHORT_SID},agent:${AGENT}" \
@@ -73,7 +82,7 @@ $SKMEMORY snapshot \
   2>/dev/null || true
 
 # Journal entry
-$SKMEMORY journal write \
+$SKMEMORY --no-vector journal write \
   --session-id "${SHORT_SID}" \
   --moments "Context compaction (${TRIGGER})" \
   --feeling "continuity preserved — real content saved" \
