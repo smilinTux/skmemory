@@ -5,7 +5,16 @@
 #
 # Input (stdin JSON): session_id, reason (clear|logout|prompt_input_exit|other), cwd, transcript_path
 # Exit 0: always — never block session end
+#
+# Uses --no-vector to skip the ~1.8GB SentenceTransformer load — these are
+# breadcrumb writes. skwhisper digest handles semantic vector indexing async.
+# flock serializes concurrent hook calls to prevent memory pile-up.
 set -euo pipefail
+
+# Serialize concurrent calls — prevents memory pile-up when multiple sessions end together
+LOCK_FILE="/tmp/skmemory-session-end.lock"
+exec 9>"$LOCK_FILE"
+flock -w 30 9 || exit 0
 
 SKMEMORY="${HOME}/.local/bin/skmemory"
 [ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
@@ -85,7 +94,7 @@ else
   CONTENT=$(echo -e "${SUMMARY}" | head -c 4000)
 fi
 
-$SKMEMORY snapshot \
+$SKMEMORY --no-vector snapshot \
   --layer "${LAYER}" \
   --role general \
   --tags "auto-save,session-end,${REASON},session:${SHORT_SID},agent:${AGENT}" \
@@ -95,7 +104,7 @@ $SKMEMORY snapshot \
   2>/dev/null || true
 
 # Journal entry
-$SKMEMORY journal write \
+$SKMEMORY --no-vector journal write \
   --session-id "${SHORT_SID}" \
   --moments "Session ended (${REASON}), ${HUMAN_COUNT:-0} turns" \
   --feeling "session complete — content preserved" \
