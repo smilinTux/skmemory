@@ -262,18 +262,9 @@ class MemoryStore:
             elif neg > pos:
                 memory.emotional.valence = max(-1.0, -0.3 - 0.2 * neg)
 
-        # Set intent from source if not provided
-        if not memory.intent and memory.source:
-            SOURCE_INTENTS = {
-                "cli": "user-recorded",
-                "session": "session-capture",
-                "seed": "identity-anchor",
-                "mcp": "tool-captured",
-                "import": "imported",
-                "skchat": "conversation-log",
-            }
-            memory.intent = SOURCE_INTENTS.get(memory.source, "")
-
+        # Memory.intent auto-fill removed 2026-05-10 (no consumer; map keys
+        # didn't match actual source distribution). Field still declared for
+        # backward-compat — see skmemory/archived/predictive_2026-05-10/README.md
         memory.seal()
 
         self._wal.log_pending("snapshot", memory.id, title, layer.value)

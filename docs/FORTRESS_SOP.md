@@ -33,6 +33,20 @@ Telegram alert.
 
 ### Install
 
+**Option A — post-install prompt (recommended).** Running `pip install skmemory`
+(or `skmemory-post-install` directly) now offers to enable the fortress timer
+for the active agent. On a TTY you get a Y/n prompt; in CI / non-TTY runs the
+step is skipped with a copy-paste hint. Force-enable in scripted installs:
+
+```bash
+SKMEMORY_INSTALL_FORTRESS=1 skmemory-post-install
+# or skip entirely:
+SKMEMORY_SKIP_FORTRESS=1 skmemory-post-install
+```
+
+**Option B — direct, multi-agent.** Use the install script when you need to
+provision more than one agent in one pass, or want sync + fortress together:
+
 ```bash
 cd ~/clawd/skcapstone-repos/skmemory
 scripts/install-systemd.sh
@@ -173,14 +187,18 @@ missing, file backend path misconfigured.
 
 ---
 
-## Phantom-field hygiene
+## AMK provenance fields
 
-The `intent` field on `Memory` was added during AMK integration. As of
-2026-05-10, only **4 of 7,251** short-term memories on Lumina's index have
-a populated intent — the field is being declared but not written. The
-fortress integrity hash doesn't depend on intent being populated, so this
-is a separate hygiene concern: either backfill from the message context at
-save time, or remove the field. Tracked separately from the verify cron.
+The original AMK integration declared two extra provenance fields on `Memory`:
+`intent` (why it was stored) and a co-occurrence `predictive` index. An audit
+on 2026-05-10 found neither was load-bearing — `intent` had only 3/4,999
+populated rows and zero read-sites, and `predictive` had no production
+imports. Both were archived in the same pass that shipped this SOP. The
+fortress integrity hash never depended on them.
+
+If you're chasing the original AMK shape: the field is still declared on the
+model for backward-compat with existing JSON, but the auto-fill is removed
+and no consumer reads it. Re-wire only with a real consumer in the same PR.
 
 ---
 
