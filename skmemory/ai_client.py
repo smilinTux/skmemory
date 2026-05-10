@@ -14,9 +14,12 @@ Configuration via environment variables:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
+
+logger = logging.getLogger("skmemory.ai_client")
 
 DEFAULT_URL = "http://localhost:11434"
 DEFAULT_MODEL = "llama3.2"

@@ -10,6 +10,7 @@ Cross-platform: macOS, Linux, Windows.
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import shutil
@@ -25,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import CONFIG_DIR, SKMemoryConfig, save_config
+
+logger = logging.getLogger("skmemory.setup_wizard")
 
 # ─────────────────────────────────────────────────────────
 # Docker Desktop direct download URLs

@@ -25,6 +25,7 @@ Usage (Python):
 from __future__ import annotations
 
 import json
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,8 @@ import click
 
 from ..models import EmotionalSnapshot, MemoryLayer, MemoryRole
 from ..store import MemoryStore
+
+logger = logging.getLogger("skmemory.importers.telegram")
 
 
 def _extract_text(text_field) -> str:

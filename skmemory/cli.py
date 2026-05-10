@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -34,6 +35,8 @@ from . import __version__
 from .ai_client import AIClient
 from .models import EmotionalSnapshot, MemoryLayer, MemoryRole
 from .store import MemoryStore
+
+logger = logging.getLogger("skmemory.cli")
 
 _active_selector = None  # Module-level reference for routing commands
 

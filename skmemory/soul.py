@@ -18,6 +18,7 @@ at the start of every session as the first context injection.
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 from datetime import datetime, timezone
@@ -26,6 +27,8 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("skmemory.soul")
 
 
 def _default_soul_path() -> str:

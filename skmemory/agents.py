@@ -7,11 +7,14 @@ excludes templates, and provides agent-aware path resolution.
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger("skmemory.agents")
 
 
 def _agents_base() -> Path:

@@ -19,11 +19,14 @@ Or from the OpenClaw JS plugin (calls CLI under the hood).
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from .backends.sqlite_backend import SQLiteBackend
 from .models import EmotionalSnapshot, MemoryLayer
 from .store import MemoryStore
+
+logger = logging.getLogger("skmemory.openclaw")
 
 OPENCLAW_BASE = Path.home() / ".openclaw"
 SKMEMORY_OPENCLAW_DIR = OPENCLAW_BASE / "plugins" / "skmemory"

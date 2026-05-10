@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -29,6 +30,8 @@ from pathlib import Path
 from ..models import Memory, MemoryLayer
 from ..vault import VAULT_HEADER, MemoryVault
 from .sqlite_backend import DEFAULT_BASE_PATH, SQLiteBackend
+
+logger = logging.getLogger("skmemory.backends.vaulted")
 
 
 class VaultedSQLiteBackend(SQLiteBackend):
