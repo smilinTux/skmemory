@@ -1,0 +1,16 @@
+[Unit]
+Description=SKMemory Fortress integrity verify for %i
+After=network.target
+
+[Service]
+Type=oneshot
+Environment=SKAGENT=%i
+Environment=SKCAPSTONE_AGENT=%i
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+# Override alert hook here if you don't symlink to ~/.skenv/bin/skmemory-fortress-alert
+# Environment=SKMEMORY_FORTRESS_ALERT_CMD=%h/clawd/skcapstone-repos/skmemory/scripts/fortress-alert-telegram.sh
+ExecStart=%h/clawd/skcapstone-repos/skmemory/scripts/fortress-verify.sh
+StandardOutput=append:%h/.skcapstone/agents/%i/logs/fortress-verify.log
+StandardError=append:%h/.skcapstone/agents/%i/logs/fortress-verify.log
+# Exit code 2 = tamper detected; let systemd surface that distinctly
+SuccessExitStatus=0

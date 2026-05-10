@@ -340,20 +340,35 @@ skmemory sync           # one-shot bidirectional reconcile
 skmemory export-flat    # one-direction: SQLite-only → flat files
 ```
 
-For automatic background reconciliation, install the per-agent systemd timer (see [`systemd/README.md`](systemd/README.md)):
+For automatic background reconciliation, run the bundled installer (interactive prompts let you pick which timers and which agents):
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp systemd/skmemory-sync@.{service,timer} ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now skmemory-sync@opus.timer
-systemctl --user enable --now skmemory-sync@lumina.timer
-systemctl --user enable --now skmemory-sync@jarvis.timer
+scripts/install-systemd.sh
+# or non-interactively:
+scripts/install-systemd.sh --agents lumina,opus,jarvis --sync --fortress --telegram-hook
 ```
 
-The timer fires 5 min after boot, then every 6 h. Logs land at `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log` — only written when something changed (thanks to `--quiet`).
+This installs two per-agent timers:
+
+- **`skmemory-sync@<agent>.timer`** — bidirectional reconciliation (SQLite ↔ flat ↔ Chroma ↔ FalkorDB), every 6 h. Logs at `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log`.
+- **`skmemory-fortress-verify@<agent>.timer`** — daily SHA-256 integrity verify across all stored memories at 03:00 (±5min jitter). On tamper or failure, fires an optional alert hook (sample Telegram hook included). See [`docs/FORTRESS_SOP.md`](docs/FORTRESS_SOP.md) for full procedures and the tamper-response playbook.
+
+Manual install path and per-template details are documented in [`systemd/README.md`](systemd/README.md).
 
 `reindex` is **safe by default** — it pre-exports orphans before rebuilding. Use `--force` only if you're sure all SQLite-only entries are stale.
+
+### Memory Fortress — integrity verification
+
+The Fortress layer (`skmemory fortress`) hashes every memory on write and verifies on read. The shipped systemd timer makes that verification continuous instead of theoretical. Quick reference:
+
+```bash
+skmemory fortress verify              # on-demand verify (exit 2 = tamper)
+skmemory fortress verify --json       # machine-readable summary
+skmemory fortress audit --last 50     # recent store/recall/delete log
+skmemory fortress verify-chain        # validate the audit log's hash chain
+```
+
+The threat model is direct: poisoned memories can rewrite the agent's recall surface silently — the [Souly et al. 2025](https://arxiv.org/abs/2510.07192) work showed how cheap that gets at the pretraining layer, and the same shape applies to any persistent-memory store. Continuous integrity verification + audit-trail chain checks make tampering loud instead of invisible. SOP: [`docs/FORTRESS_SOP.md`](docs/FORTRESS_SOP.md).
 
 ### Python API
 
