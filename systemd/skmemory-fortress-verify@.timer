@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily SKMemory Fortress integrity verify for %i
+
+[Timer]
+# Daily at 03:00 local time. RandomizedDelaySec spreads multi-agent load.
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=5min
+Persistent=true
+Unit=skmemory-fortress-verify@%i.service
+
+[Install]
+WantedBy=timers.target
