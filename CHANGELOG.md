@@ -6,6 +6,38 @@
 
 ## Unreleased
 
+### [REMOVED] AMK provenance: predictive recall + intent auto-fill
+
+Audited the AMK integration on 2026-05-10. Two of three pieces were
+declared but never load-bearing:
+
+- **`skmemory/predictive.py`** archived to
+  `skmemory/archived/predictive_2026-05-10/`. Zero production imports
+  outside its own test file; untouched since 2026-03-18; the consumers it
+  was designed for (context, ritual) were never wired. SKWhisper v0.4
+  semantic-recency surfacing supersedes the original use case. Restore
+  only with a real consumer in the same PR — see archived README.
+- **`Memory.intent` auto-fill** removed from `store.snapshot()`. Field
+  remains declared on the model for backward-compat with existing JSON
+  (loads cleanly into Pydantic), but it is no longer auto-populated and
+  has no read-sites in production. The 6-key `SOURCE_INTENTS` map didn't
+  match the actual source distribution anyway (telegram, hook:session-end,
+  dreaming-engine, etc. were absent).
+- **Fortress integrity verify is unchanged** — it was the one AMK piece
+  that did pull weight (daily timer, 9942/11625 sealed, 0 tampered).
+
+### [NEW] Post-install fortress timer prompt
+
+`skmemory-post-install` now offers to enable the per-agent fortress
+verify timer when run on a TTY. Force-enable in scripted installs with
+`SKMEMORY_INSTALL_FORTRESS=1`, skip entirely with
+`SKMEMORY_SKIP_FORTRESS=1`. Non-TTY runs print a copy-paste hint.
+
+### [DOCS] FORTRESS_SOP.md
+
+Added post-install path (Option A) and rewrote the AMK-provenance section
+to reflect the archival above.
+
 ### Planned
 
 - **Two-gate admission for legacy/external ingest** —

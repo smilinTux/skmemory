@@ -157,8 +157,10 @@ class Memory(BaseModel):
 
     intent: str = Field(
         default="",
-        description="WHY this memory was stored — the purpose, not just the content. "
-        "Inspired by Jonathan Clements' AMK (Adaptive Memory Kernel).",
+        description="DEPRECATED 2026-05-10. Originally from AMK (Adaptive Memory Kernel) — "
+        "WHY this memory was stored. Auto-fill in store.snapshot() was removed; field "
+        "remains declared for backward-compat with existing JSON. No read-sites in "
+        "production. Do not add new writes without also wiring a consumer.",
     )
     integrity_hash: str = Field(
         default="",

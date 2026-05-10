@@ -4,17 +4,28 @@ Runs `skmemory register` automatically after pip install to ensure:
   - MCP server is registered in Claude Code, Cursor, etc.
   - Auto-save hooks are installed in Claude Code settings
   - Skill symlink is created
+  - (Optional) Fortress verify systemd timer is enabled
 
 Called via:
   - `skmemory-post-install` console script (entry point)
   - `pip install skmemory && skmemory-post-install`
   - Automatically on first `skmemory` CLI invocation (if not yet registered)
+
+Fortress install:
+  - TTY: prompts to install daily integrity-verify timer
+  - Non-TTY: skipped (print hint); enable via
+    `SKMEMORY_INSTALL_FORTRESS=1` env var or pass `--fortress` to the script
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _is_registered() -> bool:
@@ -31,6 +42,100 @@ def _is_registered() -> bool:
     except Exception as e:
         logger.warning("post_install.py: %s", e)
         return False
+
+
+def _find_install_script() -> Path | None:
+    """Locate scripts/install-systemd.sh from the package.
+
+    Returns None when installed from a wheel without the scripts/ tree,
+    which is the expected case for non-editable pip installs.
+    """
+    candidates = [
+        Path(__file__).parent.parent / "scripts" / "install-systemd.sh",
+        Path.home() / "clawd" / "skcapstone-repos" / "skmemory" / "scripts" / "install-systemd.sh",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def _agent_name() -> str:
+    return (
+        os.environ.get("SKAGENT")
+        or os.environ.get("SKCAPSTONE_AGENT")
+        or os.environ.get("SKMEMORY_AGENT")
+        or "lumina"
+    )
+
+
+def _timer_already_enabled(agent: str) -> bool:
+    """True if the fortress timer is enabled for this agent."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-enabled", f"skmemory-fortress-verify@{agent}.timer"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.returncode == 0 and "enabled" in result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def maybe_install_fortress_timer() -> None:
+    """Offer to install the daily fortress-verify systemd timer.
+
+    Skipped silently if:
+      - Not on Linux (no systemd --user)
+      - install-systemd.sh not findable (wheel install without source)
+      - Timer already enabled for this agent
+      - SKMEMORY_SKIP_FORTRESS=1 set
+    """
+    if os.environ.get("SKMEMORY_SKIP_FORTRESS") == "1":
+        return
+    if sys.platform != "linux":
+        return
+
+    script = _find_install_script()
+    if script is None:
+        return
+
+    agent = _agent_name()
+    if _timer_already_enabled(agent):
+        print(f"  Fortress: timer already enabled for {agent}")
+        return
+
+    force = os.environ.get("SKMEMORY_INSTALL_FORTRESS") in {"1", "yes", "true"}
+    is_tty = sys.stdin.isatty() and sys.stdout.isatty()
+
+    if not force and not is_tty:
+        print("  Fortress: timer not enabled. To enable later:")
+        print(f"    {script} --agents {agent} --fortress")
+        print("    (or set SKMEMORY_INSTALL_FORTRESS=1 before re-running this script)")
+        return
+
+    if not force:
+        try:
+            ans = input(
+                f"  Enable daily fortress integrity-verify timer for agent '{agent}'? [Y/n]: "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if ans and ans not in {"y", "yes"}:
+            print("  Fortress: skipped.")
+            return
+
+    try:
+        subprocess.run(
+            ["bash", str(script), "--agents", agent, "--fortress", "--no-sync"],
+            check=True,
+        )
+        print(f"  Fortress: timer enabled for {agent}.")
+    except subprocess.CalledProcessError as exc:
+        print(f"  Fortress: install script failed (rc={exc.returncode}); enable manually:")
+        print(f"    {script} --agents {agent} --fortress")
 
 
 def run_post_install() -> None:
@@ -69,6 +174,8 @@ def run_post_install() -> None:
     hooks = result.get("hooks", {})
     if hooks:
         print(f"  Hooks: {hooks.get('action', '—')}")
+
+    maybe_install_fortress_timer()
 
     print("skmemory: post-install complete.")
 
