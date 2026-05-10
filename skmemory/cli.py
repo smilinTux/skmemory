@@ -2419,6 +2419,82 @@ def fortress_audit(n: int, as_json: bool) -> None:
         click.echo(line)
 
 
+@fortress_group.command("seal")
+@click.option("--dry-run", is_flag=True, help="Show how many would be sealed without writing")
+@click.option("--limit", type=int, default=0, help="Cap how many to seal in this pass (0 = no cap)")
+@click.option("--json", "as_json", is_flag=True, help="Output result as JSON")
+@click.pass_context
+def fortress_seal(ctx: click.Context, dry_run: bool, limit: int, as_json: bool) -> None:
+    """Seal any memories that lack an integrity hash.
+
+    Idempotent backfill: scans every memory, computes the SHA-256 integrity
+    hash for each one missing it, and writes the sealed memory back to the
+    primary store. Already-sealed memories are skipped. Safe to re-run.
+
+    Useful after enabling the fortress on a store with pre-fortress legacy
+    memories, or after an admission flow that created memories without
+    sealing.
+    """
+    from .config import SKMEMORY_HOME
+    from .fortress import AuditLog
+
+    store = ctx.obj.get("store")
+    audit = AuditLog(path=SKMEMORY_HOME / "audit.jsonl")
+
+    all_memories = store.primary.list_memories(limit=99999)
+    total = len(all_memories)
+    unsealed = [m for m in all_memories if not m.integrity_hash]
+
+    target = unsealed if limit <= 0 else unsealed[:limit]
+
+    sealed_ids: list[str] = []
+    failed: list[tuple[str, str]] = []
+
+    if not dry_run:
+        for mem in target:
+            try:
+                mem.seal()
+                store.primary.save(mem)
+                audit.append("seal", mem.id, ok=True, context="backfill")
+                sealed_ids.append(mem.id)
+            except Exception as exc:  # noqa: BLE001 — backfill must continue past per-memory errors
+                failed.append((mem.id, str(exc)))
+                audit.append("seal", mem.id, ok=False, error=str(exc)[:120], context="backfill")
+
+    result = {
+        "total": total,
+        "already_sealed": total - len(unsealed),
+        "unsealed_found": len(unsealed),
+        "sealed_now": len(sealed_ids),
+        "failed": len(failed),
+        "dry_run": dry_run,
+        "limit": limit,
+    }
+
+    if as_json:
+        click.echo(json.dumps(result, indent=2))
+        if failed:
+            sys.exit(1)
+        return
+
+    click.echo("Fortress Seal Backfill")
+    click.echo(f"  Total memories  : {total}")
+    click.echo(f"  Already sealed  : {result['already_sealed']}")
+    click.echo(f"  Unsealed found  : {result['unsealed_found']}")
+    if dry_run:
+        click.echo(f"  Would seal      : {len(target)}  (dry-run)")
+    else:
+        click.echo(f"  Sealed now      : {len(sealed_ids)}")
+        if failed:
+            click.echo(f"  Failed          : {len(failed)}")
+            for mid, err in failed[:10]:
+                click.echo(f"    !! {mid}: {err}")
+            if len(failed) > 10:
+                click.echo(f"    ... and {len(failed) - 10} more")
+            sys.exit(1)
+        click.echo("\nAll targeted memories sealed.")
+
+
 @fortress_group.command("verify-chain")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def fortress_verify_chain(as_json: bool) -> None:

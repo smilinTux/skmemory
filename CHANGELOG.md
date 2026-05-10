@@ -26,6 +26,15 @@ declared but never load-bearing:
 - **Fortress integrity verify is unchanged** — it was the one AMK piece
   that did pull weight (daily timer, 9942/11625 sealed, 0 tampered).
 
+### [NEW] `skmemory fortress seal` — idempotent backfill
+
+CLI command that scans every memory and seals any without an integrity
+hash. Safe to re-run. Useful after enabling fortress on a store with
+pre-fortress legacy memories, or after a bulk import that bypassed
+`store.snapshot()`. Backfilled lumina's local store: 1,860 → 0 unsealed,
+total 11,809 / 11,809 verified clean. `--dry-run`, `--limit N`, and
+`--json` modes available.
+
 ### [NEW] Post-install fortress timer prompt
 
 `skmemory-post-install` now offers to enable the per-agent fortress
