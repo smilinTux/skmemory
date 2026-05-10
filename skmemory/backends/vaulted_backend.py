@@ -31,7 +31,7 @@ from ..models import Memory, MemoryLayer
 from ..vault import VAULT_HEADER, MemoryVault
 from .sqlite_backend import DEFAULT_BASE_PATH, SQLiteBackend
 
-logger = logging.getLogger("skmemory.vaulted_backend")
+logger = logging.getLogger("skmemory.backends.vaulted")
 
 
 class VaultedSQLiteBackend(SQLiteBackend):

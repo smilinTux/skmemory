@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 
 from .agents import AGENTS_BASE_DIR, get_agent_paths, get_default_template_agent
 
+logger = logging.getLogger("skmemory.config")
+
 # SKMEMORY_HOME — override the active-agent base directory entirely.
 # Set this env var to point skmemory at a custom location without
 # changing SKCAPSTONE_HOME or agent discovery logic.

@@ -28,6 +28,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger("skmemory.soul")
+
 
 def _default_soul_path() -> str:
     """Platform-aware default path for the soul blueprint.
