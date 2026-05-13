@@ -12,6 +12,7 @@ Now supports multiple agents via ~/.skcapstone/agents/{agent_name}/
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -51,6 +52,8 @@ except ValueError:
     CONFIG_DIR = SKMEMORY_HOME / "config"
     CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
 
+
+logger = logging.getLogger("skmemory.config")
 
 class EndpointConfig(BaseModel):
     """A single backend endpoint with role and optional Tailscale IP."""

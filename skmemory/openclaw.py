@@ -19,6 +19,7 @@ Or from the OpenClaw JS plugin (calls CLI under the hood).
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from .backends.sqlite_backend import SQLiteBackend
@@ -28,6 +29,8 @@ from .store import MemoryStore
 OPENCLAW_BASE = Path.home() / ".openclaw"
 SKMEMORY_OPENCLAW_DIR = OPENCLAW_BASE / "plugins" / "skmemory"
 SKMEMORY_STATE_FILE = SKMEMORY_OPENCLAW_DIR / "state.json"
+
+logger = logging.getLogger("skmemory.openclaw")
 
 
 class SKMemoryPlugin:
@@ -59,8 +62,9 @@ class SKMemoryPlugin:
                 from .agents import get_agent_paths
 
                 agent_paths = get_agent_paths()
-                persist_dir = str(agent_paths["memory"] / "chroma")
-                state_path = agent_paths["memory"] / "chroma-state.json"
+                memory_root = agent_paths["base"] / "memory"
+                persist_dir = str(memory_root / "chroma")
+                state_path = memory_root / "chroma-state.json"
                 vector = SKChromaBackend(
                     persist_dir=persist_dir,
                     state_path=state_path,

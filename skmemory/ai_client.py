@@ -14,6 +14,7 @@ Configuration via environment variables:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -21,6 +22,8 @@ import urllib.request
 DEFAULT_URL = "http://localhost:11434"
 DEFAULT_MODEL = "llama3.2"
 DEFAULT_TIMEOUT = 60
+
+logger = logging.getLogger("skmemory.ai_client")
 
 
 class AIClient:

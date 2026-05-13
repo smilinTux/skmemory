@@ -18,6 +18,7 @@ at the start of every session as the first context injection.
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 from datetime import datetime, timezone
@@ -57,6 +58,8 @@ def _default_soul_path() -> str:
             return os.path.join(local, "skcapstone", "soul", "base.json")
     return os.path.expanduser("~/.skcapstone/soul/base.json")
 
+
+logger = logging.getLogger("skmemory.soul")
 
 DEFAULT_SOUL_PATH = os.environ.get(
     "SKMEMORY_SOUL_PATH",
