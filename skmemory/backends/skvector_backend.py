@@ -311,6 +311,72 @@ class SKVectorBackend(BaseBackend):
             "role": memory.role.value if hasattr(memory.role, "value") else str(memory.role),
         }
 
+    def _memory_from_payload(self, payload: dict) -> Memory:
+        """Build a Memory from either current or legacy Qdrant payloads."""
+        raw = payload.get("memory_json")
+        if raw:
+            return Memory.model_validate_json(raw)
+
+        layer_raw = payload.get("layer") or payload.get("tier") or MemoryLayer.SHORT.value
+        try:
+            layer = MemoryLayer(layer_raw)
+        except Exception:
+            layer = MemoryLayer.LONG if str(layer_raw).startswith("long") else MemoryLayer.SHORT
+
+        emotions = payload.get("emotional_labels") or payload.get("emotions") or []
+        if isinstance(emotions, str):
+            emotions = [emotions]
+        elif not isinstance(emotions, list):
+            emotions = []
+
+        tags = payload.get("tags") or []
+        if not isinstance(tags, list):
+            tags = [str(tags)]
+
+        title = (
+            payload.get("title")
+            or payload.get("filename")
+            or payload.get("file_path")
+            or payload.get("source")
+            or "Legacy vector memory"
+        )
+        content = (
+            payload.get("content")
+            or payload.get("content_preview")
+            or payload.get("summary")
+            or payload.get("file_path")
+            or payload.get("section_title")
+            or title
+        )
+
+        known_keys = {
+            "memory_json", "title", "layer", "tier", "tags", "source", "created_at",
+            "emotional_intensity", "intensity", "emotional_valence", "emotional_labels",
+            "emotions", "content", "content_preview", "summary", "role", "file_path",
+            "filename", "type", "category", "is_chunk", "chunk_index", "total_chunks",
+            "section_title", "parent_id", "parent_doc", "authority_tier",
+        }
+        metadata = {k: v for k, v in payload.items() if k not in known_keys}
+        for key in ("file_path", "filename", "type", "category", "parent_doc", "authority_tier"):
+            if payload.get(key) is not None:
+                metadata.setdefault(key, payload.get(key))
+
+        return Memory(
+            title=title,
+            content=content,
+            layer=layer,
+            tags=tags,
+            source=payload.get("source") or payload.get("type") or "skvector",
+            created_at=payload.get("created_at") or datetime.utcnow().isoformat(),
+            emotional={
+                "intensity": payload.get("emotional_intensity", payload.get("intensity", 0.0)),
+                "valence": payload.get("emotional_valence", 0.0),
+                "labels": emotions,
+            },
+            parent_id=payload.get("parent_id") or payload.get("parent_doc"),
+            metadata=metadata,
+        )
+
     def _check_duplicate(self, content_hash: str) -> str | None:
         """Return existing point's memory_id if duplicate content exists.
 
@@ -432,7 +498,7 @@ class SKVectorBackend(BaseBackend):
             )
             if not points:
                 return None
-            return Memory.model_validate_json(points[0].payload["memory_json"])
+            return self._memory_from_payload(points[0].payload)
         except Exception as e:
             logger.warning("skvector_backend.py: %s", e)
             return None
@@ -550,7 +616,7 @@ class SKVectorBackend(BaseBackend):
         memories = []
         for point in points:
             try:
-                mem = Memory.model_validate_json(point.payload["memory_json"])
+                mem = self._memory_from_payload(point.payload)
                 memories.append(mem)
             except Exception as e:
                 logger.warning("skvector_backend.py: %s", e)
@@ -564,18 +630,22 @@ class SKVectorBackend(BaseBackend):
         query: str,
         limit: int = 10,
         layer: str | None = None,
+        tags: list[str] | None = None,
+        source: str | None = None,
         is_chunk: bool | None = None,
         authority_tier: str | None = None,
     ) -> list[Memory]:
         """Semantic search: find memories by meaning, not exact text.
 
         Change 6: optional filter params to narrow results by layer,
-        chunk status, or authority tier.
+        tags, source, chunk status, or authority tier.
 
         Args:
             query: Natural language query.
             limit: Max results.
             layer: Filter by layer value (e.g. 'short-term').
+            tags: Filter by tags (AND logic).
+            source: Filter by source value.
             is_chunk: If True, return only chunks; if False, exclude chunks.
             authority_tier: Filter by authority_tier payload field.
 
@@ -593,10 +663,19 @@ class SKVectorBackend(BaseBackend):
         must_conditions = []
 
         from qdrant_client.models import FieldCondition, Filter, MatchValue
-
         if layer is not None:
+            layer_value = layer.value if hasattr(layer, "value") else layer
             must_conditions.append(
-                FieldCondition(key="layer", match=MatchValue(value=layer))
+                FieldCondition(key="layer", match=MatchValue(value=layer_value))
+            )
+        if tags:
+            for tag in tags:
+                must_conditions.append(
+                    FieldCondition(key="tags", match=MatchValue(value=tag))
+                )
+        if source is not None:
+            must_conditions.append(
+                FieldCondition(key="source", match=MatchValue(value=source))
             )
         if is_chunk is not None:
             must_conditions.append(
@@ -620,7 +699,7 @@ class SKVectorBackend(BaseBackend):
         memories = []
         for scored_point in results:
             try:
-                mem = Memory.model_validate_json(scored_point.payload["memory_json"])
+                mem = self._memory_from_payload(scored_point.payload)
                 memories.append(mem)
             except Exception as e:
                 logger.warning("skvector_backend.py: %s", e)

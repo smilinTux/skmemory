@@ -208,6 +208,25 @@ class TestSearch:
         assert len(results) == 1
         assert results[0].title == "The Secret Recipe"
 
+
+    def test_search_text_handles_legacy_payloads(self, backend, mock_qdrant_client):
+        scored_point = MagicMock()
+        scored_point.payload = {
+            "file_path": "reference/postal/usps-imm-2025.md",
+            "filename": "usps-imm-2025.md",
+            "type": "document",
+            "category": "document",
+            "is_chunk": True,
+            "chunk_index": 3602,
+            "total_chunks": 3605,
+            "parent_doc": "reference/postal/usps-imm-2025.md",
+        }
+        mock_qdrant_client.query_points.return_value.points = [scored_point]
+        results = backend.search_text("postal")
+        assert len(results) == 1
+        assert results[0].title == "usps-imm-2025.md"
+        assert results[0].metadata["file_path"] == "reference/postal/usps-imm-2025.md"
+
     def test_search_text_empty_results(self, backend, mock_qdrant_client):
         """search_text returns empty list when nothing matches."""
         mock_qdrant_client.query_points.return_value.points = []
@@ -221,6 +240,19 @@ class TestSearch:
         assert call_kwargs is not None
         # query_filter should be set when layer is provided
         assert "query_filter" in call_kwargs.kwargs or call_kwargs.args
+
+
+    def test_search_text_with_tags_and_source_filters(self, backend, mock_qdrant_client):
+        mock_qdrant_client.query_points.return_value.points = []
+        backend.search_text("query", tags=["cloud9", "philosophy"], source="cli")
+        call_kwargs = mock_qdrant_client.query_points.call_args
+        assert call_kwargs is not None
+        query_filter = call_kwargs.kwargs.get("query_filter")
+        assert query_filter is not None
+        values = [condition.match.value for condition in query_filter.must]
+        assert "cloud9" in values
+        assert "philosophy" in values
+        assert "cli" in values
 
     def test_search_text_no_filter_when_none_params(self, backend, mock_qdrant_client):
         """search_text passes no filter when all filter params are None."""
