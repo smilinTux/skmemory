@@ -152,6 +152,39 @@ MERGE (s:Section {title: $section})
 MERGE (m)-[:IN_SECTION]->(s)
 """
 
+
+#: Batch-connect Memory to Entity nodes with MENTIONS edges.
+CREATE_MENTIONS_ENTITY_BATCH = """
+UNWIND $entities AS entity
+MATCH (m:Memory {id: $mem_id})
+MERGE (e:Entity {name: entity})
+MERGE (m)-[:MENTIONS]->(e)
+"""
+
+#: Batch-connect Memory to Citation nodes with CITES edges.
+CREATE_CITES_BATCH = """
+UNWIND $citations AS citation
+MATCH (m:Memory {id: $mem_id})
+MERGE (c:Citation {text: citation})
+MERGE (m)-[:CITES]->(c)
+"""
+
+#: Batch-connect Memory to Claim nodes with ASSERTS edges.
+CREATE_ASSERTS_BATCH = """
+UNWIND $claims AS claim
+MATCH (m:Memory {id: $mem_id})
+MERGE (c:Claim {text: claim})
+MERGE (m)-[:ASSERTS]->(c)
+"""
+
+#: Batch-connect Memory to Section nodes with IN_SECTION edges.
+CREATE_IN_SECTION_BATCH = """
+UNWIND $sections AS section
+MATCH (m:Memory {id: $mem_id})
+MERGE (s:Section {title: section})
+MERGE (m)-[:IN_SECTION]->(s)
+"""
+
 # ═══════════════════════════════════════════════════════════
 # Traversal queries
 # ═══════════════════════════════════════════════════════════

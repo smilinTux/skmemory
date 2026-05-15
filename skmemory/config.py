@@ -63,6 +63,17 @@ class EndpointConfig(BaseModel):
     tailscale_ip: str = ""  # optional, for display
 
 
+class SharedCorpusConfig(BaseModel):
+    """A shared recall corpus with its own vector/graph identities and source roots."""
+
+    name: str
+    vector_collection: str
+    graph_name: str | None = None
+    source_roots: list[str] = Field(default_factory=list)
+    projection_profile: str | None = None
+    enabled: bool = True
+
+
 class SKMemoryConfig(BaseModel):
     """Persistent configuration for SKMemory backends."""
 
@@ -83,8 +94,13 @@ class SKMemoryConfig(BaseModel):
     docker_compose_file: str | None = None
     setup_completed_at: str | None = None
 
-    # Additional read-only recall collections (for cross-project search)
+    # Additional shared recall corpora (cross-agent/cross-project search)
+    shared_corpora: list[SharedCorpusConfig] = Field(default_factory=list)
+
+    # Legacy compatibility fields for shared recall corpora
     recall_collections: list[str] = Field(default_factory=list)
+    recall_graphs: list[str] = Field(default_factory=list)
+    recall_source_roots: dict[str, list[str]] = Field(default_factory=dict)
 
     # Multi-endpoint HA support
     skvector_endpoints: list[EndpointConfig] = Field(default_factory=list)

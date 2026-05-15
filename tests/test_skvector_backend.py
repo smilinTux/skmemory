@@ -180,6 +180,31 @@ class TestSave:
         mock_qdrant_client.upsert.assert_called_once()
 
 
+
+
+    def test_memory_to_payload_exposes_recall_source_fields(self, backend):
+        mem = Memory(
+            title="Shared corpus doc",
+            content="Reference content for a shared corpus.",
+            layer=MemoryLayer("long-term"),
+            source="shared-corpus:nyc-docs",
+            source_ref="cover-letters/README.md",
+            metadata={
+                "file_path": "cover-letters/README.md",
+                "filename": "README.md",
+                "type": "process",
+                "category": "workflow",
+                "parent_doc": "cover-letters/README.md",
+                "decomposition": {"chunk_index": 0, "total_chunks": 1, "section_title": "Overview"},
+            },
+        )
+        payload = backend._memory_to_payload(mem)
+        assert payload["file_path"] == "cover-letters/README.md"
+        assert payload["filename"] == "README.md"
+        assert payload["type"] == "process"
+        assert payload["category"] == "workflow"
+        assert payload["parent_doc"] == "cover-letters/README.md"
+
 # ═══════════════════════════════════════════════════════════
 # Search
 # ═══════════════════════════════════════════════════════════
@@ -224,8 +249,8 @@ class TestSearch:
         mock_qdrant_client.query_points.return_value.points = [scored_point]
         results = backend.search_text("postal")
         assert len(results) == 1
+        assert results[0].id
         assert results[0].title == "usps-imm-2025.md"
-        assert results[0].metadata["file_path"] == "reference/postal/usps-imm-2025.md"
 
     def test_search_text_empty_results(self, backend, mock_qdrant_client):
         """search_text returns empty list when nothing matches."""

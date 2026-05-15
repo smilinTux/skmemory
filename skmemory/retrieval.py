@@ -79,7 +79,7 @@ def infer_authority_tier(
     if any(marker in haystack for marker in ("template", "generated/", "guide bundle")):
         return "template"
 
-    if any(marker in haystack for marker in ("reference/", "american jurisprudence", "black's law", "handbook", "practitioner", "treatise")):
+    if any(marker in haystack for marker in ("reference/", "american jurisprudence", "american jurispurdence", "american juris", "black's law", "handbook", "practitioner", "treatise")):
         return "secondary"
 
     return "memory"

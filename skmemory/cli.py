@@ -735,6 +735,31 @@ def health(ctx: click.Context) -> None:
     click.echo(json.dumps(status, indent=2))
 
 
+
+
+@cli.group()
+def corpora() -> None:
+    """Inspect shared corpus registry and cache coverage."""
+
+
+@corpora.command("status")
+@click.option("--name", "names", multiple=True, help="Filter by shared corpus name, vector collection, or graph name.")
+@click.option("--pretty/--compact", default=True, help="Pretty-print JSON output.")
+@click.pass_context
+def corpora_status(ctx: click.Context, names: tuple[str, ...], pretty: bool) -> None:
+    """Show agent-local backend identity plus shared corpus registry status."""
+    from .corpus_registry import build_corpus_registry_report
+
+    import os
+
+    agent = ctx.obj.get("agent") or os.environ.get("SKMEMORY_AGENT") or "jarvis"
+    report = build_corpus_registry_report(agent=agent, names=list(names) or None)
+    if pretty:
+        click.echo(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        click.echo(json.dumps(report, sort_keys=True))
+
+
 @cli.group()
 def graph() -> None:
     """Query decomposition-aware graph structures."""
@@ -1099,10 +1124,11 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
 
     # Phase 4 (optional): SKGraph (FalkorDB) backfill
     graph_stats = None
+    recall_graph_stats = None
     if graph:
         try:
+            paths = get_agent_paths()
             if store.graph is not None:
-                paths = get_agent_paths()
                 graph_stats = store.graph.sync_all(paths["base"] / "memory", agent)
             else:
                 click.echo(
@@ -1110,6 +1136,10 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
                     "(check ~/.skcapstone/agents/<agent>/config/skgraph.yaml).",
                     err=True,
                 )
+
+            from .context_loader import LazyMemoryLoader
+
+            recall_graph_stats = LazyMemoryLoader(agent).sync_recall_graphs()
         except Exception as e:
             logger.warning("cli.py: %s", e)
             click.echo(f"graph sync failed: {e}", err=True)
@@ -1118,6 +1148,7 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
         orphan_stats["exported"] > 0
         or (chroma_stats and (chroma_stats["indexed"] > 0 or chroma_stats["removed"] > 0))
         or (graph_stats and graph_stats["indexed"] > 0)
+        or (recall_graph_stats and any(item["indexed"] > 0 for item in recall_graph_stats.values()))
     )
     if quiet and not changed:
         return

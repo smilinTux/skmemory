@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -44,6 +44,31 @@ MODEL_DIMENSIONS = {
 MODEL_ALIASES = {
     "bge-large": PUBLIC_FALLBACK_MODEL,
 }
+
+
+def _legacy_payload_memory_id(payload: dict) -> str:
+    """Derive a deterministic memory id from a legacy payload."""
+    for key in ("id", "memory_id"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+
+    basis = [
+        payload.get("file_path"),
+        payload.get("parent_doc"),
+        payload.get("filename"),
+        payload.get("section_title"),
+        payload.get("title"),
+        payload.get("content_preview"),
+        payload.get("summary"),
+        payload.get("source"),
+        payload.get("chunk_index"),
+    ]
+    sep = chr(124)
+    stable = sep.join("" if value is None else str(value) for value in basis)
+    if not stable.strip(sep):
+        stable = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(stable.encode("utf-8")).hexdigest()[:16]
 
 
 def _candidate_local_model_paths(model_name: str) -> list[Path]:
@@ -122,7 +147,7 @@ class VectorStateTracker:
             "content_hash": content_hash,
             "point_id": point_id,
             "chunk_count": chunk_count,
-            "indexed_at": datetime.utcnow().isoformat(),
+            "indexed_at": datetime.now(timezone.utc).isoformat(),
         }
         self._save()
 
@@ -289,6 +314,7 @@ class SKVectorBackend(BaseBackend):
         Returns:
             dict: Payload suitable for Qdrant upsert.
         """
+        metadata = memory.metadata or {}
         return {
             "memory_json": memory.model_dump_json(),
             "title": memory.title,
@@ -299,16 +325,21 @@ class SKVectorBackend(BaseBackend):
             "emotional_intensity": memory.emotional.intensity,
             "emotional_valence": memory.emotional.valence,
             "emotional_labels": memory.emotional.labels,
-            # Change 1: additional top-level filterable fields
+            # Additional top-level filterable fields for recall corpora and legacy-compatible scans
             "content_preview": memory.content[:500],
             "content_hash": memory.content_hash(),
             "is_chunk": bool(memory.parent_id),
-            "chunk_index": memory.metadata.get("decomposition", {}).get("chunk_index", 0),
-            "total_chunks": memory.metadata.get("decomposition", {}).get("total_chunks", 1),
+            "chunk_index": metadata.get("decomposition", {}).get("chunk_index", 0),
+            "total_chunks": metadata.get("decomposition", {}).get("total_chunks", 1),
             "parent_id": memory.parent_id or "",
-            "section_title": memory.metadata.get("decomposition", {}).get("section_title", ""),
-            "authority_tier": memory.metadata.get("authority_tier", "memory"),
+            "section_title": metadata.get("decomposition", {}).get("section_title", ""),
+            "authority_tier": metadata.get("authority_tier", "memory"),
             "role": memory.role.value if hasattr(memory.role, "value") else str(memory.role),
+            "file_path": metadata.get("file_path", ""),
+            "filename": metadata.get("filename", ""),
+            "type": metadata.get("type", ""),
+            "category": metadata.get("category", ""),
+            "parent_doc": metadata.get("parent_doc", ""),
         }
 
     def _memory_from_payload(self, payload: dict) -> Memory:
@@ -361,19 +392,30 @@ class SKVectorBackend(BaseBackend):
             if payload.get(key) is not None:
                 metadata.setdefault(key, payload.get(key))
 
+
+        from ..retrieval import prepare_metadata
+        source_ref = payload.get("parent_doc") or payload.get("file_path") or payload.get("filename") or ""
+        metadata = prepare_metadata(
+            title=title,
+            source=payload.get("source") or payload.get("type") or "skvector",
+            source_ref=str(source_ref),
+            tags=tags,
+            metadata=metadata,
+        )
         return Memory(
+            id=_legacy_payload_memory_id(payload),
             title=title,
             content=content,
             layer=layer,
-            tags=tags,
+            source_ref=str(source_ref),
+            parent_id=payload.get("parent_id") or payload.get("parent_doc"),
             source=payload.get("source") or payload.get("type") or "skvector",
-            created_at=payload.get("created_at") or datetime.utcnow().isoformat(),
+            created_at=payload.get("created_at") or datetime.now(timezone.utc).isoformat(),
             emotional={
                 "intensity": payload.get("emotional_intensity", payload.get("intensity", 0.0)),
                 "valence": payload.get("emotional_valence", 0.0),
                 "labels": emotions,
             },
-            parent_id=payload.get("parent_id") or payload.get("parent_doc"),
             metadata=metadata,
         )
 

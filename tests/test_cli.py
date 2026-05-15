@@ -50,7 +50,7 @@ class TestCLIHelp:
 
     def test_subgroup_help(self, runner):
         """Subgroups have help text."""
-        for group in ["soul", "journal", "anchor", "lovenote", "steelman", "graph"]:
+        for group in ["soul", "journal", "anchor", "lovenote", "steelman", "graph", "corpora"]:
             result = runner.invoke(cli, [group, "--help"])
             assert result.exit_code == 0, f"{group} --help failed"
 
@@ -159,6 +159,24 @@ class TestCLIGraphCommands:
         assert result.exit_code == 0
         graph.related_claims_by_citation.assert_called_once_with("UCC § 3-301", limit=10)
 
+
+
+
+class TestCLICorpora:
+    """Shared corpus registry CLI behavior."""
+
+    def test_corpora_status_emits_registry_report(self, runner):
+        report = {
+            "agent": "jarvis",
+            "local": {"primary_vector_collection": "jarvis-memory"},
+            "shared_corpora": [{"name": "hammertime", "vector_collection": "hammertime-v3", "graph_name": "hammertime-v4"}],
+        }
+        with patch("skmemory.corpus_registry.build_corpus_registry_report", return_value=report) as mock_report:
+            result = runner.invoke(cli, ["corpora", "status", "--name", "hammertime"])
+
+        assert result.exit_code == 0
+        mock_report.assert_called_once_with(agent="jarvis", names=["hammertime"])
+        assert "hammertime-v4" in result.output
 
 class TestBackendConfigRouting:
     """Backend configuration should propagate collection and graph names."""

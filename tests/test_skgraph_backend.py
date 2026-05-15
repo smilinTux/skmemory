@@ -226,11 +226,19 @@ class TestIndexMemory:
         )
 
         backend.index_memory(mem)
-        calls = [str(c) for c in mock_graph.query.call_args_list]
-        assert len([c for c in calls if "IN_SECTION" in c]) == 3
-        assert len([c for c in calls if "MENTIONS" in c]) == 2
-        assert len([c for c in calls if "CITES" in c]) == 2
-        assert len([c for c in calls if "ASSERTS" in c]) == 1
+        calls = mock_graph.query.call_args_list
+        section_calls = [c for c in calls if "UNWIND $sections AS section" in str(c)]
+        entity_calls = [c for c in calls if "UNWIND $entities AS entity" in str(c)]
+        citation_calls = [c for c in calls if "UNWIND $citations AS citation" in str(c)]
+        claim_calls = [c for c in calls if "UNWIND $claims AS claim" in str(c)]
+        assert len(section_calls) == 1
+        assert len(entity_calls) == 1
+        assert len(citation_calls) == 1
+        assert len(claim_calls) == 1
+        assert section_calls[0].args[1]["sections"] == ["Notice", "Demand"]
+        assert entity_calls[0].args[1]["entities"] == ["Internal Revenue Service", "Chef Casey"]
+        assert citation_calls[0].args[1]["citations"] == ["26 U.S.C. § 6903", "UCC § 3-301"]
+        assert claim_calls[0].args[1]["claims"] == ["The Internal Revenue Service shall respond within 10 days."]
 
 
 # ═══════════════════════════════════════════════════════════

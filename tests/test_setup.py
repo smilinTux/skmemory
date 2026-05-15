@@ -15,6 +15,7 @@ from click.testing import CliRunner
 
 from skmemory.config import (
     SKMemoryConfig,
+    SharedCorpusConfig,
     load_config,
     merge_env_and_config,
     save_config,
@@ -50,6 +51,15 @@ class TestConfig:
             skvector_vector_dim=1024,
             skgraph_url="redis://localhost:6379",
             backends_enabled=["skvector", "skgraph"],
+            shared_corpora=[
+                SharedCorpusConfig(
+                    name="hammertime",
+                    vector_collection="hammertime-v3",
+                    graph_name="hammertime-v4",
+                    source_roots=["/data/hammerTime"],
+                    projection_profile="legal-retrieval",
+                )
+            ],
             docker_compose_file="/some/path/docker-compose.yml",
             setup_completed_at="2026-02-28T12:00:00+00:00",
         )
@@ -64,6 +74,9 @@ class TestConfig:
         assert loaded.skvector_vector_dim == 1024
         assert loaded.skgraph_url == "redis://localhost:6379"
         assert loaded.backends_enabled == ["skvector", "skgraph"]
+        assert loaded.shared_corpora[0].vector_collection == "hammertime-v3"
+        assert loaded.shared_corpora[0].graph_name == "hammertime-v4"
+        assert loaded.shared_corpora[0].projection_profile == "legal-retrieval"
         assert loaded.setup_completed_at == "2026-02-28T12:00:00+00:00"
 
     def test_load_missing_file(self, tmp_path: Path) -> None:

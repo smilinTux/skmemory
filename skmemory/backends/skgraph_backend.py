@@ -43,6 +43,7 @@ from __future__ import annotations
 import logging
 import os
 from collections import OrderedDict
+from collections.abc import Iterable
 
 from .. import graph_queries as Q
 from ..models import Memory
@@ -109,6 +110,29 @@ class SKGraphBackend:
         except Exception as exc:
             logger.warning("SKGraph connection failed: %s", exc)
             return False
+
+
+
+    @staticmethod
+    def _ordered_unique(values: Iterable[str]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            clean = str(value).strip()
+            if not clean:
+                continue
+            key = clean.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(clean)
+        return ordered
+
+    def _run_batch_edge_query(self, query: str, memory_id: str, parameter_name: str, values: Iterable[str]) -> None:
+        items = self._ordered_unique(values)
+        if not items:
+            return
+        self._graph.query(query, {"mem_id": memory_id, parameter_name: items})
 
     def _initialize_source_cursors(self):
         """Load latest memory ID per source from existing graph data."""
@@ -264,35 +288,12 @@ class SKGraphBackend:
 
             # Decomposition-derived structure edges
             decomposition = memory.metadata.get("decomposition", {})
-            section_title = decomposition.get("section_title")
-            if section_title:
-                self._graph.query(
-                    Q.CREATE_IN_SECTION,
-                    {"mem_id": memory.id, "section": section_title},
-                )
-            for section in decomposition.get("section_titles", []):
-                self._graph.query(
-                    Q.CREATE_IN_SECTION,
-                    {"mem_id": memory.id, "section": section},
-                )
-
-            for entity in decomposition.get("entities", []):
-                self._graph.query(
-                    Q.CREATE_MENTIONS_ENTITY,
-                    {"mem_id": memory.id, "entity": entity},
-                )
-
-            for citation in decomposition.get("citations", []):
-                self._graph.query(
-                    Q.CREATE_CITES,
-                    {"mem_id": memory.id, "citation": citation},
-                )
-
-            for claim in decomposition.get("claims", []):
-                self._graph.query(
-                    Q.CREATE_ASSERTS,
-                    {"mem_id": memory.id, "claim": claim},
-                )
+            sections = [decomposition.get("section_title")] if decomposition.get("section_title") else []
+            sections.extend(decomposition.get("section_titles", []))
+            self._run_batch_edge_query(Q.CREATE_IN_SECTION_BATCH, memory.id, "sections", sections)
+            self._run_batch_edge_query(Q.CREATE_MENTIONS_ENTITY_BATCH, memory.id, "entities", decomposition.get("entities", []))
+            self._run_batch_edge_query(Q.CREATE_CITES_BATCH, memory.id, "citations", decomposition.get("citations", []))
+            self._run_batch_edge_query(Q.CREATE_ASSERTS_BATCH, memory.id, "claims", decomposition.get("claims", []))
 
             # For non-decomposed memories, extract entities inline
             if not memory.metadata.get("decomposition") and len(memory.content) > 50:
