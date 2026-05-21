@@ -118,31 +118,38 @@ def handle_stop() -> None:
         logger.warning("handle_stop: could not acquire hook lock within 30s, skipping")
         return
 
-    store = _get_store()
-    session_id = _get_session_id()
+    try:
+        store = _get_store()
+        session_id = _get_session_id()
 
-    saved = 0
-    for mem in extracted:
+        saved = 0
+        for mem in extracted:
+            try:
+                store.snapshot(
+                    title=f"[auto-{mem.type}] {mem.content[:60]}",
+                    content=mem.content,
+                    layer=MemoryLayer.SHORT,
+                    tags=["auto-extract", mem.type, f"session:{session_id}"],
+                    source="claude-code-hook",
+                    source_ref=f"session:{session_id}",
+                    metadata={
+                        "extraction_confidence": mem.confidence,
+                        "extraction_type": mem.type,
+                        "hook": "stop",
+                    },
+                )
+                saved += 1
+            except Exception as exc:
+                logger.warning("Failed to save extracted memory: %s", exc)
+
+        if saved:
+            print(f"skmemory: auto-saved {saved} memories from session {session_id[:8]}")
+    finally:
         try:
-            store.snapshot(
-                title=f"[auto-{mem.type}] {mem.content[:60]}",
-                content=mem.content,
-                layer=MemoryLayer.SHORT,
-                tags=["auto-extract", mem.type, f"session:{session_id}"],
-                source="claude-code-hook",
-                source_ref=f"session:{session_id}",
-                metadata={
-                    "extraction_confidence": mem.confidence,
-                    "extraction_type": mem.type,
-                    "hook": "stop",
-                },
-            )
-            saved += 1
-        except Exception as exc:
-            logger.warning("Failed to save extracted memory: %s", exc)
-
-    if saved:
-        print(f"skmemory: auto-saved {saved} memories from session {session_id[:8]}")
+            fcntl.flock(_lock, fcntl.LOCK_UN)
+            _lock.close()
+        except Exception:
+            pass
 
 
 def handle_precompact() -> None:
@@ -161,24 +168,31 @@ def handle_precompact() -> None:
         logger.warning("handle_precompact: could not acquire hook lock within 30s, skipping")
         return
 
-    store = _get_store()
-    session_id = _get_session_id()
-
     try:
+        store = _get_store()
+        session_id = _get_session_id()
+
         # Save the last 4K chars (most recent/relevant context)
         content = conversation[-4000:]
-        store.snapshot(
-            title=f"Pre-compact session snapshot ({session_id[:8]})",
-            content=content,
-            layer=MemoryLayer.SHORT,
-            tags=["pre-compact", "auto-save", f"session:{session_id}"],
-            source="claude-code-hook",
-            source_ref=f"session:{session_id}",
-            metadata={"hook": "precompact", "original_length": len(conversation)},
-        )
-        print(f"skmemory: pre-compact snapshot saved for session {session_id[:8]}")
-    except Exception as exc:
-        logger.warning("Failed to save pre-compact snapshot: %s", exc)
+        try:
+            store.snapshot(
+                title=f"Pre-compact session snapshot ({session_id[:8]})",
+                content=content,
+                layer=MemoryLayer.SHORT,
+                tags=["pre-compact", "auto-save", f"session:{session_id}"],
+                source="claude-code-hook",
+                source_ref=f"session:{session_id}",
+                metadata={"hook": "precompact", "original_length": len(conversation)},
+            )
+            print(f"skmemory: pre-compact snapshot saved for session {session_id[:8]}")
+        except Exception as exc:
+            logger.warning("Failed to save pre-compact snapshot: %s", exc)
+    finally:
+        try:
+            fcntl.flock(_lock, fcntl.LOCK_UN)
+            _lock.close()
+        except Exception:
+            pass
 
 
 def install_hooks(settings_path: Path | None = None) -> bool:

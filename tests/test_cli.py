@@ -172,7 +172,8 @@ class TestCLICorpora:
             "shared_corpora": [{"name": "hammertime", "vector_collection": "hammertime-v3", "graph_name": "hammertime-v4"}],
         }
         with patch("skmemory.corpus_registry.build_corpus_registry_report", return_value=report) as mock_report:
-            result = runner.invoke(cli, ["corpora", "status", "--name", "hammertime"])
+            result = runner.invoke(cli, ["corpora", "status", "--name", "hammertime"],
+                                   env={"SKMEMORY_AGENT": "jarvis"})
 
         assert result.exit_code == 0
         mock_report.assert_called_once_with(agent="jarvis", names=["hammertime"])
