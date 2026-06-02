@@ -27,7 +27,7 @@ cat >"$TMP/transcript.jsonl" <<'JSONL'
 {"type":"user","message":{"role":"user","content":"please build the widget factory module"}}
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Building the widget factory module now with tests"}]}}
 {"type":"user","message":{"role":"user","content":"now add retry logic to the uploader"}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Added exponential backoff retry to the uploader path"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Added exponential backoff retry to the uploader path"},{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/work/uploader.py","old_string":"a","new_string":"b"}}]}}
 {"type":"user","message":{"role":"user","content":"great, commit it and run the suite"}}
 JSONL
 
@@ -53,6 +53,12 @@ if ! grep -qa 'widget factory' "$LOG"; then
   echo "FAIL: expected actual user text 'widget factory' in saved content"; fail=1
 else
   echo "PASS: real conversation text preserved"
+fi
+
+if ! grep -qa 'uploader.py' "$LOG"; then
+  echo "FAIL: expected edited file 'uploader.py' in FILES CHANGED"; fail=1
+else
+  echo "PASS: changed files captured"
 fi
 
 exit $fail

@@ -56,10 +56,15 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
       | sed 's/"type":"text","text":"//' | sed 's/"$//' \
       | head -c 2000 || echo "")
 
-    # Track files changed
-    FILES_CHANGED=$(grep -oE '"tool_name":"(Write|Edit)".*"file_path":"[^"]*"' "$TRANSCRIPT" 2>/dev/null \
-      | grep -oE '"file_path":"[^"]*"' \
-      | sed 's/"file_path":"//;s/"$//' \
+    # Track files changed. Claude Code records edits as tool_use blocks (name
+    # Write/Edit/MultiEdit) with the path under .input.file_path, inside the
+    # .message.content array — not a flat "tool_name"/"file_path" pair. jq with
+    # `fromjson?` extracts robustly and tolerates any non-JSON lines.
+    FILES_CHANGED=$(jq -rR 'fromjson? | (.message.content // empty)
+      | if type=="array" then .[] else empty end
+      | select(type=="object" and .type=="tool_use"
+               and (.name=="Write" or .name=="Edit" or .name=="MultiEdit"))
+      | .input.file_path // empty' "$TRANSCRIPT" 2>/dev/null \
       | sort -u \
       | head -30 \
       | tr '\n' ', ' || echo "")
@@ -69,18 +74,20 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
       | head -5 \
       | tr '\n' '; ' || echo "")
 
+    # High-signal facts (files, commits) go first so they survive the 4000-char
+    # CONTENT cap even when the verbose message dumps below are long.
     SUMMARY="TURNS: ${HUMAN_COUNT}\n"
-    if [ -n "$HUMAN_MSGS" ]; then
-      SUMMARY="${SUMMARY}USER REQUESTS:\n${HUMAN_MSGS}\n\n"
-    fi
-    if [ -n "$ASSISTANT_MSGS" ]; then
-      SUMMARY="${SUMMARY}WORK DONE:\n${ASSISTANT_MSGS}\n\n"
-    fi
     if [ -n "$FILES_CHANGED" ]; then
       SUMMARY="${SUMMARY}FILES CHANGED: ${FILES_CHANGED}\n"
     fi
     if [ -n "$GIT_COMMITS" ]; then
       SUMMARY="${SUMMARY}GIT COMMITS: ${GIT_COMMITS}\n"
+    fi
+    if [ -n "$HUMAN_MSGS" ]; then
+      SUMMARY="${SUMMARY}\nUSER REQUESTS:\n${HUMAN_MSGS}\n\n"
+    fi
+    if [ -n "$ASSISTANT_MSGS" ]; then
+      SUMMARY="${SUMMARY}WORK DONE:\n${ASSISTANT_MSGS}\n\n"
     fi
   fi
 fi

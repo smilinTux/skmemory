@@ -48,10 +48,14 @@ if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
     | sed 's/.*"text":"//' | sed 's/"$//' \
     | head -c 2000 || echo "")
 
-  # Pull files that were written/edited (track what changed)
-  FILES_CHANGED=$(grep -oE '"tool_name":"(Write|Edit)".*"file_path":"[^"]*"' "$TRANSCRIPT" 2>/dev/null \
-    | grep -oE '"file_path":"[^"]*"' \
-    | sed 's/"file_path":"//;s/"$//' \
+  # Pull files that were written/edited. Claude Code records edits as tool_use
+  # blocks (name Write/Edit/MultiEdit) with the path under .input.file_path,
+  # inside the .message.content array. jq with `fromjson?` extracts robustly.
+  FILES_CHANGED=$(jq -rR 'fromjson? | (.message.content // empty)
+    | if type=="array" then .[] else empty end
+    | select(type=="object" and .type=="tool_use"
+             and (.name=="Write" or .name=="Edit" or .name=="MultiEdit"))
+    | .input.file_path // empty' "$TRANSCRIPT" 2>/dev/null \
     | sort -u \
     | head -20 \
     | tr '\n' ', ' || echo "")
