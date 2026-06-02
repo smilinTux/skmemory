@@ -35,13 +35,17 @@ SHORT_SID="${SESSION_ID:0:8}"
 # Extract real conversation content from the transcript
 SUMMARY=""
 if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
-  # Count conversation turns for context
-  HUMAN_COUNT=$(grep -c '"role":"human"' "$TRANSCRIPT" 2>/dev/null || echo "0")
+  # Count conversation turns for context.
+  # Claude Code transcripts use "role":"user" (nested under .message), not "human".
+  # Use `|| true` (not `|| echo 0`): grep -c already prints "0" and exits 1 on no
+  # match, so `|| echo 0` would append a second "0" and break the integer compare.
+  HUMAN_COUNT=$(grep -c '"role":"user"' "$TRANSCRIPT" 2>/dev/null || true)
+  HUMAN_COUNT=${HUMAN_COUNT:-0}
 
   # Skip trivial sessions (< 3 human messages = nothing worth saving beyond the marker)
   if [ "$HUMAN_COUNT" -ge 3 ]; then
     # Pull user messages (what was asked)
-    HUMAN_MSGS=$(grep -o '"role":"human"[^}]*"content":"[^"]*"' "$TRANSCRIPT" 2>/dev/null \
+    HUMAN_MSGS=$(grep -o '"role":"user"[^}]*"content":"[^"]*"' "$TRANSCRIPT" 2>/dev/null \
       | tail -30 \
       | sed 's/.*"content":"//' | sed 's/"$//' \
       | head -c 2000 || echo "")

@@ -35,8 +35,9 @@ SHORT_SID="${SESSION_ID:0:8}"
 # Extract real conversation content from the transcript
 SUMMARY=""
 if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
-  # Pull the last 20 human messages (the content about to be compacted)
-  HUMAN_MSGS=$(grep -o '"role":"human"[^}]*"content":"[^"]*"' "$TRANSCRIPT" 2>/dev/null \
+  # Pull the last 20 user messages (the content about to be compacted).
+  # Claude Code transcripts use "role":"user" (nested under .message), not "human".
+  HUMAN_MSGS=$(grep -o '"role":"user"[^}]*"content":"[^"]*"' "$TRANSCRIPT" 2>/dev/null \
     | tail -20 \
     | sed 's/.*"content":"//' | sed 's/"$//' \
     | head -c 2000 || echo "")
