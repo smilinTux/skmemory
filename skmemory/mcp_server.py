@@ -32,6 +32,7 @@ Client configuration (Cursor / Claude Desktop / Claude Code CLI):
 
 from __future__ import annotations
 
+import os
 import asyncio
 import json
 import logging
@@ -59,16 +60,25 @@ def _get_store() -> MemoryStore:
     global _store
     if _store is None:
         vector = None
-        try:
-            from .backends.chroma_backend import SKChromaBackend
-            from .agents import get_agent_paths
-            agent_paths = get_agent_paths()
-            persist_dir = str(agent_paths["memory"] / "chroma")
-            state_path = agent_paths["memory"] / "chroma-state.json"
-            vector = SKChromaBackend(persist_dir=persist_dir, state_path=state_path)
-        except Exception as e:
-            logger.warning("mcp_server.py: %s", e)
-            pass
+        # PGVector (Postgres) — opt-in via SKMEMORY_VECTOR_BACKEND=pgvector
+        if os.environ.get("SKMEMORY_VECTOR_BACKEND", "").lower() == "pgvector":
+            try:
+                from .backends.pgvector_backend import PGVectorBackend
+
+                vector = PGVectorBackend()
+                logger.info("mcp_server.py: vector backend = PGVectorBackend")
+            except Exception as e:
+                logger.warning("mcp_server.py pgvector: %s", e)
+        if vector is None:
+            try:
+                from .backends.chroma_backend import SKChromaBackend
+                from .agents import get_agent_paths
+                agent_paths = get_agent_paths()
+                persist_dir = str(agent_paths["memory"] / "chroma")
+                state_path = agent_paths["memory"] / "chroma-state.json"
+                vector = SKChromaBackend(persist_dir=persist_dir, state_path=state_path)
+            except Exception as e:
+                logger.warning("mcp_server.py: %s", e)
         _store = MemoryStore(vector=vector)
     return _store
 
