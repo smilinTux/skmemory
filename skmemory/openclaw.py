@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from .backends.sqlite_backend import SQLiteBackend
@@ -57,8 +58,19 @@ class SKMemoryPlugin:
     ) -> None:
         vector = None
 
+        # PGVector (Postgres) — syncable, hybrid vector+BM25, remote embedding.
+        # Opt-in: SKMEMORY_VECTOR_BACKEND=pgvector (DSN/embed endpoint from env).
+        if os.environ.get("SKMEMORY_VECTOR_BACKEND", "").lower() == "pgvector":
+            try:
+                from .backends.pgvector_backend import PGVectorBackend
+
+                vector = PGVectorBackend()
+                logger.info("openclaw.py: vector backend = PGVectorBackend")
+            except Exception as e:
+                logger.warning("openclaw.py pgvector: %s", e)
+
         # Prefer ChromaDB (local, embedded) by default
-        if use_chroma:
+        if vector is None and use_chroma:
             try:
                 from .backends.chroma_backend import SKChromaBackend
                 from .agents import get_agent_paths
