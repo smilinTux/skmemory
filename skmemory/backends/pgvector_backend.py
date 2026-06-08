@@ -46,11 +46,20 @@ class PGVectorBackend(BaseBackend):
         embed_url: str = DEFAULT_EMBED_URL,
         embed_model: str = DEFAULT_EMBED_MODEL,
         vector_dim: int = VECTOR_DIM,
+        agent: str | None = None,
     ):
         self.dsn = dsn
         self.embed_url = embed_url
         self.embed_model = embed_model
         self.vector_dim = vector_dim
+        # Agent isolation: one pg shared across agents, scoped by this column.
+        self.agent = (
+            agent
+            or os.environ.get("SKMEMORY_AGENT")
+            or os.environ.get("SKAGENT")
+            or os.environ.get("SKCAPSTONE_AGENT")
+            or "lumina"
+        )
         self._embed_fn = embed_fn
         self._conn = None
 
@@ -102,17 +111,18 @@ class PGVectorBackend(BaseBackend):
             cur.execute(
                 """
                 INSERT INTO memories
-                  (id, layer, role, title, content, summary, tags, source,
+                  (id, agent, layer, role, title, content, summary, tags, source,
                    created_at, updated_at, memory_json, embedding)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO UPDATE SET
-                  layer=EXCLUDED.layer, role=EXCLUDED.role, title=EXCLUDED.title,
-                  content=EXCLUDED.content, summary=EXCLUDED.summary, tags=EXCLUDED.tags,
-                  source=EXCLUDED.source, updated_at=EXCLUDED.updated_at,
+                  agent=EXCLUDED.agent, layer=EXCLUDED.layer, role=EXCLUDED.role,
+                  title=EXCLUDED.title, content=EXCLUDED.content, summary=EXCLUDED.summary,
+                  tags=EXCLUDED.tags, source=EXCLUDED.source, updated_at=EXCLUDED.updated_at,
                   memory_json=EXCLUDED.memory_json, embedding=EXCLUDED.embedding
                 """,
                 (
                     memory.id,
+                    self.agent,
                     str(getattr(memory.layer, "value", memory.layer)),
                     str(getattr(memory.role, "value", memory.role)),
                     memory.title,
@@ -131,14 +141,19 @@ class PGVectorBackend(BaseBackend):
     def load(self, memory_id: str) -> Memory | None:
         conn = self._connection()
         with conn.cursor() as cur:
-            cur.execute("SELECT memory_json FROM memories WHERE id=%s", (memory_id,))
+            cur.execute(
+                "SELECT memory_json FROM memories WHERE id=%s AND agent=%s",
+                (memory_id, self.agent),
+            )
             row = cur.fetchone()
         return Memory.model_validate_json(_as_json_str(row[0])) if row else None
 
     def delete(self, memory_id: str) -> bool:
         conn = self._connection()
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM memories WHERE id=%s", (memory_id,))
+            cur.execute(
+                "DELETE FROM memories WHERE id=%s AND agent=%s", (memory_id, self.agent)
+            )
             return cur.rowcount > 0
 
     def list_memories(
@@ -147,14 +162,14 @@ class PGVectorBackend(BaseBackend):
         tags: list[str] | None = None,
         limit: int = 50,
     ) -> list[Memory]:
-        clauses, params = [], []
+        clauses, params = ["agent=%s"], [self.agent]
         if layer is not None:
             clauses.append("layer=%s")
             params.append(str(getattr(layer, "value", layer)))
         if tags:
             clauses.append("tags @> %s")
             params.append(list(tags))
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        where = " WHERE " + " AND ".join(clauses)
         params.append(limit)
         conn = self._connection()
         with conn.cursor() as cur:
@@ -171,11 +186,11 @@ class PGVectorBackend(BaseBackend):
             cur.execute(
                 """
                 SELECT memory_json FROM memories
-                WHERE tsv @@ plainto_tsquery('english', %s)
+                WHERE agent=%s AND tsv @@ plainto_tsquery('english', %s)
                 ORDER BY ts_rank(tsv, plainto_tsquery('english', %s)) DESC
                 LIMIT %s
                 """,
-                (query, query, limit),
+                (self.agent, query, query, limit),
             )
             rows = cur.fetchall()
         if rows:
@@ -183,8 +198,8 @@ class PGVectorBackend(BaseBackend):
         # fallback: case-insensitive substring
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT memory_json FROM memories WHERE content ILIKE %s LIMIT %s",
-                (f"%{query}%", limit),
+                "SELECT memory_json FROM memories WHERE agent=%s AND content ILIKE %s LIMIT %s",
+                (self.agent, f"%{query}%", limit),
             )
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
 
@@ -196,9 +211,9 @@ class PGVectorBackend(BaseBackend):
         conn = self._connection()
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT memory_json FROM memories WHERE embedding IS NOT NULL "
+                "SELECT memory_json FROM memories WHERE agent=%s AND embedding IS NOT NULL "
                 "ORDER BY embedding <=> %s::vector LIMIT %s",
-                (qvec, limit),
+                (self.agent, qvec, limit),
             )
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
 
@@ -210,11 +225,12 @@ class PGVectorBackend(BaseBackend):
         try:
             conn = self._connection()
             with conn.cursor() as cur:
-                cur.execute("SELECT count(*) FROM memories")
+                cur.execute("SELECT count(*) FROM memories WHERE agent=%s", (self.agent,))
                 n = cur.fetchone()[0]
             return {
                 "ok": True,
                 "backend": "PGVectorBackend",
+                "agent": self.agent,
                 "dsn": self.dsn.split("@")[-1],
                 "memories": n,
                 "embed_url": self.embed_url,
