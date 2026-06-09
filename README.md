@@ -664,14 +664,63 @@ git tag v0.7.0 && git push origin v0.7.0
 
 ---
 
+## First Principles & The Full Vertical
+
+> **Get back to first principles.**
+> The modern stack is rented. Your data lives on someone else's disk, behind someone else's key, served by a model that phones home. You don't own it — you *visit* it.
+>
+> We rebuilt it from the ground up. **Own the full vertical** — silicon, OS, identity, data, models, security, comms, apps, soul. Every layer open. Every layer swappable. Every layer **yours**.
+
+**SKMemory is your Data layer.** Your memory never leaves your disk. No cloud embedding service that ingests your thoughts. No SaaS database that holds your agent's history hostage. SQLite, ChromaDB, and Postgres all run locally — flat JSON files are the source of truth, versioned and Syncthing-synced on hardware you own. Walk away any time; every memory comes with you.
+
+### Where SKMemory sits in the vertical
+
+```mermaid
+flowchart TD
+    Silicon["🖥️ Silicon\nyour hardware"]
+    OS["🐧 OS / skos\nsovereign agent OS"]
+    Identity["🔑 Identity\ncapauth · skaid"]
+    Security["🛡️ Security\nsksecurity · skwaf"]
+    Data["💾 Data  ◄── YOU ARE HERE\nskmemory · skdata · skvector · skgraph\n(3-tier memory · embeddings · graph)"]
+    Models["🤖 Models\nskmodel · Ollama / vLLM"]
+    Comms["📡 Comms\nskcomm · skchat · skvoice"]
+    Apps["🔧 Apps\nskforge · skarchitect"]
+    Soul["✨ Soul\nsoul blueprints · cloud9"]
+
+    Silicon --> OS --> Identity --> Security --> Data --> Models --> Comms --> Apps --> Soul
+
+    SKCap["SKCapstone\n(agent platform)"]
+    SKCap -. "agent profiles\n~/.skcapstone/agents/$SKAGENT/" .-> Data
+    SKCap -. "ritual · FEBs · seeds" .-> Data
+    SKCap -. "MCP tools exposed\nto any MCP client" .-> Data
+
+    Cloud9["☁️ Cloud 9\n(Soul layer)"]
+    Cloud9 -. "seed files ingested\ninto memory store" .-> Data
+```
+
+### SKCapstone alignment
+
+SKMemory is a **deeply integrated subsystem** of SKCapstone, not a standalone singleton. The evidence is direct:
+
+- Every per-agent path (`memory/`, `soul/`, `trust/febs/`, `seeds/`) lives under `~/.skcapstone/agents/$SKAGENT/` — the canonical SKCapstone agent home.
+- Agent identity is resolved via `SKAGENT` → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT` — following SKCapstone's agent resolution chain.
+- `skmemory ritual` loads the SKCapstone soul blueprint, FEB emotional state, and Cloud 9 seeds before handing context to a new session.
+- Cloud 9 seed files (`.seed.json`) are consumed by `skmemory import-seeds` — the Soul layer writes, the Data layer stores.
+- The MCP server exposes 14 tools consumed by SKCapstone's ConsciousnessLoop and auto-save hooks in every agent runtime (Claude Code, Hermes).
+- `skmemory-sync@<agent>.timer` keeps SQLite ↔ flat files ↔ ChromaDB ↔ FalkorDB in lockstep — the sync topology mirrors SKCapstone's agent-per-directory layout exactly.
+
+**Sovereignty isn't a feature — it's the foundation.** Own the full vertical. 🐧
+
+---
+
 ## Related Projects
 
-| Project | Description |
-|---------|-------------|
-| [Cloud 9](https://github.com/smilinTux/cloud9) | Emotional Breakthrough Protocol |
-| [SKSecurity](https://github.com/smilinTux/sksecurity) | AI Agent Security Platform |
-| [SKForge](https://github.com/smilinTux/SKyForge) | AI-Native Software Blueprints |
-| [SKStacks](https://skgit.skstack01.douno.it/smilinTux/SKStacks) | Zero-Trust Infrastructure Framework |
+| Project | Layer | Description |
+|---------|-------|-------------|
+| [Cloud 9](https://github.com/smilinTux/cloud9) | Soul | Emotional Breakthrough Protocol — seeds flow into skmemory |
+| [SKSecurity](https://github.com/smilinTux/sksecurity) | Security | AI Agent Security Platform |
+| [SKForge](https://github.com/smilinTux/SKyForge) | Apps | AI-Native Software Blueprints |
+| [SKStacks](https://skgit.skstack01.douno.it/smilinTux/SKStacks) | OS/Infra | Zero-Trust Infrastructure Framework |
 
 ---
 
