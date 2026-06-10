@@ -4,7 +4,7 @@ This document covers internal behaviors of the `skmemory` package that are not
 part of the top-level CLI surface. For user-facing usage see the repo-root
 [`README.md`](../README.md).
 
-## Recall collection namespacing & consent gating (skcomms T9)
+## Recall collection namespacing & consent gating (skcomms T9 + T10)
 
 `recall_collections` (configured in `skmemory.yaml`) name *shared* corpora that
 live in the central pgvector store (**skmem-pg**) and are searched in addition
@@ -72,14 +72,25 @@ A token **grants read** when, for the foreign collection in question:
 3. `expires` is in the future (parsed as ISO-8601; naive timestamps treated as UTC), **and**
 4. the signature verifies — see below.
 
-> **T10 hook:** signature *verification* is a future task. For T9,
-> `_verify_consent_signature(token)` is a clearly-marked stub returning `True`,
-> so a well-formed, unexpired, correctly-scoped token is treated as consent.
-> T10 will wire real PGP verification (validate `signature` against
-> `granted_by`'s published key over the canonical token payload) **inside that
-> function**, without changing the call site.
+> **Signature verification (T10, wired).** `_verify_consent_signature(token)`
+> now delegates to **`skcomms.grants.verify_grant(token)`**, which checks the
+> detached PGP signature over the token's canonical bytes against the granter's
+> public key, **TOFU-trusts** that key for `granted_by` (rejecting fingerprint
+> conflicts), and re-checks expiry. The granter's public key is resolved by
+> skcomms from its own TOFU/peer store — `${SKCOMMS_HOME:-~/.skcomms}/known_fingerprints.json`
+> (cached `pubkey`), falling back to `<SKCOMMS_HOME>/peers/<granted_by>.asc`.
+> skmemory never opens a private keyring.
+>
+> **sk-integration dual-mode / fail-closed.** skcomms is an *optional* import.
+> If `from skcomms.grants import verify_grant` raises `ImportError` (standalone
+> skmemory), or the verifier raises, or it returns `valid=False` (bad/tampered/
+> wrong-key signature, untrusted/unknown granter key, fingerprint conflict, or
+> expiry), the foreign reference is **dropped** and a one-line reason is logged.
+> skmemory never crashes when skcomms is absent — it just enforces consent
+> when skcomms is present and fails closed when it is not.
 
-> This consent file is **produced by T10**; T9 only *reads* it.
+> This consent file is **produced by skcomms** (`skcomms.grants.mint_grant` /
+> `accept_grant`); skmemory only *reads* and *verifies* it.
 
 ### Related config
 

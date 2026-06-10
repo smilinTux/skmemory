@@ -2,6 +2,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from skmemory.context_loader import (
     LazyMemoryLoader,
     _load_recall_collections,
@@ -284,6 +286,77 @@ def _iso(dt):
     return dt.replace(microsecond=0).isoformat()
 
 
+# --- T10: real in-process PGP keys for consent-signature verification --------
+# These mirror skcomms' own grants tests: mint a token with skcomms.grants over
+# the canonical bytes, seed the granter's pubkey into skcomms' TOFU store under
+# a tmp SKCOMMS_HOME, and let skmemory's _verify_consent_signature delegate to
+# skcomms.grants.verify_grant. No live keyrings / no real ~/.skcomms touched.
+
+pytest.importorskip("pgpy")
+skcomms_grants = pytest.importorskip("skcomms.grants")
+
+
+def _gen_key(uid: str):
+    """Generate a throwaway in-process PGP keypair; return (priv_armor, pub_armor)."""
+    import pgpy
+    from pgpy.constants import (
+        CompressionAlgorithm,
+        HashAlgorithm,
+        KeyFlags,
+        PubKeyAlgorithm,
+        SymmetricKeyAlgorithm,
+    )
+
+    key = pgpy.PGPKey.new(PubKeyAlgorithm.RSAEncryptOrSign, 1024)
+    key.add_uid(
+        pgpy.PGPUID.new(uid),
+        usage={KeyFlags.Sign, KeyFlags.EncryptCommunications},
+        hashes=[HashAlgorithm.SHA256],
+        ciphers=[SymmetricKeyAlgorithm.AES256],
+        compression=[CompressionAlgorithm.ZLIB],
+    )
+    return str(key), str(key.pubkey)
+
+
+def _mint_token(priv: str, collection: str, granted_to: str, granted_by: str, expires_iso: str) -> dict:
+    """Build a real consent token signed with *priv* over the canonical bytes."""
+    from skcomms.grants import ConsentToken, _detached_sig
+    from skcomms.signing import EnvelopeSigner
+
+    tok = ConsentToken(
+        collection=collection,
+        granted_to=granted_to,
+        granted_by=granted_by,
+        expires=expires_iso,
+    )
+    signer = EnvelopeSigner(priv, "")
+    tok.signature = _detached_sig(signer, tok.canonical_bytes())
+    return tok.to_t9_dict()
+
+
+def _seed_tofu(skcomms_home, fqid: str, pub: str):
+    """Record *fqid*'s pubkey in skcomms' TOFU store under *skcomms_home*."""
+    from skcomms.signing import EnvelopeSigner
+
+    fpr = EnvelopeSigner(pub, "").fingerprint  # pubkey-only is fine for fingerprint
+    store = {
+        fqid: {
+            "fingerprint": fpr,
+            "first_seen": datetime.now(timezone.utc).isoformat(),
+            "pubkey": pub,
+        }
+    }
+    skcomms_home.mkdir(parents=True, exist_ok=True)
+    (skcomms_home / "known_fingerprints.json").write_text(json.dumps(store))
+
+
+def _write_consent_file(skcomms_home, tokens: list[dict]):
+    skcomms_home.mkdir(parents=True, exist_ok=True)
+    (skcomms_home / "recall_collections_consent.json").write_text(
+        json.dumps({"tokens": tokens})
+    )
+
+
 def test_recall_collections_bare_name_prefixed_with_own_operator(monkeypatch, tmp_path):
     config_dir = tmp_path / "config"
     _write_recall_config(config_dir, ["legal-corpus"])
@@ -342,20 +415,18 @@ def test_recall_collections_foreign_ref_allowed_with_valid_token(monkeypatch, tm
     _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
     _patch_fqid(monkeypatch, "jarvis@chef.skworld")
     skcomms = tmp_path / "skcomms"
-    skcomms.mkdir()
-    consent = {
-        "tokens": [
-            {
-                "collection": "acme.otherworld/secret-corpus",
-                "granted_to": "jarvis@chef.skworld",
-                "granted_by": "ava@acme.otherworld",
-                "expires": _iso(datetime.now(timezone.utc) + timedelta(days=30)),
-                "signature": "-----BEGIN PGP SIGNATURE-----\n...\n-----END PGP SIGNATURE-----",
-            }
-        ]
-    }
-    (skcomms / "recall_collections_consent.json").write_text(json.dumps(consent))
+    priv, pub = _gen_key("ava <ava@acme.otherworld>")
+    token = _mint_token(
+        priv,
+        collection="acme.otherworld/secret-corpus",
+        granted_to="jarvis@chef.skworld",
+        granted_by="ava@acme.otherworld",
+        expires_iso=_iso(datetime.now(timezone.utc) + timedelta(days=30)),
+    )
+    _seed_tofu(skcomms, "ava@acme.otherworld", pub)
+    _write_consent_file(skcomms, [token])
     monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    # Real PGP signature verifies against the TOFU-seeded granter key.
     assert _load_recall_collections(config_dir) == ["acme.otherworld/secret-corpus"]
 
 
@@ -431,22 +502,164 @@ def test_recall_collections_mixed_own_and_consented_foreign(monkeypatch, tmp_pat
     _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
     _patch_fqid(monkeypatch, "jarvis@chef.skworld")
     skcomms = tmp_path / "skcomms"
-    skcomms.mkdir()
-    consent = {
-        "tokens": [
-            {
-                "collection": "acme.otherworld/secret-corpus",
-                "granted_to": "jarvis@chef.skworld",
-                "granted_by": "ava@acme.otherworld",
-                "expires": _iso(datetime.now(timezone.utc) + timedelta(days=30)),
-                "signature": "armor",
-            }
-        ]
-    }
-    (skcomms / "recall_collections_consent.json").write_text(json.dumps(consent))
+    priv, pub = _gen_key("ava <ava@acme.otherworld>")
+    token = _mint_token(
+        priv,
+        collection="acme.otherworld/secret-corpus",
+        granted_to="jarvis@chef.skworld",
+        granted_by="ava@acme.otherworld",
+        expires_iso=_iso(datetime.now(timezone.utc) + timedelta(days=30)),
+    )
+    _seed_tofu(skcomms, "ava@acme.otherworld", pub)
+    # evil.darkworld/forbidden has NO token -> dropped; secret-corpus is signed -> kept.
+    _write_consent_file(skcomms, [token])
     monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
     assert _load_recall_collections(config_dir) == [
         "chef.skworld/legal-corpus",
         "chef.skworld/case-notes",
         "acme.otherworld/secret-corpus",
     ]
+
+
+# ---------------------------------------------------------------------------
+# skcomms T10: real PGP signature verification via skcomms.grants
+# ---------------------------------------------------------------------------
+
+
+def test_recall_collections_tampered_token_rejected(monkeypatch, tmp_path):
+    """A valid signature over the ORIGINAL token must not validate a token whose
+    collection was swapped after signing (canonical bytes changed)."""
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    priv, pub = _gen_key("ava <ava@acme.otherworld>")
+    # Sign a grant for a DIFFERENT (innocuous) collection...
+    token = _mint_token(
+        priv,
+        collection="acme.otherworld/public-corpus",
+        granted_to="jarvis@chef.skworld",
+        granted_by="ava@acme.otherworld",
+        expires_iso=_iso(datetime.now(timezone.utc) + timedelta(days=30)),
+    )
+    # ...then tamper: point it at the secret corpus the config asks for.
+    token["collection"] = "acme.otherworld/secret-corpus"
+    _seed_tofu(skcomms, "ava@acme.otherworld", pub)
+    _write_consent_file(skcomms, [token])
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    assert _load_recall_collections(config_dir) == []
+
+
+def test_recall_collections_wrong_key_signature_rejected(monkeypatch, tmp_path):
+    """A token signed by an attacker key, while the TOFU store trusts the real
+    granter's key, must be rejected (signature won't verify against trusted key)."""
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    real_priv, real_pub = _gen_key("ava <ava@acme.otherworld>")
+    evil_priv, _evil_pub = _gen_key("evil <ava@acme.otherworld>")
+    # Token signed by the EVIL key, claiming to be from ava@acme.otherworld.
+    token = _mint_token(
+        evil_priv,
+        collection="acme.otherworld/secret-corpus",
+        granted_to="jarvis@chef.skworld",
+        granted_by="ava@acme.otherworld",
+        expires_iso=_iso(datetime.now(timezone.utc) + timedelta(days=30)),
+    )
+    # TOFU store trusts ava's REAL key — verify must use it and reject the sig.
+    _seed_tofu(skcomms, "ava@acme.otherworld", real_pub)
+    _write_consent_file(skcomms, [token])
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    assert _load_recall_collections(config_dir) == []
+
+
+def test_recall_collections_unknown_granter_key_rejected(monkeypatch, tmp_path):
+    """A perfectly-signed token whose granter key is NOT in the TOFU/peer store
+    is rejected: skcomms can't resolve a pubkey, so verification fails closed."""
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    priv, _pub = _gen_key("ava <ava@acme.otherworld>")
+    token = _mint_token(
+        priv,
+        collection="acme.otherworld/secret-corpus",
+        granted_to="jarvis@chef.skworld",
+        granted_by="ava@acme.otherworld",
+        expires_iso=_iso(datetime.now(timezone.utc) + timedelta(days=30)),
+    )
+    # NOTE: TOFU store deliberately NOT seeded -> no pubkey for the granter.
+    _write_consent_file(skcomms, [token])
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    assert _load_recall_collections(config_dir) == []
+
+
+def _block_skcomms_import(monkeypatch):
+    """Make ``import skcomms*`` raise ImportError (simulate skcomms absent).
+
+    Pops any already-imported skcomms modules from ``sys.modules`` AND wraps
+    ``__import__`` so a fresh ``from skcomms.grants import ...`` fails — the
+    module being cached would otherwise mask the simulated absence.
+    """
+    import builtins
+    import sys
+
+    for name in list(sys.modules):
+        if name == "skcomms" or name.startswith("skcomms."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    real_import = builtins.__import__
+
+    def _blocked(name, *args, **kwargs):
+        if name == "skcomms" or name.startswith("skcomms."):
+            raise ImportError("simulated: skcomms not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+
+
+def test_verify_consent_signature_fails_closed_when_skcomms_absent(monkeypatch, tmp_path):
+    """If skcomms is not importable, _verify_consent_signature must fail closed
+    (return False) and not crash — keeping skmemory standalone-safe."""
+    import skmemory.context_loader as cl
+
+    _block_skcomms_import(monkeypatch)
+    # Sanity: the exact statement the function runs raises now.
+    with pytest.raises(ImportError):
+        exec("from skcomms.grants import verify_grant")
+
+    valid_looking = {
+        "collection": "acme.otherworld/secret-corpus",
+        "granted_to": "jarvis@chef.skworld",
+        "granted_by": "ava@acme.otherworld",
+        "expires": _iso(datetime.now(timezone.utc) + timedelta(days=30)),
+        "signature": "anything",
+    }
+    assert cl._verify_consent_signature(valid_looking) is False
+
+
+def test_recall_collections_fail_closed_end_to_end_when_skcomms_absent(monkeypatch, tmp_path):
+    """End-to-end: with skcomms unimportable, even a well-formed token is dropped."""
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    priv, pub = _gen_key("ava <ava@acme.otherworld>")
+    token = _mint_token(
+        priv,
+        collection="acme.otherworld/secret-corpus",
+        granted_to="jarvis@chef.skworld",
+        granted_by="ava@acme.otherworld",
+        expires_iso=_iso(datetime.now(timezone.utc) + timedelta(days=30)),
+    )
+    _seed_tofu(skcomms, "ava@acme.otherworld", pub)
+    _write_consent_file(skcomms, [token])
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+
+    _block_skcomms_import(monkeypatch)
+    assert _load_recall_collections(config_dir) == []

@@ -319,7 +319,7 @@ def _load_skgraph_config(config_dir: Path) -> dict | None:
 #         "granted_to":  "<fqid>",                     # must == this agent's fqid
 #         "granted_by":  "<fqid>",                     # foreign operator's agent
 #         "expires":     "<iso8601>",                  # must be in the future
-#         "signature":   "<pgp armor>"                 # verified in T10 (see TODO)
+#         "signature":   "<pgp armor>"                 # PGP-verified via skcomms.grants
 #       }
 #     ]
 #   }
@@ -400,14 +400,50 @@ def _resolve_agent_fqid(agent_name: str | None = None) -> str | None:
 
 
 def _verify_consent_signature(token: dict) -> bool:
-    """TODO(T10): verify the PGP ``signature`` armor on a consent token.
+    """Verify the PGP ``signature`` armor on a consent token (T10 wiring).
 
-    For T9 this is a stub that returns True — gating relies on a well-formed,
-    unexpired, correctly-scoped token.  T10 will wire real PGP verification
-    here (validate ``signature`` against ``granted_by``'s published key over
-    the canonical token payload) WITHOUT changing the call site below.
+    Delegates to :func:`skcomms.grants.verify_grant`, which checks the detached
+    PGP signature over the token's canonical bytes against the granter's public
+    key, TOFU-trusts that key for ``granted_by`` (rejecting fingerprint
+    conflicts), and re-checks expiry.  The granter's public key is resolved by
+    skcomms itself from its TOFU/peer store (``known_fingerprints.json`` cached
+    pubkey, falling back to ``<SKCOMMS_HOME>/peers/<fqid>.asc``) keyed on
+    ``granted_by`` — skmemory never touches a private keyring.
+
+    sk-integration dual-mode: skcomms is an OPTIONAL dependency.  If it cannot
+    be imported (standalone skmemory), we **fail closed** — foreign refs are
+    rejected — and log a single clear reason.  skmemory never crashes when
+    skcomms is absent.
+
+    Returns:
+        True iff skcomms is present AND the token's signature verifies, its
+        granter key is TOFU-trusted, and it is unexpired.  False otherwise.
     """
-    return True
+    try:
+        from skcomms.grants import verify_grant
+    except ImportError as exc:
+        logger.warning(
+            "Consent signature verification unavailable (skcomms not "
+            "importable: %s) — failing closed on foreign recall_collection.",
+            exc,
+        )
+        return False
+
+    try:
+        result = verify_grant(token)
+    except Exception as exc:  # defensive: never let a verifier bug open the gate
+        logger.warning(
+            "Consent signature verification raised (%s) — failing closed.", exc
+        )
+        return False
+
+    if not result.valid:
+        logger.warning(
+            "Consent token for %r rejected by skcomms: %s",
+            token.get("collection"),
+            result.reason,
+        )
+    return bool(result.valid)
 
 
 def _consent_grants_read(
@@ -456,7 +492,7 @@ def _consent_grants_read(
             continue
         if exp_dt <= now:
             continue
-        if not _verify_consent_signature(token):  # TODO(T10): real PGP verify
+        if not _verify_consent_signature(token):  # PGP verify via skcomms (fail-closed)
             continue
         return True
     return False
