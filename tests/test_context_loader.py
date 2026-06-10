@@ -1,6 +1,13 @@
+import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from skmemory.context_loader import LazyMemoryLoader, _load_recall_graphs, _load_shared_corpora
+from skmemory.context_loader import (
+    LazyMemoryLoader,
+    _load_recall_collections,
+    _load_recall_graphs,
+    _load_shared_corpora,
+)
 
 
 class _DummyDB:
@@ -243,3 +250,203 @@ def test_sync_recall_graphs_skips_unchanged_sources(monkeypatch, tmp_path):
     assert second["hammertime-v3"]["indexed"] == 0
     assert second["hammertime-v3"]["skipped"] == 2
     assert graph.indexed == ["hammertime-v3-1", "hammertime-v3-2"]
+
+
+# ---------------------------------------------------------------------------
+# skcomms T9: recall_collections operator-prefix + consent gating
+# ---------------------------------------------------------------------------
+
+def _write_recall_config(config_dir, collections):
+    config_dir.mkdir(parents=True, exist_ok=True)
+    lines = ["recall_collections:"]
+    for col in collections:
+        lines.append(f"  - {col}")
+    (config_dir / "skmemory.yaml").write_text("\n".join(lines) + "\n")
+
+
+def _patch_cluster(monkeypatch, cluster):
+    """Patch the cluster.json reader to return a fixed operator/realm dict (or None)."""
+    monkeypatch.setattr(
+        "skmemory.context_loader._read_cluster_config",
+        lambda: cluster,
+    )
+
+
+def _patch_fqid(monkeypatch, fqid):
+    """Patch the running-agent fqid resolver."""
+    monkeypatch.setattr(
+        "skmemory.context_loader._resolve_agent_fqid",
+        lambda agent_name=None: fqid,
+    )
+
+
+def _iso(dt):
+    return dt.replace(microsecond=0).isoformat()
+
+
+def test_recall_collections_bare_name_prefixed_with_own_operator(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["legal-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    monkeypatch.setenv("SKCOMMS_HOME", str(tmp_path / "skcomms"))
+    assert _load_recall_collections(config_dir) == ["chef.skworld/legal-corpus"]
+
+
+def test_recall_collections_already_qualified_left_alone(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["chef.skworld/legal-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    monkeypatch.setenv("SKCOMMS_HOME", str(tmp_path / "skcomms"))
+    assert _load_recall_collections(config_dir) == ["chef.skworld/legal-corpus"]
+
+
+def test_recall_collections_no_cluster_leaves_bare_unprefixed(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["legal-corpus"])
+    _patch_cluster(monkeypatch, None)
+    _patch_fqid(monkeypatch, None)
+    monkeypatch.setenv("SKCOMMS_HOME", str(tmp_path / "skcomms"))
+    # Can't namespace without a realm — bare name passes through untouched.
+    assert _load_recall_collections(config_dir) == ["legal-corpus"]
+
+
+def test_recall_collections_foreign_ref_dropped_without_consent(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    # SKCOMMS_HOME points at an empty dir — no consent file exists.
+    monkeypatch.setenv("SKCOMMS_HOME", str(tmp_path / "skcomms"))
+    assert _load_recall_collections(config_dir) == []
+
+
+def test_recall_collections_foreign_ref_missing_consent_file_drops(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(
+        config_dir,
+        ["legal-corpus", "peer:acme.otherworld/secret-corpus"],
+    )
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"  # never created
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    # Own bare name survives + namespaced; foreign ref fails closed.
+    assert _load_recall_collections(config_dir) == ["chef.skworld/legal-corpus"]
+
+
+def test_recall_collections_foreign_ref_allowed_with_valid_token(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    skcomms.mkdir()
+    consent = {
+        "tokens": [
+            {
+                "collection": "acme.otherworld/secret-corpus",
+                "granted_to": "jarvis@chef.skworld",
+                "granted_by": "ava@acme.otherworld",
+                "expires": _iso(datetime.now(timezone.utc) + timedelta(days=30)),
+                "signature": "-----BEGIN PGP SIGNATURE-----\n...\n-----END PGP SIGNATURE-----",
+            }
+        ]
+    }
+    (skcomms / "recall_collections_consent.json").write_text(json.dumps(consent))
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    assert _load_recall_collections(config_dir) == ["acme.otherworld/secret-corpus"]
+
+
+def test_recall_collections_expired_token_rejected(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    skcomms.mkdir()
+    consent = {
+        "tokens": [
+            {
+                "collection": "acme.otherworld/secret-corpus",
+                "granted_to": "jarvis@chef.skworld",
+                "granted_by": "ava@acme.otherworld",
+                "expires": _iso(datetime.now(timezone.utc) - timedelta(days=1)),
+                "signature": "armor",
+            }
+        ]
+    }
+    (skcomms / "recall_collections_consent.json").write_text(json.dumps(consent))
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    assert _load_recall_collections(config_dir) == []
+
+
+def test_recall_collections_wrong_grantee_token_rejected(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    skcomms.mkdir()
+    consent = {
+        "tokens": [
+            {
+                "collection": "acme.otherworld/secret-corpus",
+                "granted_to": "someone-else@chef.skworld",
+                "granted_by": "ava@acme.otherworld",
+                "expires": _iso(datetime.now(timezone.utc) + timedelta(days=30)),
+                "signature": "armor",
+            }
+        ]
+    }
+    (skcomms / "recall_collections_consent.json").write_text(json.dumps(consent))
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    assert _load_recall_collections(config_dir) == []
+
+
+def test_recall_collections_malformed_consent_file_fails_closed(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(config_dir, ["peer:acme.otherworld/secret-corpus"])
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    skcomms.mkdir()
+    (skcomms / "recall_collections_consent.json").write_text("{ not valid json")
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    assert _load_recall_collections(config_dir) == []
+
+
+def test_recall_collections_mixed_own_and_consented_foreign(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    _write_recall_config(
+        config_dir,
+        [
+            "legal-corpus",
+            "chef.skworld/case-notes",
+            "peer:acme.otherworld/secret-corpus",
+            "peer:evil.darkworld/forbidden",
+        ],
+    )
+    _patch_cluster(monkeypatch, {"operator": "chef", "realm": "skworld"})
+    _patch_fqid(monkeypatch, "jarvis@chef.skworld")
+    skcomms = tmp_path / "skcomms"
+    skcomms.mkdir()
+    consent = {
+        "tokens": [
+            {
+                "collection": "acme.otherworld/secret-corpus",
+                "granted_to": "jarvis@chef.skworld",
+                "granted_by": "ava@acme.otherworld",
+                "expires": _iso(datetime.now(timezone.utc) + timedelta(days=30)),
+                "signature": "armor",
+            }
+        ]
+    }
+    (skcomms / "recall_collections_consent.json").write_text(json.dumps(consent))
+    monkeypatch.setenv("SKCOMMS_HOME", str(skcomms))
+    assert _load_recall_collections(config_dir) == [
+        "chef.skworld/legal-corpus",
+        "chef.skworld/case-notes",
+        "acme.otherworld/secret-corpus",
+    ]

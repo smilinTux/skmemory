@@ -19,9 +19,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
@@ -288,10 +289,234 @@ def _load_skgraph_config(config_dir: Path) -> dict | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# skcomms T9: realm-aware, consent-gated recall_collections namespacing.
+#
+# Collections live in the central pgvector store (skmem-pg).  This module only
+# implements the NAMESPACING + CONSENT-GATING LOGIC — it never queries or
+# writes skmem-pg.  Resolution rules (per configured collection name):
+#
+#   * bare ``legal-corpus``               -> ``<operator>.<realm>/legal-corpus``
+#                                            (own-operator namespace, auto-prefixed)
+#   * ``chef.skworld/legal-corpus``       -> left as-is (already qualified)
+#   * ``peer:acme.world/secret-corpus``   -> FOREIGN reference.  Dropped (with a
+#                                            logged warning) UNLESS a valid,
+#                                            unexpired consent token grants read
+#                                            on that exact ``<operator>.<realm>/
+#                                            <collection>`` to this agent's fqid.
+#
+# Fail-CLOSED: a missing / empty / malformed consent file drops ALL foreign
+# refs.  Without an operator/realm (no cluster.json) we cannot namespace, so
+# bare names pass through untouched and foreign refs still fail closed.
+# ---------------------------------------------------------------------------
+
+# Consent-file schema (T10 will produce + sign these; T9 only reads them):
+#   ${SKCOMMS_HOME:-~/.skcomms}/recall_collections_consent.json
+#   {
+#     "tokens": [
+#       {
+#         "collection":  "<operator>.<realm>/<name>",  # exact foreign collection
+#         "granted_to":  "<fqid>",                     # must == this agent's fqid
+#         "granted_by":  "<fqid>",                     # foreign operator's agent
+#         "expires":     "<iso8601>",                  # must be in the future
+#         "signature":   "<pgp armor>"                 # verified in T10 (see TODO)
+#       }
+#     ]
+#   }
+_PEER_PREFIX = "peer:"
+_CONSENT_FILENAME = "recall_collections_consent.json"
+
+# cluster.json search path — mirrors capauth.agent_identity so operator/realm
+# resolution stays consistent across SK packages.
+_CLUSTER_JSON_PATHS = (
+    Path("/etc/skcapstone/cluster.json"),
+    Path("~/.skcapstone/cluster.json").expanduser(),
+)
+
+
+def _skcomms_home() -> Path:
+    """Resolve the skcomms home dir, honoring the SKCOMMS_HOME override."""
+    override = os.environ.get("SKCOMMS_HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path("~/.skcomms").expanduser()
+
+
+def _read_cluster_config() -> dict | None:
+    """Load cluster.json (operator/realm) from the standard search path.
+
+    Returns the parsed dict, or None if no readable cluster.json exists.
+    Mirrors capauth's search order; a local reader so skmemory has no hard
+    dependency on capauth for namespacing.
+    """
+    for path in _CLUSTER_JSON_PATHS:
+        try:
+            if path.exists():
+                data = json.loads(path.read_text())
+                return data if isinstance(data, dict) else None
+        except Exception as e:  # malformed / unreadable — try next, then None
+            logger.warning("Could not read cluster.json at %s: %s", path, e)
+    return None
+
+
+def _operator_realm() -> tuple[str | None, str | None]:
+    """Return (operator, realm) from cluster.json, or (None, None)."""
+    cluster = _read_cluster_config()
+    if not isinstance(cluster, dict):
+        return (None, None)
+    operator = cluster.get("operator")
+    realm = cluster.get("realm")
+    return (operator or None, realm or None)
+
+
+def _resolve_agent_fqid(agent_name: str | None = None) -> str | None:
+    """Resolve the running agent's fqid (``<agent>@<operator>.<realm>``).
+
+    Prefers capauth's canonical resolver; falls back to deriving it from
+    SKAGENT (env) + cluster.json operator/realm.  Returns None when the
+    realm is unknowable (so foreign refs fail closed).
+    """
+    # 1. Canonical resolver (graceful import — capauth is optional here).
+    try:
+        from capauth import resolve_agent_identity
+
+        ident = resolve_agent_identity(agent_name)
+        if getattr(ident, "fqid", None):
+            return ident.fqid
+    except Exception:
+        pass
+
+    # 2. Local fallback: SKAGENT + cluster.json.
+    agent = (
+        agent_name
+        or os.environ.get("SKAGENT")
+        or os.environ.get("SKCAPSTONE_AGENT")
+        or os.environ.get("SKMEMORY_AGENT")
+    )
+    operator, realm = _operator_realm()
+    if agent and operator and realm:
+        return f"{agent}@{operator}.{realm}"
+    return None
+
+
+def _verify_consent_signature(token: dict) -> bool:
+    """TODO(T10): verify the PGP ``signature`` armor on a consent token.
+
+    For T9 this is a stub that returns True — gating relies on a well-formed,
+    unexpired, correctly-scoped token.  T10 will wire real PGP verification
+    here (validate ``signature`` against ``granted_by``'s published key over
+    the canonical token payload) WITHOUT changing the call site below.
+    """
+    return True
+
+
+def _consent_grants_read(
+    collection: str, agent_fqid: str | None, skcomms_home: Path
+) -> bool:
+    """Return True iff a valid consent token grants ``agent_fqid`` read on
+    ``collection`` (an exact ``<operator>.<realm>/<name>`` string).
+
+    Fail-CLOSED on every failure path: no fqid, missing / empty / malformed
+    consent file, no matching token, expired token, wrong grantee, or a
+    failed (future) signature verification.
+    """
+    if not agent_fqid:
+        return False
+
+    path = skcomms_home / _CONSENT_FILENAME
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text())
+    except Exception as e:
+        logger.warning("Malformed consent file %s — failing closed: %s", path, e)
+        return False
+    if not isinstance(data, dict):
+        return False
+    tokens = data.get("tokens")
+    if not isinstance(tokens, list):
+        return False
+
+    now = datetime.now(timezone.utc)
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+        if token.get("collection") != collection:
+            continue
+        if token.get("granted_to") != agent_fqid:
+            continue
+        expires = token.get("expires")
+        if not expires:
+            continue
+        try:
+            exp_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if exp_dt <= now:
+            continue
+        if not _verify_consent_signature(token):  # TODO(T10): real PGP verify
+            continue
+        return True
+    return False
+
+
 def _load_recall_collections(config_dir: Path) -> list[str]:
-    """Return recall_collections list from skmemory.yaml (for cross-index search)."""
+    """Return the realm-aware, consent-gated recall_collections list.
+
+    Reads ``recall_collections`` from skmemory.yaml and resolves each name:
+      * bare name           -> auto-prefixed ``<operator>.<realm>/<name>``
+      * already-qualified   -> left as-is
+      * ``peer:<...>`` ref  -> kept only when a valid consent token exists
+                               (fail-closed otherwise)
+
+    See module docstring above for the full ruleset + consent schema.
+    """
     skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
-    return skmem.get("recall_collections", [])
+    raw = skmem.get("recall_collections", []) or []
+
+    operator, realm = _operator_realm()
+    own_prefix = f"{operator}.{realm}/" if operator and realm else None
+    agent_fqid = _resolve_agent_fqid()
+    skcomms_home = _skcomms_home()
+
+    resolved: list[str] = []
+    for entry in raw:
+        name = str(entry).strip()
+        if not name:
+            continue
+
+        if name.startswith(_PEER_PREFIX):
+            # Foreign reference — consent-gated, fail-closed.
+            foreign = name[len(_PEER_PREFIX):].strip()
+            if not foreign:
+                logger.warning("Dropping empty peer recall_collection reference.")
+                continue
+            if _consent_grants_read(foreign, agent_fqid, skcomms_home):
+                resolved.append(foreign)
+            else:
+                logger.warning(
+                    "Dropping foreign recall_collection %r — no valid consent "
+                    "token granting read to %s (fail-closed).",
+                    foreign,
+                    agent_fqid or "<unknown-fqid>",
+                )
+            continue
+
+        if "/" in name:
+            # Already operator-qualified — trust as-is.
+            resolved.append(name)
+            continue
+
+        # Bare name — auto-prefix with own operator namespace when possible.
+        if own_prefix:
+            resolved.append(own_prefix + name)
+        else:
+            # No realm to namespace with — pass through untouched.
+            resolved.append(name)
+
+    return resolved
 
 
 def _load_recall_graphs(config_dir: Path) -> list[str]:
