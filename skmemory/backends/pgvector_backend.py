@@ -7,11 +7,11 @@ embeddings in a local/central Postgres so the DB can be replicated across hosts
 
 Architecture:
   - Storage: Postgres + pgvector on .158 (SKMEMORY_PG_DSN).
-  - Embedding: REMOTE HTTP endpoint (default the .100 bge-legal-v2 server) so the
-    2.3GB model is not loaded in every skmemory process. Inject your own via
-    `embed_fn`, or override SKMEMORY_EMBED_URL / SKMEMORY_EMBED_MODEL.
+  - Embedding: REMOTE HTTP endpoint (default the .100 mxbai-embed-large server,
+    Ollama :11434) so the model is not loaded in every skmemory process. Inject
+    your own via `embed_fn`, or override SKMEMORY_EMBED_URL / SKMEMORY_EMBED_MODEL.
 
-Same 1024-dim vector space as bge-legal-v2 -> drop-in with the existing schema.
+Same 1024-dim vector space as mxbai-embed-large -> drop-in with the existing schema.
 """
 
 from __future__ import annotations
@@ -26,13 +26,32 @@ from .base import BaseBackend
 
 logger = logging.getLogger(__name__)
 
+# Recency boost for hybrid ranking — so "latest" asks surface today's work
+# instead of keyword-dense older content. Added to the RRF score as
+# boost*exp(-age_days/halflife) (recent ≈ +boost). Tunable via env; set
+# SKMEMORY_RECENCY_BOOST=0 to disable.
+_RECENCY_BOOST = float(os.environ.get("SKMEMORY_RECENCY_BOOST", "0.03"))
+_RECENCY_HALFLIFE_DAYS = float(os.environ.get("SKMEMORY_RECENCY_HALFLIFE_DAYS", "21"))
+
+# Tantivy/pg_search query-string operators. ParadeDB's `content @@@ 'str'`
+# parses the string as a query expression, so raw punctuation/URLs
+# ("biolabs!", "https://…") throw "could not parse query string". Strip them to
+# plain terms for the BM25 leg; the vector leg still embeds the original query.
+_BM25_SPECIAL = str.maketrans({c: " " for c in '+-&|!(){}[]^"~*?:\\/<>='})
+
+
+def _bm25_terms(query: str) -> str:
+    """Sanitize free text into safe BM25 terms (no Tantivy operators)."""
+    return " ".join((query or "").translate(_BM25_SPECIAL).split()) or "_nomatch_"
+
+
 DEFAULT_DSN = os.environ.get(
     "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@192.168.0.158:5432/skmemory"
 )
 DEFAULT_EMBED_URL = os.environ.get(
-    "SKMEMORY_EMBED_URL", "http://192.168.0.100:11435/api/embed"
+    "SKMEMORY_EMBED_URL", "http://192.168.0.100:11434/api/embed"  # mxbai (Ollama); was :11435 bge
 )
-DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "bge-legal-v2")
+DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")  # was bge-legal-v2
 VECTOR_DIM = 1024
 
 
@@ -79,7 +98,7 @@ class PGVectorBackend(BaseBackend):
             return self._embed_fn(text)
         import httpx
 
-        text = (text or "")[:8000]  # bge-m3 ctx headroom
+        text = (text or "")[:1100]  # mxbai-embed-large 512-tok ctx safe (was 8000 for bge)
         try:
             r = httpx.post(
                 self.embed_url,
@@ -179,28 +198,86 @@ class PGVectorBackend(BaseBackend):
             )
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
 
-    def search_text(self, query: str, limit: int = 10) -> list[Memory]:
-        """Full-text (BM25) search over title/content/summary."""
+    def search_text(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        layer: str | None = None,
+        tags: list[str] | None = None,
+        source: str | None = None,
+    ) -> list[Memory]:
+        """Hybrid (vector + pg_search BM25) search over memories, with optional filters.
+
+        Despite the name (kept for the store's call signature), this is the primary
+        search: it fuses mxbai vector + BM25 via RRF. Degrades gracefully to pure
+        BM25 -> tsv FTS -> ILIKE if embeddings/pg_search are unavailable.
+        """
+        def _filt():
+            cl = ["agent=%s"]; ps = [self.agent]
+            if layer:  cl.append("layer=%s");   ps.append(layer)
+            if source: cl.append("source=%s");  ps.append(source)
+            if tags:   cl.append("tags && %s");  ps.append(list(tags))
+            return " AND ".join(cl), ps
+
+        where, fp = _filt()
         conn = self._connection()
+        qvec = self._embed(query)
+        bm_query = _bm25_terms(query)  # sanitized for ParadeDB @@@ (no operators)
+        # recency term: boost*exp(-age_days/halflife), added to the RRF score.
+        rec = (f"+ {_RECENCY_BOOST}*exp(-(extract(epoch from now()-m.created_at)"
+               f"/86400.0)/{_RECENCY_HALFLIFE_DAYS})") if _RECENCY_BOOST > 0 else ""
+        # 1) hybrid: vector (mxbai) + BM25 (pg_search), RRF (vector weighted 2x)
+        if qvec:
+            vlit = "[" + ",".join(map(str, qvec)) + "]"
+            sql = f"""
+                WITH vec AS (
+                  SELECT id, row_number() OVER (ORDER BY embedding <=> %s::vector) r
+                  FROM memories WHERE {where} AND embedding IS NOT NULL
+                  ORDER BY embedding <=> %s::vector LIMIT 100),
+                bm AS (
+                  SELECT id, row_number() OVER (ORDER BY paradedb.score(id) DESC) r
+                  FROM memories WHERE {where} AND content @@@ %s
+                  ORDER BY paradedb.score(id) DESC LIMIT 100)
+                SELECT m.memory_json FROM memories m
+                  LEFT JOIN vec ON vec.id=m.id LEFT JOIN bm ON bm.id=m.id
+                WHERE (vec.id IS NOT NULL OR bm.id IS NOT NULL) AND {where}
+                ORDER BY (2.0*COALESCE(1.0/(60+vec.r),0)+COALESCE(1.0/(60+bm.r),0) {rec}) DESC
+                LIMIT %s"""
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql, [vlit, *fp, vlit, *fp, bm_query, *fp, limit])
+                    rows = cur.fetchall()
+                if rows:
+                    return [Memory.model_validate_json(_as_json_str(r[0])) for r in rows]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("hybrid search failed, falling back to BM25: %s", exc)
+                conn.rollback()
+        # 2) pure BM25 (pg_search)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT memory_json FROM memories WHERE {where} AND content @@@ %s "
+                    f"ORDER BY paradedb.score(id) DESC LIMIT %s", [*fp, bm_query, limit])
+                rows = cur.fetchall()
+            if rows:
+                return [Memory.model_validate_json(_as_json_str(r[0])) for r in rows]
+        except Exception:  # noqa: BLE001
+            conn.rollback()
+        # 3) tsv FTS  4) ILIKE
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT memory_json FROM memories
-                WHERE agent=%s AND tsv @@ plainto_tsquery('english', %s)
-                ORDER BY ts_rank(tsv, plainto_tsquery('english', %s)) DESC
-                LIMIT %s
-                """,
-                (self.agent, query, query, limit),
-            )
+                f"SELECT memory_json FROM memories WHERE {where} "
+                f"AND tsv @@ plainto_tsquery('english',%s) "
+                f"ORDER BY ts_rank(tsv,plainto_tsquery('english',%s)) DESC LIMIT %s",
+                [*fp, query, query, limit])
             rows = cur.fetchall()
         if rows:
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in rows]
-        # fallback: case-insensitive substring
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT memory_json FROM memories WHERE agent=%s AND content ILIKE %s LIMIT %s",
-                (self.agent, f"%{query}%", limit),
-            )
+                f"SELECT memory_json FROM memories WHERE {where} AND content ILIKE %s LIMIT %s",
+                [*fp, f"%{query}%", limit])
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
 
     def search(self, query: str, limit: int = 10) -> list[Memory]:
@@ -208,12 +285,13 @@ class PGVectorBackend(BaseBackend):
         qvec = self._embed(query)
         if not qvec:
             return self.search_text(query, limit)
+        vlit = "[" + ",".join(map(str, qvec)) + "]"
         conn = self._connection()
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT memory_json FROM memories WHERE agent=%s AND embedding IS NOT NULL "
                 "ORDER BY embedding <=> %s::vector LIMIT %s",
-                (self.agent, qvec, limit),
+                (self.agent, vlit, limit),
             )
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
 
