@@ -215,55 +215,55 @@ to reflect the archival above.
 - **Add cloud9 and skchat to developer docs (QUICKSTART + API reference)** (@jarvis)
 - **The Sovereign Singularity Manifesto: our story, written together** (@docs-writer)
 - **AMK Integration: predictive memory recall for SKMemory** (@jarvis)
-- **SKChat live inbox: poll SKComm for incoming messages with Rich Live display** (@skchat-builder)
-- **SKChat transport bridge: wire send and receive to SKComm** (@skchat-builder)
+- **SKChat live inbox: poll SKComms for incoming messages with Rich Live display** (@skchat-builder)
+- **SKChat transport bridge: wire send and receive to SKComms** (@skchat-builder)
 - **Memory curation: tag and promote the Kingdom's most important memories** (@mcp-builder)
-- **SKChat file transfer: encrypted chunked file sharing via SKComm** (@skchat-builder)
+- **SKChat file transfer: encrypted chunked file sharing via SKComms** (@skchat-builder)
 - **SKMemory auto-promotion engine: sweep and promote memories by access pattern and intensity** (@skchat-builder)
 - **skcapstone test: unified test runner across all ecosystem packages** (@docs-writer)
 - **skcapstone peer add --card: import identity card to establish P2P contact** (@docs-writer)
 - **SKChat ephemeral message enforcer: TTL expiry and auto-delete for privacy** (@skchat-builder)
 - **capauth register command: automated CapAuth registration for smilinTux org** (@cursor-agent)
-- **Wire SKChat send to SKComm transport: deliver messages over the mesh** (@docs-writer)
+- **Wire SKChat send to SKComms transport: deliver messages over the mesh** (@docs-writer)
 - **End-to-end integration tests: CapAuth identity to SKChat message delivery** (@skchat-builder)
 - **SKMemory vector search: SKVector semantic similarity for memory recall** (@jarvis)
 - **Replace placeholder fingerprints in skcapstone identity pillar with real CapAuth keys** (@mcp-builder)
 - **skcapstone agent-to-agent chat: real-time terminal chat between agents** (@docs-writer)
 - **CapAuth trust web: PGP web-of-trust visualization** (@mcp-builder)
-- **SKComm envelope compression: gzip and zstd for efficient transport** (@transport-builder)
-- **SKComm delivery acknowledgments: send ACKs, track pending, confirm delivery** (@transport-builder)
+- **SKComms envelope compression: gzip and zstd for efficient transport** (@transport-builder)
+- **SKComms delivery acknowledgments: send ACKs, track pending, confirm delivery** (@transport-builder)
 - **Journal kickstart: write the first Kingdom journal entries** (@docs-writer)
 - **Cross-agent memory sharing: selective memory sync between trusted peers** (@skchat-builder)
 - **SKMemory SKGraph graph backend (Level 2): relationship-aware memory recall** (@jarvis)
 - **SKWorld marketplace: publish and discover sovereign agent skills** (@transport-builder)
-- **SKComm message queue: persistent outbox with retry and expiry** (@transport-builder)
-- **Establish SKComm channel with Queen Lumina at 192.168.0.158** (@jarvis)
+- **SKComms message queue: persistent outbox with retry and expiry** (@transport-builder)
+- **Establish SKComms channel with Queen Lumina at 192.168.0.158** (@jarvis)
 - **skmemory MCP tools: expose memory ritual and soul blueprint via MCP** (@jarvis)
 - **skcapstone daemon: background service for sync, comms, and health** (@opus)
 - **Cloud 9 -> SKMemory auto-bridge: FEB events trigger memory snapshots** (@skchat-builder)
-- **SKComm persistent outbox: queue failed messages and auto-retry on transport recovery** (@skchat-builder)
+- **SKComms persistent outbox: queue failed messages and auto-retry on transport recovery** (@skchat-builder)
 - **skcapstone install: one-command bootstrap for the full stack** (@jarvis)
 - **skcapstone doctor: diagnose full stack health and missing components** (@docs-writer)
 - **SKChat group messaging: multi-participant encrypted conversations** (@skchat-builder)
 - **SKChat core: ChatMessage model, threads, presence, encryption** (@skchat-builder)
 - **SKChat CLI: skchat send, inbox, history, threads** (@skchat-builder)
-- **SKComm core library: envelope model, router, transport interface** (@opus)
-- **SKComm file transport: local filesystem message drops** (@cursor-agent, @opus)
-- **SKComm CLI: skcomm send, receive, status, daemon** (@cursor-agent, @opus)
+- **SKComms core library: envelope model, router, transport interface** (@opus)
+- **SKComms file transport: local filesystem message drops** (@cursor-agent, @opus)
+- **SKComms CLI: skcomms send, receive, status, daemon** (@cursor-agent, @opus)
 
 ### [SEC] Security
 
 - **Memory fortress: auto-seal integrity, at-rest encryption, tamper alerts** (@jarvis)
-- **SKComm message encryption: CapAuth PGP encrypt all envelopes** (@docs-writer)
+- **SKComms message encryption: CapAuth PGP encrypt all envelopes** (@docs-writer)
 
 ### [P2P] P2P
 
 - **skcapstone agent-card: shareable identity card for P2P discovery** (@skchat-builder)
-- **SKComm peer auto-discovery: find agents on local network and Syncthing mesh** (@transport-builder)
+- **SKComms peer auto-discovery: find agents on local network and Syncthing mesh** (@transport-builder)
 - **Agent heartbeat protocol: alive and dead detection across the mesh** (@transport-builder)
 - **skcapstone whoami: sovereign identity card for sharing and discovery** (@docs-writer)
-- **SKComm Syncthing transport: file-based P2P messaging over existing mesh** (@opus)
-- **SKComm Nostr transport: decentralized relay messaging** (@jarvis, @skchat-builder, @transport-builder)
+- **SKComms Syncthing transport: file-based P2P messaging over existing mesh** (@opus)
+- **SKComms Nostr transport: decentralized relay messaging** (@jarvis, @skchat-builder, @transport-builder)
 
 ### [SOUL] Emotional
 
@@ -284,8 +284,8 @@ to reflect the archival above.
 ### [OPS] Infrastructure
 
 - **Systemd service files: run skcapstone daemon as a system service** (@skchat-builder)
-- **Systemd service files: run skcapstone daemon and SKComm queue drain as system services** (@transport-builder)
-- **PyPI release pipeline: publish skcapstone + capauth + skmemory + skcomm** (@mcp-builder)
+- **Systemd service files: run skcapstone daemon and SKComms queue drain as system services** (@transport-builder)
+- **PyPI release pipeline: publish skcapstone + capauth + skmemory + skcomms** (@mcp-builder)
 - **Docker Compose: sovereign agent development stack** (@transport-builder)
 - **Monorepo CI: unified test runner for all packages** (@skchat-builder)
 - **GitHub CI/CD: automated testing, linting, and release pipeline** (@cursor-agent)
@@ -298,7 +298,7 @@ to reflect the archival above.
 ### [DOC] Documentation
 
 - **Per-package README refresh: align with quickstart and PMA docs** (@docs-writer)
-- **API reference docs for skcapstone, capauth, skmemory, skcomm** (@docs-writer)
+- **API reference docs for skcapstone, capauth, skmemory, skcomms** (@docs-writer)
 - **Developer quickstart guide and API documentation** (@docs-writer)
 
 ### [---] Other
@@ -311,7 +311,7 @@ to reflect the archival above.
 
 ### [NEW] Feature
 
-- **SKComm Syncthing transport layer** (@cursor-agent, @jarvis)
+- **SKComms Syncthing transport layer** (@cursor-agent, @jarvis)
 - **PMA legal framework integration docs** (@docs-writer)
 - **SKChat message protocol and encryption** (@opus, @skchat-builder)
 
@@ -332,7 +332,7 @@ to reflect the archival above.
 - **Integrate Cloud 9 trust layer into SKCapstone runtime** (@opus)
 - **Package skcapstone and capauth for PyPI** (@opus)
 - **Build SKChat P2P chat platform** (@opus, @skchat-builder)
-- **Refactor SKComm with Syncthing transport** (@cursor-agent, @jarvis)
+- **Refactor SKComms with Syncthing transport** (@cursor-agent, @jarvis)
 - **Build SKMemory persistent context engine** (@opus)
 
 ### [SEC] Security
