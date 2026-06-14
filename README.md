@@ -683,7 +683,7 @@ flowchart TD
     Security["🛡️ Security\nsksecurity · skwaf"]
     Data["💾 Data  ◄── YOU ARE HERE\nskmemory · skdata · skvector · skgraph\n(3-tier memory · embeddings · graph)"]
     Models["🤖 Models\nskmodel · Ollama / vLLM"]
-    Comms["📡 Comms\nskcomm · skchat · skvoice"]
+    Comms["📡 Comms\nskcomms · skchat · skvoice"]
     Apps["🔧 Apps\nskforge · skarchitect"]
     Soul["✨ Soul\nsoul blueprints · cloud9"]
 

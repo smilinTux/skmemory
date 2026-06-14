@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -131,6 +132,20 @@ def _get_store(
     vector = None
     graph = None
 
+    # PGVector (Postgres + pg_search BM25 + AGE) — syncable, hybrid vector+BM25,
+    # remote mxbai-embed-large embedding. Opt-in: SKMEMORY_VECTOR_BACKEND=pgvector
+    # (DSN/embed endpoint from env). Mirrors openclaw.py / mcp_server.py so the
+    # CLI ingest path lands in the same store as the hooks/MCP, not flat+SQLite.
+    if not no_vector and os.environ.get("SKMEMORY_VECTOR_BACKEND", "").lower() == "pgvector":
+        try:
+            from .backends.pgvector_backend import PGVectorBackend
+
+            vector = PGVectorBackend()
+            logger.info("cli.py: vector backend = PGVectorBackend")
+        except Exception as e:
+            logger.warning("cli.py pgvector: %s", e)
+            click.echo(f"Warning: Could not initialize PGVector backend: {e}", err=True)
+
     if no_vector:
         # Flat JSON + SQLite only — skip the 1.8GB SentenceTransformer load.
         # Used by session-end hooks where semantic search isn't needed.
@@ -145,7 +160,7 @@ def _get_store(
         if not chroma_enabled and not skvector_enabled and not final_skvector_url:
             chroma_enabled = True
 
-    if chroma_enabled:
+    if vector is None and chroma_enabled:
         try:
             from .backends.chroma_backend import SKChromaBackend
 
