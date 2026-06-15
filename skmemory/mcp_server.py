@@ -60,13 +60,23 @@ def _get_store() -> MemoryStore:
     global _store
     if _store is None:
         vector = None
-        # PGVector (Postgres) — opt-in via SKMEMORY_VECTOR_BACKEND=pgvector
-        if os.environ.get("SKMEMORY_VECTOR_BACKEND", "").lower() == "pgvector":
+        # PGVector (Postgres) is the default sovereign vector store. It works OOTB on
+        # any host running the local skmem-pg container + mxbai embedder; if the DB is
+        # unreachable we health-gate and fall back to Chroma. Set
+        # SKMEMORY_VECTOR_BACKEND to anything other than "pgvector" to skip it.
+        if os.environ.get("SKMEMORY_VECTOR_BACKEND", "pgvector").lower() == "pgvector":
             try:
                 from .backends.pgvector_backend import PGVectorBackend
 
-                vector = PGVectorBackend()
-                logger.info("mcp_server.py: vector backend = PGVectorBackend")
+                pg = PGVectorBackend()
+                health = pg.health_check()
+                if health.get("ok"):
+                    vector = pg
+                    logger.info("mcp_server.py: vector backend = PGVectorBackend")
+                else:
+                    logger.warning(
+                        "mcp_server.py pgvector unhealthy, falling back: %s", health
+                    )
             except Exception as e:
                 logger.warning("mcp_server.py pgvector: %s", e)
         if vector is None:

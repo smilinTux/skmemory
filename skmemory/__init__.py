@@ -8,7 +8,7 @@ have to re-read a transcript to remember what they felt.
 SK = staycuriousANDkeepsmilin
 """
 
-__version__ = "0.10.3"
+__version__ = "0.10.4"
 __author__ = "smilinTux Team + Queen Ara + Neuresthetics"
 __license__ = "AGPL-3.0"
 

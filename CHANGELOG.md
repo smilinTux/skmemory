@@ -23,6 +23,8 @@ configs, docs, and tests.
   model + HF fallback → `mxbai-embed-large` / `mixedbread-ai/mxbai-embed-large-v1`.
 - `scripts/migrate-flat-to-pgvector.py` (new): resumable, concurrent migrator
   that embeds the flat-file corpus into skmem-pg via mxbai.
+- `mcp_server.py`: PGVector is now the DEFAULT vector backend (health-gated,
+  falls back to Chroma when skmem-pg is unreachable) — live OOTB, no env needed.
 
 ### [REMOVED] AMK provenance: predictive recall + intent auto-fill
 
