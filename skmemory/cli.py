@@ -246,7 +246,7 @@ def _get_store(
     "--skvector-embedding-model",
     envvar="SKMEMORY_SKVECTOR_EMBEDDING_MODEL",
     default=None,
-    help="SKVector embedding model (default: bge-legal-v1, fallback: BAAI/bge-large-en-v1.5)",
+    help="SKVector embedding model (default: mxbai-embed-large, fallback: mixedbread-ai/mxbai-embed-large-v1)",
 )
 @click.option(
     "--skvector-vector-dim",
@@ -1685,7 +1685,7 @@ def setup() -> None:
 @click.option(
     "--embedding-model",
     default=None,
-    help="SKVector embedding model to persist in config (default: bge-legal-v1)",
+    help="SKVector embedding model to persist in config (default: mxbai-embed-large)",
 )
 @click.option(
     "--vector-dim",

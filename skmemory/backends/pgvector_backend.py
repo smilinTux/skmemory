@@ -6,12 +6,14 @@ embeddings in a local/central Postgres so the DB can be replicated across hosts
 (streaming/logical replication) instead of snapshot-shipped.
 
 Architecture:
-  - Storage: Postgres + pgvector on .158 (SKMEMORY_PG_DSN).
-  - Embedding: REMOTE HTTP endpoint (default the .100 bge-legal-v2 server) so the
-    2.3GB model is not loaded in every skmemory process. Inject your own via
-    `embed_fn`, or override SKMEMORY_EMBED_URL / SKMEMORY_EMBED_MODEL.
+  - Storage: Postgres + pgvector via the local skmem-pg container (SKMEMORY_PG_DSN).
+    Defaults to localhost:5433 so it works out-of-the-box on any host running the
+    container; replicate the DB across hosts via streaming/logical replication.
+  - Embedding: HTTP endpoint (default the local Ollama mxbai-embed-large server) so
+    the model is served once per host, not loaded in every skmemory process. Inject
+    your own via `embed_fn`, or override SKMEMORY_EMBED_URL / SKMEMORY_EMBED_MODEL.
 
-Same 1024-dim vector space as bge-legal-v2 -> drop-in with the existing schema.
+1024-dim vector space (mxbai-embed-large) -> drop-in with the existing schema.
 """
 
 from __future__ import annotations
@@ -27,12 +29,12 @@ from .base import BaseBackend
 logger = logging.getLogger(__name__)
 
 DEFAULT_DSN = os.environ.get(
-    "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@192.168.0.158:5432/skmemory"
+    "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5433/skmemory"
 )
 DEFAULT_EMBED_URL = os.environ.get(
-    "SKMEMORY_EMBED_URL", "http://192.168.0.100:11435/api/embed"
+    "SKMEMORY_EMBED_URL", "http://localhost:11434/api/embed"
 )
-DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "bge-legal-v2")
+DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")
 VECTOR_DIM = 1024
 
 
@@ -79,24 +81,38 @@ class PGVectorBackend(BaseBackend):
             return self._embed_fn(text)
         import httpx
 
-        text = (text or "")[:8000]  # bge-m3 ctx headroom
-        try:
-            r = httpx.post(
-                self.embed_url,
-                json={"model": self.embed_model, "input": text},
-                timeout=60.0,
-            )
-            r.raise_for_status()
-            data = r.json()
-            # Ollama: {"embeddings": [[...]]}  | OpenAI: {"data":[{"embedding":[...]}]}
-            if "embeddings" in data:
-                return data["embeddings"][0]
-            if "data" in data:
-                return data["data"][0]["embedding"]
-            if "embedding" in data:
-                return data["embedding"]
-        except Exception as e:  # noqa: BLE001
-            logger.warning("embed failed (%s): %s", self.embed_url, e)
+        # mxbai-embed-large caps at 512 tokens and this Ollama build 400s on overflow
+        # (its `truncate` flag is a no-op). ~1400 chars clears 512 tokens for typical
+        # text; for denser text we halve and retry until it fits. The full memory is
+        # still stored in content/memory_json and BM25-searchable, so recall is intact.
+        text = (text or "")[:1400]
+        while text:
+            try:
+                r = httpx.post(
+                    self.embed_url,
+                    json={"model": self.embed_model, "input": text, "truncate": True},
+                    timeout=60.0,
+                )
+                r.raise_for_status()
+                data = r.json()
+                # Ollama: {"embeddings": [[...]]} | OpenAI: {"data":[{"embedding":[...]}]}
+                if "embeddings" in data:
+                    return data["embeddings"][0]
+                if "data" in data:
+                    return data["data"][0]["embedding"]
+                if "embedding" in data:
+                    return data["embedding"]
+                return []
+            except httpx.HTTPStatusError as e:
+                # 400 == over context window: shrink and retry, else give up.
+                if e.response.status_code == 400 and len(text) > 200:
+                    text = text[: len(text) // 2]
+                    continue
+                logger.warning("embed failed (%s): %s", self.embed_url, e)
+                return []
+            except Exception as e:  # noqa: BLE001
+                logger.warning("embed failed (%s): %s", self.embed_url, e)
+                return []
         return []
 
     @staticmethod

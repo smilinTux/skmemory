@@ -275,7 +275,7 @@ path = plugin.export()
 | `--ai-model` | `SKMEMORY_AI_MODEL` | Model name (default: llama3.2) |
 | `--ai-url` | `SKMEMORY_AI_URL` | Ollama server URL |
 | `--skvector-url` | `SKMEMORY_SKVECTOR_URL` | SKVector server URL |
-| `--skvector-embedding-model` | `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Embedding model override (default: `bge-legal-v1`, fallback: `BAAI/bge-large-en-v1.5`) |
+| `--skvector-embedding-model` | `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Embedding model override (default: `mxbai-embed-large`, fallback: `mixedbread-ai/mxbai-embed-large-v1`) |
 | `--skvector-vector-dim` | `SKMEMORY_SKVECTOR_VECTOR_DIM` | Embedding dimension override |
 | `--skgraph-url` | `SKMEMORY_SKGRAPH_URL` | SKGraph / FalkorDB server URL |
 
@@ -425,7 +425,7 @@ stats = import_telegram_api(
 
 **Three-tier storage:**
 1. **SQLite** (default primary) — fast indexed queries, zero-config
-2. **SKVector** (optional) — semantic vector search with `bge-legal-v1` by default and `BAAI/bge-large-en-v1.5` as fallback
+2. **SKVector** (optional) — semantic vector search with `mxbai-embed-large` by default and `mixedbread-ai/mxbai-embed-large-v1` as fallback
 3. **SKGraph** (optional) — graph relationship traversal over decomposition-aware structure nodes
 
 ---
@@ -453,7 +453,7 @@ export SKMEMORY_AI_URL=http://localhost:11434   # Ollama URL
 # SKVector (optional — semantic search)
 export SKMEMORY_SKVECTOR_URL=http://localhost:6333
 export SKMEMORY_SKVECTOR_KEY=your-api-key
-export SKMEMORY_SKVECTOR_EMBEDDING_MODEL=bge-legal-v1
+export SKMEMORY_SKVECTOR_EMBEDDING_MODEL=mxbai-embed-large
 export SKMEMORY_SKVECTOR_VECTOR_DIM=1024
 
 # SKGraph (optional — graph retrieval)

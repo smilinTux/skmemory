@@ -227,7 +227,7 @@ def main() -> None:
         url=cfg.skvector_url,
         api_key=cfg.skvector_key,
         collection=args.vector_collection,
-        embedding_model=cfg.skvector_embedding_model or "bge-legal-v1",
+        embedding_model=cfg.skvector_embedding_model or "mxbai-embed-large",
         vector_dim=cfg.skvector_vector_dim,
     )
     if not args.dry_run and not backend._ensure_initialized():

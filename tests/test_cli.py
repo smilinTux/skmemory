@@ -223,7 +223,7 @@ class TestBackendConfigRouting:
         cfg = SKMemoryConfig(
             skvector_url="https://vector.example",
             skvector_collection="aster-memory",
-            skvector_embedding_model="bge-legal-v1",
+            skvector_embedding_model="mxbai-embed-large",
             skvector_vector_dim=1024,
         )
 
@@ -243,7 +243,7 @@ class TestBackendConfigRouting:
             _get_store()
 
         _, kwargs = mock_vector_backend.call_args
-        assert kwargs["embedding_model"] == "bge-legal-v1"
+        assert kwargs["embedding_model"] == "mxbai-embed-large"
         assert kwargs["vector_dim"] == 1024
 
 

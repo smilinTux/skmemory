@@ -47,7 +47,7 @@ class TestConfig:
         config = SKMemoryConfig(
             skvector_url="http://localhost:6333",
             skvector_key="secret",
-            skvector_embedding_model="bge-legal-v1",
+            skvector_embedding_model="mxbai-embed-large",
             skvector_vector_dim=1024,
             skgraph_url="redis://localhost:6379",
             backends_enabled=["skvector", "skgraph"],
@@ -70,7 +70,7 @@ class TestConfig:
         assert loaded is not None
         assert loaded.skvector_url == "http://localhost:6333"
         assert loaded.skvector_key == "secret"
-        assert loaded.skvector_embedding_model == "bge-legal-v1"
+        assert loaded.skvector_embedding_model == "mxbai-embed-large"
         assert loaded.skvector_vector_dim == 1024
         assert loaded.skgraph_url == "redis://localhost:6379"
         assert loaded.backends_enabled == ["skvector", "skgraph"]
@@ -730,7 +730,7 @@ class TestSetupWizard:
         assert result["success"] is True
         assert result["services"] == ["skvector"]
         assert "skgraph" not in result["health"]
-        assert captured["config"].skvector_embedding_model == "bge-legal-v1"
+        assert captured["config"].skvector_embedding_model == "mxbai-embed-large"
         assert captured["config"].skvector_vector_dim == 1024
 
     def test_wizard_no_backends_selected(self) -> None:
@@ -829,7 +829,7 @@ class TestSetupCLI:
                     "wizard",
                     "--yes",
                     "--embedding-model",
-                    "bge-legal-v1",
+                    "mxbai-embed-large",
                     "--vector-dim",
                     "1024",
                 ],
@@ -837,7 +837,7 @@ class TestSetupCLI:
 
         assert result.exit_code == 0
         _, kwargs = mock_wizard.call_args
-        assert kwargs["embedding_model"] == "bge-legal-v1"
+        assert kwargs["embedding_model"] == "mxbai-embed-large"
         assert kwargs["vector_dim"] == 1024
 
     def test_setup_wizard_cli_failure(self) -> None:

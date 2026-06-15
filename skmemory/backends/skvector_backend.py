@@ -28,21 +28,19 @@ from .base import BaseBackend
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "skmemory"
-EMBEDDING_MODEL = "bge-legal-v2"
+EMBEDDING_MODEL = "mxbai-embed-large"
 VECTOR_DIM = 1024
-HAMMERTIME_HF_MODEL = "chefboyrave21/bge-legal-v2"
-PUBLIC_FALLBACK_MODEL = "BAAI/bge-large-en-v1.5"
+SOVEREIGN_HF_MODEL = "mixedbread-ai/mxbai-embed-large-v1"
+PUBLIC_FALLBACK_MODEL = "mixedbread-ai/mxbai-embed-large-v1"
 
 MODEL_DIMENSIONS = {
     "all-MiniLM-L6-v2": 384,
-    "bge-legal-v2": 1024,
-    HAMMERTIME_HF_MODEL: 1024,
-    "BAAI/bge-large-en-v1.5": 1024,
-    "bge-large": 1024,
+    "mxbai-embed-large": 1024,
+    SOVEREIGN_HF_MODEL: 1024,
 }
 
 MODEL_ALIASES = {
-    "bge-large": PUBLIC_FALLBACK_MODEL,
+    "mxbai-embed-large": SOVEREIGN_HF_MODEL,
 }
 
 
@@ -73,14 +71,14 @@ def _legacy_payload_memory_id(payload: dict) -> str:
 
 def _candidate_local_model_paths(model_name: str) -> list[Path]:
     """Return plausible local model directories for sovereign embeddings."""
-    if model_name not in {"bge-legal-v2", HAMMERTIME_HF_MODEL}:
+    if model_name not in {"mxbai-embed-large", SOVEREIGN_HF_MODEL}:
         return []
 
     candidates: list[Path] = []
     hammertime_root = os.environ.get("HAMMERTIME_ROOT")
     if hammertime_root:
-        candidates.append(Path(hammertime_root) / "models" / "bge-legal-v2")
-    candidates.append(Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/models/bge-legal-v2"))
+        candidates.append(Path(hammertime_root) / "models" / "mxbai-embed-large")
+    candidates.append(Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/models/mxbai-embed-large"))
     return candidates
 
 
@@ -92,10 +90,8 @@ def _resolve_embedding_model_name(model_name: str) -> str:
         if candidate.exists():
             return str(candidate)
 
-    if normalized in {"bge-legal-v2", HAMMERTIME_HF_MODEL}:
-        if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN"):
-            return HAMMERTIME_HF_MODEL
-        return PUBLIC_FALLBACK_MODEL
+    if normalized in {"mxbai-embed-large", SOVEREIGN_HF_MODEL}:
+        return SOVEREIGN_HF_MODEL
 
     return normalized
 

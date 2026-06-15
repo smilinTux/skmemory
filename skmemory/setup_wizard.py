@@ -708,9 +708,9 @@ def run_setup_wizard(
                 skvector_key = key_raw or None
                 if not embedding_model and not non_interactive:
                     model_raw = input_fn(
-                        "SKVector embedding model [bge-legal-v1]: "
+                        "SKVector embedding model [mxbai-embed-large]: "
                     ).strip()
-                    embedding_model = model_raw or "bge-legal-v1"
+                    embedding_model = model_raw or "mxbai-embed-large"
                 if not vector_dim and not non_interactive:
                     dim_raw = input_fn("SKVector vector dimension [1024]: ").strip()
                     vector_dim = int(dim_raw) if dim_raw else 1024
@@ -744,7 +744,7 @@ def run_setup_wizard(
         cfg = SKMemoryConfig(
             skvector_url=skvector_url,
             skvector_key=skvector_key,
-            skvector_embedding_model=embedding_model or "bge-legal-v1",
+            skvector_embedding_model=embedding_model or "mxbai-embed-large",
             skvector_vector_dim=vector_dim or 1024,
             skgraph_url=skgraph_url,
             backends_enabled=backends_remote,
@@ -906,7 +906,7 @@ def run_setup_wizard(
 
     cfg = SKMemoryConfig(
         skvector_url="http://localhost:6333" if enable_skvector else None,
-        skvector_embedding_model=((embedding_model or "bge-legal-v1") if enable_skvector else None),
+        skvector_embedding_model=((embedding_model or "mxbai-embed-large") if enable_skvector else None),
         skvector_vector_dim=((vector_dim or 1024) if enable_skvector else None),
         skgraph_url="redis://localhost:6379" if enable_skgraph else None,
         backends_enabled=backends_enabled,

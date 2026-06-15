@@ -6,6 +6,24 @@
 
 ## Unreleased
 
+### [CHANGED] Embedding cutover: bge-legal → mxbai-embed-large; pgvector localhost default
+
+Cut the sovereign vector stack over from the bge-legal embedders to
+`mxbai-embed-large` (1024-dim, drop-in — same vector width, no schema change)
+and removed every `bge-legal-v1`/`bge-legal-v2` reference from the codebase,
+configs, docs, and tests.
+
+- `backends/pgvector_backend.py`: defaults now `mxbai-embed-large` via local
+  Ollama (`http://localhost:11434/api/embed`) and `DSN=localhost:5433` so the
+  backend works out-of-the-box on any host running the skmem-pg container.
+  `_embed` hard-caps input to 1400 chars and halves-on-400 to respect
+  mxbai's 512-token context (the Ollama `truncate` flag is a no-op here);
+  full text stays in `content`/`memory_json` and BM25-searchable.
+- `backends/skvector_backend.py`, `backends/chroma_backend.py`: default
+  model + HF fallback → `mxbai-embed-large` / `mixedbread-ai/mxbai-embed-large-v1`.
+- `scripts/migrate-flat-to-pgvector.py` (new): resumable, concurrent migrator
+  that embeds the flat-file corpus into skmem-pg via mxbai.
+
 ### [REMOVED] AMK provenance: predictive recall + intent auto-fill
 
 Audited the AMK integration on 2026-05-10. Two of three pieces were
@@ -88,7 +106,7 @@ to reflect the archival above.
 - README + ARCHITECTURE: decomposition section explains auto-trigger
   threshold (1200 chars), what gets extracted (chunks, entities,
   citations, claims, sections), and how it flows into FalkorDB via
-  `index_memory`. Notes that bge-legal-v1 is the standard local
+  `index_memory`. Notes that mxbai-embed-large is the standard local
   embedding model for both ChromaDB and SKVector.
 
 ## 2026-04-25 — skmemory v0.9.8 (Sync & Drift)

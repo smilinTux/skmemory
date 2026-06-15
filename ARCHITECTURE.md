@@ -124,8 +124,8 @@ Resource cost: ~50MB RAM, ~30MB disk per agent (idle).
 **"Find the memory about that feeling we had" — even if those words aren't in it.**
 
 Uses the sovereign HammerTime embedding model by default:
-`bge-legal-v1` when the local model is available, falling back to
-`BAAI/bge-large-en-v1.5`.
+`mxbai-embed-large` when the local model is available, falling back to
+`mixedbread-ai/mxbai-embed-large-v1`.
 
 SKVector stores the embeddings and enables cosine similarity search across
 a remote Qdrant cluster. Use this when you need multi-machine search,
@@ -843,7 +843,7 @@ Environment variables:
 ```bash
 SKMEMORY_SKVECTOR_URL=http://localhost:6333    # SKVector endpoint
 SKMEMORY_SKVECTOR_KEY=                          # SKVector API key
-SKMEMORY_SKVECTOR_EMBEDDING_MODEL=bge-legal-v1 # Sovereign default, fallback BAAI/bge-large-en-v1.5
+SKMEMORY_SKVECTOR_EMBEDDING_MODEL=mxbai-embed-large # Sovereign default, fallback mixedbread-ai/mxbai-embed-large-v1
 SKMEMORY_SKVECTOR_VECTOR_DIM=1024              # Match the embedding model
 SKMEMORY_SKGRAPH_URL=redis://localhost:6379    # SKGraph endpoint
 ```

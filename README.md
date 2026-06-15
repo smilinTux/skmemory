@@ -73,7 +73,7 @@ flowchart TD
     end
 
     subgraph Vector["Vector Backends"]
-        Chroma["SKChromaBackend\n(default — local, embedded)\nbge-legal-v1, 1024-dim"]
+        Chroma["SKChromaBackend\n(default — local, embedded)\nmxbai-embed-large, 1024-dim"]
         Qdrant["SKVectorBackend\n(remote — shared collections)\nlumina-memory, jarvis-memory,\nchef-docs, ..."]
     end
 
@@ -253,14 +253,14 @@ The vector layer is **two-tier**:
 | 1a (local) | **ChromaDB** (`SKChromaBackend`) | Per-agent local semantic search; embedded; zero infra | ✅ on |
 | 1b (remote) | **SKVector / Qdrant** (`SKVectorBackend`) | Shared collections (`lumina-memory`, `jarvis-memory`, `chef-docs`, etc.); cross-agent recall | optional |
 
-ChromaDB is wired up automatically when `pip install skmemory[chroma]` is present (or built into `skmemory[all]`). Embeddings use `bge-legal-v1` (1024-dim) with a `BAAI/bge-large-en-v1.5` fallback. Persist dir: `~/.skcapstone/agents/<agent>/memory/chroma/`.
+ChromaDB is wired up automatically when `pip install skmemory[chroma]` is present (or built into `skmemory[all]`). Embeddings use `mxbai-embed-large` (1024-dim) with a `mixedbread-ai/mxbai-embed-large-v1` fallback. Persist dir: `~/.skcapstone/agents/<agent>/memory/chroma/`.
 
-### Embedding model — `bge-legal-v1` (default, local)
+### Embedding model — `mxbai-embed-large` (default, local)
 
-Both ChromaDB and SKVector default to **`bge-legal-v1`** (1024-dim) when the local model is available at `~/clawd/models/bge-legal-v1/`, with `BAAI/bge-large-en-v1.5` as the network fallback. This means:
+Both ChromaDB and SKVector default to **`mxbai-embed-large`** (1024-dim) when the local model is available at `~/clawd/models/mxbai-embed-large/`, with `mixedbread-ai/mxbai-embed-large-v1` as the network fallback. This means:
 
-- ChromaDB embeddings: bge-legal-v1 (per-agent local index)
-- SKVector embeddings: bge-legal-v1 (must match the indexed dimension of every collection in `recall_collections` — `lumina-memory`, `jarvis-memory`, etc. are all bge-legal-v1)
+- ChromaDB embeddings: mxbai-embed-large (per-agent local index)
+- SKVector embeddings: mxbai-embed-large (must match the indexed dimension of every collection in `recall_collections` — `lumina-memory`, `jarvis-memory`, etc. are all mxbai-embed-large)
 - Cross-collection queries Just Work because the embedding model is consistent across the mesh
 
 To override per-agent, edit `~/.skcapstone/agents/<agent>/config/skvector.yaml`:
@@ -268,7 +268,7 @@ To override per-agent, edit `~/.skcapstone/agents/<agent>/config/skvector.yaml`:
 ```yaml
 embedding:
   provider: sentence_transformers
-  model: /home/cbrd21/clawd/models/bge-legal-v1   # or any HF model id
+  model: /home/cbrd21/clawd/models/mxbai-embed-large   # or any HF model id
 dimensions: 1024
 ```
 
@@ -521,7 +521,7 @@ Location: `~/.skcapstone/agents/<agent>/config/skmemory.yaml`
 ```yaml
 skvector_url: http://localhost:6333
 skvector_key: ""
-skvector_embedding_model: bge-legal-v1
+skvector_embedding_model: mxbai-embed-large
 skvector_vector_dim: 1024
 skgraph_url: redis://localhost:6379
 backends_enabled:
@@ -545,7 +545,7 @@ skmemory setup
 | `SKMEMORY_HOME` | Override the active profile's memory home (defaults under `~/.skcapstone/agents/<agent>/memory`) |
 | `SKMEMORY_SKVECTOR_URL` | Qdrant endpoint URL |
 | `SKMEMORY_SKVECTOR_KEY` | Qdrant API key |
-| `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Override the sovereign embedding model (`bge-legal-v1` by default, fallback: `BAAI/bge-large-en-v1.5`) |
+| `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Override the sovereign embedding model (`mxbai-embed-large` by default, fallback: `mixedbread-ai/mxbai-embed-large-v1`) |
 | `SKMEMORY_SKVECTOR_VECTOR_DIM` | Override the embedding dimension (default: `1024`) |
 | `SKMEMORY_SKGRAPH_URL` | FalkorDB / Redis endpoint URL |
 | `SKMEMORY_SOUL_PATH` | Override soul blueprint path (default: `~/.skcapstone/soul/base.json`) |

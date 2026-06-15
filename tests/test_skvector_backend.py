@@ -108,20 +108,20 @@ class TestInitialization:
 
     def test_model_alias_sets_expected_vector_dim(self):
         """Known model aliases should default to the right dimension."""
-        qb = SKVectorBackend(embedding_model="bge-large")
-        assert qb.embedding_model_name == "BAAI/bge-large-en-v1.5"
-        assert qb.vector_dim == MODEL_DIMENSIONS["bge-large"]
+        qb = SKVectorBackend(embedding_model="mxbai-embed-large")
+        assert qb.embedding_model_name == "mixedbread-ai/mxbai-embed-large-v1"
+        assert qb.vector_dim == MODEL_DIMENSIONS["mxbai-embed-large"]
 
     def test_default_model_prefers_local_hammertime_path(self, tmp_path, monkeypatch):
         """The default sovereign model should resolve to the local HammerTime path when present."""
         # Create a fake hammerTime model dir so the path-resolution logic can find it
-        fake_model = tmp_path / "models" / "bge-legal-v1"
+        fake_model = tmp_path / "models" / "mxbai-embed-large"
         fake_model.mkdir(parents=True)
         monkeypatch.setenv("HAMMERTIME_ROOT", str(tmp_path))
         qb = SKVectorBackend()
-        assert qb.requested_embedding_model == "bge-legal-v1"
+        assert qb.requested_embedding_model == "mxbai-embed-large"
         # Resolves to a local path containing the model directory
-        assert "models" in qb.embedding_model_name and "bge-legal-v1" in qb.embedding_model_name
+        assert "models" in qb.embedding_model_name and "mxbai-embed-large" in qb.embedding_model_name
 
 
 # ═══════════════════════════════════════════════════════════
