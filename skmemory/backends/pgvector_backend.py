@@ -195,27 +195,60 @@ class PGVectorBackend(BaseBackend):
             )
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
 
-    def search_text(self, query: str, limit: int = 10) -> list[Memory]:
-        """Full-text (BM25) search over title/content/summary."""
+    def search_text(
+        self, query: str, limit: int = 10, layer=None, tags=None, source=None
+    ) -> list[Memory]:
+        """Primary search: mxbai semantic vector (cosine) with optional
+        layer/tags/source filters, falling back to BM25 full-text then ILIKE when
+        the query can't be embedded or vector returns nothing.
+
+        Named search_text for the MemoryStore contract — store.search() calls this
+        with the filter kwargs. (Previously this was BM25-only and rejected the
+        kwargs, so every store search silently fell back to text. Now it uses the
+        mxbai vectors as intended.)"""
+        clauses, params = ["agent=%s"], [self.agent]
+        if layer is not None:
+            clauses.append("layer=%s")
+            params.append(str(getattr(layer, "value", layer)))
+        if tags:
+            clauses.append("tags @> %s")
+            params.append(list(tags))
+        if source:
+            clauses.append("source=%s")
+            params.append(source)
+        where = " AND ".join(clauses)
         conn = self._connection()
+
+        # 1) semantic vector (cosine) — the mxbai path
+        qvec = self._embed(query)
+        if qvec:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT memory_json FROM memories WHERE {where} "
+                    f"AND embedding IS NOT NULL ORDER BY embedding <=> %s::vector LIMIT %s",
+                    params + [qvec, limit],
+                )
+                rows = cur.fetchall()
+            if rows:
+                return [Memory.model_validate_json(_as_json_str(r[0])) for r in rows]
+
+        # 2) BM25 full-text fallback (same filters)
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT memory_json FROM memories
-                WHERE agent=%s AND tsv @@ plainto_tsquery('english', %s)
-                ORDER BY ts_rank(tsv, plainto_tsquery('english', %s)) DESC
-                LIMIT %s
-                """,
-                (self.agent, query, query, limit),
+                f"SELECT memory_json FROM memories WHERE {where} "
+                f"AND tsv @@ plainto_tsquery('english', %s) "
+                f"ORDER BY ts_rank(tsv, plainto_tsquery('english', %s)) DESC LIMIT %s",
+                params + [query, query, limit],
             )
             rows = cur.fetchall()
         if rows:
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in rows]
-        # fallback: case-insensitive substring
+
+        # 3) case-insensitive substring fallback
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT memory_json FROM memories WHERE agent=%s AND content ILIKE %s LIMIT %s",
-                (self.agent, f"%{query}%", limit),
+                f"SELECT memory_json FROM memories WHERE {where} AND content ILIKE %s LIMIT %s",
+                params + [f"%{query}%", limit],
             )
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
 
