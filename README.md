@@ -713,7 +713,31 @@ SKMemory is a **deeply integrated subsystem** of SKCapstone, not a standalone si
 
 ---
 
-## Related Projects
+## Related projects / See also
+
+SKMemory is the **Data / continuity layer** of the smilinTux vertical. Wander the
+ecosystem from here:
+
+- ⬆️ **Depends on:** [SKCapstone](https://github.com/smilinTux/skcapstone) — the
+  agent platform; every per-agent path lives under `~/.skcapstone/agents/$SKAGENT/`,
+  and the ritual loads its soul blueprint + FEBs.
+- ⬆️ **Depends on:** [Cloud 9](https://github.com/smilinTux/cloud9) — the Emotional
+  Breakthrough Protocol; `.seed.json` seeds are ingested into the memory store.
+- ⬇️ **Used by:** [skchat](https://github.com/smilinTux/skchat) /
+  [skcomms](https://github.com/smilinTux/skcomms) — capture conversations to memory
+  and recall context via the MCP tools.
+- ↔️ **Sibling:** [skingest](https://github.com/smilinTux/skingest) — the sole
+  **document** ingestion service; it writes the shared skmem-pg `docs` table that
+  skmemory's pgvector backend also reads. (skmemory = agent memories; skingest =
+  corpus.)
+- ↔️ **Sibling:** [sksecurity](https://github.com/smilinTux/sksecurity) /
+  [capauth](https://github.com/smilinTux/capauth) — identity + the GPG/PGP key the
+  vaulted backend seals to.
+- 🔭 **Future crypto path:** [sk_pgp](https://github.com/smilinTux/sk-pgp) /
+  [sk-pqc](https://github.com/smilinTux/sk-pqc-dart) — the PGP→PQC migration that the
+  vaulted backend will seal through (see [SECURITY.md](./SECURITY.md), tier T0 today).
+- 📐 **Standards:** [sk-standards](https://github.com/smilinTux/sk-standards) — the
+  canonical crypto, data-flow, version, and doc/SOP standards this repo conforms to.
 
 | Project | Layer | Description |
 |---------|-------|-------------|
@@ -721,6 +745,10 @@ SKMemory is a **deeply integrated subsystem** of SKCapstone, not a standalone si
 | [SKSecurity](https://github.com/smilinTux/sksecurity) | Security | AI Agent Security Platform |
 | [SKForge](https://github.com/smilinTux/SKyForge) | Apps | AI-Native Software Blueprints |
 | [SKStacks](https://skgit.skstack01.douno.it/smilinTux/SKStacks) | OS/Infra | Zero-Trust Infrastructure Framework |
+
+> Doc set: [SOP.md](./SOP.md) · [SECURITY.md](./SECURITY.md) ·
+> [CONTRIBUTING.md](./CONTRIBUTING.md) · [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) ·
+> [CHANGELOG.md](./CHANGELOG.md) · [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ---
 

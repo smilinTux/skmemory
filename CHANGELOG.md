@@ -6,6 +6,26 @@
 
 ## Unreleased
 
+### [ADDED] sk-standards doc set (SOP / SECURITY / CONTRIBUTING / CODE_OF_CONDUCT)
+
+Brought the repo up to the canonical
+[SK_REPO_DOC_STANDARD](https://github.com/smilinTux/sk-standards) bar (2026-06-28):
+
+- `SOP.md` — 9-section operational source of truth with a mermaid Architecture
+  diagram (source-of-truth flat files → SQLite index → Chroma/pgvector/graph
+  projections), build/test/deploy, troubleshooting table, and a maturity-tier
+  reference (**T0 — Classical**: at-rest GPG sealing only; no hybrid PQ KEM today).
+- `SECURITY.md` — threat model, secret-handling hard rules, reporting channel, and an
+  **honest crypto-posture** statement (no post-quantum claim; FIPS 203 cited for the
+  future sk_pgp/sk_pqc sealing path).
+- `CONTRIBUTING.md` — branch/commit (`Co-Authored-By` trailer)/test-gate/review path;
+  additive-and-gated rule for LIVE paths; TDD-where-there's-logic.
+- `CODE_OF_CONDUCT.md` — Contributor Covenant 2.1.
+- `README.md` — added a standard-conformant **Related projects / See also** section
+  (Depends on / Used by / Siblings / Standards cross-links) and a doc-set footer.
+
+Documentation-only; no code or backend behavior changed.
+
 ### [CHANGED] Embedding cutover: bge-legal → mxbai-embed-large; pgvector localhost default
 
 Cut the sovereign vector stack over from the bge-legal embedders to
