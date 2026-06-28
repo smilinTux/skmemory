@@ -146,6 +146,16 @@ Library release (PyPI + npm):
 Service deploy (per-agent sync): `skmemory-sync@<agent>.timer` (systemd, in
 `systemd/`) keeps SQLite ⇄ flat files ⇄ vector in lockstep.
 
+### Front-end / Exposure
+
+Per [sk-standards `UNIFIED_INGRESS_STANDARD.md`](https://github.com/smilinTux/sk-standards/blob/main/standards/UNIFIED_INGRESS_STANDARD.md):
+
+**N/A — no network surface.** skmemory is a CLI / library + MCP (stdio) over **local
+stores** (flat JSON files, SQLite `index.db`, ChromaDB) and reaches the shared
+`skmem-pg` Postgres as a *client* over the tailnet. It exposes no public `:443` route
+and binds no inbound listener; the `skmemory-sync@<agent>` timer is a local file/vector
+reconciler, not a server.
+
 ---
 
 ## 6. Configuration / Usage
