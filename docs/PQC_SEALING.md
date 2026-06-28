@@ -6,9 +6,14 @@ sealing pattern (`cloud9/sealing.py`). It lets skmemory move from today's
 classical at-rest behaviour to a real post-quantum **detached signature** as a
 *configuration change*, not a rewrite.
 
-It is wired into **nothing**. `FileBackend.save` / `load` are unchanged; the
-live skchat / skcomms daemons are untouched. The seam exists so the cut-over,
-when it happens, is a one-line backend swap behind `get_sealer()`.
+**Stage-2 (this change) wires the seam into `FileBackend`'s real save/load
+path — but only when explicitly opted in.** With the default (classical)
+backend, `FileBackend.save` / `load` remain byte-for-byte unchanged and the
+live skchat / skcomms daemons are untouched: the classical sealer produces no
+signature, so **no sidecar is written** and nothing is verified. A PQC sidecar
+is produced *only* when an `sk_pgp` backend is explicitly selected **and** a
+signing key is present; otherwise it honestly falls back to classical. See
+"Stage-2 wiring" below.
 
 ## What "at rest" means here
 
@@ -83,6 +88,47 @@ Config precedence: explicit `config` dict → environment → classical.
 | `SKMEMORY_SEAL_CERT` | path to armored public cert (optional; defaults to key) |
 | `SKMEMORY_SEAL_PASSWORD` | passphrase (prefer gpg-agent later) |
 
+## Stage-2 wiring — `FileBackend` sidecars (write side + verify-on-read)
+
+The seam is now wired into the **real** save/load path of
+`skmemory.backends.file_backend.FileBackend`, gated and additive:
+
+```python
+from skmemory.backends.file_backend import FileBackend
+
+# Default: classical, byte-for-byte unchanged — no sidecar, no verification.
+be = FileBackend(base_path="...")
+
+# Opt-in PQC sealing (sign on save, verify on read):
+cfg = {"backend": "sk_pgp", "key": "/path/agent-key.asc", "password": "…"}
+be = FileBackend(base_path="...", seal_config=cfg)            # writes <id>.json.sig
+be = FileBackend(base_path="...", seal_config=cfg, strict_verify=True)  # reject tamper
+```
+
+- **`save(memory)`** writes the memory JSON exactly as before, then calls
+  `sealing.write_seal(memory, path, config=seal_config)`. The classical default's
+  `sign()` returns `None`, so **no sidecar is written** and the on-disk body is
+  byte-for-byte today's output. Only a ready `sk_pgp` backend emits a
+  `<id>.json.sig` armored composite detached signature. Signing that raises
+  (e.g. wrong passphrase) is swallowed — persistence never fails because of
+  sealing.
+- **`load(memory_id)`** reads the memory, then calls
+  `sealing.verify_seal(raw_bytes, path, config=seal_config)` over the **exact
+  on-disk bytes**. No sidecar → verdict is `None` and behaviour is unchanged.
+  The verdict is exposed on `FileBackend.last_verdict`; an explicit
+  `FileBackend.verify_at_rest(memory_id)` returns it on demand. In
+  `strict_verify=True` mode a *failed* signature (`signature_ok is False`, i.e. a
+  tampered file) makes `load` return `None`; an *unverifiable* signature
+  (`signature_ok is None`, e.g. a sidecar with no cert/key to check it) is
+  **never** a rejection.
+- **`delete(memory_id)`** also removes any `<id>.json.sig` sidecar. The
+  `*.json` globs in `list_memories` / `search_text` ignore `.sig` files.
+
+`sealing.get_verifier()` is the read-side resolver: laxer than `get_sealer()`
+(it needs only a public cert, not a usable secret key), still defaulting to
+classical. `store.py` constructs `FileBackend()` with **no** seal config, so the
+live skmemory store stays fully classical until a deployment opts in.
+
 ## Honest crypto claims
 
 - ML-DSA (FIPS 204) and ML-KEM (FIPS 203) are **post-quantum /
@@ -98,23 +144,29 @@ Config precedence: explicit `config` dict → environment → classical.
 
 This is a **seam**, not a deployed control. Where it stands:
 
-- **T0 — Scaffold (DONE, this change).** Interface, classical bit-for-bit
-  sealer, gated `SkPgpSealer`, resolver with honest fallback, TDD
-  (classical bit-for-bit + checksum + tri-state verify + fallback paths + real
-  sk_pgp sign/verify roundtrip when the extra is installed). Unwired from the
-  live path.
-- **T1 — Opt-in sidecar writer (NOT STARTED).** A wrapper that, when
-  `SKMEMORY_SEAL_BACKEND=sk_pgp`, writes `<id>.json.sig` alongside each saved
-  memory and verifies it on load. Still additive; classical files keep loading
-  with `signature_ok=None`.
+- **T0 — Scaffold (DONE).** Interface, classical bit-for-bit sealer, gated
+  `SkPgpSealer`, resolver with honest fallback, TDD (classical bit-for-bit +
+  checksum + tri-state verify + fallback paths + real sk_pgp sign/verify
+  roundtrip when the extra is installed). Unwired from the live path.
+- **T1 — Opt-in sidecar writer + verify-on-read (DONE, this change).**
+  `FileBackend` now writes `<id>.json.sig` on `save` and verifies it on `load`
+  when an `sk_pgp` backend is *explicitly* configured + ready; `strict_verify`
+  rejects a *failed* signature. Still additive: the classical default writes no
+  sidecar and is byte-for-byte unchanged; classical/legacy files keep loading
+  with `signature_ok=None`. TDD: `tests/test_sealing_stage2.py` (classical
+  bit-for-bit on the real path, gated sign+verify roundtrip, tamper →
+  `signature_ok=False`, strict rejection, unverifiable-is-honest, explicit-cert
+  verify, sk_pgp-absent fallback, sign-failure-never-breaks-save).
 - **T2 — Key lifecycle (NOT STARTED).** Source the signing key from CapAuth /
   gpg-agent instead of an env-var path; rotation + revocation story; per-agent
   signing identity (see the skcomms agent-signing-key lesson — agents must sign
   as themselves, not the operator).
-- **T3 — Verify-on-read enforcement + audit (NOT STARTED).** Optional strict
-  mode that treats `signature_ok is False` as a hard tamper event into the
-  Fortress audit chain; migration tooling to back-seal existing memories.
+- **T3 — Verify-on-read *enforcement* + audit (PARTIAL).** `strict_verify`
+  exists at the `FileBackend` layer (a failed signature → `load` returns
+  `None`); still **not started**: piping a tamper verdict into the Fortress
+  audit chain and migration tooling to back-seal existing memories.
 
-Nothing past T0 exists yet; do not describe this as "memories are PQC-signed."
-They are not, by default — and the seam is dormant until a future, separate
-change wires T1.
+`store.py` builds `FileBackend()` with **no** seal config, so by default
+**memories are NOT PQC-signed** — do not describe them as such. PQC signing is
+dormant until a deployment explicitly opts in via `seal_config` / `SKMEMORY_SEAL_*`
+with a real key present.

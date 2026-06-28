@@ -283,8 +283,28 @@ class SkPgpSealer:
                 notes=["no detached signature supplied"],
             )
         cert_src = self.cert_path or self.secret_key_path
-        cert = sk.Cert.from_file(cert_src)  # type: ignore[attr-defined]
-        sig_ok = bool(cert.verify_detached(signature, at_rest_bytes(memory_like)))
+        if not cert_src:
+            # Honest: a signature is present but we have no cert/key to check it.
+            # Never reject -- surface as unverifiable (signature_ok=None).
+            return SealVerdict(
+                scheme=self.scheme, checksum_ok=checksum_ok, signature_ok=None,
+                notes=["signature present but no cert/key configured to verify it"],
+            )
+        try:
+            # Prefer an explicit public cert; otherwise derive the cert from the
+            # secret key so we never depend on Cert.from_file parsing secret files.
+            if self.cert_path:
+                cert = sk.Cert.from_file(self.cert_path)  # type: ignore[attr-defined]
+            else:
+                cert = sk.Key.from_file(self.secret_key_path).cert  # type: ignore[attr-defined]
+            # sk_pgp's verify_detached takes the armored signature as *bytes*.
+            sig_bytes = signature.encode("utf-8") if isinstance(signature, str) else bytes(signature)
+            sig_ok = bool(cert.verify_detached(sig_bytes, at_rest_bytes(memory_like)))
+        except Exception as exc:  # pragma: no cover - malformed sig/cert
+            return SealVerdict(
+                scheme=self.scheme, checksum_ok=checksum_ok, signature_ok=False,
+                notes=[f"PQC verification raised: {exc}"],
+            )
         fp = getattr(cert, "fingerprint", None)
         return SealVerdict(
             scheme=self.scheme,
@@ -355,15 +375,143 @@ def seal_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Stage-2 wiring -- detached-signature sidecars (write side + verify-on-read)
+# --------------------------------------------------------------------------- #
+#
+# A memory's PQC signature lives in a sidecar file ``<id>.json.sig`` (armored),
+# never inside the memory JSON. This keeps the on-disk body -- and its
+# bit-for-bit compatibility with every existing reader/importer -- intact: a
+# legacy reader simply ignores the sidecar, and the classical sealer writes no
+# sidecar at all. Enabling PQC can therefore never alter an existing memory or
+# break its load path.
+
+SIDECAR_SUFFIX = ".sig"
+
+
+def sidecar_path_for(memory_path: Any) -> str:
+    """Return the sidecar path for a given memory file path (``<path>.sig``)."""
+    return str(memory_path) + SIDECAR_SUFFIX
+
+
+def get_verifier(config: Optional[Dict[str, Any]] = None) -> Sealer:
+    """Resolve a sealer for **verification**. Defaults to classical.
+
+    Verification needs only a public cert (or a key to derive it), not a usable
+    signing key -- so this is intentionally laxer than :func:`get_sealer`
+    (which gates on a configured secret key). If the sk_pgp backend is requested
+    *or* a cert/key is configured, and ``sk_pgp`` imports, a ``SkPgpSealer`` is
+    returned; otherwise classical. A ``SkPgpSealer`` returned here still yields
+    an honest ``signature_ok=None`` verdict if it has nothing to verify against.
+    """
+    config = config or {}
+    backend = (config.get("backend") or os.environ.get(ENV_BACKEND) or "classical").lower()
+    key = config.get("key") or os.environ.get(ENV_KEY)
+    cert = config.get("cert") or os.environ.get(ENV_CERT)
+    want_pqc = backend in ("sk_pgp", "skpgp", "pqc") or bool(cert) or bool(key)
+    if want_pqc and _sk_pgp() is not None:
+        suite = (config.get("scheme") or os.environ.get(ENV_SCHEME) or "mldsa87-ed448").lower()
+        scheme = _SCHEME_BY_SUITE.get(suite, SCHEME_SKPGP_MLDSA87_ED448)
+        return SkPgpSealer(
+            scheme=scheme,
+            secret_key_path=key,
+            cert_path=cert,
+            password=config.get("password") or os.environ.get(ENV_PASSWORD),
+        )
+    return ClassicalSealer()
+
+
+def write_seal(
+    memory_like: Any,
+    memory_path: Any,
+    *,
+    sealer: Optional[Sealer] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Write side: optionally drop a ``<path>.sig`` detached-signature sidecar.
+
+    Resolves a sealer (``sealer`` arg wins, else :func:`get_sealer`). The
+    classical default's ``sign()`` returns ``None`` -> **no sidecar is written
+    and this returns ``None``**, so the on-disk result is byte-for-byte today's
+    behaviour. Only when a real PQC backend is selected *and* ready does a
+    signature get produced and written.
+
+    Robustness: if signing raises (e.g. wrong passphrase), the memory is left
+    untouched and this returns ``None`` -- persisting a memory never fails
+    because of sealing.
+
+    Returns a small info dict (``signature_path`` / ``seal_scheme`` /
+    ``seal_is_post_quantum``) when a sidecar was written, else ``None``.
+    """
+    sealer = sealer or get_sealer(config)
+    try:
+        sig = sealer.sign(memory_like)
+    except Exception:  # never let sealing break persistence
+        return None
+    if not sig:
+        return None
+    # sk_pgp returns armored *bytes*; normalise to text for the sidecar file.
+    sig_text = sig.decode("utf-8") if isinstance(sig, (bytes, bytearray)) else sig
+    sig_path = sidecar_path_for(memory_path)
+    try:
+        with open(sig_path, "w", encoding="utf-8") as fh:
+            fh.write(sig_text)
+    except Exception:  # pragma: no cover - filesystem dependent
+        return None
+    return {
+        "signature_path": str(sig_path),
+        "seal_scheme": sealer.scheme,
+        "seal_is_post_quantum": sealer.scheme.startswith("sk_pgp:"),
+    }
+
+
+def verify_seal(
+    memory_like: Any,
+    memory_path: Optional[Any] = None,
+    *,
+    signature: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+    expected_checksum: Optional[str] = None,
+) -> Optional[SealVerdict]:
+    """Verify-on-read: verify a sidecar signature **if one exists**.
+
+    Returns ``None`` when there is no sidecar (and no inline ``signature``) --
+    i.e. today's memories round-trip with **zero** behaviour change. When a
+    sidecar is present, returns a :class:`SealVerdict`. This only ever *adds*
+    assurance: a missing/unverifiable signature is reported honestly
+    (``signature_ok`` ``None``), never as a rejection; a present-but-failing
+    signature is ``signature_ok=False`` and the caller decides policy.
+    """
+    sig = signature
+    if sig is None and memory_path is not None:
+        sig_path = sidecar_path_for(memory_path)
+        if not os.path.exists(sig_path):
+            return None
+        try:
+            with open(sig_path, "r", encoding="utf-8") as fh:
+                sig = fh.read()
+        except Exception:  # pragma: no cover - filesystem dependent
+            return None
+    if not sig:
+        return None
+    verifier = get_verifier(config)
+    return verifier.verify(memory_like, sig, expected_checksum=expected_checksum)
+
+
 __all__ = [
     "Sealer",
     "SealVerdict",
     "ClassicalSealer",
     "SkPgpSealer",
     "get_sealer",
+    "get_verifier",
+    "write_seal",
+    "verify_seal",
+    "sidecar_path_for",
     "seal_status",
     "content_checksum",
     "at_rest_bytes",
+    "SIDECAR_SUFFIX",
     "SCHEME_CLASSICAL",
     "SCHEME_SKPGP_MLDSA87_ED448",
     "SCHEME_SKPGP_MLDSA65_ED25519",
