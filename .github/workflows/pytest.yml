@@ -1,0 +1,68 @@
+name: Tests
+
+# Dedicated pytest workflow — green-by-construction.
+#
+# Invocation mirrors the repo's known-passing command (see publish.yml's
+# pre-publish gate):
+#
+#     pytest tests/ --ignore=tests/integration -k "not test_sharing"
+#
+# Honest scoping notes:
+#   * tests/integration/* require LIVE SKGraph (FalkorDB) + SKVector (Qdrant)
+#     backends and sentence-transformers. They auto-skip via skipif when those
+#     services are unreachable (tests/integration/conftest.py), but we exclude
+#     the directory outright so the run never depends on networked services.
+#   * test_sharing.py exercises PGP cross-agent sharing via `pgpy`, which is
+#     unstable across CPython versions (see commit 435e817 "guard pgpy import in
+#     test_sharing"). It is deselected here — the same exclusion publish.yml uses
+#     for its release gate — rather than relying on an import-time skip.
+#
+# Dependency set: `.[dev]` (pytest, pytest-cov, pgpy, black, ruff) on top of the
+# core deps (pydantic, click, pyyaml, mcp). Sibling sk* packages (skseed,
+# chromadb, qdrant-client, falkordb, telethon, sk_pgp) are NOT installed — every
+# test that needs one guards with pytest.importorskip / skipif and self-skips, so
+# no GitHub-source install or allow-failure shim is required for a green run.
+#
+# The bootstrap test agent (SKCAPSTONE_HOME / SKCAPSTONE_AGENT in a temp dir) is
+# created automatically by tests/conftest.py, so no run-from-HOME setup is needed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "skmemory/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/pytest.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run unit test suite (integration + pgpy-sharing excluded)
+        run: |
+          python -m pytest tests/ \
+            --ignore=tests/integration \
+            -k "not test_sharing" \
+            -v --tb=short

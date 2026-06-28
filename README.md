@@ -1,5 +1,6 @@
 # SKMemory
 
+[![Tests](https://github.com/smilinTux/skmemory/actions/workflows/pytest.yml/badge.svg)](https://github.com/smilinTux/skmemory/actions/workflows/pytest.yml)
 [![PyPI version](https://img.shields.io/pypi/v/skmemory.svg)](https://pypi.org/project/skmemory/)
 [![npm version](https://img.shields.io/npm/v/@smilintux/skmemory.svg)](https://www.npmjs.com/package/@smilintux/skmemory)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
