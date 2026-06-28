@@ -30,6 +30,14 @@ from .lovenote import LoveNote, LoveNoteChain
 from .openclaw import SKMemoryPlugin
 from .quadrants import Quadrant, classify_memory, tag_with_quadrant
 from .ritual import RitualResult, perform_ritual, quick_rehydrate
+from .sealing import (
+    ClassicalSealer,
+    Sealer,
+    SealVerdict,
+    SkPgpSealer,
+    get_sealer,
+    seal_status,
+)
 from .soul import SoulBlueprint, load_soul, save_soul
 from .steelman import (
     SeedFramework,
@@ -76,5 +84,11 @@ __all__ = [
     "install_seed_framework",
     "get_default_framework",
     "import_telegram",
+    "Sealer",
+    "SealVerdict",
+    "ClassicalSealer",
+    "SkPgpSealer",
+    "get_sealer",
+    "seal_status",
     "__version__",
 ]

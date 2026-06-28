@@ -49,6 +49,12 @@ skgraph = [
 telegram = [
     "telethon>=1.36",
 ]
+pqc-seal = [
+    # Optional: composite ML-DSA-87 + Ed448 detached signatures for the at-rest
+    # sealing seam (skmemory.sealing). NOT a hard dependency -- absent it, the
+    # seam transparently falls back to the classical SHA-256 sealer.
+    "sk_pgp>=0.1.0",
+]
 all = [
     "skseed>=0.1.0",
     "chromadb>=0.5.0",
