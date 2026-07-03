@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
+from .fresh_context import FreshContextRunner, resolve_runner
 from .models import Memory, MemoryLayer
 from .store import MemoryStore
 
@@ -135,15 +136,37 @@ class PromotionEngine:
     Args:
         store: SKMemory MemoryStore instance.
         criteria: Promotion thresholds (uses defaults if not provided).
+        runner: Optional fresh-context runner used by :meth:`run_pass` to
+            execute a full sweep in an isolated context (e.g. a spawned
+            subagent/subprocess), so a long consolidation/promotion pass does
+            not pollute the caller's working context. Defaults to the
+            in-process runner (no isolation), which keeps behaviour identical
+            to calling :meth:`sweep` directly.
     """
 
     def __init__(
         self,
         store: MemoryStore,
         criteria: PromotionCriteria | None = None,
+        runner: FreshContextRunner | None = None,
     ) -> None:
         self._store = store
         self._criteria = criteria or PromotionCriteria()
+        self._runner = resolve_runner(runner)
+
+    def run_pass(self) -> PromotionResult:
+        """Run a consolidation/promotion sweep via the fresh-context runner.
+
+        This is the fresh-context seam: the actual work (:meth:`sweep`) is
+        handed to the injected runner, which in production executes it in an
+        isolated context (a spawned subagent/subprocess with a clean context
+        window) and returns the result. With the default in-process runner this
+        is exactly equivalent to calling :meth:`sweep`.
+
+        Returns:
+            PromotionResult: Summary of what was promoted.
+        """
+        return self._runner(self.sweep)
 
     def sweep(self) -> PromotionResult:
         """Run a full promotion sweep across all tiers.
@@ -410,6 +433,9 @@ class PromotionScheduler:
         store: The MemoryStore to sweep.
         criteria: Promotion thresholds (uses defaults if not provided).
         interval_seconds: How often to run a sweep (default: 6 hours).
+        runner: Optional fresh-context runner. When provided, every scheduled
+            sweep is executed via this runner (e.g. spawned in an isolated
+            subagent/subprocess) instead of inline on the scheduler thread.
 
     Example::
 
@@ -426,8 +452,9 @@ class PromotionScheduler:
         store: MemoryStore,
         criteria: PromotionCriteria | None = None,
         interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
+        runner: FreshContextRunner | None = None,
     ) -> None:
-        self._engine = PromotionEngine(store, criteria)
+        self._engine = PromotionEngine(store, criteria, runner=runner)
         self._interval = interval_seconds
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -475,7 +502,7 @@ class PromotionScheduler:
         Returns:
             PromotionResult: The sweep result.
         """
-        result = self._engine.sweep()
+        result = self._engine.run_pass()
         self._last_result = result
         self._sweep_count += 1
         return result
@@ -523,7 +550,7 @@ class PromotionScheduler:
         """Background thread: sweep, wait interval, repeat until stopped."""
         while not self._stop_event.is_set():
             try:
-                result = self._engine.sweep()
+                result = self._engine.run_pass()
                 self._last_result = result
                 self._sweep_count += 1
                 if result.total_promoted > 0:

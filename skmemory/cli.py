@@ -678,9 +678,10 @@ def sweep_cmd(
             time.sleep(1)
 
     else:
-        # Single one-shot sweep
+        # Single one-shot sweep, routed through the fresh-context seam
+        # (in-process by default; a spawned-subagent runner can be injected).
         engine = PromotionEngine(store, criteria)
-        result = engine.sweep()
+        result = engine.run_pass()
 
         if as_json:
             click.echo(json.dumps(result.model_dump(), indent=2, default=str))
