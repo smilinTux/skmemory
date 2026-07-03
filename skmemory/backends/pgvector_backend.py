@@ -24,7 +24,9 @@ import os
 from collections.abc import Callable
 
 from ..models import Memory, MemoryLayer
+from ..query_sanitizer import sanitize_query
 from .base import BaseBackend
+from .sqlite_backend import CONTENT_PREVIEW_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +271,64 @@ class PGVectorBackend(BaseBackend):
     # convenience alias
     def search_semantic(self, query: str, limit: int = 10) -> list[Memory]:
         return self.search(query, limit)
+
+    def find_similar(self, content: str, k: int = 5) -> list[dict]:
+        """Find memories with content similar to *content* (advisory dedup check).
+
+        Mirrors ``SKChromaBackend.find_similar()`` — same signature and return
+        shape — so ``MemoryStore.check_duplicate()`` works identically
+        regardless of which vector backend is wired in. Runs the same pgvector
+        cosine-distance nearest-neighbor query as ``search()``/``search_text()``,
+        scoped to ``self.agent``, but keeps the raw distance (converted to a
+        similarity) instead of discarding it, so the caller can decide for
+        itself whether a candidate is "close enough" to be a near-duplicate.
+        Read-only — never writes, merges, or mutates anything.
+
+        Args:
+            content: Text to check for near-duplicates (not yet stored).
+            k: Max number of candidates to return.
+
+        Returns:
+            list[dict]: Each item is ``{"id", "content_preview", "similarity"}``,
+                sorted by similarity descending. Empty list if the query can't
+                be embedded, the connection/query fails, or there are no
+                candidates — this method never raises.
+        """
+        try:
+            qvec = self._embed(sanitize_query(content))
+            if not qvec:
+                return []
+
+            conn = self._connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, content, embedding <=> %s::vector AS distance "
+                    "FROM memories WHERE agent=%s AND embedding IS NOT NULL "
+                    "ORDER BY embedding <=> %s::vector LIMIT %s",
+                    (qvec, self.agent, qvec, k),
+                )
+                rows = cur.fetchall()
+
+            matches = []
+            for row_id, row_content, distance in rows:
+                # pgvector cosine (<=>) distance is 1 - cosine_similarity.
+                # Clamp to [0, 1] since floating-point drift can push it
+                # slightly outside that range.
+                similarity = max(0.0, min(1.0, 1.0 - float(distance)))
+                preview = (row_content or "")[:CONTENT_PREVIEW_LENGTH]
+                matches.append(
+                    {
+                        "id": row_id,
+                        "content_preview": preview,
+                        "similarity": round(similarity, 4),
+                    }
+                )
+
+            matches.sort(key=lambda m: m["similarity"], reverse=True)
+            return matches
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PGVectorBackend find_similar failed: %s", e)
+            return []
 
     def health_check(self) -> dict:
         try:
