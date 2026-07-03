@@ -6,6 +6,46 @@
 
 ## Unreleased
 
+### [ADDED] Maps of Content, schema-validated writes, fresh-context runner (2026-07-03)
+
+Three additive, backward-compatible capabilities (round-2 merges) — no change to
+existing store/backend behavior; defaults preserve prior semantics.
+
+- **Maps of Content (MOC) indexes + `skmemory moc` CLI.** New `skmemory/moc.py`
+  builds read-side index documents ("Maps of Content") over a memory collection,
+  grouped two ways: **by quadrant** (Core / Work / Soul / Wild) and **by tag
+  cluster** (one MOC per tag shared by ≥ N memories). Output is deterministic
+  (stable sort keys, byte-identical Markdown for the same input) and bounded
+  (caps on entries-per-section and cluster count) so a large store can't blow up
+  index generation. Pure aggregation — never mutates or writes back to the store.
+  The `skmemory moc` command renders the MOCs to stdout or writes one
+  `<key>.md` file per index with `--out DIR`; `--kind {all,quadrants,tags}`,
+  `--limit`, `--min-cluster-size`, `--max-clusters`, and `--max-entries` tune it.
+- **Schema-validated writes via pluggable pre-write hooks.** New
+  `skmemory/validation.py` adds a `(Memory) -> None` **pre-write hook** chain that
+  runs at the write boundary *before* any backend is touched. The default hook
+  (`schema_validator`) round-trips each memory through `model_dump → model_validate`
+  so fields mutated after construction (e.g. via `model_construct` or direct
+  attribute assignment) are re-checked against the canonical `Memory` schema;
+  malformed writes are rejected with a `SchemaValidationError` (subclasses
+  `ValueError`, so existing `except ValueError` / WAL failure paths keep working)
+  naming the offending fields. Register additional hooks via
+  `MemoryStore.register_pre_write_hook(...)`; the default chain is installed on
+  every new store.
+- **Fresh-context runner seam for consolidation/promotion.** New
+  `skmemory/fresh_context.py` adds an injectable `FreshContextRunner` seam so a
+  long, chatty maintenance pass (consolidation / promotion sweep) can run in an
+  **isolated context** (spawned subagent/subprocess) instead of polluting the
+  live agent's working context window. `PromotionEngine.run_pass()` routes the
+  sweep through the runner; the default `in_process_runner` runs in-process with
+  no isolation (identity element — behavior identical to before), and
+  `SubprocessRunner(spawn)` is the scaffold for real subagent/subprocess spawning
+  with the spawn mechanism itself injected. `PromotionScheduler` accepts the same
+  optional `runner`. `skmemory sweep` (one-shot) now routes through the seam.
+
+Verified: full suite green — **988 passed, 76 skipped** (`pytest tests/ -q`), incl.
+`tests/test_moc.py`, `tests/test_validation.py`, `tests/test_fresh_context.py`.
+
 ### [ADDED] sk-standards doc set (SOP / SECURITY / CONTRIBUTING / CODE_OF_CONDUCT)
 
 Brought the repo up to the canonical

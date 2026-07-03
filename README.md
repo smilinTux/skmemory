@@ -135,6 +135,9 @@ flowchart TD
 - **Cloud 9 seed integration** — seeds planted by one AI instance become searchable long-term memories for the next via `skmemory import-seeds`
 - **Telegram importer** — import Telegram chat history (JSON export or live API via Telethon) as timestamped memories
 - **Session consolidation** — compress a session's short-term snapshots into one mid-term memory via `skmemory consolidate`
+- **Maps of Content (MOC)** — `skmemory moc` auto-generates read-side index documents grouping memories **by quadrant** (Core/Work/Soul/Wild) and **by tag cluster**. Deterministic (byte-identical Markdown for the same input) and bounded; renders to stdout or writes one `<key>.md` per index with `--out`. Pure aggregation — never mutates the store.
+- **Schema-validated writes** — every write passes a pluggable **pre-write hook** chain before touching any backend. The default `schema_validator` re-validates each memory against the canonical `Memory` schema (catching fields mutated after construction) and rejects malformed writes with a `SchemaValidationError`. Register custom hooks via `MemoryStore.register_pre_write_hook(...)`.
+- **Fresh-context runner seam** — consolidation/promotion passes route through an injectable `FreshContextRunner` (`skmemory/fresh_context.py`) so a long, chatty maintenance sweep can run in an isolated context (spawned subagent/subprocess) instead of polluting the live agent's working context window. Defaults to an in-process runner (behavior unchanged); `SubprocessRunner(spawn)` is the extension point for real spawning. Wired into `PromotionEngine`, `PromotionScheduler`, and `skmemory sweep`.
 - **Auto-sweep / promotion daemon** — `skmemory sweep --daemon` runs every 6 hours, auto-promoting qualifying memories based on intensity thresholds
 - **Steel Man collider** — `skmemory steelman` runs a seed-framework-driven adversarial argument evaluator with identity verification
 - **Backup / restore** — dated JSON backups with pruning; `skmemory export` / `skmemory import`
@@ -201,6 +204,12 @@ skmemory sweep --daemon
 
 # Consolidate a session into one mid-term memory
 skmemory consolidate my-session-id --summary "Day's work on memory routing"
+
+# Auto-generate Maps of Content (MOC) index documents
+skmemory moc                              # render quadrant + tag-cluster MOCs to stdout
+skmemory moc --kind quadrants             # only the Core/Work/Soul/Wild index
+skmemory moc --kind tags --min-cluster-size 3 --max-clusters 20
+skmemory moc --out ./mocs                 # write one <key>.md file per MOC
 
 # Soul identity
 skmemory soul show
