@@ -150,6 +150,30 @@ class TestCheckDuplicate:
 
         assert [m["id"] for m in matches] == ["exact"]
 
+    def test_default_threshold_tuned_for_mxbai(self, tmp_path: Path) -> None:
+        """The DEFAULT threshold (0.73) is empirically tuned for mxbai-embed-large.
+
+        Uses the real boundary similarities measured by
+        skmemory/eval/tune_dedup_threshold.py: near-duplicates clustered at
+        0.76-0.94 and distinct content at 0.27-0.70 (clean gap 0.703-0.763).
+        With NO explicit threshold, a near-dup at the dup-cluster floor (0.763)
+        must be caught and distinct content at the non-dup ceiling (0.703) must
+        be excluded. This regression-locks the 0.85->0.73 tuning: if the default
+        drifts back up to 0.85 the near-dup is wrongly missed; if it drops to
+        0.70 the distinct item wrongly matches — either way this test fails.
+        """
+        vector = MagicMock()
+        vector.find_similar.return_value = [
+            {"id": "near-dup", "content_preview": "paraphrase of a stored fact", "similarity": 0.763},
+            {"id": "distinct", "content_preview": "unrelated different topic", "similarity": 0.703},
+        ]
+        store = self._store(tmp_path, vector)
+
+        # No threshold kwarg -> exercises the tuned default (0.73).
+        matches = store.check_duplicate("candidate content")
+
+        assert [m["id"] for m in matches] == ["near-dup"]
+
     def test_no_vector_backend_returns_empty(self, tmp_path: Path) -> None:
         """No vector backend configured -> [] (never crashes)."""
         store = self._store(tmp_path, None)
