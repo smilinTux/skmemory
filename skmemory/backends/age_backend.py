@@ -342,7 +342,7 @@ class AGEGraphBackend:
             "intensity": memory.emotional.intensity,
             "valence": memory.emotional.valence,
             "tags": list(memory.tags),
-            "metadata_json": json.dumps(memory.metadata or {}),
+            "metadata_json": json.dumps(memory.metadata or {}, default=str),
         }
         query = (
             "MERGE (m:Memory {id: $id}) "
@@ -459,7 +459,16 @@ class AGEGraphBackend:
         return self._memory_dict(vertex)
 
     def get_related(self, memory_id: str, depth: int = 2) -> list[dict]:
-        """Traverse any edge type, any direction, up to ``depth`` hops.
+        """Traverse Memory-to-Memory relationship edges only, up to ``depth`` hops.
+
+        Constrained to ``RELATED_TO`` and ``SUPERSEDES`` — the only edge
+        types that connect ``(:Memory)-(:Memory)`` (see the graph schema
+        docstring at the top of this module). Deliberately excludes
+        ``TAGGED_WITH`` / ``FROM_SOURCE`` / ``MENTIONS``, which connect a
+        Memory to a Tag / Source / Entity hub node respectively — walking
+        through those would traverse ANY two memories that merely share a
+        popular tag or source, exploding through hub nodes rather than
+        reflecting real relatedness.
 
         Args:
             memory_id: Starting memory ID.
@@ -473,16 +482,33 @@ class AGEGraphBackend:
         if self.graph is None:
             return []
         safe_depth = max(1, min(int(depth), 5))
-        query = (
-            "MATCH (start:Memory {id: $id}) "
-            "MATCH path = (start)-[*1.." + str(safe_depth) + "]-(related:Memory) "
-            "WHERE related.id <> $id "
-            "WITH related, min(length(path)) AS distance "
-            "RETURN related.id, related.title, related.layer, distance "
-            "ORDER BY distance ASC, related.title ASC LIMIT 50"
-        )
-        rows = self._cypher(query, {"id": memory_id}, cols="id agtype, title agtype, layer agtype, distance agtype")
-        return self._rows_to_dicts(rows, ["id", "title", "layer", "distance"])
+        # Apache AGE's Cypher parser (1.7.x) does not support relationship-type
+        # alternation (`-[:A|B*1..N]-`) in a pattern — it's a hard syntax
+        # error, not just a semantic gap — so each Memory-to-Memory edge
+        # type is queried separately and the results are merged here,
+        # keeping the minimum hop-distance per related memory (matching
+        # what a single combined query's `min(length(path))` would have
+        # produced).
+        merged: dict[str, dict] = {}
+        for rel_type in ("RELATED_TO", "SUPERSEDES"):
+            query = (
+                "MATCH (start:Memory {id: $id}) "
+                "MATCH path = (start)-[:" + rel_type + "*1.." + str(safe_depth) + "]-(related:Memory) "
+                "WHERE related.id <> $id "
+                "WITH related, min(length(path)) AS distance "
+                "RETURN related.id, related.title, related.layer, distance"
+            )
+            rows = self._cypher(
+                query, {"id": memory_id}, cols="id agtype, title agtype, layer agtype, distance agtype"
+            )
+            for row in self._rows_to_dicts(rows, ["id", "title", "layer", "distance"]):
+                rid = row["id"]
+                existing = merged.get(rid)
+                if existing is None or (row["distance"] or 0) < (existing["distance"] or 0):
+                    merged[rid] = row
+
+        results = sorted(merged.values(), key=lambda r: (r["distance"] or 0, r["title"] or ""))
+        return results[:50]
 
     def traverse(self, memory_id: str, depth: int = 2) -> list[dict]:
         """Alias for :meth:`get_related` (matches SKGraphBackend's convention)."""

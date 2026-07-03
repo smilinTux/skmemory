@@ -21,10 +21,13 @@ import os
 import random
 import string
 import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from skmemory.backends.age_backend import AGEGraphBackend
+from skmemory.context_loader import LazyMemoryLoader, _load_age_config
 from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
 
 DSN = os.environ.get("SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory")
@@ -288,6 +291,21 @@ class TestIndexAndGet:
     def test_get_nonexistent_returns_none(self, backend):
         assert backend.get("does-not-exist-" + str(uuid.uuid4())) is None
 
+    def test_index_memory_with_non_json_serializable_metadata_does_not_raise(self, backend):
+        """metadata_json=json.dumps(memory.metadata, default=str) must never
+        raise on values like datetime — a plain json.dumps() would TypeError
+        here, violating index_memory's 'never raises' contract."""
+        when = datetime(2026, 1, 1, 12, 30, 0, tzinfo=timezone.utc)
+        mem = make_memory(title="Metadata Safety", metadata={"when": when, "note": "ok"})
+
+        assert backend.index_memory(mem) is True
+
+        node = backend.get(mem.id)
+        assert node is not None
+        # Round-trips as its str() form (what json.dumps(..., default=str) produces).
+        assert node["metadata"]["when"] == str(when)
+        assert node["metadata"]["note"] == "ok"
+
 
 @requires_skmem_pg
 class TestEdges:
@@ -443,6 +461,32 @@ class TestTraversal:
 
     def test_get_related_unknown_id_returns_empty(self, backend):
         assert backend.get_related("nope-" + str(uuid.uuid4())) == []
+
+    def test_get_related_excludes_hub_only_connections(self, backend):
+        """Two memories that share a Tag AND a Source but have no
+        RELATED_TO/SUPERSEDES edge between them must NOT show up as
+        'related' to each other — sharing a hub node (Tag/Source) is not
+        relatedness. Regression test for the traversal-explosion fix:
+        get_related() must restrict its variable-length hop to
+        RELATED_TO|SUPERSEDES, never walking through TAGGED_WITH/
+        FROM_SOURCE/MENTIONS hub nodes."""
+        shared_tag = f"hubtag-{uuid.uuid4().hex[:8]}"
+        shared_source = f"hubsrc-{uuid.uuid4().hex[:8]}"
+        mem_a = make_memory(title="Hub Only A", tags=[shared_tag], source=shared_source)
+        mem_b = make_memory(title="Hub Only B", tags=[shared_tag], source=shared_source)
+        backend.index_memory(mem_a)
+        backend.index_memory(mem_b)
+
+        # Generous depth so a hub-walking bug would still surface it.
+        related = backend.get_related(mem_a.id, depth=4)
+        ids = {r["id"] for r in related}
+        assert mem_b.id not in ids
+
+        # Sanity: they really do share both hubs (proves the test fixture
+        # is exercising the hub-node scenario, not just two disconnected
+        # nodes with nothing in common).
+        tag_hits = {r["id"] for r in backend.search_by_tags([shared_tag])}
+        assert {mem_a.id, mem_b.id} <= tag_hits
 
 
 @requires_skmem_pg
@@ -741,3 +785,115 @@ class TestDeferredMethods:
     def test_update_emotional_not_implemented(self):
         with pytest.raises(NotImplementedError):
             self.be.update_emotional("id", 5.0, 0.5, [])
+
+
+# ═══════════════════════════════════════════════════════════
+# context_loader wire-in — AGE opt-in selection (pure config-plumbing
+# unit tests: get_agent_paths/SQLiteBackend and the backend builder
+# functions are all monkeypatched, so no live DB is required).
+# ═══════════════════════════════════════════════════════════
+
+
+class _DummyLoaderDB:
+    _conn = SimpleNamespace()
+
+
+class _DummyLoaderGraph:
+    """Stand-in for either AGEGraphBackend or SKGraphBackend — the
+    _ensure_backends() selection logic only cares which builder produced
+    the instance, not its concrete type."""
+
+    def __init__(self, graph_name: str = "dummy"):
+        self.graph_name = graph_name
+
+
+def _make_context_loader(monkeypatch, tmp_path, skmemory_yaml: str = ""):
+    base = tmp_path / "agent"
+    config = base / "config"
+    config.mkdir(parents=True)
+    if skmemory_yaml:
+        (config / "skmemory.yaml").write_text(skmemory_yaml)
+    monkeypatch.setattr(
+        "skmemory.context_loader.get_agent_paths",
+        lambda agent_name=None: {"base": base, "config": config},
+    )
+    monkeypatch.setattr(
+        "skmemory.context_loader.SQLiteBackend", lambda *_a, **_kw: _DummyLoaderDB()
+    )
+    monkeypatch.setattr("skmemory.context_loader._load_skvector_config", lambda _cd: None)
+    monkeypatch.setattr("skmemory.context_loader.SKChromaBackend", None, raising=False)
+    return LazyMemoryLoader("wiretest")
+
+
+class TestAgeConfigWireIn:
+    def test_load_age_config_returns_none_with_no_config_at_all(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        assert _load_age_config(config_dir) is None
+
+    def test_load_age_config_returns_none_when_not_opted_in(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "skmemory.yaml").write_text("backends_enabled: [skgraph]\n")
+        assert _load_age_config(config_dir) is None
+
+    def test_load_age_config_opt_in_via_backends_enabled(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "skmemory.yaml").write_text("backends_enabled: [age]\n")
+        cfg = _load_age_config(config_dir)
+        assert cfg is not None
+        assert cfg["enabled"] is True
+
+    def test_load_age_config_dedicated_yaml_file(self, tmp_path):
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "age.yaml").write_text("enabled: true\nagent: opus\n")
+        cfg = _load_age_config(config_dir)
+        assert cfg == {"enabled": True, "agent": "opus"}
+
+    def test_ensure_backends_selects_age_when_configured(self, monkeypatch, tmp_path):
+        loader = _make_context_loader(monkeypatch, tmp_path, "backends_enabled: [age]\n")
+        monkeypatch.setattr(
+            "skmemory.context_loader._build_age_backend",
+            lambda cfg: _DummyLoaderGraph("age-backend"),
+        )
+        monkeypatch.setattr(
+            "skmemory.context_loader._build_skgraph_backend",
+            lambda cfg: _DummyLoaderGraph("skgraph-backend"),
+        )
+
+        loader._ensure_backends()
+
+        assert isinstance(loader._graph_backend, _DummyLoaderGraph)
+        assert loader._graph_backend.graph_name == "age-backend"
+
+    def test_ensure_backends_falls_back_to_skgraph_when_age_not_configured(self, monkeypatch, tmp_path):
+        loader = _make_context_loader(
+            monkeypatch,
+            tmp_path,
+            "backends_enabled: [skgraph]\n"
+            "skgraph_url: redis://localhost:6379\n"
+            "skgraph_graph_name: legacy_graph\n",
+        )
+
+        def _fail_if_built(cfg):
+            raise AssertionError("AGE backend must not be built when unconfigured")
+
+        monkeypatch.setattr("skmemory.context_loader._build_age_backend", _fail_if_built)
+        monkeypatch.setattr(
+            "skmemory.context_loader._build_skgraph_backend",
+            lambda cfg: _DummyLoaderGraph("skgraph-backend"),
+        )
+
+        loader._ensure_backends()
+
+        assert isinstance(loader._graph_backend, _DummyLoaderGraph)
+        assert loader._graph_backend.graph_name == "skgraph-backend"
+
+    def test_ensure_backends_no_graph_backend_when_neither_configured(self, monkeypatch, tmp_path):
+        loader = _make_context_loader(monkeypatch, tmp_path, "")
+
+        loader._ensure_backends()
+
+        assert loader._graph_backend is None
