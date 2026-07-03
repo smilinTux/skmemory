@@ -24,6 +24,7 @@ Directory layout (same as FileBackend):
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sqlite3
@@ -35,6 +36,64 @@ from ..models import Memory, MemoryLayer
 from .base import BaseBackend
 
 logger = logging.getLogger("skmemory.sqlite_backend")
+
+# How long a busy/locked connection waits before raising (seconds).
+_BUSY_TIMEOUT_S = 5.0
+
+
+def _is_corruption(err: Exception) -> bool:
+    """Return True if a SQLite error indicates a corrupt/unreadable index.
+
+    We distinguish corruption (recoverable by rebuilding the index from the
+    flat JSON source of truth) from transient conditions like a locked DB,
+    which should NOT trigger a rebuild.
+    """
+    msg = str(err).lower()
+    return (
+        "malformed" in msg
+        or "not a database" in msg
+        or "disk image" in msg
+        or "file is encrypted" in msg
+        or "database corruption" in msg
+    )
+
+
+def _resilient_read(default_factory):
+    """Decorate a read method to degrade gracefully on SQLite errors.
+
+    Read paths must never crash a caller: the flat JSON files remain the
+    source of truth, so an unavailable/locked/corrupt index just yields a
+    safe empty default. Corruption additionally triggers a one-shot recovery
+    attempt (quarantine + rebuild) before returning the default.
+
+    Args:
+        default_factory: Zero-arg callable producing the fallback value
+            (e.g. ``list`` or ``dict``).
+    """
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return fn(self, *args, **kwargs)
+            except sqlite3.Error as e:
+                logger.warning(
+                    "sqlite_backend: %s degraded, index unavailable (%s)",
+                    fn.__name__,
+                    e,
+                )
+                if _is_corruption(e):
+                    try:
+                        self._recover_from_corruption(e)
+                    except Exception as rec_err:  # pragma: no cover - defensive
+                        logger.error(
+                            "sqlite_backend: corruption recovery failed: %s", rec_err
+                        )
+                return default_factory()
+
+        return wrapper
+
+    return decorator
 
 DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memory")
 
@@ -134,6 +193,10 @@ class SQLiteBackend(BaseBackend):
     def _get_conn(self) -> sqlite3.Connection:
         """Get or create the SQLite connection.
 
+        A ``busy_timeout`` is set so concurrent writers (Syncthing peers,
+        another agent process) wait briefly instead of immediately raising
+        "database is locked".
+
         Returns:
             sqlite3.Connection: Active database connection.
         """
@@ -141,14 +204,80 @@ class SQLiteBackend(BaseBackend):
             self._conn = sqlite3.connect(
                 str(self._db_path),
                 check_same_thread=False,
+                timeout=_BUSY_TIMEOUT_S,
             )
             self._conn.row_factory = sqlite3.Row
+            self._conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_S * 1000)}")
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
         return self._conn
 
+    def _reset_conn(self) -> None:
+        """Drop the cached connection so the next call reopens cleanly."""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def _quarantine_corrupt_db(self) -> None:
+        """Move an unreadable index.db (and WAL/SHM) aside so it can be rebuilt.
+
+        The flat JSON files are the source of truth, so discarding the index
+        is always safe. The corrupt file is renamed rather than deleted so an
+        operator can inspect it.
+        """
+        self._reset_conn()
+        stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+        for suffix in ("", "-wal", "-shm"):
+            src = Path(str(self._db_path) + suffix)
+            if src.exists():
+                dest = Path(f"{self._db_path}.corrupt-{stamp}{suffix}")
+                try:
+                    src.rename(dest)
+                    logger.error(
+                        "sqlite_backend: quarantined corrupt index %s -> %s", src, dest
+                    )
+                except OSError as e:
+                    logger.error("sqlite_backend: could not quarantine %s: %s", src, e)
+                    # Last resort: remove so a fresh DB can be created.
+                    try:
+                        src.unlink()
+                    except OSError:
+                        pass
+
+    def _recover_from_corruption(self, err: Exception) -> None:
+        """Quarantine a corrupt index and rebuild it from the flat JSON files."""
+        logger.error(
+            "sqlite_backend: index.db corrupt (%s); quarantining and rebuilding "
+            "from flat files (source of truth)",
+            err,
+        )
+        self._quarantine_corrupt_db()
+        self._init_schema()
+        try:
+            self.reindex(force=True)
+        except Exception as e:  # pragma: no cover - rebuild is best-effort
+            logger.warning("sqlite_backend: rebuild after corruption failed: %s", e)
+
     def _ensure_db(self) -> None:
-        """Initialize the database schema, migrating old tables if needed."""
+        """Initialize the schema, recovering if the index is corrupt.
+
+        A corrupt/unreadable index.db must not make the whole backend
+        unusable — the flat JSON files still hold every memory. On corruption
+        we quarantine the bad file and rebuild. A transient lock is re-raised
+        (it is not a reason to discard the index).
+        """
+        try:
+            self._init_schema()
+        except sqlite3.DatabaseError as e:
+            if not _is_corruption(e):
+                raise
+            self._recover_from_corruption(e)
+
+    def _init_schema(self) -> None:
+        """Create/migrate the schema on the current connection."""
         conn = self._get_conn()
 
         # Migrate: add columns that may be missing from older schemas.
@@ -205,12 +334,19 @@ class SQLiteBackend(BaseBackend):
         Returns:
             Optional[Path]: Path to the file if found.
         """
-        conn = self._get_conn()
-        row = conn.execute("SELECT file_path FROM memories WHERE id = ?", (memory_id,)).fetchone()
-        if row:
-            path = Path(row["file_path"])
-            if path.exists():
-                return path
+        try:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT file_path FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            if row:
+                path = Path(row["file_path"])
+                if path.exists():
+                    return path
+        except sqlite3.Error as e:
+            # Index unavailable — fall back to scanning the flat files, which
+            # are the source of truth.
+            logger.warning("sqlite_backend: _find_file index lookup failed (%s)", e)
 
         for layer in MemoryLayer:
             path = self.base_path / layer.value / f"{memory_id}.json"
@@ -218,48 +354,70 @@ class SQLiteBackend(BaseBackend):
                 return path
         return None
 
-    def _index_memory(self, memory: Memory, file_path: Path) -> None:
+    def _index_memory(self, memory: Memory, file_path: Path) -> bool:
         """Insert or update the index entry for a memory.
+
+        The flat JSON file is the source of truth and is written before this
+        is called, so an index write failure is logged and swallowed rather
+        than propagated — the memory is still persisted and recoverable via
+        ``reindex()``.
 
         Args:
             memory: The memory to index.
             file_path: Where the JSON file lives.
+
+        Returns:
+            bool: True if the index was updated, False if it degraded.
         """
-        conn = self._get_conn()
         content_preview = memory.content[:CONTENT_PREVIEW_LENGTH]
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO memories (
-                id, title, layer, role, tags, source, source_ref,
-                summary, content_preview, emotional_intensity,
-                emotional_valence, emotional_labels, cloud9_achieved,
-                parent_id, related_ids, created_at, updated_at,
-                file_path, content_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
+        try:
+            conn = self._get_conn()
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memories (
+                    id, title, layer, role, tags, source, source_ref,
+                    summary, content_preview, emotional_intensity,
+                    emotional_valence, emotional_labels, cloud9_achieved,
+                    parent_id, related_ids, created_at, updated_at,
+                    file_path, content_hash
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    memory.id,
+                    memory.title,
+                    memory.layer.value,
+                    memory.role.value,
+                    ",".join(memory.tags),
+                    memory.source,
+                    memory.source_ref,
+                    memory.summary,
+                    content_preview,
+                    memory.emotional.intensity,
+                    memory.emotional.valence,
+                    ",".join(memory.emotional.labels),
+                    1 if memory.emotional.cloud9_achieved else 0,
+                    memory.parent_id,
+                    ",".join(memory.related_ids),
+                    memory.created_at,
+                    memory.updated_at,
+                    str(file_path),
+                    memory.content_hash(),
+                ),
+            )
+            conn.commit()
+            return True
+        except sqlite3.Error as e:
+            logger.warning(
+                "sqlite_backend: index write failed for %s (flat file intact): %s",
                 memory.id,
-                memory.title,
-                memory.layer.value,
-                memory.role.value,
-                ",".join(memory.tags),
-                memory.source,
-                memory.source_ref,
-                memory.summary,
-                content_preview,
-                memory.emotional.intensity,
-                memory.emotional.valence,
-                ",".join(memory.emotional.labels),
-                1 if memory.emotional.cloud9_achieved else 0,
-                memory.parent_id,
-                ",".join(memory.related_ids),
-                memory.created_at,
-                memory.updated_at,
-                str(file_path),
-                memory.content_hash(),
-            ),
-        )
-        conn.commit()
+                e,
+            )
+            if _is_corruption(e):
+                try:
+                    self._recover_from_corruption(e)
+                except Exception as rec_err:  # pragma: no cover - defensive
+                    logger.error("sqlite_backend: recovery failed: %s", rec_err)
+            return False
 
     def _row_to_memory_summary(self, row: sqlite3.Row) -> dict:
         """Convert a database row to a lightweight memory summary dict.
@@ -273,22 +431,44 @@ class SQLiteBackend(BaseBackend):
         Returns:
             dict: Lightweight memory summary.
         """
+
+        def _keys(row: sqlite3.Row) -> set[str]:
+            try:
+                return set(row.keys())
+            except Exception:
+                return set()
+
+        def _get(key: str, default=None):
+            # Tolerate schema drift: a row from an older/newer index may be
+            # missing columns this code expects.
+            if key in cols:
+                return row[key]
+            return default
+
+        def _csv(key: str) -> list[str]:
+            # Tolerate NULL and non-string values from malformed rows.
+            val = _get(key, "")
+            if not isinstance(val, str):
+                return []
+            return [item for item in val.split(",") if item]
+
+        cols = _keys(row)
         return {
-            "id": row["id"],
-            "title": row["title"],
-            "layer": row["layer"],
-            "role": row["role"],
-            "tags": [t for t in row["tags"].split(",") if t],
-            "source": row["source"],
-            "summary": row["summary"],
-            "content_preview": row["content_preview"],
-            "emotional_intensity": row["emotional_intensity"],
-            "emotional_valence": row["emotional_valence"],
-            "emotional_labels": [lbl for lbl in row["emotional_labels"].split(",") if lbl],
-            "cloud9_achieved": bool(row["cloud9_achieved"]),
-            "created_at": row["created_at"],
-            "parent_id": row["parent_id"],
-            "related_ids": [r for r in row["related_ids"].split(",") if r],
+            "id": _get("id"),
+            "title": _get("title"),
+            "layer": _get("layer"),
+            "role": _get("role"),
+            "tags": _csv("tags"),
+            "source": _get("source"),
+            "summary": _get("summary"),
+            "content_preview": _get("content_preview"),
+            "emotional_intensity": _get("emotional_intensity"),
+            "emotional_valence": _get("emotional_valence"),
+            "emotional_labels": _csv("emotional_labels"),
+            "cloud9_achieved": bool(_get("cloud9_achieved")),
+            "created_at": _get("created_at"),
+            "parent_id": _get("parent_id"),
+            "related_ids": _csv("related_ids"),
         }
 
     def _row_to_memory(self, row: sqlite3.Row) -> Memory | None:
@@ -312,6 +492,10 @@ class SQLiteBackend(BaseBackend):
     def save(self, memory: Memory) -> str:
         """Persist a memory as JSON and update the index.
 
+        The flat JSON file is written first (it is the source of truth). If
+        the index update fails, the save still succeeds — the memory is on
+        disk and will be picked up by the next ``reindex()``.
+
         Args:
             memory: The Memory to store.
 
@@ -324,7 +508,7 @@ class SQLiteBackend(BaseBackend):
             json.dumps(memory.model_dump(), indent=2, default=str),
             encoding="utf-8",
         )
-        self._index_memory(memory, path)
+        self._index_memory(memory, path)  # non-fatal: degrades gracefully
         return memory.id
 
     def load(self, memory_id: str) -> Memory | None:
@@ -356,9 +540,14 @@ class SQLiteBackend(BaseBackend):
         """
         path = self._find_file(memory_id)
 
-        conn = self._get_conn()
-        conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-        conn.commit()
+        try:
+            conn = self._get_conn()
+            conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            conn.commit()
+        except sqlite3.Error as e:
+            # Index removal failed, but the flat file (source of truth) is
+            # deleted below. A later reindex will drop the stale row.
+            logger.warning("sqlite_backend: index delete failed for %s: %s", memory_id, e)
 
         if path is None:
             return False
@@ -366,6 +555,7 @@ class SQLiteBackend(BaseBackend):
             path.unlink()
         return True
 
+    @_resilient_read(list)
     def list_memories(
         self,
         layer: MemoryLayer | None = None,
@@ -410,6 +600,7 @@ class SQLiteBackend(BaseBackend):
                 results.append(mem)
         return results
 
+    @_resilient_read(list)
     def list_summaries(
         self,
         layer: MemoryLayer | None = None,
@@ -485,6 +676,7 @@ class SQLiteBackend(BaseBackend):
 
         return [self._row_to_memory_summary(row) for row in rows]
 
+    @_resilient_read(list)
     def search_text(self, query: str, limit: int = 10) -> list[Memory]:
         """Search memories using the SQLite index (title, summary, preview).
 
@@ -564,6 +756,7 @@ class SQLiteBackend(BaseBackend):
                 results.append(mem)
         return results
 
+    @_resilient_read(list)
     def get_related(self, memory_id: str, depth: int = 1) -> list[dict]:
         """Get related memories by traversing related_ids (shallow graph).
 
