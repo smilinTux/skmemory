@@ -289,6 +289,46 @@ def _load_skgraph_config(config_dir: Path) -> dict | None:
     return None
 
 
+def _load_age_config(config_dir: Path) -> dict | None:
+    """Load AGE (Apache AGE, Postgres-backed) graph config: try age.yaml
+    first, then skmemory.yaml inline, then the ``backends_enabled: [age]``
+    opt-in flag. Purely additive — returns None (age backend not used)
+    unless explicitly configured, so existing skgraph-based configs are
+    unaffected.
+    """
+    path = config_dir / "age.yaml"
+    if path.exists():
+        cfg = _read_yaml_file(path)
+        if cfg and cfg.get("enabled", False):
+            return cfg
+
+    skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
+
+    inline = skmem.get("backends", {}).get("age", {})
+    if inline and inline.get("enabled", False):
+        ext_cfg_path = inline.get("config")
+        if ext_cfg_path:
+            resolved = Path(ext_cfg_path).expanduser()
+            if resolved.exists():
+                ext = _read_yaml_file(resolved)
+                if ext and ext.get("enabled", False):
+                    return ext
+        return inline
+
+    # Opt-in via backends_enabled: [age] with no other config needed —
+    # AGEGraphBackend derives dsn/agent/graph from env vars by default.
+    backends_enabled = skmem.get("backends_enabled", [])
+    if "age" in backends_enabled:
+        return {
+            "enabled": True,
+            "dsn": skmem.get("age_dsn"),
+            "agent": skmem.get("age_agent"),
+            "graph_name": skmem.get("age_graph_name"),
+        }
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # skcomms T9: realm-aware, consent-gated recall_collections namespacing.
 #
@@ -720,6 +760,25 @@ def _build_skgraph_backend(skgraph_cfg: dict) -> Any | None:
         return None
 
 
+def _build_age_backend(age_cfg: dict) -> Any | None:
+    """Instantiate AGEGraphBackend from config dict.
+
+    Any of ``dsn`` / ``agent`` / ``graph_name`` may be omitted — the backend
+    falls back to ``SKMEMORY_PG_DSN`` / ``SKAGENT`` (etc.) / ``f"{agent}_knowledge"``.
+    """
+    try:
+        from .backends.age_backend import AGEGraphBackend
+
+        return AGEGraphBackend(
+            dsn=age_cfg.get("dsn") or None,
+            agent=age_cfg.get("agent") or None,
+            graph=age_cfg.get("graph_name") or age_cfg.get("graph") or None,
+        )
+    except Exception as e:
+        logger.warning("Could not build AGEGraphBackend: %s", e)
+        return None
+
+
 class LazyMemoryLoader:
     """Efficiently loads memories based on date tiers."""
 
@@ -873,8 +932,15 @@ class LazyMemoryLoader:
             # ChromaDB is primary — but load Qdrant separately for recall_collections
             self._recall_qdrant_backend = _build_skvector_backend(skvector_cfg)
 
+        # AGE (Postgres-backed, live per-agent knowledge graphs) is opt-in and
+        # takes priority when configured; falls back to skgraph (FalkorDB,
+        # deprecated legacy) otherwise. Purely additive — no config means no
+        # behavior change from before AGE existed.
+        age_cfg = _load_age_config(config_dir)
         skgraph_cfg = _load_skgraph_config(config_dir)
-        if skgraph_cfg:
+        if age_cfg:
+            self._graph_backend = _build_age_backend(age_cfg)
+        elif skgraph_cfg:
             self._graph_backend = _build_skgraph_backend(skgraph_cfg)
 
         shared_corpora = _load_shared_corpora(config_dir)
