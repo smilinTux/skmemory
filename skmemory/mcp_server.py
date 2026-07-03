@@ -7,6 +7,7 @@ Windsurf, Aider, Cline, or any MCP client that speaks stdio.
 Tools:
     memory_store       — Store a new memory (snapshot with title + content)
     memory_search      — Full-text search across memories
+    memory_check_duplicate — Advisory semantic dedup check before writing
     memory_recall      — Recall a specific memory by ID
     memory_list        — List memories with optional layer/tag filters
     memory_forget      — Delete a memory by ID
@@ -184,6 +185,34 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["query"],
+            },
+        ),
+        Tool(
+            name="memory_check_duplicate",
+            description=(
+                "Advisory pre-write duplicate check: semantically search for existing "
+                "memories similar to a piece of candidate content, BEFORE storing it. "
+                "Read-only — does not write, merge, or modify anything. Complements "
+                "memory_store's automatic exact-hash dedup by catching near-duplicates "
+                "(paraphrases, reworded notes) via embedding similarity."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "Candidate content to check for near-duplicates.",
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Minimum similarity 0.0-1.0 to count as a match (default: 0.85).",
+                    },
+                    "k": {
+                        "type": "integer",
+                        "description": "Max candidates to consider before threshold filtering (default: 5).",
+                    },
+                },
+                "required": ["content"],
             },
         ),
         Tool(
@@ -661,6 +690,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             source = arguments.get("source") or None
             memories = store.search(query, limit=limit, tags=tags, layer=layer, source=source)
             return _json_response([_memory_dict(m) for m in memories])
+
+        elif name == "memory_check_duplicate":
+            content = arguments["content"]
+            threshold = float(arguments.get("threshold", 0.85))
+            k = int(arguments.get("k", 5))
+            matches = store.check_duplicate(content, threshold=threshold, k=k)
+            return _json_response(
+                {
+                    "duplicate_candidates": matches,
+                    "possible_duplicate": len(matches) > 0,
+                }
+            )
 
         elif name == "memory_recall":
             memory_id = arguments["memory_id"]

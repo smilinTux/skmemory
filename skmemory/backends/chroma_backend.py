@@ -24,6 +24,7 @@ from typing import Callable
 from ..models import Memory, MemoryLayer
 from ..query_sanitizer import sanitize_query
 from .base import BaseBackend
+from .sqlite_backend import CONTENT_PREVIEW_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +410,70 @@ class SKChromaBackend(BaseBackend):
             return memories
         except Exception as e:
             logger.warning("ChromaDB search failed: %s", e)
+            return []
+
+    def find_similar(self, content: str, k: int = 5) -> list[dict]:
+        """Find memories with content similar to *content* (advisory dedup check).
+
+        Runs the same ChromaDB nearest-neighbor query as ``search_text()``, but
+        keeps the raw distances instead of discarding them, so a caller can
+        decide for itself whether a candidate is "close enough" to be a
+        near-duplicate. Read-only — never writes, merges, or mutates anything.
+
+        Args:
+            content: Text to check for near-duplicates (not yet stored).
+            k: Max number of candidates to return.
+
+        Returns:
+            list[dict]: Each item is ``{"id", "content_preview", "similarity"}``,
+                sorted by similarity descending. Empty list if the backend
+                isn't initialized, embedding fails, or the query errors —
+                this method never raises.
+        """
+        if not self._ensure_initialized():
+            return []
+
+        embedding = self._embed(sanitize_query(content))
+        if not embedding:
+            return []
+
+        try:
+            results = self._collection.query(
+                query_embeddings=[embedding],
+                n_results=k,
+                include=["documents", "distances"],
+            )
+
+            ids = (results.get("ids") or [[]])[0]
+            documents = (results.get("documents") or [[]])[0]
+            distances = (results.get("distances") or [[]])[0]
+
+            matches = []
+            for doc_id, doc, distance in zip(ids, documents, distances):
+                if not doc:
+                    continue
+                try:
+                    preview = Memory.model_validate_json(doc).content[:CONTENT_PREVIEW_LENGTH]
+                except Exception:
+                    preview = doc[:CONTENT_PREVIEW_LENGTH]
+
+                # ChromaDB's default HNSW space here is "cosine", where the
+                # reported "distance" is 1 - cosine_similarity. Clamp to
+                # [0, 1] since floating-point drift can push it slightly
+                # outside that range.
+                similarity = max(0.0, min(1.0, 1.0 - float(distance)))
+                matches.append(
+                    {
+                        "id": doc_id,
+                        "content_preview": preview,
+                        "similarity": round(similarity, 4),
+                    }
+                )
+
+            matches.sort(key=lambda m: m["similarity"], reverse=True)
+            return matches
+        except Exception as e:
+            logger.warning("ChromaDB find_similar failed: %s", e)
             return []
 
     def sync_all(self, flat_files_dir: Path, agent_name: str) -> dict:

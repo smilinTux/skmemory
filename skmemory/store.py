@@ -679,6 +679,51 @@ class MemoryStore:
 
         return self.primary.search_text(query, limit=limit)
 
+    def check_duplicate(
+        self,
+        content: str,
+        threshold: float = 0.85,
+        k: int = 5,
+    ) -> list[dict]:
+        """Advisory pre-write duplicate check — does NOT write or merge anything.
+
+        Ported from MemPalace's ``mempalace_check_duplicate``: lets a caller ask
+        "does something like this already exist?" *before* calling snapshot(),
+        using semantic (embedding) similarity rather than the exact SHA-256
+        content-hash match that snapshot() already performs automatically.
+        This is purely a read-only query — snapshot()'s own dedup behavior is
+        untouched by this method.
+
+        Args:
+            content: Candidate content to check for near-duplicates.
+            threshold: Minimum similarity (0.0-1.0) to count as a match.
+                Default 0.85.
+                TODO tune empirically for mxbai-embed-large (MemPalace's 0.9
+                default was tuned for MiniLM, a different embedding model).
+            k: Max number of candidates to fetch from the backend before
+                filtering by threshold.
+
+        Returns:
+            list[dict]: Matches with ``{"id", "content_preview", "similarity"}``,
+                sorted by similarity descending. Empty list if there's no
+                vector backend, the backend doesn't support similarity
+                lookups, or nothing clears the threshold.
+        """
+        if not self.vector:
+            return []
+
+        find_similar = getattr(self.vector, "find_similar", None)
+        if not callable(find_similar):
+            return []
+
+        try:
+            candidates = find_similar(content, k=k)
+        except Exception as exc:
+            logger.warning("check_duplicate: backend find_similar failed: %s", exc)
+            return []
+
+        return [c for c in candidates if c.get("similarity", 0.0) >= threshold]
+
     def novelty_search(self, query: str, limit: int = 10) -> list[dict]:
         """Surface potentially novel or under-linked memories for a query."""
         memories = self.search(query, limit=max(limit * 3, limit))
