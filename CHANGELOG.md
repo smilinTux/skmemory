@@ -4,7 +4,9 @@
 
 **Total completed: 87** across 8 agents
 
-## Unreleased
+## [Unreleased]
+
+## [0.11.0] - 2026-07-03
 
 ### [ADDED] Maps of Content, schema-validated writes, fresh-context runner (2026-07-03)
 
