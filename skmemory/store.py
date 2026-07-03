@@ -46,6 +46,17 @@ CONTENT_OVERFLOW_STRATEGY = "split"  # "truncate" or "split"
 DECOMPOSE_MIN_LENGTH = 1200
 TASK_PACK_TAG = "task-pack"
 
+# --- Reweave (backward pass) defaults -------------------------------------- #
+# When a NEW memory is stored, the forward pass wires only the new memory's
+# outgoing links. The reweave backward pass closes the loop: it finds the
+# top-K most-related OLDER memories and adds a back-reference to the new
+# memory on each, keeping the association graph coherent (bidirectional).
+# Bounded by design — never re-weaves the whole corpus on a write.
+REWEAVE_TOP_K = 5
+# Tags that mark a memory as a decomposition/split fragment; these are skipped
+# as reweave targets to avoid amplifying chunk noise.
+REWEAVE_SKIP_TAGS = frozenset({"content-chunk"})
+
 
 def _unique_list(items: list[str]) -> list[str]:
     seen: set[str] = set()
@@ -122,6 +133,8 @@ class MemoryStore:
         decompose_min_length: int = DECOMPOSE_MIN_LENGTH,
         pre_write_hooks: list[PreWriteHook] | None = None,
         skseed_auto_validate: bool | None = None,
+        reweave: bool = False,
+        reweave_top_k: int = REWEAVE_TOP_K,
     ) -> None:
         if primary is not None:
             self.primary = primary
@@ -134,6 +147,12 @@ class MemoryStore:
         self.max_content_length = max_content_length
         self.content_overflow_strategy = content_overflow_strategy
         self.decompose_min_length = decompose_min_length
+        # Reweave backward pass — opt-in. When enabled, a simple snapshot()
+        # write triggers a bounded backward pass that re-links the top-K most
+        # related OLDER memories to the new one. Off by default so existing
+        # callers see no behaviour change.
+        self.reweave = reweave
+        self.reweave_top_k = reweave_top_k
 
         # Pluggable pre-write validation hooks. Each is a callable
         # (Memory) -> None that raises to reject a malformed write before it
@@ -382,7 +401,141 @@ class MemoryStore:
                 if isinstance(self.primary, SQLiteBackend):
                     self.primary.record_sync_failure(memory.id, "skgraph", str(e))
 
+        # Reweave backward pass (opt-in, bounded) — re-link older neighbours.
+        if self.reweave:
+            try:
+                self._reweave_backward(memory)
+            except Exception as exc:
+                logger.warning("reweave backward pass failed for %s: %s", memory.id, exc)
+
         return memory
+
+    def _reweave_backward(self, memory: Memory) -> list[str]:
+        """Backward pass: re-link the top-K most-related OLDER memories.
+
+        The forward write path only wires the *new* memory's outgoing edges.
+        This closes the loop so the association graph stays coherent: for each
+        of the top-K older memories most related to ``memory`` it
+
+          * adds ``memory.id`` to the older memory's ``related_ids`` (back-ref),
+          * bumps ``updated_at`` and re-seals its integrity hash,
+          * re-persists it to the primary backend, and
+          * best-effort re-indexes it in the vector + graph backends so their
+            embeddings-links / weighted edges refresh too.
+
+        The new memory is kept symmetric: any older neighbour discovered here
+        (not already an explicit ``related_id``) is linked back on the new
+        memory as well and persisted once.
+
+        Bounded by design:
+
+          * candidates = the new memory's explicit ``related_ids`` first, then
+            up to ``2 * reweave_top_k`` topical search neighbours;
+          * only genuinely older memories are touched (``created_at`` strictly
+            before the new memory's);
+          * decomposition/split fragments (``content-chunk``) are skipped;
+          * at most ``reweave_top_k`` older memories are re-linked per write;
+          * already-linked neighbours are skipped, so repeated writes are
+            idempotent.
+
+        Args:
+            memory: The freshly stored memory driving the backward pass.
+
+        Returns:
+            list[str]: IDs of the older memories that were re-linked.
+        """
+        top_k = self.reweave_top_k
+        if top_k <= 0:
+            return []
+
+        # --- 1. Gather candidate older memories (bounded) ---
+        seen: set[str] = {memory.id}
+        candidate_ids: list[str] = []
+
+        # (a) Explicit outgoing links get first priority for a back-reference.
+        for rid in memory.related_ids:
+            if rid and rid not in seen:
+                seen.add(rid)
+                candidate_ids.append(rid)
+
+        # (b) Topical neighbours via the existing search path (vector or text).
+        query = " ".join([memory.title, *memory.tags]).strip() or memory.content[:200]
+        if query:
+            try:
+                hits = self.search(query, limit=max(top_k * 2, top_k))
+            except Exception as exc:
+                logger.warning("reweave: neighbour search failed: %s", exc)
+                hits = []
+            for hit in hits:
+                if hit.id not in seen:
+                    seen.add(hit.id)
+                    candidate_ids.append(hit.id)
+
+        # --- 2. Re-link older memories, capped at top_k ---
+        relinked: list[str] = []
+        new_symmetric_links: list[str] = []
+        for cid in candidate_ids:
+            if len(relinked) >= top_k:
+                break
+            older = self.primary.load(cid)
+            if older is None or older.id == memory.id:
+                continue
+            # Only reweave genuinely older memories.
+            if older.created_at >= memory.created_at:
+                continue
+            if any(tag in REWEAVE_SKIP_TAGS for tag in older.tags):
+                continue
+            if memory.id in older.related_ids:
+                continue  # already back-linked — idempotent
+
+            older.related_ids = _unique_list([*older.related_ids, memory.id])
+            older.updated_at = datetime.now(timezone.utc).isoformat()
+            older.seal()
+            try:
+                self.primary.save(older)
+            except Exception as exc:
+                logger.warning("reweave: primary save failed for %s: %s", older.id, exc)
+                continue
+            relinked.append(older.id)
+            if older.id not in memory.related_ids:
+                new_symmetric_links.append(older.id)
+
+            if self.vector:
+                try:
+                    self.vector.save(older)
+                except Exception as exc:
+                    logger.warning("reweave: vector reindex failed for %s: %s", older.id, exc)
+            if self.graph:
+                try:
+                    self.graph.index_memory(older)
+                except Exception as exc:
+                    logger.warning("reweave: graph reindex failed for %s: %s", older.id, exc)
+
+        # --- 3. Keep the new memory symmetric with discovered neighbours ---
+        if new_symmetric_links:
+            memory.related_ids = _unique_list([*memory.related_ids, *new_symmetric_links])
+            memory.updated_at = datetime.now(timezone.utc).isoformat()
+            memory.seal()
+            try:
+                self.primary.save(memory)
+            except Exception as exc:
+                logger.warning("reweave: symmetric persist failed for %s: %s", memory.id, exc)
+            if self.vector:
+                try:
+                    self.vector.save(memory)
+                except Exception as exc:
+                    logger.warning("reweave: vector reindex (new) failed: %s", exc)
+            if self.graph:
+                try:
+                    self.graph.index_memory(memory)
+                except Exception as exc:
+                    logger.warning("reweave: graph reindex (new) failed: %s", exc)
+
+        if relinked:
+            logger.info(
+                "reweave: linked %d older memories back to %s", len(relinked), memory.id
+            )
+        return relinked
 
     def snapshot_bulk(self, items: list[dict], progress_cb=None) -> list[Memory]:
         """Batch save multiple memories efficiently.
