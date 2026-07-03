@@ -682,7 +682,7 @@ class MemoryStore:
     def check_duplicate(
         self,
         content: str,
-        threshold: float = 0.85,
+        threshold: float = 0.73,
         k: int = 5,
     ) -> list[dict]:
         """Advisory pre-write duplicate check — does NOT write or merge anything.
@@ -697,9 +697,13 @@ class MemoryStore:
         Args:
             content: Candidate content to check for near-duplicates.
             threshold: Minimum similarity (0.0-1.0) to count as a match.
-                Default 0.85.
-                TODO tune empirically for mxbai-embed-large (MemPalace's 0.9
-                default was tuned for MiniLM, a different embedding model).
+                Default 0.73 — tuned empirically for mxbai-embed-large
+                (2026-07-03). On a labeled dup/non-dup set, mxbai cosine
+                similarity separated cleanly: near-duplicates 0.76-0.94,
+                distinct content 0.27-0.70 (gap 0.703-0.763). 0.73 is the
+                gap midpoint, favoring recall (an advisory dedup check should
+                surface candidates for the caller to judge, not silently miss
+                them). MemPalace's 0.9 was tuned for MiniLM and is too high here.
             k: Max number of candidates to fetch from the backend before
                 filtering by threshold.
 

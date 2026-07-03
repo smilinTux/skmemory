@@ -205,7 +205,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "threshold": {
                         "type": "number",
-                        "description": "Minimum similarity 0.0-1.0 to count as a match (default: 0.85).",
+                        "description": "Minimum similarity 0.0-1.0 to count as a match (default: 0.73, tuned for mxbai-embed-large).",
                     },
                     "k": {
                         "type": "integer",
@@ -693,7 +693,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "memory_check_duplicate":
             content = arguments["content"]
-            threshold = float(arguments.get("threshold", 0.85))
+            threshold = float(arguments.get("threshold", 0.73))
             k = int(arguments.get("k", 5))
             matches = store.check_duplicate(content, threshold=threshold, k=k)
             return _json_response(
