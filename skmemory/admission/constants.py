@@ -33,6 +33,7 @@ KNOWN_SOURCE_VOCAB: Final[frozenset[str]] = frozenset(
         "import",
         "telegram",
         "notion",
+        "conversation",
         "claude-code-hook",
         "consolidation",
         "journal-synthesis",
