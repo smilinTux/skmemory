@@ -284,11 +284,14 @@ diagrams, configuration examples, and scaling considerations.
 
 ---
 
-## MemPalace — Intelligent Memory Infrastructure
+## Memory Write Safety & Retrieval Infrastructure
 
-MemPalace is the collection of subsystems that make memory writes safe and
+These are the native skmemory subsystems that make memory writes safe and
 memory queries accurate: a write-ahead log, query sanitizer, conversation
-extractor, scoped search, and Claude Code hooks.
+extractor, scoped search, and Claude Code hooks. Their design is **inspired by**
+the third-party [MemPalace](https://github.com/milla-jovovich/mempalace) project,
+but this is original skmemory code — MemPalace is not a dependency and shares no
+code or storage with skmemory.
 
 ### Write-Ahead Log (WAL)
 
