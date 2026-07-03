@@ -1,5 +1,7 @@
 # SKMemory
 
+> **Purpose:** sovereign, multi-layer, emotionally-aware memory for AI agents (flat-file source of truth + SQLite index + vector recall). **Maturity: crypto tier T0 — Classical** (at-rest GPG sealing only; no hybrid PQ KEM today — see [SOP §9](./SOP.md#9-maturity-tier--version-reference)).
+
 [![Tests](https://github.com/smilinTux/skmemory/actions/workflows/pytest.yml/badge.svg)](https://github.com/smilinTux/skmemory/actions/workflows/pytest.yml)
 [![PyPI version](https://img.shields.io/pypi/v/skmemory.svg)](https://pypi.org/project/skmemory/)
 [![npm version](https://img.shields.io/npm/v/@smilintux/skmemory.svg)](https://www.npmjs.com/package/@smilintux/skmemory)

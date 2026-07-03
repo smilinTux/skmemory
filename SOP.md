@@ -52,18 +52,21 @@ flowchart TD
 
     Store["MemoryStore\n(facade / orchestrator)"]
 
+    Store --> Hooks["Pre-write hook chain\nvalidation.py · schema_validator\n(schema-validated writes)"]
+    Hooks --> Flat
+
     subgraph SoT["Source of truth"]
-        Flat["Flat JSON files\nshort/ mid/ long-term\n(Syncthing-synced)"]
+        Flat["Flat-file store\nshort/ mid/ long-term JSON\n(Syncthing-synced)"]
     end
 
     subgraph L0["Level 0 — Index (always)"]
-        SQLite["SQLiteBackend\nindex.db + JSON"]
+        SQLite["SQLite index\n(SQLiteBackend · index.db)"]
         Vaulted["VaultedSQLiteBackend\nPGP-sealed at rest"]
     end
 
     subgraph L1["Level 1 — Vector"]
         Chroma["SKChromaBackend\nlocal default · mxbai 1024-dim"]
-        PG["pgvector / skmem-pg\nshared docs+memories · BM25+HNSW"]
+        PG["pgvector backend\nskmem-pg · docs+memories · BM25+HNSW"]
         Qdrant["SKVectorBackend\nremote shared collections"]
     end
 
@@ -87,7 +90,12 @@ flowchart TD
     subgraph Layers["Promotion ladder"]
         Short["short-term"] -->|promote| Mid["mid-term"] -->|promote| Long["long-term"]
     end
-    Store --> Layers
+    Store --> Promo["Promotion engine\npromotion.py · PromotionEngine\n+ PromotionScheduler"]
+    Promo --> Fresh["FreshContextRunner seam\nfresh_context.py\n(in-process default · SubprocessRunner)"]
+    Promo --> Layers
+
+    Store --> MOC["MOC generator\nmoc.py · read-side indexes\nby quadrant + tag cluster (no mutation)"]
+    Flat -.read-only.-> MOC
 ```
 
 **Key invariant:** the flat JSON files are canonical. SQLite, ChromaDB, pgvector,
@@ -178,13 +186,32 @@ skmemory context --max-tokens 3000     # token-budgeted load for a new session
 
 ## 7. API / Reference
 
-- **CLI:** `skmemory {store,search,context,ritual,promote,health,snapshot,songs,...}`.
+- **CLI:** `skmemory {store,search,context,ritual,promote,sweep,health,snapshot,moc,songs,...}`.
+  - `skmemory moc` — auto-generate **Maps of Content**: read-side index documents
+    grouping memories **by quadrant** (Core/Work/Soul/Wild) and **by tag cluster**.
+    Deterministic (byte-identical Markdown per input) + bounded; renders to stdout or
+    writes one `<key>.md` per index with `--out DIR`. Flags:
+    `--kind {all,quadrants,tags}`, `--limit`, `--min-cluster-size`, `--max-clusters`,
+    `--max-entries`. Pure aggregation — never mutates the store (`moc.py`).
 - **MCP server:** `skmemory-mcp` (stdio) exposes 14 tools — `memory_store`,
   `memory_search`, `memory_recall`, `memory_context`, `memory_promote`,
   `memory_health`, `memory_save_session`, `memory_synthesize_*`, etc. (see the
   `mcp__skmemory__*` surface).
 - **Python:** `from skmemory import MemoryStore` — `store.add()`, `store.search()`,
   `store.promote()`, `store.context()`.
+  - **Schema-validated writes (pre-write hooks):** every write runs a
+    `(Memory) -> None` pre-write hook chain at the write boundary *before* any backend
+    is touched (`validation.py`). The default `schema_validator` round-trips each memory
+    (`model_dump → model_validate`) so fields mutated after construction are re-checked
+    against the canonical `Memory` schema; malformed writes raise `SchemaValidationError`
+    (subclasses `ValueError`, so existing `except ValueError`/WAL paths still work).
+    Register more via `MemoryStore.register_pre_write_hook(...)`.
+  - **Fresh-context runner seam:** `PromotionEngine.run_pass()` /
+    `PromotionScheduler` / `skmemory sweep` route long consolidation/promotion sweeps
+    through an injectable `FreshContextRunner` (`fresh_context.py`) so a chatty
+    maintenance pass can run in an isolated context (spawned subagent/subprocess) instead
+    of polluting the live agent's working window. Default `in_process_runner` is the
+    identity element (behavior unchanged); `SubprocessRunner(spawn)` is the spawn seam.
 
 Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage.
 
@@ -213,12 +240,12 @@ Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage.
   (`HKDF(X25519 ‖ ML-KEM-768)`, FIPS 203) is **not** integrated today; the migration
   path is to seal via [sk_pgp](https://github.com/smilinTux/sk-pgp)/sk_pqc when the
   PGP→PQC root cutover lands. **No claim of post-quantum protection is made here.**
-- **VERSION_LIFECYCLE phase:** Active. **SemVer:** see `pyproject.toml`
-  (`0.10.x` at time of writing) and [CHANGELOG.md](./CHANGELOG.md).
+- **VERSION_LIFECYCLE phase:** Active (v2). **SemVer:** see `pyproject.toml`
+  (`0.10.4` at time of writing) and [CHANGELOG.md](./CHANGELOG.md). The MOC generator,
+  schema-validated writes, and fresh-context runner (2026-07-03) are **additive,
+  backward-compatible** — defaults preserve prior store/backend semantics.
 - **Self-report / evidence:** `skmemory health` reports the live backends; the
   vaulted/fortress state is reported via the fortress audit log
   ([`docs/FORTRESS_SOP.md`](./docs/FORTRESS_SOP.md)). Every backend/LIVE claim in the
   docs is reproducible from that output (honest-claims gate, see
   [SECURITY.md](./SECURITY.md)).
-</content>
-</invoke>
