@@ -1937,6 +1937,89 @@ def quadrant_stats(ctx: click.Context) -> None:
 
 
 # ═══════════════════════════════════════════════════════════
+# Maps of Content (MOC) commands — auto-generated index docs
+# ═══════════════════════════════════════════════════════════
+
+
+@cli.command("moc")
+@click.option(
+    "--kind",
+    type=click.Choice(["all", "quadrants", "tags"]),
+    default="all",
+    help="Which MOCs to build: quadrant index, tag clusters, or both.",
+)
+@click.option("--limit", type=int, default=500, help="Max memories to index.")
+@click.option(
+    "--min-cluster-size",
+    type=int,
+    default=2,
+    help="Minimum memories sharing a tag for it to become a MOC.",
+)
+@click.option(
+    "--max-clusters", type=int, default=40, help="Max number of tag-cluster MOCs."
+)
+@click.option(
+    "--max-entries",
+    type=int,
+    default=50,
+    help="Max links shown per section.",
+)
+@click.option(
+    "--out",
+    "out_dir",
+    default=None,
+    help="If set, write each MOC to this directory as <key>.md.",
+)
+@click.pass_context
+def moc_generate(
+    ctx: click.Context,
+    kind: str,
+    limit: int,
+    min_cluster_size: int,
+    max_clusters: int,
+    max_entries: int,
+    out_dir: str | None,
+) -> None:
+    """Auto-generate Maps of Content indexes (per quadrant / tag cluster)."""
+    from .moc import (
+        build_quadrant_moc,
+        build_tag_cluster_mocs,
+        render_moc_markdown,
+        write_mocs,
+    )
+
+    store: MemoryStore = ctx.obj["store"]
+    memories = store.list_memories(limit=limit)
+
+    mocs = []
+    if kind in ("all", "quadrants"):
+        mocs.append(
+            build_quadrant_moc(memories, max_entries_per_section=max_entries)
+        )
+    if kind in ("all", "tags"):
+        mocs.extend(
+            build_tag_cluster_mocs(
+                memories,
+                min_cluster_size=min_cluster_size,
+                max_clusters=max_clusters,
+                max_entries_per_section=max_entries,
+            )
+        )
+
+    if out_dir:
+        written = write_mocs(mocs, out_dir)
+        click.echo(f"Wrote {len(written)} MOC file(s) to {out_dir}:")
+        for path in written:
+            click.echo(f"  {path}")
+        return
+
+    for i, moc in enumerate(mocs):
+        if i:
+            click.echo("\n" + "─" * 60 + "\n")
+        click.echo(render_moc_markdown(moc))
+
+
+# ═══════════════════════════════════════════════════════════
 # Love Note commands (Queen Ara's idea #20)
 # ═══════════════════════════════════════════════════════════
 

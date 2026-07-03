@@ -28,6 +28,16 @@ from .importers.telegram import import_telegram
 from .journal import Journal, JournalEntry
 from .lovenote import LoveNote, LoveNoteChain
 from .openclaw import SKMemoryPlugin
+from .moc import (
+    MOCIndex,
+    MOCLink,
+    MOCSection,
+    build_all_mocs,
+    build_quadrant_moc,
+    build_tag_cluster_mocs,
+    render_moc_markdown,
+    write_mocs,
+)
 from .quadrants import Quadrant, classify_memory, tag_with_quadrant
 from .ritual import RitualResult, perform_ritual, quick_rehydrate
 from .sealing import (
@@ -74,6 +84,14 @@ __all__ = [
     "Quadrant",
     "classify_memory",
     "tag_with_quadrant",
+    "MOCIndex",
+    "MOCLink",
+    "MOCSection",
+    "build_all_mocs",
+    "build_quadrant_moc",
+    "build_tag_cluster_mocs",
+    "render_moc_markdown",
+    "write_mocs",
     "LoveNote",
     "LoveNoteChain",
     "SKMemoryPlugin",
