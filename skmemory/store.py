@@ -29,6 +29,11 @@ from .models import (
 from .agents import get_agent_paths
 from .query_sanitizer import sanitize_query
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
+from .validation import (
+    PreWriteHook,
+    default_pre_write_hooks,
+    run_pre_write_hooks,
+)
 from .wal import WriteAheadLog
 
 logger = logging.getLogger("skmemory.store")
@@ -107,6 +112,7 @@ class MemoryStore:
         max_content_length: int = MAX_CONTENT_LENGTH,
         content_overflow_strategy: str = CONTENT_OVERFLOW_STRATEGY,
         decompose_min_length: int = DECOMPOSE_MIN_LENGTH,
+        pre_write_hooks: list[PreWriteHook] | None = None,
     ) -> None:
         if primary is not None:
             self.primary = primary
@@ -119,6 +125,17 @@ class MemoryStore:
         self.max_content_length = max_content_length
         self.content_overflow_strategy = content_overflow_strategy
         self.decompose_min_length = decompose_min_length
+
+        # Pluggable pre-write validation hooks. Each is a callable
+        # (Memory) -> None that raises to reject a malformed write before it
+        # reaches any backend. Defaults to the canonical schema validator;
+        # pass an explicit list (even []) to override, or use
+        # register_pre_write_hook() to extend.
+        self.pre_write_hooks: list[PreWriteHook] = (
+            list(pre_write_hooks)
+            if pre_write_hooks is not None
+            else default_pre_write_hooks()
+        )
 
         # Write-ahead log — resilient init so missing agent config doesn't block
         try:
@@ -149,6 +166,27 @@ class MemoryStore:
             tags=tags,
             metadata=metadata,
         )
+
+    def register_pre_write_hook(self, hook: PreWriteHook) -> None:
+        """Register an additional pre-write validation hook.
+
+        Hooks run in registration order right before a memory is persisted.
+        Any hook that raises aborts the write and the exception propagates to
+        the caller, so a memory that fails validation never reaches a backend.
+
+        Args:
+            hook: A callable ``(Memory) -> None`` that raises to reject.
+        """
+        self.pre_write_hooks.append(hook)
+
+    def _run_pre_write_hooks(self, memory: Memory) -> None:
+        """Run all registered pre-write hooks against *memory*.
+
+        Raises:
+            Exception: Whatever a hook raises (e.g. SchemaValidationError)
+                when the memory is rejected.
+        """
+        run_pre_write_hooks(memory, self.pre_write_hooks)
 
     def snapshot(
         self,
@@ -266,6 +304,10 @@ class MemoryStore:
         # didn't match actual source distribution). Field still declared for
         # backward-compat — see skmemory/archived/predictive_2026-05-10/README.md
         memory.seal()
+
+        # Pre-write validation: reject malformed memories before they hit
+        # any backend. Raises (e.g. SchemaValidationError) on rejection.
+        self._run_pre_write_hooks(memory)
 
         self._wal.log_pending("snapshot", memory.id, title, layer.value)
         try:
@@ -396,6 +438,7 @@ class MemoryStore:
                 },
             )
             chunk_memory.seal()
+            self._run_pre_write_hooks(chunk_memory)
             self.primary.save(chunk_memory)
             child_ids.append(chunk_memory.id)
 
@@ -420,6 +463,7 @@ class MemoryStore:
             },
         )
         parent.seal()
+        self._run_pre_write_hooks(parent)
         self.primary.save(parent)
 
         for idx, child_id in enumerate(child_ids):
@@ -435,6 +479,7 @@ class MemoryStore:
             child.related_ids = _unique_list(neighbours)
             child.metadata["decomposition"]["parent_id"] = parent.id
             child.seal()
+            self._run_pre_write_hooks(child)
             self.primary.save(child)
             if self.vector:
                 try:
@@ -512,6 +557,7 @@ class MemoryStore:
                 },
             )
             child.seal()
+            self._run_pre_write_hooks(child)
             self.primary.save(child)
             child_ids.append(child.id)
 
@@ -537,6 +583,7 @@ class MemoryStore:
             },
         )
         parent.seal()
+        self._run_pre_write_hooks(parent)
         self.primary.save(parent)
 
         if self.vector:
@@ -923,6 +970,7 @@ class MemoryStore:
             return None
 
         promoted = source.promote(target, summary=summary)
+        self._run_pre_write_hooks(promoted)
         self._wal.log_pending("promote", promoted.id, promoted.title, target.value)
         try:
             self.primary.save(promoted)
@@ -981,6 +1029,7 @@ class MemoryStore:
                 raise ValueError(f"Seed validation failed: {'; '.join(errors)}")
 
         memory = seed.to_memory()
+        self._run_pre_write_hooks(memory)
         self.primary.save(memory)
 
         if self.vector:
