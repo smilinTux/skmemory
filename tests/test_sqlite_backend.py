@@ -1,5 +1,7 @@
 """Tests for the SQLite-indexed storage backend."""
 
+import sqlite3
+
 import pytest
 
 from skmemory.backends.sqlite_backend import SQLiteBackend
@@ -247,3 +249,134 @@ class TestHealth:
         assert health["ok"] is True
         assert health["total_memories"] == 1
         assert "SQLiteBackend" in health["backend"]
+
+
+class TestErrorHandling:
+    """Graceful degradation when the SQLite index is unavailable or broken.
+
+    The flat JSON files are the source of truth, so index failures must
+    degrade (log + safe fallback), never crash the caller.
+    """
+
+    def test_corrupt_index_recovers_on_init(self, tmp_path, sample_memory):
+        """A corrupt index.db is quarantined and rebuilt from flat files."""
+        base = tmp_path / "memories"
+        backend = SQLiteBackend(base_path=str(base))
+        backend.save(sample_memory)
+        backend.close()
+
+        # Corrupt the index file with garbage.
+        db_path = base / "index.db"
+        db_path.write_bytes(b"this is not a sqlite database at all" * 10)
+
+        # Re-open: constructor must not raise, and should rebuild from the
+        # surviving flat JSON file.
+        recovered = SQLiteBackend(base_path=str(base))
+        assert recovered.stats()["total"] == 1
+        assert recovered.load(sample_memory.id) is not None
+        # The bad file was quarantined, not silently dropped.
+        assert list(base.glob("index.db.corrupt-*"))
+
+    def test_corrupt_index_recovers_on_read(self, tmp_path, sample_memory):
+        """A read against a live-corrupted index degrades then self-heals."""
+        base = tmp_path / "memories"
+        backend = SQLiteBackend(base_path=str(base))
+        backend.save(sample_memory)
+
+        # Simulate a broken/locked connection object.
+        class _BrokenConn:
+            def execute(self, *a, **k):
+                raise sqlite3.DatabaseError("database disk image is malformed")
+
+        backend._conn = _BrokenConn()
+
+        # Read must not raise; corruption recovery reopens a fresh connection.
+        result = backend.list_memories()
+        assert isinstance(result, list)
+        # After recovery the index is rebuilt from the flat file.
+        assert backend.stats()["total"] == 1
+
+    def test_locked_index_read_returns_empty(self, backend, sample_memory):
+        """A locked (OperationalError) index yields an empty list, not a crash."""
+        backend.save(sample_memory)
+
+        class _LockedConn:
+            def execute(self, *a, **k):
+                raise sqlite3.OperationalError("database is locked")
+
+        backend._conn = _LockedConn()
+        # Should degrade to empty, and must NOT quarantine (locks aren't corruption).
+        assert backend.list_summaries() == []
+        assert backend.search_text("anything") == []
+        assert (backend.base_path / "index.db").exists()
+
+    def test_save_survives_index_write_failure(self, tmp_path, sample_memory):
+        """If the index write fails, the flat file is still persisted."""
+        base = tmp_path / "memories"
+        backend = SQLiteBackend(base_path=str(base))
+
+        class _LockedConn:
+            def execute(self, *a, **k):
+                raise sqlite3.OperationalError("database is locked")
+
+            def commit(self):
+                raise sqlite3.OperationalError("database is locked")
+
+        backend._conn = _LockedConn()
+
+        mid = backend.save(sample_memory)
+        assert mid == sample_memory.id
+        # Flat file (source of truth) exists despite the index failure.
+        path = base / "short-term" / f"{mid}.json"
+        assert path.exists()
+
+    def test_malformed_row_summary_does_not_crash(self, backend):
+        """A row with NULL/short-form columns still yields a summary dict."""
+
+        class _FakeRow:
+            _data = {
+                "id": "abc",
+                "title": None,
+                "layer": "short-term",
+                "role": "general",
+                "tags": None,  # NULL instead of ''
+                "source": "manual",
+                "summary": None,
+                "content_preview": None,
+                "emotional_intensity": 0.0,
+                "emotional_valence": 0.0,
+                "emotional_labels": None,
+                "cloud9_achieved": 0,
+                "created_at": "2026-07-03",
+                "parent_id": None,
+                "related_ids": None,
+            }
+
+            def keys(self):
+                return list(self._data.keys())
+
+            def __getitem__(self, k):
+                return self._data[k]
+
+        summary = backend._row_to_memory_summary(_FakeRow())
+        assert summary["id"] == "abc"
+        assert summary["tags"] == []
+        assert summary["emotional_labels"] == []
+        assert summary["related_ids"] == []
+
+    def test_row_summary_tolerates_missing_column(self, backend):
+        """Schema drift (a missing expected column) does not raise KeyError."""
+
+        class _PartialRow:
+            _data = {"id": "xyz", "layer": "mid-term"}
+
+            def keys(self):
+                return list(self._data.keys())
+
+            def __getitem__(self, k):
+                return self._data[k]
+
+        summary = backend._row_to_memory_summary(_PartialRow())
+        assert summary["id"] == "xyz"
+        assert summary["title"] is None
+        assert summary["tags"] == []

@@ -8,13 +8,18 @@
 #
 # Uses --no-vector to skip the ~1.8GB SentenceTransformer load — these are
 # breadcrumb writes. skwhisper digest handles semantic vector indexing async.
-# flock serializes concurrent hook calls to prevent memory pile-up.
-set -euo pipefail
+#
+# The skmemory CLI writes take ~13s (double CLI cold-start + DB writes). Running
+# them synchronously held Claude Code's stdout pipe open until they finished, so
+# on interactive exit the harness killed the hook mid-write ("Hook cancelled")
+# and nothing got saved. Fix (mirrors skwhisper-save.sh 2026-06-17): parse the
+# transcript synchronously (fast), then fire the writes fully DETACHED —
+#   - flock -n : single-flight, skip if another session-end save is running
+#   - setsid + </dev/null >/dev/null 2>&1 : don't inherit Claude's stdout pipe
+#     and survive Claude's process-group teardown so the write actually lands.
+set -uo pipefail
 
-# Serialize concurrent calls — prevents memory pile-up when multiple sessions end together
 LOCK_FILE="/tmp/skmemory-session-end.lock"
-exec 9>"$LOCK_FILE"
-flock -w 30 9 || exit 0
 
 SKMEMORY="${HOME}/.local/bin/skmemory"
 [ -x "$SKMEMORY" ] || SKMEMORY="${HOME}/.skenv/bin/skmemory"
@@ -105,23 +110,33 @@ else
   CONTENT=$(echo -e "${SUMMARY}" | head -c 4000)
 fi
 
-$SKMEMORY --no-vector snapshot \
-  --layer "${LAYER}" \
-  --role general \
-  --tags "auto-save,session-end,${REASON},session:${SHORT_SID},agent:${AGENT}" \
-  --source "hook:session-end" \
-  "Session ${SHORT_SID} ended (${AGENT}, ${HUMAN_COUNT:-0} turns)" \
-  "${CONTENT}" \
-  2>/dev/null || true
+# Fire the two skmemory writes fully detached so the hook returns immediately
+# and can't be cancelled mid-write on session exit. Values pass through the
+# environment (exported) into the setsid'd bash -c. flock -n gives single-flight.
+export SKMEMORY LOCK_FILE LAYER REASON SHORT_SID AGENT CONTENT CWD
+export HUMAN_COUNT="${HUMAN_COUNT:-0}"
+export FILES_CHANGED="${FILES_CHANGED:-none}"
 
-# Journal entry
-$SKMEMORY --no-vector journal write \
-  --session-id "${SHORT_SID}" \
-  --moments "Session ended (${REASON}), ${HUMAN_COUNT:-0} turns" \
-  --feeling "session complete — content preserved" \
-  --participants "${AGENT}" \
-  --notes "CWD: ${CWD}. Reason: ${REASON}. Files: ${FILES_CHANGED:-none}" \
-  "Session ${SHORT_SID} — ended" \
-  2>/dev/null || true
+DETACH=""; command -v setsid >/dev/null 2>&1 && DETACH="setsid"
+$DETACH bash -c '
+  exec 9>"$LOCK_FILE" || exit 0
+  flock -n 9 || exit 0   # another session-end save already running — skip
+
+  "$SKMEMORY" --no-vector snapshot \
+    --layer "$LAYER" \
+    --role general \
+    --tags "auto-save,session-end,${REASON},session:${SHORT_SID},agent:${AGENT}" \
+    --source "hook:session-end" \
+    "Session ${SHORT_SID} ended (${AGENT}, ${HUMAN_COUNT} turns)" \
+    "$CONTENT" >/dev/null 2>&1 || true
+
+  "$SKMEMORY" --no-vector journal write \
+    --session-id "$SHORT_SID" \
+    --moments "Session ended (${REASON}), ${HUMAN_COUNT} turns" \
+    --feeling "session complete — content preserved" \
+    --participants "$AGENT" \
+    --notes "CWD: ${CWD}. Reason: ${REASON}. Files: ${FILES_CHANGED}" \
+    "Session ${SHORT_SID} — ended" >/dev/null 2>&1 || true
+' </dev/null >/dev/null 2>&1 &
 
 exit 0
