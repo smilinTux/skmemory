@@ -1,8 +1,24 @@
 # SKMemory Architecture
 
-> Three-tier storage with token-optimized agent loading.
+> **Flat JSON files are the source of truth.** Two active indexes sit over them: a
+> **relational/recency** layer (SQLite) and a **semantic + graph** layer (skmem-pg).
 
-## Storage Tiers
+> ### ⚠️ CURRENT ARCHITECTURE (2026-07) — read this first
+> The tier diagrams below are historical and list retired backends. **What's actually
+> live:**
+>
+> | Layer | Store | Answers | |
+> |---|---|---|---|
+> | **Relational / recency** (always on) | **SQLite** `index.db` | *"what's here by layer/tag/recency; latest sessions"* | the `skmemory` CLI read path **+ skwhisper's recency feed**; local, zero-dep, works if pg is down |
+> | **Semantic + graph** (default) | **skmem-pg** (Postgres) | *"what's relevant / how memories relate"* | pgvector + pg_search **BM25** + Apache **AGE** — one container ("Plan A: one Postgres for everything") |
+>
+> 💤 **Retired as defaults** (still pluggable via `vector_backend`/`graph_backend`, but
+> not installed/used): **SKChroma** (embedded ChromaDB), **SKVector** (Qdrant),
+> **FalkorDB** graph — all superseded by skmem-pg. Sections mentioning them are reference-only.
+> Sync: flat→SQLite via `skmemory reindex`; flat→skmem-pg via `skmem_reconcile.py` (both cronned daily).
+> Full store-location map: `~/.skcapstone/docs/MEMORY_STORES.md`.
+
+## Storage Tiers (historical — see the callout above for what's live)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -84,7 +100,11 @@ The JSON files remain the source of truth. The index is rebuildable:
 skmemory reindex
 ```
 
-### Level 1a: SKChroma (local, default — semantic search)
+### Level 1a: SKChroma (💤 RETIRED — superseded by skmem-pg)
+
+> **Not the default anymore.** The semantic backend is **skmem-pg** (pgvector + pg_search
+> BM25 + Apache AGE — see the CURRENT ARCHITECTURE callout at the top). ChromaDB is removed
+> from all agents; this section is kept for reference / if someone re-enables `vector_backend = "chromadb"`.
 
 **Zero-config embedded vector search. Works out of the box, no Docker required.**
 
