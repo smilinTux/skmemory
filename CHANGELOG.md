@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-07-10
+
+### [DOCS] Architecture corrected to the live two-layer design
+- `ARCHITECTURE.md`: **SQLite** (relational/recency — the CLI read path + skwhisper's
+  recency feed) + **skmem-pg** (semantic + graph: pgvector + pg_search BM25 + Apache AGE).
+- Marked **ChromaDB / SKVector / FalkorDB** retired as defaults (still pluggable).
+- Added a CURRENT-ARCHITECTURE callout and a link to the store-location map
+  `~/.skcapstone/docs/MEMORY_STORES.md`.
+- Companion: skwhisper v0.6.0 now reads both layers (recency from SQLite, semantic from
+  skmem-pg); the `hybrid_search_memories()` "unsupported query shape" bug was fixed and
+  the flat↔pg store drift reconciled (100% embedded).
+
 ## [0.11.0] - 2026-07-03
 
 ### [ADDED] Maps of Content, schema-validated writes, fresh-context runner (2026-07-03)
