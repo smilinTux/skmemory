@@ -187,18 +187,26 @@ missing, file backend path misconfigured.
 
 ---
 
-## AMK provenance fields
+## AMK provenance fields — 💤 DEPRECATED (2026-05-10)
 
-The original AMK integration declared two extra provenance fields on `Memory`:
-`intent` (why it was stored) and a co-occurrence `predictive` index. An audit
-on 2026-05-10 found neither was load-bearing — `intent` had only 3/4,999
-populated rows and zero read-sites, and `predictive` had no production
-imports. Both were archived in the same pass that shipped this SOP. The
-fortress integrity hash never depended on them.
+> **Status: archived, intentionally. Not a live feature.** Do not build on these.
 
-If you're chasing the original AMK shape: the field is still declared on the
-model for backward-compat with existing JSON, but the auto-fill is removed
-and no consumer reads it. Re-wire only with a real consumer in the same PR.
+The original AMK (Adaptive Memory Kernel) integration declared two extra provenance
+fields on `Memory`: **`intent`** (why it was stored) and a co-occurrence **`predictive`**
+index. A **2026-05-10 audit** found neither load-bearing — `intent` had only **3/4,999**
+populated rows and **zero read-sites**, and `predictive` had no production imports. Both
+were archived in the same pass that shipped this SOP. **The fortress integrity hash never
+depended on them**, so removing them is safe.
+
+Where things stand now:
+- **`intent`** — still *declared* on the model for backward-compat with existing JSON
+  (`models.py`, marked `DEPRECATED 2026-05-10`), but **auto-fill is removed and nothing
+  reads it**. It serializes as `""` on new memories.
+- **`predictive`** — code path is a backward-compat guard only; the implementation lives
+  in `skmemory/archived/predictive_2026-05-10/README.md`.
+
+**If you want to revive either:** re-wire it **with a real consumer in the same PR** — a
+declared-but-unread field is exactly the dead weight this audit removed.
 
 ---
 
