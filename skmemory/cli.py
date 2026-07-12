@@ -153,11 +153,20 @@ def _get_store(
 
     if pgvector_enabled:
         try:
+            import os
+
             from .backends.pgvector_backend import PGVectorBackend
 
             pg_kwargs = {}
-            if cfg and cfg.pgvector_dsn:
-                pg_kwargs["dsn"] = cfg.pgvector_dsn
+            # DSN precedence: SKMEMORY_PG_DSN env (node-local, authoritative) wins
+            # over cfg.pgvector_dsn (the yaml). The agent home is one Syncthing
+            # folder, so a yaml DSN is a SHARED value that cannot carry a node IP;
+            # the per-node env (~/.bashrc) is the only correct per-node lever.
+            pg_dsn = os.environ.get("SKMEMORY_PG_DSN") or (
+                cfg.pgvector_dsn if cfg and cfg.pgvector_dsn else None
+            )
+            if pg_dsn:
+                pg_kwargs["dsn"] = pg_dsn
             if cfg and cfg.embed_url:
                 pg_kwargs["embed_url"] = cfg.embed_url
             if cfg and cfg.embed_model:

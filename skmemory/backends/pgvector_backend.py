@@ -1,14 +1,17 @@
 """
 PGVector — semantic + hybrid memory search backend (Postgres + pgvector).
 
-Sovereign, syncable alternative to the Qdrant skvector backend: stores memory
-embeddings in a local/central Postgres so the DB can be replicated across hosts
-(streaming/logical replication) instead of snapshot-shipped.
-
-Architecture:
-  - Storage: Postgres + pgvector via the local skmem-pg container (SKMEMORY_PG_DSN).
-    Defaults to localhost:5433 so it works out-of-the-box on any host running the
-    container; replicate the DB across hosts via streaming/logical replication.
+Sovereign, syncable alternative to the Qdrant skvector backend. The embedding
+store is a DERIVED, per-node rebuildable cache (same class as the SQLite
+index.db), NOT a replicated system of record:
+  - Source of truth = the Syncthing-synced flat JSON memory files. `memories`
+    rows (content + embedding) are rebuilt from them by skmem_reconcile.py
+    (idempotent, agent-scoped). Embeddings are a deterministic function of the
+    flat content + the mxbai model, so any node can regenerate them locally.
+  - Topology: each node runs its OWN writable skmem-pg on localhost. Agents point
+    only at localhost (SKMEMORY_PG_DSN). No streaming/logical replication, no
+    remote primary, no failover — a node stays self-sufficient, and DR is covered
+    by rebuild-from-flat plus the Syncthing-synced pg dumps.
   - Embedding: HTTP endpoint (default the local Ollama mxbai-embed-large server) so
     the model is served once per host, not loaded in every skmemory process. Inject
     your own via `embed_fn`, or override SKMEMORY_EMBED_URL / SKMEMORY_EMBED_MODEL.
@@ -30,8 +33,15 @@ from .sqlite_backend import CONTENT_PREVIEW_LENGTH
 
 logger = logging.getLogger(__name__)
 
+# skmem-pg is a LOCAL, per-node writable Postgres. The embedding store is a
+# derived, rebuildable cache (same class as index.db): `memories` are rebuilt
+# from the Syncthing-synced flat JSON via skmem_reconcile.py, `docs` from the
+# wiki via skingest. It is NOT streaming-replicated and is NOT a remote primary.
+# Default to the node-local writable port; `SKMEMORY_PG_DSN` overrides per node.
+# (Was :5433 — the retired standby port — which made an unconfigured node target
+# a read-only replica where every save()/delete() raised.)
 DEFAULT_DSN = os.environ.get(
-    "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5433/skmemory"
+    "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory"
 )
 DEFAULT_EMBED_URL = os.environ.get(
     "SKMEMORY_EMBED_URL", "http://localhost:11434/api/embed"
@@ -334,6 +344,22 @@ class PGVectorBackend(BaseBackend):
         try:
             conn = self._connection()
             with conn.cursor() as cur:
+                # Guard: skmem-pg must be a LOCAL writable primary, never a
+                # read-only standby. A replica silently breaks every save()/
+                # delete() (and ParadeDB Community cannot serve pg_search reads
+                # in recovery), so fail loud rather than look healthy.
+                cur.execute("SELECT pg_is_in_recovery()")
+                in_recovery = cur.fetchone()[0]
+                if in_recovery:
+                    return {
+                        "ok": False,
+                        "backend": "PGVectorBackend",
+                        "agent": self.agent,
+                        "dsn": self.dsn.split("@")[-1],
+                        "error": "pg is in recovery (read-only standby) — skmem-pg "
+                        "must be a local writable primary; promote it or fix "
+                        "SKMEMORY_PG_DSN to the local node.",
+                    }
                 cur.execute("SELECT count(*) FROM memories WHERE agent=%s", (self.agent,))
                 n = cur.fetchone()[0]
             return {
