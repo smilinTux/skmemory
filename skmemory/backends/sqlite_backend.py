@@ -981,6 +981,9 @@ class SQLiteBackend(BaseBackend):
 
         fb = FileBackend(base_path=str(self.base_path))
         stats = {"exported": 0, "skipped": 0, "errors": 0, "orphan_ids": []}
+        # Memories moved to the archive tree are intentional cold storage —
+        # never resurrect them into an active tier as a truncated preview stub.
+        archived_stems = self._archived_stems()
 
         for row in rows:
             (
@@ -990,9 +993,15 @@ class SQLiteBackend(BaseBackend):
                 created_at, updated_at,
             ) = row
 
+            short = memory_id[:12].replace("-", "")
             full_path = self.base_path / layer / f"{memory_id}.json"
-            short_path = self.base_path / layer / f"{memory_id[:12].replace('-', '')}.json"
+            short_path = self.base_path / layer / f"{short}.json"
             if full_path.exists() or short_path.exists():
+                stats["skipped"] += 1
+                continue
+            if memory_id in archived_stems or short in archived_stems:
+                # Archived (cold storage); the full-content flat file already
+                # lives under memory/archive/ — leave it there.
                 stats["skipped"] += 1
                 continue
 
@@ -1098,22 +1107,43 @@ class SQLiteBackend(BaseBackend):
             "index_path": str(self._db_path),
         }
 
+    def _archived_stems(self) -> set[str]:
+        """Stems (filename without .json) of all memories in the archive tree.
+
+        The memory promoter (skcapstone.memory_promoter) moves aged/duplicate
+        memories out of the active tiers into ``memory/archive/`` and
+        ``memory/archive/deduped/``. Those are intentional cold storage, NOT
+        orphans — so drift/orphan accounting must recognize them. Returns both
+        the full-uuid stem and the 12-char shortform for each archived file.
+        """
+        stems: set[str] = set()
+        archive_root = self.base_path / "archive"
+        if not archive_root.exists():
+            return stems
+        for f in archive_root.rglob("*.json"):
+            stems.add(f.stem)
+        return stems
+
     def drift_check(self) -> dict:
         """Compare SQLite row count vs. flat-file count per layer.
 
-        Returns counts and the two drift directions:
-            sqlite_only — rows whose file_path no longer exists (recoverable
-                via export_orphans_to_flat).
+        Returns counts and the drift directions:
+            sqlite_only — rows whose flat file is truly gone (not in a tier and
+                not in the archive tree); recoverable via export_orphans_to_flat.
             flat_only   — flat files whose id is not indexed in SQLite
                 (recoverable via reindex).
+            archived    — rows whose flat file has been moved to memory/archive/
+                (intentional cold storage; NOT drift).
 
         Returns:
             dict: ``{"in_sync": bool, "sqlite_total", "flat_total",
-                    "sqlite_only", "flat_only", "by_layer": {...}}``.
+                    "sqlite_only", "flat_only", "archived", "by_layer": {...}}``.
         """
         conn = self._get_conn()
         sqlite_ids: set[str] = set()
         sqlite_orphans = 0
+        archived = 0
+        archived_stems = self._archived_stems()
         by_layer = {l.value: {"sqlite": 0, "flat": 0} for l in MemoryLayer}
 
         for memory_id, layer, file_path in conn.execute(
@@ -1124,8 +1154,13 @@ class SQLiteBackend(BaseBackend):
                 by_layer[layer]["sqlite"] += 1
             if not Path(file_path).exists():
                 # Also tolerate the 12-char shortform path
-                short = self.base_path / layer / f"{memory_id[:12].replace('-', '')}.json"
-                if not short.exists():
+                short = memory_id[:12].replace("-", "")
+                if (self.base_path / layer / f"{short}.json").exists():
+                    continue
+                # Moved to the archive tree ⇒ cold storage, not an orphan.
+                if memory_id in archived_stems or short in archived_stems:
+                    archived += 1
+                else:
                     sqlite_orphans += 1
 
         flat_ids: set[str] = set()
@@ -1150,8 +1185,45 @@ class SQLiteBackend(BaseBackend):
             "flat_total": len(flat_ids),
             "sqlite_only": sqlite_orphans,
             "flat_only": flat_only,
+            "archived": archived,
             "by_layer": by_layer,
         }
+
+    def prune_archived(self) -> int:
+        """Delete index rows for memories that have been moved to archive/.
+
+        The memory promoter moves aged/duplicate memories into the archive tree
+        and removes them from the active store. Their SQLite index rows point at
+        a now-nonexistent tier path — cold storage should not appear in the
+        active index. This deletes exactly those rows (a row is only pruned when
+        its flat file is absent from its tier *and* its id is present in the
+        archive tree), leaving genuinely-missing orphans untouched.
+
+        Returns:
+            int: Number of stale archived rows removed from the index.
+        """
+        conn = self._get_conn()
+        archived_stems = self._archived_stems()
+        if not archived_stems:
+            return 0
+
+        to_delete: list[str] = []
+        for memory_id, layer, file_path in conn.execute(
+            "SELECT id, layer, file_path FROM memories"
+        ):
+            if Path(file_path).exists():
+                continue
+            short = memory_id[:12].replace("-", "")
+            if (self.base_path / layer / f"{short}.json").exists():
+                continue
+            if memory_id in archived_stems or short in archived_stems:
+                to_delete.append(memory_id)
+
+        for mid in to_delete:
+            conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
+        if to_delete:
+            conn.commit()
+        return len(to_delete)
 
     def health_check(self) -> dict:
         """Check SQLite backend health.

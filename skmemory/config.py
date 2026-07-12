@@ -84,6 +84,13 @@ class SKMemoryConfig(BaseModel):
     chroma_collection: str | None = None
     chroma_embedding_model: str | None = None
 
+    # pgvector / skmem-pg (sovereign default vector backend — hybrid vector+BM25,
+    # agent-isolated by the `agent` column). Consolidated here 2026-07-04.
+    pgvector_dsn: str | None = None
+    embed_url: str | None = None
+    embed_model: str | None = None
+    vector_dim: int | None = None
+
     # Qdrant (for shared/remote collections like hammertime)
     skvector_url: str | None = None
     skvector_key: str | None = None

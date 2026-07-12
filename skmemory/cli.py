@@ -136,16 +136,43 @@ def _get_store(
         # Used by session-end hooks where semantic search isn't needed.
         chroma_enabled = False
         skvector_enabled = False
+        pgvector_enabled = False
     else:
-        # Prefer ChromaDB (local, embedded) as default vector backend
-        chroma_enabled = cfg and "chroma" in cfg.backends_enabled
-        skvector_enabled = cfg and "skvector" in cfg.backends_enabled
+        enabled = list(cfg.backends_enabled) if cfg and cfg.backends_enabled else []
+        chroma_enabled = "chroma" in enabled
+        skvector_enabled = "skvector" in enabled
+        pgvector_enabled = "pgvector" in enabled
 
-        # If neither is explicitly configured, default to ChromaDB
-        if not chroma_enabled and not skvector_enabled and not final_skvector_url:
+        # Only fall back to the embedded-ChromaDB default when the operator has
+        # NOT declared any vector backend. When backends_enabled is set (e.g.
+        # ``[pgvector]`` after the skmem-pg consolidation), respect it — do not
+        # force ChromaDB, which would false-report "chromadb not installed" /
+        # SKChromaBackend "Not initialized" in `skmemory health`.
+        if not enabled and not final_skvector_url:
             chroma_enabled = True
 
-    if chroma_enabled:
+    if pgvector_enabled:
+        try:
+            from .backends.pgvector_backend import PGVectorBackend
+
+            pg_kwargs = {}
+            if cfg and cfg.pgvector_dsn:
+                pg_kwargs["dsn"] = cfg.pgvector_dsn
+            if cfg and cfg.embed_url:
+                pg_kwargs["embed_url"] = cfg.embed_url
+            if cfg and cfg.embed_model:
+                pg_kwargs["embed_model"] = cfg.embed_model
+            if cfg and cfg.vector_dim:
+                pg_kwargs["vector_dim"] = cfg.vector_dim
+            # Construction is cheap and does NOT open a connection (lazy in
+            # _connection()), so every CLI call stays fast; PG is only contacted
+            # on an actual search or health_check().
+            vector = PGVectorBackend(**pg_kwargs)
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
+            click.echo("Warning: Could not initialize pgvector backend", err=True)
+
+    if vector is None and chroma_enabled:
         try:
             from .backends.chroma_backend import SKChromaBackend
 
