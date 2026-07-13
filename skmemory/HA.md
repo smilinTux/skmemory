@@ -3,6 +3,18 @@
 > Self-contained endpoint routing for SKVector and SKGraph backends.
 > No external load balancer. No new dependencies. Backward compatible.
 
+> ### ⚠️ Scope: this applies ONLY to the retired SKVector/SKGraph recall endpoints
+> The `primary`/`replica`/`failover` endpoint selector documented here covers the
+> optional, **retired** shared recall backends (**SKVector/Qdrant**, **SKGraph/FalkorDB**)
+> only. **skmem-pg is never run primary/replica and has no failover.** skmem-pg is LOCAL
+> and per-node: each node runs its OWN writable Postgres on `localhost:5432`, and its
+> `memories`/`docs` indexes are derived caches rebuilt from source on that node (flat JSON
+> via `reconcile.py`; git wiki via skingest). HA/DR for skmem-pg = node self-sufficiency +
+> rebuild-from-source, not replication. Streaming replication (`.158 -> .41` standby on
+> :5433) was abandoned because ParadeDB Community cannot serve `pg_search` reads in
+> recovery (prb-6f069c5e; hardened in 0.11.3). Do not apply the selector below to the
+> skmem-pg write path.
+
 ## Overview
 
 SKMemory's SKVector and SKGraph backends can run on multiple nodes across a

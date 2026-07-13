@@ -67,6 +67,35 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_pg_dsn_is_local_writable_not_standby():
+    """skmem-pg is LOCAL, per-node, and NOT streaming-replicated / NOT a SPOF
+    (prb-6f069c5e). The live write path must resolve to a LOCAL host (never a
+    remote primary such as 192.168.0.158) and a writable primary (never the
+    retired :5433 standby port, never ``pg_is_in_recovery()``). Parametrized from
+    SKMEMORY_PG_DSN so a node whose container maps a non-default port still passes,
+    as long as it is local and writable.
+    """
+    from urllib.parse import urlparse
+
+    u = urlparse(PG_DSN)
+    host = (u.hostname or "localhost").lower()
+    assert host in ("localhost", "127.0.0.1", "::1"), (
+        f"skmem-pg write DSN must be LOCAL, got {host!r} -- agents connect only to localhost."
+    )
+    assert u.port != 5433, ":5433 is the retired standby port; skmem-pg is a local writable primary"
+
+    import psycopg
+
+    conn = psycopg.connect(PG_DSN, autocommit=True, connect_timeout=5)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_is_in_recovery();")
+            in_recovery = cur.fetchone()[0]
+    finally:
+        conn.close()
+    assert in_recovery is False, "skmem-pg write path must target a writable primary, not a standby"
+
+
 @pytest.fixture
 def throwaway_agent() -> str:
     return f"__dedup_test_{os.getpid()}__"

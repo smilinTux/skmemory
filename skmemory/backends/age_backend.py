@@ -56,6 +56,18 @@ from ..models import Memory
 
 logger = logging.getLogger(__name__)
 
+# Node-LOCAL writable DSN. Canonical model (prb-6f069c5e): skmem-pg is local,
+# per-node, and rebuildable from source. It is NOT streaming-replicated, NOT a
+# central/shared system of record, and NOT a SPOF. Each node runs its OWN writable
+# skmem-pg on localhost:5432 (fleet-wide uniform port, env-free); agents connect only
+# to localhost. Per-node override = SKMEMORY_PG_DSN (default localhost:5432).
+#
+# ALIGNMENT: the pgvector backend, this AGE backend, and skmemory/reconcile.py MUST
+# resolve to the SAME node-local port/DB. Do not let them drift (e.g. one on :5432 and
+# another on the retired :5433 standby port) or the vector and graph indexes for the
+# same node end up in different databases. The `lumina_knowledge`-class graph is a
+# derived cache: rebuild it from the synced flat JSON via `sync_all`, never a remote
+# primary/replica.
 DEFAULT_DSN = os.environ.get(
     "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory"
 )

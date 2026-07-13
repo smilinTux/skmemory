@@ -80,6 +80,15 @@ def _get_store() -> MemoryStore:
                     )
             except Exception as e:
                 logger.warning("mcp_server.py pgvector: %s", e)
+        # NOTE (prb-6f069c5e, local-per-node rebuild model): reconsider this Chroma
+        # fallback. Chroma is RETIRED, and skmem-pg is now a LOCAL, per-node, writable
+        # Postgres on localhost that any node rebuilds from its Syncthing-synced flat
+        # JSON via skmemory/reconcile.py (embeddings are a deterministic function of
+        # flat content + mxbai on .100). An unreachable local pg is an operational
+        # fault that should surface loudly (or degrade to the always-on SQLite/BM25
+        # recency read path), NOT silently init a retired, empty Chroma vector store
+        # that masks the outage and answers recall from nothing. Left in place for now
+        # to avoid a behavior change; slated to become fail-loud + SQLite-recency.
         if vector is None:
             try:
                 from .backends.chroma_backend import SKChromaBackend

@@ -1,15 +1,44 @@
 # SKCapstone Changelog
 
-*Auto-generated from the coordination board — 2026-02-24 07:12 UTC*
+*Auto-generated from the coordination board - 2026-02-24 07:12 UTC*
 
 **Total completed: 87** across 8 agents
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-07-12
+
+### [CHANGED] skmem-pg is local-per-node rebuild-from-source, not replicated-central (prb-6f069c5e)
+- Corrected the topology across docs and code: **skmem-pg is LOCAL, per-node, and
+  rebuildable from source. It is NOT streaming-replicated, NOT a central/shared system of
+  record, and NOT a SPOF.** Each node runs its OWN writable skmem-pg on `localhost:5432`
+  (fleet-wide uniform port, env-free; per-node override `SKMEMORY_PG_DSN`); agents connect
+  only to `localhost`.
+- The `memories` table is a DERIVED cache (same class as `index.db`): rebuilt from the
+  Syncthing-synced flat JSON by `reconcile.py` (idempotent, agent-scoped). Embeddings are a
+  deterministic function of flat content + mxbai on .100, so any node regenerates them
+  locally. `docs`/`file_locations` is wiki-canon rebuilt per-node by skingest.
+- HA/DR = node self-sufficiency + rebuild-from-source (flat files + git wiki, both
+  replicated) + the daily `pg_dump` backup in the synced tree. **There is no
+  primary/replica/failover for skmem-pg.** Any primary/replica wording is scoped to the
+  retired SKVector(Qdrant)/SKGraph(FalkorDB) recall endpoints only.
+- Background: streaming replication (`.158 -> .41` standby on `:5433`) was abandoned -
+  ParadeDB Community cannot serve `pg_search` reads in recovery, so the standby broke,
+  bloated primary WAL, and made .41 depend on .158.
+- **Default DSN fix:** node-local skmem-pg DSN standardized on `localhost:5432` (the retired
+  `:5433` was the abandoned standby port); `age_backend.py` and `reconcile.py` aligned on
+  the same node-local port/DB.
+- Vendored the production reconcile engine into the repo as `skmemory/reconcile.py` (was
+  out-of-repo `~/skmem-build/skmem_reconcile.py`) and added `tests/test_reconcile_invariant.py`
+  asserting rebuild-from-empty backfills+embeds every flat memory, prunes gone rows,
+  `flat_count == pg_count` per agent, and is idempotent.
+- Docs updated: `docs/ARCHITECTURE.md`, `README.md`, `skmemory/README.md`, `SOP.md`,
+  `skmemory/HA.md`, and `docs/deploy-plan/skmemory-bulletproof-deploy.md`.
+
 ## [0.11.1] - 2026-07-10
 
 ### [DOCS] Architecture corrected to the live two-layer design
-- `ARCHITECTURE.md`: **SQLite** (relational/recency — the CLI read path + skwhisper's
+- `ARCHITECTURE.md`: **SQLite** (relational/recency - the CLI read path + skwhisper's
   recency feed) + **skmem-pg** (semantic + graph: pgvector + pg_search BM25 + Apache AGE).
 - Marked **ChromaDB / SKVector / FalkorDB** retired as defaults (still pluggable).
 - Added a CURRENT-ARCHITECTURE callout and a link to the store-location map
@@ -22,7 +51,7 @@
 
 ### [ADDED] Maps of Content, schema-validated writes, fresh-context runner (2026-07-03)
 
-Three additive, backward-compatible capabilities (round-2 merges) — no change to
+Three additive, backward-compatible capabilities (round-2 merges) - no change to
 existing store/backend behavior; defaults preserve prior semantics.
 
 - **Maps of Content (MOC) indexes + `skmemory moc` CLI.** New `skmemory/moc.py`
@@ -31,7 +60,7 @@ existing store/backend behavior; defaults preserve prior semantics.
   cluster** (one MOC per tag shared by ≥ N memories). Output is deterministic
   (stable sort keys, byte-identical Markdown for the same input) and bounded
   (caps on entries-per-section and cluster count) so a large store can't blow up
-  index generation. Pure aggregation — never mutates or writes back to the store.
+  index generation. Pure aggregation - never mutates or writes back to the store.
   The `skmemory moc` command renders the MOCs to stdout or writes one
   `<key>.md` file per index with `--out DIR`; `--kind {all,quadrants,tags}`,
   `--limit`, `--min-cluster-size`, `--max-clusters`, and `--max-entries` tune it.
@@ -52,12 +81,12 @@ existing store/backend behavior; defaults preserve prior semantics.
   **isolated context** (spawned subagent/subprocess) instead of polluting the
   live agent's working context window. `PromotionEngine.run_pass()` routes the
   sweep through the runner; the default `in_process_runner` runs in-process with
-  no isolation (identity element — behavior identical to before), and
+  no isolation (identity element - behavior identical to before), and
   `SubprocessRunner(spawn)` is the scaffold for real subagent/subprocess spawning
   with the spawn mechanism itself injected. `PromotionScheduler` accepts the same
   optional `runner`. `skmemory sweep` (one-shot) now routes through the seam.
 
-Verified: full suite green — **988 passed, 76 skipped** (`pytest tests/ -q`), incl.
+Verified: full suite green - **988 passed, 76 skipped** (`pytest tests/ -q`), incl.
 `tests/test_moc.py`, `tests/test_validation.py`, `tests/test_fresh_context.py`.
 
 ### [ADDED] sk-standards doc set (SOP / SECURITY / CONTRIBUTING / CODE_OF_CONDUCT)
@@ -65,17 +94,17 @@ Verified: full suite green — **988 passed, 76 skipped** (`pytest tests/ -q`), 
 Brought the repo up to the canonical
 [SK_REPO_DOC_STANDARD](https://github.com/smilinTux/sk-standards) bar (2026-06-28):
 
-- `SOP.md` — 9-section operational source of truth with a mermaid Architecture
+- `SOP.md` - 9-section operational source of truth with a mermaid Architecture
   diagram (source-of-truth flat files → SQLite index → Chroma/pgvector/graph
   projections), build/test/deploy, troubleshooting table, and a maturity-tier
-  reference (**T0 — Classical**: at-rest GPG sealing only; no hybrid PQ KEM today).
-- `SECURITY.md` — threat model, secret-handling hard rules, reporting channel, and an
+  reference (**T0 - Classical**: at-rest GPG sealing only; no hybrid PQ KEM today).
+- `SECURITY.md` - threat model, secret-handling hard rules, reporting channel, and an
   **honest crypto-posture** statement (no post-quantum claim; FIPS 203 cited for the
   future sk_pgp/sk_pqc sealing path).
-- `CONTRIBUTING.md` — branch/commit (`Co-Authored-By` trailer)/test-gate/review path;
+- `CONTRIBUTING.md` - branch/commit (`Co-Authored-By` trailer)/test-gate/review path;
   additive-and-gated rule for LIVE paths; TDD-where-there's-logic.
-- `CODE_OF_CONDUCT.md` — Contributor Covenant 2.1.
-- `README.md` — added a standard-conformant **Related projects / See also** section
+- `CODE_OF_CONDUCT.md` - Contributor Covenant 2.1.
+- `README.md` - added a standard-conformant **Related projects / See also** section
   (Depends on / Used by / Siblings / Standards cross-links) and a doc-set footer.
 
 Documentation-only; no code or backend behavior changed.
@@ -83,7 +112,7 @@ Documentation-only; no code or backend behavior changed.
 ### [CHANGED] Embedding cutover: bge-legal → mxbai-embed-large; pgvector localhost default
 
 Cut the sovereign vector stack over from the bge-legal embedders to
-`mxbai-embed-large` (1024-dim, drop-in — same vector width, no schema change)
+`mxbai-embed-large` (1024-dim, drop-in - same vector width, no schema change)
 and removed every `bge-legal-v1`/`bge-legal-v2` reference from the codebase,
 configs, docs, and tests.
 
@@ -98,7 +127,7 @@ configs, docs, and tests.
 - `scripts/migrate-flat-to-pgvector.py` (new): resumable, concurrent migrator
   that embeds the flat-file corpus into skmem-pg via mxbai.
 - `mcp_server.py`: PGVector is now the DEFAULT vector backend (health-gated,
-  falls back to Chroma when skmem-pg is unreachable) — live OOTB, no env needed.
+  falls back to Chroma when skmem-pg is unreachable) - live OOTB, no env needed.
 
 ### [REMOVED] AMK provenance: predictive recall + intent auto-fill
 
@@ -110,17 +139,17 @@ declared but never load-bearing:
   outside its own test file; untouched since 2026-03-18; the consumers it
   was designed for (context, ritual) were never wired. SKWhisper v0.4
   semantic-recency surfacing supersedes the original use case. Restore
-  only with a real consumer in the same PR — see archived README.
+  only with a real consumer in the same PR - see archived README.
 - **`Memory.intent` auto-fill** removed from `store.snapshot()`. Field
   remains declared on the model for backward-compat with existing JSON
   (loads cleanly into Pydantic), but it is no longer auto-populated and
   has no read-sites in production. The 6-key `SOURCE_INTENTS` map didn't
   match the actual source distribution anyway (telegram, hook:session-end,
   dreaming-engine, etc. were absent).
-- **Fortress integrity verify is unchanged** — it was the one AMK piece
+- **Fortress integrity verify is unchanged** - it was the one AMK piece
   that did pull weight (daily timer, 9942/11625 sealed, 0 tampered).
 
-### [NEW] `skmemory fortress seal` — idempotent backfill
+### [NEW] `skmemory fortress seal` - idempotent backfill
 
 CLI command that scans every memory and seals any without an integrity
 hash. Safe to re-run. Useful after enabling fortress on a store with
@@ -143,7 +172,7 @@ to reflect the archival above.
 
 ### Planned
 
-- **Two-gate admission for legacy/external ingest** —
+- **Two-gate admission for legacy/external ingest** -
   `skmemory/admission/` (constants, gate1, gate2, rerun) lands on
   `feature/admission-and-closure`. Notion importer prototype wired
   through both gates; review queue at
@@ -153,11 +182,11 @@ to reflect the archival above.
   `docs/admission_policy.md`. Phase 2 (closure synthesis) follows on
   the same branch.
 
-## 2026-04-25 — skmemory v0.9.9 (Graph autoload + graph sync)
+## 2026-04-25 - skmemory v0.9.9 (Graph autoload + graph sync)
 
 ### [NEW] SKGraph auto-loaded from per-agent yaml
 
-- **`skmemory/cli.py`** — `make_store()` now falls back to
+- **`skmemory/cli.py`** - `make_store()` now falls back to
   `~/.skcapstone/agents/<agent>/config/skgraph.yaml` when no graph URL
   is set via env / CLI / `skmemory.yaml`. Reuses
   `context_loader._load_skgraph_config()` (same precedence as SKWhisper).
@@ -166,15 +195,15 @@ to reflect the archival above.
 - `skmemory health` now reports a `graph` block (`ok`, `url`, `graph`
   name, `node_count`) when the backend is wired.
 
-### [NEW] `skmemory sync --graph` — backfill FalkorDB
+### [NEW] `skmemory sync --graph` - backfill FalkorDB
 
-- **`SKGraphBackend.sync_all(flat_files_dir, agent_name)`** — walks every
+- **`SKGraphBackend.sync_all(flat_files_dir, agent_name)`** - walks every
   flat-file memory and calls `index_memory()`, populating Memory nodes,
   Tag nodes, Source nodes, and `RELATED_TO` / `PROMOTED_FROM` /
   `MENTIONS` / `CITES` / `ASSERTS` / `IN_SECTION` edges. Idempotent
   (Cypher MERGE).
 - **`skmemory sync --graph`** flag added; runs alongside `--vector`.
-- `systemd/skmemory-sync@.service` — `ExecStart` now includes `--graph`
+- `systemd/skmemory-sync@.service` - `ExecStart` now includes `--graph`
   so the 6h timer keeps SQLite + ChromaDB + FalkorDB all in lockstep.
 
 ### [DOCS]
@@ -185,45 +214,45 @@ to reflect the archival above.
   `index_memory`. Notes that mxbai-embed-large is the standard local
   embedding model for both ChromaDB and SKVector.
 
-## 2026-04-25 — skmemory v0.9.8 (Sync & Drift)
+## 2026-04-25 - skmemory v0.9.8 (Sync & Drift)
 
-### [NEW] `skmemory sync` — bidirectional reconciler
+### [NEW] `skmemory sync` - bidirectional reconciler
 
-- **`skmemory/cli.py`** — new `skmemory sync [--quiet] [--vector]` command:
+- **`skmemory/cli.py`** - new `skmemory sync [--quiet] [--vector]` command:
   one-shot reconcile of SQLite ↔ flat files. Two phases (`export-flat` to
   rescue SQLite-only orphans, then safe `reindex` to pick up flat-only
   files); optional `--vector` re-syncs ChromaDB as well. `--quiet`
   suppresses output unless something changed (cron-friendly).
-- **`SQLiteBackend.drift_check()`** — counts `sqlite_only` (rows with no
+- **`SQLiteBackend.drift_check()`** - counts `sqlite_only` (rows with no
   flat file) and `flat_only` (files not indexed) per layer.
   `health_check()` now embeds a `sync` block: `{in_sync, sqlite_only,
   flat_only, hint}`. Run `skmemory health` to see it.
 
 ### [NEW] Per-agent systemd timer
 
-- **`systemd/skmemory-sync@.service`** + **`.timer`** — templated unit,
+- **`systemd/skmemory-sync@.service`** + **`.timer`** - templated unit,
   fires 5 min after boot then every 6 h, runs `skmemory sync --quiet --vector`
   for the named agent. Logs to `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log`.
-- **`systemd/README.md`** — install/enable docs.
+- **`systemd/README.md`** - install/enable docs.
 - Enable per agent: `systemctl --user enable --now skmemory-sync@<agent>.timer`
 
-## 2026-04-25 — skmemory v0.9.7 (Safe reindex + orphan recovery)
+## 2026-04-25 - skmemory v0.9.7 (Safe reindex + orphan recovery)
 
-### [NEW] `skmemory export-flat` — rescue SQLite-only memories
+### [NEW] `skmemory export-flat` - rescue SQLite-only memories
 
-- **`SQLiteBackend.export_orphans_to_flat()`** — walks every SQLite row,
+- **`SQLiteBackend.export_orphans_to_flat()`** - walks every SQLite row,
   reconstructs orphan `Memory`s from columns (`id`, `title`, `layer`, tags,
   source, summary, content_preview, emotional state, importance, parents,
   related_ids, timestamps), writes via `FileBackend`. Idempotent and
   non-destructive.
 - Recovered memories carry `metadata.recovered_from_sqlite_preview = True`
   so consumers know the content is the SQLite preview (~150 chars), not full
-  text — full content is gone once the flat file is.
+  text - full content is gone once the flat file is.
 - New CLI: `skmemory export-flat [--show-ids]`.
 
 ### [BREAKING-SAFE] `skmemory reindex` is now safe by default
 
-- **`SQLiteBackend.reindex(force=False)`** — by default, runs
+- **`SQLiteBackend.reindex(force=False)`** - by default, runs
   `export_orphans_to_flat()` *before* deleting SQLite rows, so orphans
   survive the rebuild. Pass `--force` to skip that step (preserves the
   old destructive behavior for callers that explicitly want it).
@@ -231,11 +260,11 @@ to reflect the archival above.
   this caused real data loss in opus' profile (~632 entries) before the
   safety net was added. New behavior: zero loss unless `--force` is set.
 
-## 2026-04-25 — skmemory v0.9.6 (Vector reindex CLI)
+## 2026-04-25 - skmemory v0.9.6 (Vector reindex CLI)
 
 ### [NEW] `skmemory reindex --vector` backfills ChromaDB
 
-- **`skmemory/cli.py`** — `reindex` gains `--vector`: after rebuilding
+- **`skmemory/cli.py`** - `reindex` gains `--vector`: after rebuilding
   the SQLite index, run `SKChromaBackend.sync_all()` against
   `~/.skcapstone/agents/<agent>/memory` to backfill the chroma vector
   store from flat files. Useful for older agents (opus, lumina, jarvis)
@@ -243,11 +272,11 @@ to reflect the archival above.
 - Synced `__version__` to match `pyproject.toml`: 0.9.3 → 0.9.6 (skmemory
   CLI was reporting a stale version).
 
-## 2026-04-04 — skmemory v0.9.5 (MemPalace)
+## 2026-04-04 - skmemory v0.9.5 (MemPalace)
 
 ### [NEW] ChromaDB Local Vector Backend (SKChroma)
 
-- **`skmemory/backends/chroma_backend.py`** — `SKChromaBackend`: embedded ChromaDB,
+- **`skmemory/backends/chroma_backend.py`** - `SKChromaBackend`: embedded ChromaDB,
   zero-config local vector search, per-agent scoped collections, replaces Qdrant as
   the default Level 1 backend for per-agent memory
 - ChromaDB is now the **default** local semantic backend (`pip install skmemory[chroma]`)
@@ -256,18 +285,18 @@ to reflect the archival above.
 
 ### [NEW] MemPalace Infrastructure
 
-- **`skmemory/query_sanitizer.py`** — `sanitize_query()`: 4-step cascade strips
+- **`skmemory/query_sanitizer.py`** - `sanitize_query()`: 4-step cascade strips
   system-prompt bloat from AI queries before embedding (passthrough → last `?` sentence
   → last sentence → 500-char tail truncation). Prevents context pollution in ChromaDB.
-- **`skmemory/wal.py`** — Write-ahead log for all memory writes. Crash-safe audit trail,
+- **`skmemory/wal.py`** - Write-ahead log for all memory writes. Crash-safe audit trail,
   PENDING → COMMITTED lifecycle, auto-replay on startup.
-- **`skmemory/extractor.py`** — `MemoryExtractor`: auto-pull decisions, preferences,
+- **`skmemory/extractor.py`** - `MemoryExtractor`: auto-pull decisions, preferences,
   milestones, and technical facts from conversation text into mid-term memory snapshots.
-- **`skmemory/hooks/claude_code_hooks.py`** — Claude Code `Stop` + `PreCompact` hooks
+- **`skmemory/hooks/claude_code_hooks.py`** - Claude Code `Stop` + `PreCompact` hooks
   for automatic session memory capture without manual curation.
-- **`skmemory/hooks/`** — Shell wrappers: `session-end-save.sh`, `pre-compact-save.sh`,
+- **`skmemory/hooks/`** - Shell wrappers: `session-end-save.sh`, `pre-compact-save.sh`,
   `session-start-ritual.sh`, `stop-checkpoint.sh`, `post-compact-reinject.sh`
-- **`IMPLEMENTATION_SPEC.md`** — Full MemPalace integration spec (530 lines)
+- **`IMPLEMENTATION_SPEC.md`** - Full MemPalace integration spec (530 lines)
 
 ### [OPS] Infrastructure
 
@@ -275,14 +304,14 @@ to reflect the archival above.
 - `ARCHITECTURE.md` updated with ChromaDB storage tier diagram, MemPalace section,
   and mermaid diagrams for WAL, query sanitizer, extractor, scoped search, and hooks
 
-## 2026-03-18 — skmemory v0.9.1
+## 2026-03-18 - skmemory v0.9.1
 
 ### [NEW] Feature
 
-- **Journal synthesis module** (`skmemory/synthesis.py`): JournalSynthesizer with daily, weekly, and dream narrative generation — no LLM dependency
+- **Journal synthesis module** (`skmemory/synthesis.py`): JournalSynthesizer with daily, weekly, and dream narrative generation - no LLM dependency
 - **New MCP tools**: `memory_synthesize_daily`, `memory_synthesize_dreams`, `memory_auto_context`
 - **Contextual auto-search**: `memory_auto_context` searches all tiers, deduplicates, ranks by emotional intensity, trims to token budget
-- **Content overflow handling**: configurable `max_content_length` (default 10000) with split strategy — creates parent+child memories linked via `related_ids`
+- **Content overflow handling**: configurable `max_content_length` (default 10000) with split strategy - creates parent+child memories linked via `related_ids`
 
 ### [FIX] Bug Fix
 
@@ -447,4 +476,4 @@ to reflect the archival above.
 
 ---
 
-*Built by the Pengu Nation — staycuriousANDkeepsmilin*
+*Built by the Pengu Nation - staycuriousANDkeepsmilin*

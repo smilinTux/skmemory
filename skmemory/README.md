@@ -7,9 +7,13 @@ part of the top-level CLI surface. For user-facing usage see the repo-root
 ## Recall collection namespacing & consent gating (skcomms T9 + T10)
 
 `recall_collections` (configured in `skmemory.yaml`) name *shared* corpora that
-live in the central pgvector store (**skmem-pg**) and are searched in addition
-to an agent's own memory. Because that store is shared across operators and
-realms, recall-collection resolution is **realm-aware** and **consent-gated**.
+are searched in addition to an agent's own memory. "Shared" here is a **logical
+scope**, not a physical central store: skmem-pg is LOCAL and per-node (each node
+runs its own writable pg on `localhost:5432`, rebuilt from source), so a shared
+corpus is materialized into each node's local pg (agent memories via
+`reconcile.py` from synced flat JSON; wiki-canon `docs` via skingest). Because
+these corpora are shared across operators and realms as a namespace, recall-
+collection resolution is **realm-aware** and **consent-gated**.
 
 `context_loader._load_recall_collections(config_dir)` resolves each configured
 name. **This is pure namespacing/gating logic — it never queries or writes

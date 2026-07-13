@@ -566,7 +566,16 @@ If you switch the embedding model or vector dimension, reindex or rebuild the
 vector-backed store before trusting semantic search results. Existing points
 from the old model are not compatible with the new embedding space.
 
-### Multi-endpoint HA
+### Multi-endpoint HA (retired SKVector/SKGraph recall endpoints ONLY)
+
+> **Scope:** this primary/replica/failover routing applies **only** to the retired,
+> optional **SKVector (Qdrant)** and **SKGraph (FalkorDB)** shared recall endpoints.
+> **skmem-pg is never run primary/replica and has no failover.** It is LOCAL and
+> per-node: each node runs its own writable skmem-pg on `localhost:5432`, rebuilt from
+> source (agent memories via `reconcile.py` from synced flat JSON; `docs` via skingest
+> from the git wiki). HA for skmem-pg = node self-sufficiency + rebuild-from-source, not
+> replication (see [prb-6f069c5e]; the `.158 -> .41` streaming standby was abandoned
+> because ParadeDB Community cannot serve `pg_search` reads in recovery).
 
 ```yaml
 skvector_endpoints:
@@ -739,9 +748,10 @@ ecosystem from here:
   [skcomms](https://github.com/smilinTux/skcomms) — capture conversations to memory
   and recall context via the MCP tools.
 - ↔️ **Sibling:** [skingest](https://github.com/smilinTux/skingest) — the sole
-  **document** ingestion service; it writes the shared skmem-pg `docs` table that
-  skmemory's pgvector backend also reads. (skmemory = agent memories; skingest =
-  corpus.)
+  **document** ingestion service; it builds each node's LOCAL skmem-pg `docs` table
+  (a per-node rebuild from the git wiki canon) that skmemory's pgvector backend then
+  reads over `localhost`. "Shared" is a logical corpus scope, not a central store.
+  (skmemory = agent memories; skingest = corpus.)
 - ↔️ **Sibling:** [sksecurity](https://github.com/smilinTux/sksecurity) /
   [capauth](https://github.com/smilinTux/capauth) — identity + the GPG/PGP key the
   vaulted backend seals to.

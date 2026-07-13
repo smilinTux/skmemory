@@ -3,22 +3,37 @@
 > **Flat JSON files are the source of truth.** Two active indexes sit over them: a
 > **relational/recency** layer (SQLite) and a **semantic + graph** layer (skmem-pg).
 
-> ### ⚠️ CURRENT ARCHITECTURE (2026-07) — read this first
+> ### ⚠️ CURRENT ARCHITECTURE (2026-07) - read this first
 > The tier diagrams below are historical and list retired backends. **What's actually
 > live:**
 >
 > | Layer | Store | Answers | |
 > |---|---|---|---|
 > | **Relational / recency** (always on) | **SQLite** `index.db` | *"what's here by layer/tag/recency; latest sessions"* | the `skmemory` CLI read path **+ skwhisper's recency feed**; local, zero-dep, works if pg is down |
-> | **Semantic + graph** (default) | **skmem-pg** (Postgres) | *"what's relevant / how memories relate"* | pgvector + pg_search **BM25** + Apache **AGE** — one container ("Plan A: one Postgres for everything") |
+> | **Semantic + graph** (default) | **skmem-pg** (Postgres) | *"what's relevant / how memories relate"* | pgvector + pg_search **BM25** + Apache **AGE** - one container ("Plan A: one Postgres for everything") |
 >
 > 💤 **Retired as defaults** (still pluggable via `vector_backend`/`graph_backend`, but
 > not installed/used): **SKChroma** (embedded ChromaDB), **SKVector** (Qdrant),
-> **FalkorDB** graph — all superseded by skmem-pg. Sections mentioning them are reference-only.
-> Sync: flat→SQLite via `skmemory reindex`; flat→skmem-pg via `skmem_reconcile.py` (both cronned daily).
+> **FalkorDB** graph - all superseded by skmem-pg. Sections mentioning them are reference-only.
+> Sync: flat→SQLite via `skmemory reindex`; flat→skmem-pg via `skmemory/reconcile.py` (both cronned daily).
 > Full store-location map: `~/.skcapstone/docs/MEMORY_STORES.md`.
+>
+> **Topology - skmem-pg is LOCAL, per-node, and rebuildable from source.** It is NOT
+> streaming-replicated, NOT a central/shared system of record, and NOT a SPOF. Each node
+> runs its OWN writable skmem-pg Postgres on `localhost:5432` (fleet-wide uniform port,
+> env-free); agents connect only to `localhost` (per-node override `SKMEMORY_PG_DSN`).
+> The `memories` table is a DERIVED cache, the same class as `index.db`: rebuilt from the
+> Syncthing-synced flat JSON by `reconcile.py` (idempotent, agent-scoped), and embeddings
+> are a deterministic function of flat content + mxbai on .100, so any node regenerates
+> them locally. `docs`/`file_locations` is wiki-canon built per-node by skingest (interim:
+> pulled from the .158 primary until skingest runs locally on each node), so it is canon-
+> sourced, not agent flat-file-sourced. There is NO primary/replica/failover for skmem-pg:
+> HA/DR = node self-sufficiency + rebuild-from-source (flat files + git wiki, both
+> replicated) + a daily `pg_dump` backup in the synced tree. Background: streaming
+> replication (.158 -> .41 standby on :5433) was abandoned because ParadeDB Community
+> cannot serve `pg_search` reads in recovery (prb-6f069c5e; hardened in 0.11.3).
 
-## Storage Tiers (historical — see the callout above for what's live)
+## Storage Tiers (historical - see the callout above for what's live)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -26,7 +41,7 @@
 │            skmemory context --max-tokens 3000                 │
 ├──────────────────────────────────────────────────────────────┤
 │                     MemoryStore                               │
-│           (facade — delegates to backends)                    │
+│           (facade - delegates to backends)                    │
 ├──────────┬───────────────────────────┬───────────────────────┤
 │ Level 0  │        Level 1            │       Level 2         │
 │ SQLite   │  SKChroma  │  SKVector    │       SKGraph         │
@@ -50,7 +65,7 @@ graph TB
     MS --> D["Decomposition Engine\nchunk + citation + entity + claim extraction"]
     MS --> L0["Level 0: SQLite\nAlways on, zero deps"]
     MS --> L1a["Level 1a: SKChroma\nLocal embedded ChromaDB\nDefault semantic search\nZero infrastructure"]
-    MS --> L1b["Level 1b: SKVector\nRemote Qdrant\nOptional — cloud/self-host"]
+    MS --> L1b["Level 1b: SKVector\nRemote Qdrant\nOptional - cloud/self-host"]
     MS --> L2["Level 2: SKGraph\nGraph traversal\nFalkorDB + structure nodes"]
     MS --> L3["Level 3: HA Routing\nEndpointSelector"]
     WAL --> L0
@@ -100,16 +115,24 @@ The JSON files remain the source of truth. The index is rebuildable:
 skmemory reindex
 ```
 
-### Level 1a: SKChroma (💤 RETIRED — superseded by skmem-pg)
+The **skmem-pg `memories` table is rebuildable in exactly the same way** - it is a
+node-local derived cache, not a replicated system of record. On each node, `reconcile.py`
+backfills every flat memory into that node's `localhost:5432` skmem-pg (embedding via mxbai
+on .100), prunes rows whose flat file is gone, and is idempotent, so a wiped or fresh pg is
+restored from the synced flat files alone. `docs`/`file_locations` rebuilds per-node via
+skingest from the git wiki (canon-sourced). Delete any of these indexes on any node and
+rebuild locally; there is no primary/replica and no failover.
+
+### Level 1a: SKChroma (💤 RETIRED - superseded by skmem-pg)
 
 > **Not the default anymore.** The semantic backend is **skmem-pg** (pgvector + pg_search
-> BM25 + Apache AGE — see the CURRENT ARCHITECTURE callout at the top). ChromaDB is removed
+> BM25 + Apache AGE - see the CURRENT ARCHITECTURE callout at the top). ChromaDB is removed
 > from all agents; this section is kept for reference / if someone re-enables `vector_backend = "chromadb"`.
 
 **Zero-config embedded vector search. Works out of the box, no Docker required.**
 
 SKChroma uses [ChromaDB](https://www.trychroma.com/) in embedded (in-process) mode.
-It runs inside the same Python process as the agent — no server, no Docker, no config.
+It runs inside the same Python process as the agent - no server, no Docker, no config.
 Each agent gets its own collection scoped to their agent name. The collection is built
 from the Syncthing-synced flat JSON files, same source of truth as SQLite.
 
@@ -125,7 +148,7 @@ flowchart TD
 ```
 
 Query sanitization prevents system-prompt pollution in embeddings.
-Raw AI queries are often bloated with rules and instructions — the sanitizer
+Raw AI queries are often bloated with rules and instructions - the sanitizer
 strips them to the actual intent before embedding.
 
 Install:
@@ -139,9 +162,9 @@ No other config needed. Collection auto-initializes on first use.
 
 Resource cost: ~50MB RAM, ~30MB disk per agent (idle).
 
-### Level 1b: SKVector (powered by Qdrant) (optional — remote semantic search)
+### Level 1b: SKVector (powered by Qdrant) (optional - remote semantic search)
 
-**"Find the memory about that feeling we had" — even if those words aren't in it.**
+**"Find the memory about that feeling we had" - even if those words aren't in it.**
 
 Uses the sovereign HammerTime embedding model by default:
 `mxbai-embed-large` when the local model is available, falling back to
@@ -184,23 +207,23 @@ recall_collections:
 collection listed in `recall_collections` (via the SKVector Qdrant client),
 dedupes by memory ID, and tags results with `source_backend` (`sqlite`,
 `skvector`, `skvector:<collection>`). A missing collection logs `404` and
-is skipped — never breaks the search.
+is skipped - never breaks the search.
 
 ### Sync & drift (v0.9.6+)
 
 Because flat files are the source of truth and SQLite is the index, drift is
 possible if importers write one side without the other. The sync surface:
 
-- **`skmemory health`** — embeds a `sync` block: `{in_sync, sqlite_only,
+- **`skmemory health`** - embeds a `sync` block: `{in_sync, sqlite_only,
   flat_only, hint}`. Run anytime to check.
-- **`skmemory export-flat`** — rescues SQLite-only memories to flat files.
+- **`skmemory export-flat`** - rescues SQLite-only memories to flat files.
   Idempotent. Memories carry `metadata.recovered_from_sqlite_preview = True`
   so consumers know the content is the SQLite preview (~150 chars), not full.
-- **`skmemory sync [--quiet] [--vector]`** — bidirectional reconcile:
+- **`skmemory sync [--quiet] [--vector]`** - bidirectional reconcile:
   export-flat → safe reindex → optional ChromaDB backfill.
-- **`skmemory reindex`** — safe by default (pre-exports orphans). Pass
+- **`skmemory reindex`** - safe by default (pre-exports orphans). Pass
   `--force` to skip the safety net (the old destructive behavior).
-- **`systemd/skmemory-sync@<agent>.timer`** — fires every 6h, runs the
+- **`systemd/skmemory-sync@<agent>.timer`** - fires every 6h, runs the
   full reconcile in the background. See `systemd/README.md`.
 
 ### Decomposition Layer
@@ -219,19 +242,19 @@ The parent memory keeps the high-level document metadata. Child chunk memories
 carry chunk-local decomposition metadata and are individually indexed in vector
 and graph backends.
 
-### Level 2: SKGraph (powered by FalkorDB) (optional — graph relationships)
+### Level 2: SKGraph (powered by FalkorDB) (optional - graph relationships)
 
-**"What memories connect to this person?" — traverse the relationship web.**
+**"What memories connect to this person?" - traverse the relationship web.**
 
 SKGraph (Cypher over Redis protocol) stores memory-to-memory edges:
-- `RELATED_TO` — explicit relationship links
-- `PROMOTED_FROM` — promotion lineage chains
-- `TAGGED` — tag-based clustering
-- `PLANTED` — seed creator attribution
-- `MENTIONS` — memory → entity
-- `CITES` — memory → citation
-- `ASSERTS` — memory → claim
-- `IN_SECTION` — memory → section
+- `RELATED_TO` - explicit relationship links
+- `PROMOTED_FROM` - promotion lineage chains
+- `TAGGED` - tag-based clustering
+- `PLANTED` - seed creator attribution
+- `MENTIONS` - memory → entity
+- `CITES` - memory → citation
+- `ASSERTS` - memory → claim
+- `IN_SECTION` - memory → section
 
 Install:
 ```bash
@@ -296,7 +319,7 @@ Key properties:
 - On-demand TCP probing (no background threads)
 - Heartbeat mesh auto-discovers new endpoints
 - Config endpoints take precedence over discovery
-- Backward compatible — single-URL configs work unchanged
+- Backward compatible - single-URL configs work unchanged
 - No new pip dependencies (stdlib `socket`)
 
 See **[skmemory/HA.md](skmemory/HA.md)** for full documentation, Mermaid
@@ -310,14 +333,14 @@ These are the native skmemory subsystems that make memory writes safe and
 memory queries accurate: a write-ahead log, query sanitizer, conversation
 extractor, scoped search, and Claude Code hooks. Their design is **inspired by**
 the third-party [MemPalace](https://github.com/milla-jovovich/mempalace) project,
-but this is original skmemory code — MemPalace is not a dependency and shares no
+but this is original skmemory code - MemPalace is not a dependency and shares no
 code or storage with skmemory.
 
 ### Write-Ahead Log (WAL)
 
 **Every memory write is logged before it hits storage. Crash-safe. Auditable.**
 
-`skmemory/wal.py` — wraps all `MemoryStore` writes in a WAL entry that is
+`skmemory/wal.py` - wraps all `MemoryStore` writes in a WAL entry that is
 flushed to `~/.skcapstone/agents/<agent>/memory/wal.jsonl` before the actual
 write completes. On startup the WAL is replayed to recover any incomplete writes.
 
@@ -359,13 +382,13 @@ flowchart TD
     S4 --> OUT
 ```
 
-Module: `skmemory/query_sanitizer.py` — `sanitize_query(raw: str) -> str`
+Module: `skmemory/query_sanitizer.py` - `sanitize_query(raw: str) -> str`
 
 ### Conversation Extractor
 
 **Automatically pull decisions, preferences, and milestones from conversations.**
 
-`skmemory/extractor.py` — `MemoryExtractor` scans conversation text for
+`skmemory/extractor.py` - `MemoryExtractor` scans conversation text for
 extractable insights and creates memory snapshots without human curation.
 
 ```mermaid
@@ -385,7 +408,7 @@ Used by `session-to-memory.py` (archive hook) and Claude Code Stop/PreCompact ho
 
 **ChromaDB search with per-agent isolation and tier filtering.**
 
-`SKChromaBackend.search(query, agent, tier)` — scoped to a single agent's
+`SKChromaBackend.search(query, agent, tier)` - scoped to a single agent's
 collection, with optional memory tier filtering (short/mid/long). The query
 sanitizer runs automatically before embedding.
 
@@ -408,7 +431,7 @@ sequenceDiagram
 
 **Auto-save memory at session end and before compaction. No manual curation.**
 
-`skmemory/hooks/claude_code_hooks.py` — implements two hooks:
+`skmemory/hooks/claude_code_hooks.py` - implements two hooks:
 
 | Hook | Trigger | Action |
 |---|---|---|
@@ -419,11 +442,11 @@ Shell wrappers for `.claude/hooks/` configuration:
 
 ```
 skmemory/hooks/
-├── session-end-save.sh       # Stop hook — save on exit
-├── pre-compact-save.sh       # PreCompact hook — save before context trim
-├── session-start-ritual.sh   # PostSessionStart — inject ritual
-├── stop-checkpoint.sh        # Stop — lightweight checkpoint
-└── post-compact-reinject.sh  # PostCompact — reinject identity
+├── session-end-save.sh       # Stop hook - save on exit
+├── pre-compact-save.sh       # PreCompact hook - save before context trim
+├── session-start-ritual.sh   # PostSessionStart - inject ritual
+├── stop-checkpoint.sh        # Stop - lightweight checkpoint
+└── post-compact-reinject.sh  # PostCompact - reinject identity
 ```
 
 To wire into Claude Code:
@@ -439,7 +462,7 @@ To wire into Claude Code:
 
 ---
 
-## Know Your Audience (KYA) — Audience-Aware Memory Filtering
+## Know Your Audience (KYA) - Audience-Aware Memory Filtering
 
 > Private memories stay private. The Bash Wedding Vows never leak into a business channel.
 
@@ -451,11 +474,11 @@ trust level fits through the gate.
 ### Five-Level Trust Hierarchy
 
 ```
-@public (0)        — Anyone on the internet
-@community (1)     — Known community members
-@work-circle (2)   — Business collaborators (professional trust)
-@inner-circle (3)  — Close friends / family (personal trust)
-@chef-only (4)     — Intimate, private, full-trust (Chef ONLY)
+@public (0)        - Anyone on the internet
+@community (1)     - Known community members
+@work-circle (2)   - Business collaborators (professional trust)
+@inner-circle (3)  - Close friends / family (personal trust)
+@chef-only (4)     - Intimate, private, full-trust (Chef ONLY)
 ```
 
 Scoped sub-tags like `@work:chiro` and `@work:swapseat` map to WORK_CIRCLE.
@@ -500,7 +523,7 @@ Two gates:
 
 When `perform_ritual()` receives a `channel_id`, it builds an `AudienceProfile`
 and filters **seeds** and **strongest memories** through both gates before including
-them in the context. Identity (soul blueprint + FEB) is **never filtered** — the
+them in the context. Identity (soul blueprint + FEB) is **never filtered** - the
 active agent remains itself regardless of audience filtering.
 
 ```mermaid
@@ -582,11 +605,11 @@ sequenceDiagram
     participant SV as SKVector
     participant SG as SKGraph
     A->>MS: snapshot(title, content, emotion)
-    MS->>SQ: save(memory) — primary
-    MS->>SV: save(memory) — embed + index
-    MS->>SG: index_memory(memory) — graph edges
+    MS->>SQ: save(memory) - primary
+    MS->>SV: save(memory) - embed + index
+    MS->>SG: index_memory(memory) - graph edges
     A->>MS: search("connected feeling")
-    MS->>SV: search_text(query) — semantic
+    MS->>SV: search_text(query) - semantic
     SV-->>MS: ranked results
     A->>MS: traverse(memory_id)
     MS->>SG: get_related(id, depth=2)

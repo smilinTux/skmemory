@@ -56,6 +56,52 @@ requires_skmem_pg = pytest.mark.skipif(
 )
 
 
+class TestLocalWritableDSN:
+    """The AGE graph is a node-LOCAL, rebuildable-from-flat derived cache
+    (prb-6f069c5e): skmem-pg is LOCAL, per-node, and NOT streaming-replicated,
+    NOT a central system of record, NOT a SPOF. The resolved DSN must therefore
+    be a LOCAL, writable port, never a remote primary (e.g. 192.168.0.158) and
+    never the retired :5433 standby port. The 33k-node graph loses its only
+    off-node copy when replication is dropped, so a node that silently pointed at
+    a remote/replica DSN would defeat the whole model.
+    """
+
+    def test_default_dsn_is_localhost(self):
+        from skmemory.backends import age_backend
+
+        assert "localhost:5432" in age_backend.DEFAULT_DSN
+        # The default must never carry a remote host or the retired standby port.
+        assert "192.168." not in age_backend.DEFAULT_DSN
+        assert ":5433" not in age_backend.DEFAULT_DSN
+
+    def test_resolved_dsn_is_local_not_standby(self):
+        from urllib.parse import urlparse
+
+        u = urlparse(DSN)
+        host = (u.hostname or "localhost").lower()
+        assert host in ("localhost", "127.0.0.1", "::1"), (
+            f"skmem-pg DSN must resolve to a LOCAL host, got {host!r} -- agents connect "
+            "only to localhost; there is no remote primary."
+        )
+        assert u.port != 5433, ":5433 is the retired standby port; skmem-pg is a local writable primary"
+
+    @requires_skmem_pg
+    def test_live_pg_is_writable_primary_not_replica(self):
+        """A reachable local skmem-pg must be a writable primary, never a
+        recovery/standby (ParadeDB Community cannot serve pg_search reads in
+        recovery; there is no primary/replica for skmem-pg)."""
+        import psycopg
+
+        conn = psycopg.connect(DSN, autocommit=True, connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_is_in_recovery();")
+                in_recovery = cur.fetchone()[0]
+        finally:
+            conn.close()
+        assert in_recovery is False, "skmem-pg must be a writable primary, not a standby/replica"
+
+
 def _unique_entity_word(prefix: str) -> str:
     """A unique Titlecase word matching the entity-extraction regex
     (``[A-Z][a-z]{2,}`` with a trailing word boundary): the whole word must
