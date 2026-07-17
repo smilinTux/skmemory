@@ -1,58 +1,46 @@
-# SKMemory Optional Services
+# skmem-pg: the SKMemory Postgres backend (pgvector + ParadeDB BM25 + Apache AGE)
 #
-# These are OPTIONAL backends for enhanced memory capabilities.
-# SKMemory works perfectly with just SQLite (zero infrastructure).
+# This replaces the retired Qdrant (SKVector) + FalkorDB (SKGraph) stack.
+# Production runs this image LOCAL per node on localhost:5432 (no replication,
+# no SPOF; flat JSON files remain the source of truth, `memories` is a derived
+# cache rebuilt by deploy/skmem-pg/skmem_reconcile.py).
 #
-# Start everything:  docker compose up -d
-# Just SKVector:     docker compose up -d skvector
-# Just SKGraph:      docker compose up -d skgraph
-# Check status:      docker compose ps
-# Stop:              docker compose down
+# Build + run:
+#   export SKMEM_PG_PASSWORD=change-me
+#   docker compose up -d --build
 #
-# Resource usage (idle):
-#   SKVector:  ~200MB RAM, ~100MB disk
-#   SKGraph:   ~100MB RAM, ~150MB disk
-#   Combined:  ~300MB RAM total
+# Fresh initialization loads deploy/skmem-pg/schema.sql (live .158 schema
+# snapshot, 2026-07-17) which creates extensions, tables, hybrid_search_docs /
+# hybrid_search_memories, and all HNSW + BM25 indexes.
 #
-# Connect from skmemory:
-#   skmemory --skvector-url http://localhost:6333 health
-#
-# Or set environment variables:
-#   export SKMEMORY_SKVECTOR_URL=http://localhost:6333
-#   export SKMEMORY_SKGRAPH_URL=redis://localhost:6379
+# NOTE: if a production skmem-pg already listens on 5432 on this host, override
+# the port: SKMEM_PG_PORT=15432 docker compose up -d
 
 services:
-  skvector:
-    image: qdrant/qdrant:latest
-    container_name: skmemory-skvector
-    ports:
-      - "6333:6333"   # REST API
-      - "6334:6334"   # gRPC
-    volumes:
-      - skvector_data:/qdrant/storage
+  skmem-pg:
+    build: ./deploy/skmem-pg
+    image: skmem-pg:pg17-bm25-age
+    container_name: skmem-pg
+    command: postgres -c shared_preload_libraries=pg_search,age
     environment:
-      - QDRANT__SERVICE__GRPC_PORT=6334
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-
-  skgraph:
-    image: falkordb/falkordb:latest
-    container_name: skmemory-skgraph
+      POSTGRES_DB: ${SKMEM_PG_DB:-skmemory}
+      POSTGRES_PASSWORD: ${SKMEM_PG_PASSWORD:?set SKMEM_PG_PASSWORD (no default; never commit secrets)}
     ports:
-      - "6379:6379"   # Redis-compatible protocol
+      - "127.0.0.1:${SKMEM_PG_PORT:-5432}:5432"
     volumes:
-      - skgraph_data:/data
+      - skmem_pg_data:/var/lib/postgresql/data
+      - ./deploy/skmem-pg/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 2G
 
 volumes:
-  skvector_data:
-    driver: local
-  skgraph_data:
+  skmem_pg_data:
     driver: local
