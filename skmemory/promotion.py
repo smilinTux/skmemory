@@ -570,6 +570,18 @@ class PromotionScheduler:
                     exc,
                     exc_info=True,
                 )
+                # Surface the failure on the shared sk-alert bus when
+                # skcapstone is present; degrades to local logging otherwise.
+                try:
+                    from . import integration
+
+                    integration.alert(
+                        "sweep_failed",
+                        {"message": str(exc), "sweep": self._sweep_count + 1},
+                        level="error",
+                    )
+                except Exception:  # never let alerting break the sweep loop
+                    pass
 
             # Wait for the interval or until stop() is called
             self._stop_event.wait(timeout=self._interval)

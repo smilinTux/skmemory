@@ -55,6 +55,12 @@ pqc-seal = [
     # seam transparently falls back to the classical SHA-256 sealer.
     "sk_pgp>=0.1.0",
 ]
+skcapstone = [
+    # Optional: integration backbone (sk-alert + skscheduler). NOT a hard
+    # dependency -- absent it, skmemory.integration degrades to native logging
+    # + the in-process PromotionScheduler / systemd skmemory-sync@ timer.
+    "skcapstone>=0.6.8",
+]
 all = [
     "skseed>=0.1.0",
     "chromadb>=0.5.0",
@@ -62,6 +68,7 @@ all = [
     "sentence-transformers>=2.2.0",
     "falkordb>=1.0.0",
     "telethon>=1.36",
+    "skcapstone>=0.6.8",
 ]
 dev = [
     "pytest>=7.0",
