@@ -19,6 +19,8 @@ production engine) so the rebuild path is versioned and testable in-repo.
 
 Usage:
     python -m skmemory.reconcile [AGENT]        # default: $SKAGENT or lumina
+    python -m skmemory.reconcile --all          # every provisioned agent
+    python -m skmemory.reconcile --agents a,b,c  # explicit list
 
 Env:
     EMBED_URL    (default http://192.168.0.100:11434/api/embed)
@@ -27,6 +29,7 @@ Env:
 
 from __future__ import annotations
 
+import argparse
 import csv
 import glob
 import io
@@ -48,8 +51,49 @@ def default_agent() -> str:
     return os.environ.get("SKAGENT", "lumina")
 
 
+def _agents_base_dir() -> str:
+    """Base directory holding per-agent homes.
+
+    Mirrors ``skmemory.agents`` resolution so discovery honours the same
+    overrides (used by tests to point at a throwaway tree):
+      1. ``SKMEMORY_HOME``   -> the agent base dir directly
+      2. ``SKCAPSTONE_HOME`` -> ``<that>/agents``
+      3. default             -> ``~/.skcapstone/agents``
+    """
+    home = os.environ.get("SKMEMORY_HOME")
+    if home:
+        return home
+    skcap = os.environ.get("SKCAPSTONE_HOME")
+    if skcap:
+        return os.path.join(skcap, "agents")
+    return os.path.expanduser("~/.skcapstone/agents")
+
+
 def _mem_dir(agent: str) -> str:
-    return os.path.expanduser(f"~/.skcapstone/agents/{agent}/memory")
+    return os.path.join(_agents_base_dir(), agent, "memory")
+
+
+def discover_agents(agents_base: str | None = None) -> list[str]:
+    """Discover every provisioned agent that has a memory dir.
+
+    Scans the agent base dir for subdirectories that contain a ``memory/``
+    directory, excluding ``*-template`` scaffolds. This is the "all agents"
+    source for :func:`reconcile_all`; the acceptance contract is "every agent
+    with a memory dir", so we key on the memory dir (not on the presence of a
+    ``config/skmemory.yaml``, which non-lumina MCP-only agents may lack).
+
+    Returns a sorted list of agent names (empty if the base dir is absent).
+    """
+    base = agents_base or _agents_base_dir()
+    if not os.path.isdir(base):
+        return []
+    out = []
+    for name in sorted(os.listdir(base)):
+        if name.endswith("-template"):
+            continue
+        if os.path.isdir(os.path.join(base, name, "memory")):
+            out.append(name)
+    return out
 
 
 def reconcile(
@@ -254,10 +298,100 @@ def reconcile(
     }
 
 
+def reconcile_all(
+    agents: list[str] | None = None,
+    *,
+    agents_base: str | None = None,
+    verbose: bool = True,
+    **kwargs,
+) -> dict:
+    """Reconcile every provisioned agent (or an explicit ``agents`` list).
+
+    Each agent is reconciled independently via :func:`reconcile`. A failure for
+    one agent is captured and does NOT abort the others (isolation of failure);
+    it is reflected in the summary so the CLI can exit non-zero.
+
+    Args:
+        agents: explicit agent names; if None, discovered via
+            :func:`discover_agents`.
+        agents_base: override the agent base dir for discovery (tests).
+        verbose: print per-agent + rollup lines.
+        **kwargs: forwarded to :func:`reconcile` (embed_url, embed_model,
+            psql_cmd, ...); ``mem_dir`` is intentionally left per-agent.
+
+    Returns:
+        dict: {
+            "ok": bool,                # True iff every agent succeeded
+            "succeeded": int,
+            "failed": int,
+            "agents": [                # one entry per agent, in run order
+                {..reconcile stats.., "ok": True} |
+                {"agent": name, "ok": False, "error": "<msg>"}
+            ],
+        }
+    """
+    names = agents if agents is not None else discover_agents(agents_base)
+    results: list[dict] = []
+    failed = 0
+    for name in names:
+        try:
+            stats = reconcile(name, verbose=verbose, **kwargs)
+            stats["ok"] = True
+            results.append(stats)
+        except Exception as exc:  # isolation: one agent's failure never aborts the run
+            failed += 1
+            if verbose:
+                print(f"[{name}] FAILED: {exc}", flush=True)
+            results.append({"agent": name, "ok": False, "error": str(exc)})
+    summary = {
+        "ok": failed == 0,
+        "succeeded": len(results) - failed,
+        "failed": failed,
+        "agents": results,
+    }
+    if verbose:
+        print(
+            f"[reconcile-all] agents={len(results)} "
+            f"succeeded={summary['succeeded']} failed={failed}",
+            flush=True,
+        )
+    return summary
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    agent = argv[0] if argv else default_agent()
-    reconcile(agent)
+    parser = argparse.ArgumentParser(
+        prog="skmemory.reconcile",
+        description="Reconcile flat JSON memories into the node-local skmem-pg.",
+    )
+    parser.add_argument(
+        "agent",
+        nargs="?",
+        default=None,
+        help="single agent to reconcile (default: $SKAGENT or lumina)",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="reconcile every provisioned agent (those with a memory dir)",
+    )
+    parser.add_argument(
+        "--agents",
+        default=None,
+        help="comma-separated explicit agent list to reconcile",
+    )
+    args = parser.parse_args(argv)
+
+    if args.all or args.agents:
+        explicit = None
+        if args.agents:
+            explicit = [a.strip() for a in args.agents.split(",") if a.strip()]
+        summary = reconcile_all(explicit)
+        if not summary["ok"]:
+            sys.exit(1)
+        return summary
+
+    return reconcile(args.agent or default_agent())
 
 
 if __name__ == "__main__":

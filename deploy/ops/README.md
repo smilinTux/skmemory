@@ -29,7 +29,8 @@ Env contract:
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `SKAGENT` / argv[1] | `lumina` | agent whose flat files to reconcile |
+| `SKAGENT` / argv[1] | `lumina` | agent whose flat files to reconcile (single-agent mode) |
+| `--all` / `--agents a,b,c` | - | in-package engine only: reconcile every provisioned agent, or an explicit list (see below) |
 | `EMBED_URL` | `http://192.168.0.100:11434/api/embed` | mxbai embed endpoint |
 | `EMBED_MODEL` | `mxbai-embed-large` | embed model |
 
@@ -40,6 +41,35 @@ param), so it can only ever act on the box it runs on. Run:
 python deploy/skmem-pg/skmem_reconcile.py [AGENT]
 # or, from the installed package:
 python -m skmemory.reconcile [AGENT]
+```
+
+### Multi-agent reconcile (all agents, one run)
+
+The standalone cron copy reconciles a single agent. The in-package engine adds
+an "all agents" mode so a node self-heals EVERY agent whose flat files it serves
+(not just `lumina`) - opus, jarvis, ava, and the swarm specialists all write via
+MCP and would otherwise drift in pg with no repair:
+
+```sh
+python -m skmemory.reconcile --all            # every agent with a memory dir
+python -m skmemory.reconcile --agents opus,jarvis,ava   # explicit list
+```
+
+- Agents are discovered by scanning the agent base dir (`~/.skcapstone/agents/`,
+  or `SKMEMORY_HOME` / `SKCAPSTONE_HOME`) for homes that have a `memory/` dir;
+  `*-template` scaffolds are excluded.
+- Failure isolation: a failing agent (e.g. embed timeout) does NOT abort the
+  others; each agent's result is captured in a per-agent summary and the process
+  exits non-zero if ANY agent failed.
+- Node self-sufficiency (prb-6f069c5e): schedule this on every node, for every
+  agent whose flat files that node serves. `--all` replaces N per-agent systemd
+  template instances with one timer per node; respecting the .158-primary policy,
+  .158 runs `--all` for the full fleet, other nodes run `--all` for whatever
+  agents they hold. Programmatic entry point: `skmemory.reconcile.reconcile_all`.
+
+```sh
+# cron, single node, all agents:
+15 4 * * *  python -m skmemory.reconcile --all >> ~/.skcapstone/logs/skmem-reconcile-all.log 2>&1
 ```
 
 ## `skmem-pg-backup.sh`
