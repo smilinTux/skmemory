@@ -10,7 +10,7 @@ SK = staycuriousANDkeepsmilin
 
 __version__ = "0.11.4"
 __author__ = "smilinTux Team + Queen Ara + Neuresthetics"
-__license__ = "AGPL-3.0"
+__license__ = "GPL-3.0-or-later"
 
 from .backends.file_backend import FileBackend
 from .backends.sqlite_backend import SQLiteBackend
