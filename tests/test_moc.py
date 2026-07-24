@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import pytest
 
-from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer, MemoryRole
 from skmemory.moc import (
     MOCIndex,
     build_all_mocs,
@@ -16,6 +15,7 @@ from skmemory.moc import (
     render_moc_markdown,
     write_mocs,
 )
+from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer, MemoryRole
 from skmemory.quadrants import classify_memory
 
 
@@ -154,9 +154,7 @@ class TestTagClusterMOC:
         assert [m.key for m in mocs] == ["tag-big", "tag-small"]
 
     def test_max_clusters_cap(self) -> None:
-        mems = [
-            _mem(f"m{i}", tags=[f"t{i%3}"]) for i in range(9)
-        ]  # tags t0,t1,t2 each x3
+        mems = [_mem(f"m{i}", tags=[f"t{i % 3}"]) for i in range(9)]  # tags t0,t1,t2 each x3
         mocs = build_tag_cluster_mocs(mems, min_cluster_size=2, max_clusters=1)
         assert len(mocs) == 1
 
@@ -166,9 +164,7 @@ class TestTagClusterMOC:
             _mem("b", tags=["quadrant:work"]),
         ]
         assert build_tag_cluster_mocs(mems, min_cluster_size=2) == []
-        included = build_tag_cluster_mocs(
-            mems, min_cluster_size=2, include_quadrant_tags=True
-        )
+        included = build_tag_cluster_mocs(mems, min_cluster_size=2, include_quadrant_tags=True)
         assert len(included) == 1
 
     def test_empty_input(self) -> None:

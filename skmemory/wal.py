@@ -67,22 +67,26 @@ class WriteAheadLog:
 
     def log_done(self, op: str, memory_id: str) -> None:
         """Log that a pending write completed successfully."""
-        self._append({
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "op": op,
-            "memory_id": memory_id,
-            "status": "done",
-        })
+        self._append(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "op": op,
+                "memory_id": memory_id,
+                "status": "done",
+            }
+        )
 
     def log_failed(self, op: str, memory_id: str, error: str) -> None:
         """Log that a pending write failed."""
-        self._append({
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "op": op,
-            "memory_id": memory_id,
-            "status": "failed",
-            "error": str(error)[:500],
-        })
+        self._append(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "op": op,
+                "memory_id": memory_id,
+                "status": "failed",
+                "error": str(error)[:500],
+            }
+        )
 
     def tail(self, n: int = 50) -> list[dict]:
         """Read the last n entries from the log.

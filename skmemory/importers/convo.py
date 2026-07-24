@@ -30,13 +30,14 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any
 
 from ..admission import (
+    SENTINEL_UNRECOVERABLE_SOURCE,
     AdmissionPolicy,
     Gate2Result,
-    SENTINEL_UNRECOVERABLE_SOURCE,
     admit,
     enqueue_review,
     evaluate_rerun,

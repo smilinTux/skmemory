@@ -48,7 +48,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 # --------------------------------------------------------------------------- #
 # At-rest serialisation -- identical to FileBackend so bytes match bit-for-bit
@@ -57,9 +57,9 @@ from typing import Any, Dict, Optional, Protocol, runtime_checkable
 CHECKSUM_PREFIX = "sha256:"
 
 # Sealing schemes a sealer may advertise.
-SCHEME_CLASSICAL = "classical"                            # sha256 over at-rest bytes
-SCHEME_SKPGP_MLDSA87_ED448 = "sk_pgp:mldsa87-ed448"       # composite L5 detached sig
-SCHEME_SKPGP_MLDSA65_ED25519 = "sk_pgp:mldsa65-ed25519"   # composite L3 detached sig
+SCHEME_CLASSICAL = "classical"  # sha256 over at-rest bytes
+SCHEME_SKPGP_MLDSA87_ED448 = "sk_pgp:mldsa87-ed448"  # composite L5 detached sig
+SCHEME_SKPGP_MLDSA65_ED25519 = "sk_pgp:mldsa65-ed25519"  # composite L3 detached sig
 
 
 def at_rest_bytes(memory_like: Any) -> bytes:
@@ -111,8 +111,8 @@ class SealVerdict:
 
     scheme: str
     checksum_ok: bool
-    signature_ok: Optional[bool] = None
-    fingerprint: Optional[str] = None
+    signature_ok: bool | None = None
+    fingerprint: str | None = None
     is_post_quantum: bool = False
     notes: list = field(default_factory=list)
 
@@ -134,12 +134,13 @@ class Sealer(Protocol):
 
     def checksum(self, memory_like: Any) -> str: ...
 
-    def sign(self, memory_like: Any) -> Optional[bytes]:
+    def sign(self, memory_like: Any) -> bytes | None:
         """Return a detached signature (armored bytes), or ``None`` if the
         backend produces no cryptographic signature (the classical case)."""
 
-    def verify(self, memory_like: Any, signature: Optional[bytes], *,
-               expected_checksum: Optional[str] = None) -> SealVerdict: ...
+    def verify(
+        self, memory_like: Any, signature: bytes | None, *, expected_checksum: str | None = None
+    ) -> SealVerdict: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -167,24 +168,23 @@ class ClassicalSealer:
     def checksum(self, memory_like: Any) -> str:
         return content_checksum(memory_like)
 
-    def sign(self, memory_like: Any) -> Optional[bytes]:  # noqa: ARG002 - by design
+    def sign(self, memory_like: Any) -> bytes | None:  # noqa: ARG002 - by design
         return None
 
-    def verify(self, memory_like: Any, signature: Optional[bytes], *,
-               expected_checksum: Optional[str] = None) -> SealVerdict:
+    def verify(
+        self, memory_like: Any, signature: bytes | None, *, expected_checksum: str | None = None
+    ) -> SealVerdict:
         actual = content_checksum(memory_like)
         checksum_ok = (expected_checksum == actual) if expected_checksum else True
         notes = []
         if expected_checksum is None:
             notes.append("no expected checksum supplied; integrity unverified")
         if signature:
-            notes.append(
-                "classical sealer ignores signatures; SHA-256 is not a signature"
-            )
+            notes.append("classical sealer ignores signatures; SHA-256 is not a signature")
         return SealVerdict(
             scheme=self.scheme,
             checksum_ok=checksum_ok,
-            signature_ok=None,          # no cryptographic signature in this backend
+            signature_ok=None,  # no cryptographic signature in this backend
             notes=notes,
         )
 
@@ -198,6 +198,7 @@ def _sk_pgp():
     """Import sk_pgp lazily; return the module or ``None`` if unavailable."""
     try:
         import sk_pgp  # type: ignore
+
         return sk_pgp
     except Exception:  # pragma: no cover - environment dependent
         return None
@@ -230,9 +231,9 @@ class SkPgpSealer:
         self,
         scheme: str = SCHEME_SKPGP_MLDSA87_ED448,
         *,
-        secret_key_path: Optional[str] = None,
-        cert_path: Optional[str] = None,
-        password: Optional[str] = None,
+        secret_key_path: str | None = None,
+        cert_path: str | None = None,
+        password: str | None = None,
     ) -> None:
         if scheme not in _SKPGP_SUITES:
             raise ValueError(f"unsupported sk_pgp scheme: {scheme!r}")
@@ -255,31 +256,34 @@ class SkPgpSealer:
     def _load_key(self):
         sk = _sk_pgp()
         if sk is None or not self.secret_key_path:
-            raise RuntimeError(
-                "sk_pgp backend not ready: package missing or no key configured"
-            )
+            raise RuntimeError("sk_pgp backend not ready: package missing or no key configured")
         return sk.Key.from_file(self.secret_key_path)  # type: ignore[attr-defined]
 
-    def sign(self, memory_like: Any) -> Optional[bytes]:
+    def sign(self, memory_like: Any) -> bytes | None:
         key = self._load_key()
         data = at_rest_bytes(memory_like)
         if self._password is not None:
             return key.sign_detached(data, password=self._password)
         return key.sign_detached(data)
 
-    def verify(self, memory_like: Any, signature: Optional[bytes], *,
-               expected_checksum: Optional[str] = None) -> SealVerdict:
+    def verify(
+        self, memory_like: Any, signature: bytes | None, *, expected_checksum: str | None = None
+    ) -> SealVerdict:
         sk = _sk_pgp()
         actual = content_checksum(memory_like)
         checksum_ok = (expected_checksum == actual) if expected_checksum else True
         if sk is None:
             return SealVerdict(
-                scheme=self.scheme, checksum_ok=checksum_ok, signature_ok=None,
+                scheme=self.scheme,
+                checksum_ok=checksum_ok,
+                signature_ok=None,
                 notes=["sk_pgp unavailable; cannot verify PQC signature"],
             )
         if not signature:
             return SealVerdict(
-                scheme=self.scheme, checksum_ok=checksum_ok, signature_ok=None,
+                scheme=self.scheme,
+                checksum_ok=checksum_ok,
+                signature_ok=None,
                 notes=["no detached signature supplied"],
             )
         cert_src = self.cert_path or self.secret_key_path
@@ -287,7 +291,9 @@ class SkPgpSealer:
             # Honest: a signature is present but we have no cert/key to check it.
             # Never reject -- surface as unverifiable (signature_ok=None).
             return SealVerdict(
-                scheme=self.scheme, checksum_ok=checksum_ok, signature_ok=None,
+                scheme=self.scheme,
+                checksum_ok=checksum_ok,
+                signature_ok=None,
                 notes=["signature present but no cert/key configured to verify it"],
             )
         try:
@@ -298,18 +304,22 @@ class SkPgpSealer:
             else:
                 cert = sk.Key.from_file(self.secret_key_path).cert  # type: ignore[attr-defined]
             # sk_pgp's verify_detached takes the armored signature as *bytes*.
-            sig_bytes = signature.encode("utf-8") if isinstance(signature, str) else bytes(signature)
+            sig_bytes = (
+                signature.encode("utf-8") if isinstance(signature, str) else bytes(signature)
+            )
             sig_ok = bool(cert.verify_detached(sig_bytes, at_rest_bytes(memory_like)))
         except Exception as exc:  # pragma: no cover - malformed sig/cert
             return SealVerdict(
-                scheme=self.scheme, checksum_ok=checksum_ok, signature_ok=False,
+                scheme=self.scheme,
+                checksum_ok=checksum_ok,
+                signature_ok=False,
                 notes=[f"PQC verification raised: {exc}"],
             )
         fp = getattr(cert, "fingerprint", None)
         return SealVerdict(
             scheme=self.scheme,
             checksum_ok=checksum_ok,
-            signature_ok=sig_ok,            # True iff BOTH composite legs verify
+            signature_ok=sig_ok,  # True iff BOTH composite legs verify
             fingerprint=fp,
             is_post_quantum=bool(getattr(cert, "is_post_quantum", True)),
         )
@@ -319,11 +329,11 @@ class SkPgpSealer:
 # Resolver -- config is the only signal; default is always classical
 # --------------------------------------------------------------------------- #
 
-ENV_BACKEND = "SKMEMORY_SEAL_BACKEND"     # "classical" (default) | "sk_pgp"
-ENV_SCHEME = "SKMEMORY_SEAL_SCHEME"       # e.g. "mldsa87-ed448" (sk_pgp only)
-ENV_KEY = "SKMEMORY_SEAL_KEY"             # path to armored secret key
-ENV_CERT = "SKMEMORY_SEAL_CERT"           # path to armored public cert (optional)
-ENV_PASSWORD = "SKMEMORY_SEAL_PASSWORD"   # passphrase (prefer gpg-agent later)
+ENV_BACKEND = "SKMEMORY_SEAL_BACKEND"  # "classical" (default) | "sk_pgp"
+ENV_SCHEME = "SKMEMORY_SEAL_SCHEME"  # e.g. "mldsa87-ed448" (sk_pgp only)
+ENV_KEY = "SKMEMORY_SEAL_KEY"  # path to armored secret key
+ENV_CERT = "SKMEMORY_SEAL_CERT"  # path to armored public cert (optional)
+ENV_PASSWORD = "SKMEMORY_SEAL_PASSWORD"  # passphrase (prefer gpg-agent later)
 
 _SCHEME_BY_SUITE = {
     "mldsa87-ed448": SCHEME_SKPGP_MLDSA87_ED448,
@@ -331,7 +341,7 @@ _SCHEME_BY_SUITE = {
 }
 
 
-def get_sealer(config: Optional[Dict[str, Any]] = None) -> Sealer:
+def get_sealer(config: dict[str, Any] | None = None) -> Sealer:
     """Resolve the active sealer from config/env. **Defaults to classical.**
 
     Resolution order: explicit ``config`` dict -> environment -> classical. If
@@ -357,7 +367,7 @@ def get_sealer(config: Optional[Dict[str, Any]] = None) -> Sealer:
     return ClassicalSealer()
 
 
-def seal_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def seal_status(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Introspection helper for CLI/diagnostics. Side-effect free."""
     sealer = get_sealer(config)
     sk = _sk_pgp()
@@ -394,7 +404,7 @@ def sidecar_path_for(memory_path: Any) -> str:
     return str(memory_path) + SIDECAR_SUFFIX
 
 
-def get_verifier(config: Optional[Dict[str, Any]] = None) -> Sealer:
+def get_verifier(config: dict[str, Any] | None = None) -> Sealer:
     """Resolve a sealer for **verification**. Defaults to classical.
 
     Verification needs only a public cert (or a key to derive it), not a usable
@@ -425,9 +435,9 @@ def write_seal(
     memory_like: Any,
     memory_path: Any,
     *,
-    sealer: Optional[Sealer] = None,
-    config: Optional[Dict[str, Any]] = None,
-) -> Optional[Dict[str, Any]]:
+    sealer: Sealer | None = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Write side: optionally drop a ``<path>.sig`` detached-signature sidecar.
 
     Resolves a sealer (``sealer`` arg wins, else :func:`get_sealer`). The
@@ -467,12 +477,12 @@ def write_seal(
 
 def verify_seal(
     memory_like: Any,
-    memory_path: Optional[Any] = None,
+    memory_path: Any | None = None,
     *,
-    signature: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None,
-    expected_checksum: Optional[str] = None,
-) -> Optional[SealVerdict]:
+    signature: str | None = None,
+    config: dict[str, Any] | None = None,
+    expected_checksum: str | None = None,
+) -> SealVerdict | None:
     """Verify-on-read: verify a sidecar signature **if one exists**.
 
     Returns ``None`` when there is no sidecar (and no inline ``signature``) --
@@ -488,7 +498,7 @@ def verify_seal(
         if not os.path.exists(sig_path):
             return None
         try:
-            with open(sig_path, "r", encoding="utf-8") as fh:
+            with open(sig_path, encoding="utf-8") as fh:
                 sig = fh.read()
         except Exception:  # pragma: no cover - filesystem dependent
             return None

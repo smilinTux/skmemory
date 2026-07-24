@@ -238,7 +238,9 @@ class TestIndexMemory:
         assert section_calls[0].args[1]["sections"] == ["Notice", "Demand"]
         assert entity_calls[0].args[1]["entities"] == ["Internal Revenue Service", "Chef Casey"]
         assert citation_calls[0].args[1]["citations"] == ["26 U.S.C. § 6903", "UCC § 3-301"]
-        assert claim_calls[0].args[1]["claims"] == ["The Internal Revenue Service shall respond within 10 days."]
+        assert claim_calls[0].args[1]["claims"] == [
+            "The Internal Revenue Service shall respond within 10 days."
+        ]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -361,7 +363,18 @@ class TestStructuredSearch:
 
     def test_search_by_section(self, backend, mock_graph):
         mock_graph.query.return_value.result_set = [
-            ("mem-001", "IRS Notice", "mid-term", 7.0, "Demand", "mem-001", "IRS Notice", "mid-term", 7.0, False)
+            (
+                "mem-001",
+                "IRS Notice",
+                "mid-term",
+                7.0,
+                "Demand",
+                "mem-001",
+                "IRS Notice",
+                "mid-term",
+                7.0,
+                False,
+            )
         ]
         results = backend.search_by_section("Demand")
         assert results[0]["matched_values"] == ["Demand"]
@@ -485,8 +498,30 @@ class TestTraversal:
     def test_traverse_returns_results(self, backend, mock_graph):
         """traverse() returns parsed results from graph query."""
         mock_graph.query.return_value.result_set = [
-            ("chunk-002", "Related Memory [chunk 1/2]", "long-term", 8.5, 1, "mem-002", "Related Memory", "long-term", 8.5, True),
-            ("mem-003", "Distant Memory", "mid-term", 6.0, 2, "mem-003", "Distant Memory", "mid-term", 6.0, False),
+            (
+                "chunk-002",
+                "Related Memory [chunk 1/2]",
+                "long-term",
+                8.5,
+                1,
+                "mem-002",
+                "Related Memory",
+                "long-term",
+                8.5,
+                True,
+            ),
+            (
+                "mem-003",
+                "Distant Memory",
+                "mid-term",
+                6.0,
+                2,
+                "mem-003",
+                "Distant Memory",
+                "mid-term",
+                6.0,
+                False,
+            ),
         ]
         results = backend.traverse("mem-001", depth=2)
         assert len(results) == 2
@@ -507,8 +542,30 @@ class TestTraversal:
     def test_get_related_returns_results(self, backend, mock_graph):
         """get_related() returns parsed results from graph query."""
         mock_graph.query.return_value.result_set = [
-            ("chunk-002", "Related Memory [chunk 1/2]", "long-term", 8.5, 1, "mem-002", "Related Memory", "long-term", 8.5, True),
-            ("mem-003", "Distant Memory", "mid-term", 6.0, 2, "mem-003", "Distant Memory", "mid-term", 6.0, False),
+            (
+                "chunk-002",
+                "Related Memory [chunk 1/2]",
+                "long-term",
+                8.5,
+                1,
+                "mem-002",
+                "Related Memory",
+                "long-term",
+                8.5,
+                True,
+            ),
+            (
+                "mem-003",
+                "Distant Memory",
+                "mid-term",
+                6.0,
+                2,
+                "mem-003",
+                "Distant Memory",
+                "mid-term",
+                6.0,
+                False,
+            ),
         ]
         results = backend.get_related("mem-001", depth=2)
         assert len(results) == 2

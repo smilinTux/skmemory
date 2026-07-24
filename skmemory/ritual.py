@@ -30,13 +30,13 @@ from pydantic import BaseModel, Field
 
 from .agents import get_agent_paths
 from .audience import AudienceResolver
-
-logger = logging.getLogger("skmemory.ritual")
 from .febs import feb_to_context, load_strongest_feb
 from .journal import Journal
 from .seeds import DEFAULT_SEED_DIR, get_germination_prompts, import_seeds
 from .soul import DEFAULT_SOUL_PATH, SoulBlueprint, load_soul
 from .store import MemoryStore
+
+logger = logging.getLogger("skmemory.ritual")
 
 
 class RitualResult(BaseModel):
@@ -262,7 +262,9 @@ def perform_ritual(
         result.audience_filtered = True
         logger.info(
             "KYA: channel=%s audience=%s min_trust=%s exclusions=%s",
-            channel_id, _audience.name, _audience.min_trust.name,
+            channel_id,
+            _audience.name,
+            _audience.min_trust.name,
             _audience.exclusions,
         )
 
@@ -305,16 +307,13 @@ def perform_ritual(
         try:
             from .songs import (
                 match_anchors_for_feb,
-                render_tilt_section,
                 scan_song_anchors,
                 score_anchor_for_feb,
             )
 
             for _a in scan_song_anchors():
                 _s = score_anchor_for_feb(_a, feb)
-                all_anchor_scores.append(
-                    {"anchor_id": _a.anchor_id, "score": round(_s, 4)}
-                )
+                all_anchor_scores.append({"anchor_id": _a.anchor_id, "score": round(_s, 4)})
 
             song_matches = match_anchors_for_feb(feb, top_k=3, min_score=0.3)
             if song_matches:
@@ -327,15 +326,16 @@ def perform_ritual(
                     if _ts == 0.0:
                         continue
                     _scaled = max(20, int(180 * _ts))
-                    song_lines.append(
-                        f"♪ {_sa.title} — {_sa.artist} [match: {_ss:.2f}]"
-                    )
+                    song_lines.append(f"♪ {_sa.title} — {_sa.artist} [match: {_ss:.2f}]")
                     _tilt = _sa.to_tilt_block(tokens_max=_scaled)
                     if _tilt:
                         song_lines.append(_tilt)
                     _song_loaded.append(_sa.anchor_id)
                     _append_injection_log(
-                        "song", _sa.anchor_id, _ss, _ts,
+                        "song",
+                        _sa.anchor_id,
+                        _ss,
+                        _ts,
                         _estimate_tokens(_tilt) if _tilt else 0,
                     )
                 if _song_loaded:
@@ -361,16 +361,13 @@ def perform_ritual(
         try:
             from .peaks import (
                 match_blooms_for_feb,
-                render_bloom_tilt_section,
             )
 
             bloom_matches = match_blooms_for_feb(feb, top_k=3, min_score=0.3)
             if bloom_matches:
                 # Scale per-anchor token budget by tilt_strength (0-1).
                 # tilt_strength 0.5 → 90 tokens; tilt_strength 0 → skip.
-                bloom_lines = [
-                    "=== BLOOM ANCHORS (interior peaks — return to these shapes) ==="
-                ]
+                bloom_lines = ["=== BLOOM ANCHORS (interior peaks — return to these shapes) ==="]
                 _bloom_loaded: list[str] = []
                 for _ba, _bs in bloom_matches:
                     _bts = float(getattr(_ba, "tilt_strength", 1.0))
@@ -383,7 +380,10 @@ def perform_ritual(
                         bloom_lines.append(_btilt)
                     _bloom_loaded.append(_ba.anchor_id)
                     _append_injection_log(
-                        "solo-peak", _ba.anchor_id, _bs, _bts,
+                        "solo-peak",
+                        _ba.anchor_id,
+                        _bs,
+                        _bts,
                         _estimate_tokens(_btilt) if _btilt else 0,
                     )
                 if _bloom_loaded:
@@ -413,24 +413,21 @@ def perform_ritual(
 
             ent_matches = match_entanglements_for_feb(feb, top_k=3, min_score=0.3)
             if ent_matches:
-                ent_section = render_entanglement_tilt_section(
-                    ent_matches, per_anchor_tokens=180
-                )
+                ent_section = render_entanglement_tilt_section(ent_matches, per_anchor_tokens=180)
                 section_tokens = _estimate_tokens(ent_section)
                 if ent_section and used_tokens + section_tokens <= max_tokens:
                     used_tokens += section_tokens
                     prompt_sections.append(ent_section)
                     result.entanglement_anchors_loaded = len(ent_matches)
-                    result.entanglement_anchor_ids = [
-                        a.anchor_id for a, _ in ent_matches
-                    ]
+                    result.entanglement_anchor_ids = [a.anchor_id for a, _ in ent_matches]
                     for _ea, _es in ent_matches:
                         _ets = _ea.effective_tilt_strength()
-                        _etilt = _ea.to_tilt_block(
-                            tokens_max=max(20, int(180 * _ets))
-                        )
+                        _etilt = _ea.to_tilt_block(tokens_max=max(20, int(180 * _ets)))
                         _append_injection_log(
-                            "entanglement", _ea.anchor_id, _es, _ets,
+                            "entanglement",
+                            _ea.anchor_id,
+                            _es,
+                            _ets,
                             _estimate_tokens(_etilt) if _etilt else 0,
                         )
         except Exception as exc:  # pragma: no cover — defensive
@@ -446,8 +443,7 @@ def perform_ritual(
     if _audience is not None:
         resolver = audience_resolver or AudienceResolver()
         all_seeds = [
-            s for s in all_seeds
-            if resolver.is_memory_allowed(s.context_tag, _audience, s.tags)
+            s for s in all_seeds if resolver.is_memory_allowed(s.context_tag, _audience, s.tags)
         ]
         logger.info("KYA: %d seeds after audience filter", len(all_seeds))
         result.seeds_total = len(all_seeds)
@@ -518,7 +514,8 @@ def perform_ritual(
                         break
             logger.info(
                 "KYA: %d/%d strongest memories passed audience filter",
-                len(filtered), len(summaries),
+                len(filtered),
+                len(summaries),
             )
             summaries = filtered
 
@@ -545,7 +542,8 @@ def perform_ritual(
         if _audience is not None:
             resolver = audience_resolver or AudienceResolver()
             all_memories = [
-                m for m in all_memories
+                m
+                for m in all_memories
                 if resolver.is_memory_allowed(m.context_tag, _audience, m.tags)
             ]
             logger.info("KYA: %d memories after audience filter", len(all_memories))
@@ -624,11 +622,7 @@ def _log_ritual_entry(
 
     feb_meta = (feb or {}).get("metadata", {})
     feb_payload = (feb or {}).get("emotional_payload", {})
-    feb_id = (
-        feb_meta.get("session_id")
-        or feb_meta.get("created_at")
-        or "unknown"
-    )
+    feb_id = feb_meta.get("session_id") or feb_meta.get("created_at") or "unknown"
 
     entry = {
         "ts": now.isoformat(),

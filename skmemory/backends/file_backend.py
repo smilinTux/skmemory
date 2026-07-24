@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from .. import sealing as _sealing
 from ..config import SKMEMORY_HOME
@@ -57,14 +57,14 @@ class FileBackend(BaseBackend):
         self,
         base_path: str = DEFAULT_BASE_PATH,
         *,
-        seal_config: Optional[dict[str, Any]] = None,
+        seal_config: dict[str, Any] | None = None,
         strict_verify: bool = False,
     ) -> None:
         self.base_path = Path(base_path)
         self._seal_config = seal_config
         self._strict_verify = strict_verify
         # Verdict from the most recent verify-on-read (None if no sidecar).
-        self.last_verdict: Optional[SealVerdict] = None
+        self.last_verdict: SealVerdict | None = None
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
@@ -146,15 +146,11 @@ class FileBackend(BaseBackend):
         # not.
         verdict = _sealing.verify_seal(raw, path, config=self._seal_config)
         self.last_verdict = verdict
-        if (
-            self._strict_verify
-            and verdict is not None
-            and verdict.signature_ok is False
-        ):
+        if self._strict_verify and verdict is not None and verdict.signature_ok is False:
             return None
         return memory
 
-    def verify_at_rest(self, memory_id: str) -> Optional[SealVerdict]:
+    def verify_at_rest(self, memory_id: str) -> SealVerdict | None:
         """Verify-on-read helper: return the seal verdict for a stored memory.
 
         Returns ``None`` when the memory is missing or has no signature sidecar

@@ -22,7 +22,6 @@ from skmemory.admission.constants import (
     RerunDecision,
 )
 
-
 DOC_PATH = Path(__file__).resolve().parent.parent / "docs" / "admission_policy.md"
 
 
@@ -43,8 +42,7 @@ def _backticked_tokens(text: str) -> set[str]:
 def test_policy_version_present_in_doc():
     text = _doc_text()
     assert ADMISSION_POLICY_VERSION in text, (
-        f"policy version {ADMISSION_POLICY_VERSION} must appear in "
-        f"{DOC_PATH.name}"
+        f"policy version {ADMISSION_POLICY_VERSION} must appear in {DOC_PATH.name}"
     )
 
 
@@ -52,36 +50,28 @@ def test_gate1_classes_match_doc():
     code = _values(Gate1Class)
     doc_tokens = _backticked_tokens(_doc_text())
     missing = code - doc_tokens
-    assert not missing, (
-        f"Gate1Class values missing from {DOC_PATH.name}: {sorted(missing)}"
-    )
+    assert not missing, f"Gate1Class values missing from {DOC_PATH.name}: {sorted(missing)}"
 
 
 def test_gate1_outcomes_match_doc():
     code = _values(Gate1Outcome)
     doc_tokens = _backticked_tokens(_doc_text())
     missing = code - doc_tokens
-    assert not missing, (
-        f"Gate1Outcome values missing from {DOC_PATH.name}: {sorted(missing)}"
-    )
+    assert not missing, f"Gate1Outcome values missing from {DOC_PATH.name}: {sorted(missing)}"
 
 
 def test_gate2_reasons_match_doc():
     code = _values(Gate2Reason)
     doc_tokens = _backticked_tokens(_doc_text())
     missing = code - doc_tokens
-    assert not missing, (
-        f"Gate2Reason values missing from {DOC_PATH.name}: {sorted(missing)}"
-    )
+    assert not missing, f"Gate2Reason values missing from {DOC_PATH.name}: {sorted(missing)}"
 
 
 def test_rerun_decisions_match_doc():
     code = _values(RerunDecision)
     doc_tokens = _backticked_tokens(_doc_text())
     missing = code - doc_tokens
-    assert not missing, (
-        f"RerunDecision values missing from {DOC_PATH.name}: {sorted(missing)}"
-    )
+    assert not missing, f"RerunDecision values missing from {DOC_PATH.name}: {sorted(missing)}"
 
 
 def test_no_orphan_admission_tokens_in_doc():
@@ -90,13 +80,8 @@ def test_no_orphan_admission_tokens_in_doc():
     after a code rename."""
     text = _doc_text()
     code = _values(Gate2Reason)
-    suspect = {
-        tok
-        for tok in _backticked_tokens(text)
-        if tok.startswith(("admit_", "refuse_"))
-    }
+    suspect = {tok for tok in _backticked_tokens(text) if tok.startswith(("admit_", "refuse_"))}
     orphans = suspect - code
     assert not orphans, (
-        f"{DOC_PATH.name} references admission reasons not in code: "
-        f"{sorted(orphans)}"
+        f"{DOC_PATH.name} references admission reasons not in code: {sorted(orphans)}"
     )

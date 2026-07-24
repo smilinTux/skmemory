@@ -14,8 +14,8 @@ import pytest
 from click.testing import CliRunner
 
 from skmemory.config import (
-    SKMemoryConfig,
     SharedCorpusConfig,
+    SKMemoryConfig,
     load_config,
     merge_env_and_config,
     save_config,
@@ -124,12 +124,12 @@ class TestConfig:
 
         skvector_url, skvector_key, skgraph_url, embedding_model, vector_dim = (
             merge_env_and_config(
-            cli_skvector_url="http://cli:6333",
-            cli_skvector_key="cli-key",
-            cli_skgraph_url="redis://cli:6379",
-            cli_skvector_embedding_model="cli-model",
-            cli_skvector_vector_dim=1536,
-        )
+                cli_skvector_url="http://cli:6333",
+                cli_skvector_key="cli-key",
+                cli_skgraph_url="redis://cli:6379",
+                cli_skvector_embedding_model="cli-model",
+                cli_skvector_vector_dim=1536,
+            )
         )
         assert skvector_url == "http://cli:6333"
         assert skvector_key == "cli-key"

@@ -11,14 +11,15 @@ table in ``rerun.py``.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from .constants import (
     ADMISSION_POLICY_VERSION,
-    Gate2Reason,
     SENTINEL_UNRECOVERABLE_SOURCE,
+    Gate2Reason,
 )
 from .gate1 import Gate1Result
 

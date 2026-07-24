@@ -55,7 +55,6 @@ from __future__ import annotations
 import difflib
 import re
 from pathlib import Path
-from typing import Optional
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Optional system word list — used to (a) skip already-valid words and
@@ -63,7 +62,7 @@ from typing import Optional
 # correction then falls back to the curated COMMON_TYPOS table only.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_system_words: Optional[set] = None
+_system_words: set | None = None
 _SYSTEM_DICT = Path("/usr/share/dict/words")
 
 
@@ -218,9 +217,7 @@ def _should_skip(token: str, protected_terms: frozenset) -> bool:
         return True
     if _IS_CODE_OR_EMOJI.search(token):
         return True
-    if token.lower() in protected_terms:
-        return True
-    return False
+    return token.lower() in protected_terms
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,7 +250,7 @@ def _edit_distance(a: str, b: str) -> int:
 _TOKEN_RE = re.compile(r"(\S+)")
 
 
-def _fuzzy_correct(lower: str, sys_words: set) -> Optional[str]:
+def _fuzzy_correct(lower: str, sys_words: set) -> str | None:
     """
     Best-effort dictionary fuzzy match. Returns a correction only when it's
     unambiguous: exactly one close candidate, within a tight edit-distance
@@ -306,7 +303,7 @@ def correct_text(text: str, protected_terms: frozenset = frozenset()) -> str:
     def _fix(match: re.Match) -> str:
         token = match.group(0)
         stripped = token.rstrip(".,!?;:'\")")
-        punct = token[len(stripped):]
+        punct = token[len(stripped) :]
 
         if not stripped or _should_skip(stripped, protected):
             return token

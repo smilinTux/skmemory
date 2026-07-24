@@ -226,10 +226,7 @@ def score_anchor_for_feb(
 
     # Asymmetric song-coverage: of the song's shape, how much is in the FEB?
     song_total = sum(float(v) for v in song_weights.values())
-    coverage_num = sum(
-        min(float(song_weights[e]), float(topo.get(e, 0.0)))
-        for e in song_weights.keys()
-    )
+    coverage_num = sum(min(float(song_weights[e]), float(topo.get(e, 0.0))) for e in song_weights)
     coverage = coverage_num / song_total if song_total > 0 else 0.0
 
     if metric == "coverage":
@@ -315,11 +312,7 @@ def add_resonance_note(
         raise ValueError(f"Anchor not found: {anchor_id}")
     res_path = d / "resonance.md"
     ts = datetime.now(timezone.utc).isoformat()
-    entry = (
-        f"\n\n---\n\n"
-        f"## Revision — {ts} — {author}\n\n"
-        f"{note.strip()}\n"
-    )
+    entry = f"\n\n---\n\n## Revision — {ts} — {author}\n\n{note.strip()}\n"
     if res_path.exists():
         with open(res_path, "a", encoding="utf-8") as f:
             f.write(entry)

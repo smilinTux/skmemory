@@ -6,7 +6,6 @@ import re
 from collections import Counter
 from typing import Any
 
-
 AUTHORITY_WEIGHTS = {
     "statute": 1.0,
     "rule": 0.95,
@@ -73,13 +72,27 @@ def infer_authority_tier(
     if any(marker in haystack for marker in (" v. ", " vs. ", "case law", "opinion", "holding")):
         return "case"
 
-    if any(marker in haystack for marker in ("form ", "fillable form", "irs form", "ao 240", "ao 239")):
+    if any(
+        marker in haystack for marker in ("form ", "fillable form", "irs form", "ao 240", "ao 239")
+    ):
         return "form"
 
     if any(marker in haystack for marker in ("template", "generated/", "guide bundle")):
         return "template"
 
-    if any(marker in haystack for marker in ("reference/", "american jurisprudence", "american jurispurdence", "american juris", "black's law", "handbook", "practitioner", "treatise")):
+    if any(
+        marker in haystack
+        for marker in (
+            "reference/",
+            "american jurisprudence",
+            "american jurispurdence",
+            "american juris",
+            "black's law",
+            "handbook",
+            "practitioner",
+            "treatise",
+        )
+    ):
         return "secondary"
 
     return "memory"
@@ -119,7 +132,8 @@ def novelty_score(query: str, *, title: str, tags: list[str], metadata: dict[str
     unseen = signal_terms - query_terms
     structural_bonus = min(
         0.4,
-        0.05 * len(decomposition.get("entities", [])) + 0.05 * len(decomposition.get("citations", [])),
+        0.05 * len(decomposition.get("entities", []))
+        + 0.05 * len(decomposition.get("citations", [])),
     )
     score = min(1.0, (len(unseen) / max(len(signal_terms), 1)) + structural_bonus)
     return round(score, 3)
@@ -130,4 +144,6 @@ def summarize_authorities(memories: list[Any]) -> dict[str, int]:
         normalize_authority_tier((getattr(m, "metadata", {}) or {}).get("authority_tier"))
         for m in memories
     )
-    return dict(sorted(counts.items(), key=lambda item: (-AUTHORITY_WEIGHTS.get(item[0], 0.0), item[0])))
+    return dict(
+        sorted(counts.items(), key=lambda item: (-AUTHORITY_WEIGHTS.get(item[0], 0.0), item[0]))
+    )

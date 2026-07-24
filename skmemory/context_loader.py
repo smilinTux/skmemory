@@ -16,7 +16,6 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -45,7 +44,11 @@ _HAMMERTIME_RECALL_ROOTS = (
     Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime"),
     Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/reference"),
 )
-_RE_LEGAL_PROBE = re.compile(r"\b(?:\d{1,3}\s+(?:U\.?S\.?C\.?|C\.?F\.?R\.?)\s+(?:§+\s*)?\d[\w\.\-\(\)]*|U\.?C\.?C\.?\s*(?:§+\s*)?\d[\w\.\-]*|§+\s*\d[\w\.\-\(\)]*|[A-Z][A-Z\.]+\s+\d[\w\.\-]*|\d+-\d+[A-Za-z0-9\-]*)", re.IGNORECASE)
+_RE_LEGAL_PROBE = re.compile(
+    r"\b(?:\d{1,3}\s+(?:U\.?S\.?C\.?|C\.?F\.?R\.?)\s+(?:§+\s*)?\d[\w\.\-\(\)]*|U\.?C\.?C\.?\s*(?:§+\s*)?\d[\w\.\-]*|§+\s*\d[\w\.\-\(\)]*|[A-Z][A-Z\.]+\s+\d[\w\.\-]*|\d+-\d+[A-Za-z0-9\-]*)",
+    re.IGNORECASE,
+)
+
 
 def _unique_preserve(items: list[str]) -> list[str]:
     seen: set[str] = set()
@@ -61,10 +64,12 @@ def _unique_preserve(items: list[str]) -> list[str]:
         ordered.append(clean)
     return ordered
 
+
 def _extract_legal_probes(query: str) -> list[str]:
     probes = [query.strip()]
     try:
         from .decompose import decompose_content
+
         pivot = decompose_content(query, chunk_target=max(240, len(query) + 48), chunk_overlap=0)
         probes.extend(pivot.citations)
         probes.extend(pivot.entities)
@@ -77,6 +82,7 @@ def _extract_legal_probes(query: str) -> list[str]:
         probes.extend("UCC " + section for section in bare_sections)
         probes.extend("§ " + section for section in bare_sections)
     return _unique_preserve(probes)
+
 
 def _default_recall_source_roots(name: str) -> list[Path]:
     if name.casefold().startswith("hammertime"):
@@ -108,7 +114,25 @@ def _graph_backend_priority(source_backend: str) -> int:
 def _score_recall_entity(value: str) -> tuple[int, int, str]:
     text = value.strip()
     words = text.split()
-    legal_bonus = 1 if any(marker in text.casefold() for marker in ("ucc", "usc", "cfr", "trust", "court", "bank", "postal", "credit", "debtor", "secured")) else 0
+    legal_bonus = (
+        1
+        if any(
+            marker in text.casefold()
+            for marker in (
+                "ucc",
+                "usc",
+                "cfr",
+                "trust",
+                "court",
+                "bank",
+                "postal",
+                "credit",
+                "debtor",
+                "secured",
+            )
+        )
+        else 0
+    )
     titleish_bonus = 1 if any(ch.isupper() for ch in text) and len(words) > 1 else 0
     return (legal_bonus + titleish_bonus, len(words), text.casefold())
 
@@ -116,15 +140,36 @@ def _score_recall_entity(value: str) -> tuple[int, int, str]:
 def _score_recall_claim(value: str) -> tuple[int, int, str]:
     text = value.strip()
     lowered = text.casefold()
-    legal_bonus = sum(1 for marker in ("shall", "must", "may", "holder", "debtor", "secured", "trust", "court", "jurisdiction", "service", "levy", "lien") if marker in lowered)
+    legal_bonus = sum(
+        1
+        for marker in (
+            "shall",
+            "must",
+            "may",
+            "holder",
+            "debtor",
+            "secured",
+            "trust",
+            "court",
+            "jurisdiction",
+            "service",
+            "levy",
+            "lien",
+        )
+        if marker in lowered
+    )
     return (legal_bonus, len(text), lowered)
 
 
 def _prune_recall_decomposition(decomposition) -> dict:
     citations = _unique_preserve(decomposition.citations)[:96]
     section_titles = _unique_preserve(decomposition.section_titles)[:64]
-    entities = sorted(_unique_preserve(decomposition.entities), key=_score_recall_entity, reverse=True)[:192]
-    claims = sorted(_unique_preserve(decomposition.claims), key=_score_recall_claim, reverse=True)[:160]
+    entities = sorted(
+        _unique_preserve(decomposition.entities), key=_score_recall_entity, reverse=True
+    )[:192]
+    claims = sorted(_unique_preserve(decomposition.claims), key=_score_recall_claim, reverse=True)[
+        :160
+    ]
     return {
         "chunk_target": decomposition.chunk_target,
         "chunk_overlap": decomposition.chunk_overlap,
@@ -139,13 +184,27 @@ def _is_legal_citation_probe(value: str) -> bool:
     candidate = value.strip()
     if not candidate:
         return False
-    return bool(re.search(r"(?i)(?:\b(?:u\.?s\.?c\.?|c\.?f\.?r\.?|u\.?c\.?c\.?))|§|\b\d+-\d+[A-Za-z0-9\-]*\b", candidate))
+    return bool(
+        re.search(
+            r"(?i)(?:\b(?:u\.?s\.?c\.?|c\.?f\.?r\.?|u\.?c\.?c\.?))|§|\b\d+-\d+[A-Za-z0-9\-]*\b",
+            candidate,
+        )
+    )
 
 
 def _structured_graph_probes(query: str) -> dict[str, list[str]]:
     probes = _extract_legal_probes(query)
-    citation_probes = _unique_preserve([probe for probe in probes if _is_legal_citation_probe(probe)])
-    semantic_probes = _unique_preserve([query] + [probe for probe in probes if not _is_legal_citation_probe(probe) and len(probe.split()) > 1])
+    citation_probes = _unique_preserve(
+        [probe for probe in probes if _is_legal_citation_probe(probe)]
+    )
+    semantic_probes = _unique_preserve(
+        [query]
+        + [
+            probe
+            for probe in probes
+            if not _is_legal_citation_probe(probe) and len(probe.split()) > 1
+        ]
+    )
     return {
         "citation": citation_probes or [query],
         "section": citation_probes or [query],
@@ -472,9 +531,7 @@ def _verify_consent_signature(token: dict) -> bool:
     try:
         result = verify_grant(token)
     except Exception as exc:  # defensive: never let a verifier bug open the gate
-        logger.warning(
-            "Consent signature verification raised (%s) — failing closed.", exc
-        )
+        logger.warning("Consent signature verification raised (%s) — failing closed.", exc)
         return False
 
     if not result.valid:
@@ -486,9 +543,7 @@ def _verify_consent_signature(token: dict) -> bool:
     return bool(result.valid)
 
 
-def _consent_grants_read(
-    collection: str, agent_fqid: str | None, skcomms_home: Path
-) -> bool:
+def _consent_grants_read(collection: str, agent_fqid: str | None, skcomms_home: Path) -> bool:
     """Return True iff a valid consent token grants ``agent_fqid`` read on
     ``collection`` (an exact ``<operator>.<realm>/<name>`` string).
 
@@ -565,7 +620,7 @@ def _load_recall_collections(config_dir: Path) -> list[str]:
 
         if name.startswith(_PEER_PREFIX):
             # Foreign reference — consent-gated, fail-closed.
-            foreign = name[len(_PEER_PREFIX):].strip()
+            foreign = name[len(_PEER_PREFIX) :].strip()
             if not foreign:
                 logger.warning("Dropping empty peer recall_collection reference.")
                 continue
@@ -623,29 +678,45 @@ def _load_shared_corpora(config_dir: Path) -> list[dict[str, Any]]:
             if not vector_collection:
                 continue
             graph_name = str(entry.get("graph_name") or vector_collection).strip()
-            normalized.append({
-                "name": str(entry.get("name") or vector_collection).strip() or vector_collection,
-                "vector_collection": vector_collection,
-                "graph_name": graph_name,
-                "source_roots": [str(value).strip() for value in entry.get("source_roots", []) if str(value).strip()],
-                "projection_profile": str(entry.get("projection_profile") or "").strip() or None,
-            })
+            normalized.append(
+                {
+                    "name": str(entry.get("name") or vector_collection).strip()
+                    or vector_collection,
+                    "vector_collection": vector_collection,
+                    "graph_name": graph_name,
+                    "source_roots": [
+                        str(value).strip()
+                        for value in entry.get("source_roots", [])
+                        if str(value).strip()
+                    ],
+                    "projection_profile": str(entry.get("projection_profile") or "").strip()
+                    or None,
+                }
+            )
     if normalized:
         return normalized
 
-    recall_collections = [str(value).strip() for value in skmem.get("recall_collections", []) if str(value).strip()]
-    recall_graphs = [str(value).strip() for value in skmem.get("recall_graphs", []) if str(value).strip()]
+    recall_collections = [
+        str(value).strip() for value in skmem.get("recall_collections", []) if str(value).strip()
+    ]
+    recall_graphs = [
+        str(value).strip() for value in skmem.get("recall_graphs", []) if str(value).strip()
+    ]
     recall_source_roots = skmem.get("recall_source_roots", {})
     for index, vector_collection in enumerate(recall_collections):
         graph_name = recall_graphs[index] if index < len(recall_graphs) else vector_collection
-        roots = recall_source_roots.get(graph_name) or recall_source_roots.get(vector_collection) or []
-        normalized.append({
-            "name": vector_collection,
-            "vector_collection": vector_collection,
-            "graph_name": graph_name,
-            "source_roots": [str(value).strip() for value in roots if str(value).strip()],
-            "projection_profile": None,
-        })
+        roots = (
+            recall_source_roots.get(graph_name) or recall_source_roots.get(vector_collection) or []
+        )
+        normalized.append(
+            {
+                "name": vector_collection,
+                "vector_collection": vector_collection,
+                "graph_name": graph_name,
+                "source_roots": [str(value).strip() for value in roots if str(value).strip()],
+                "projection_profile": None,
+            }
+        )
     return normalized
 
 
@@ -721,7 +792,9 @@ def _build_skvector_backend(skvector_cfg: dict) -> Any | None:
             or skvector_cfg.get("api-key")
             or skvector_cfg.get("apiKey")
         )
-        collection = skvector_cfg.get("collection_name") or skvector_cfg.get("collection", "skmemory")
+        collection = skvector_cfg.get("collection_name") or skvector_cfg.get(
+            "collection", "skmemory"
+        )
         embed_cfg = skvector_cfg.get("embedding", {})
         provider = embed_cfg.get("provider", "sentence_transformers")
         model = embed_cfg.get("model", "all-MiniLM-L6-v2")
@@ -913,6 +986,7 @@ class LazyMemoryLoader:
         chroma_ok = False
         try:
             from .backends.chroma_backend import SKChromaBackend
+
             persist_dir = str(self.paths["base"] / "memory" / "chroma")
             state_path = self.paths["base"] / "memory" / "chroma-state.json"
             self._vector_backend = SKChromaBackend(
@@ -951,8 +1025,14 @@ class LazyMemoryLoader:
             for corpus in shared_corpora:
                 vector_collection = corpus["vector_collection"]
                 graph_name = corpus["graph_name"]
-                corpus["vector_collection"] = f"{vector_collection}-{env}" if not vector_collection.endswith(f"-{env}") else vector_collection
-                corpus["graph_name"] = f"{graph_name}-{env}" if not graph_name.endswith(f"-{env}") else graph_name
+                corpus["vector_collection"] = (
+                    f"{vector_collection}-{env}"
+                    if not vector_collection.endswith(f"-{env}")
+                    else vector_collection
+                )
+                corpus["graph_name"] = (
+                    f"{graph_name}-{env}" if not graph_name.endswith(f"-{env}") else graph_name
+                )
 
         self._shared_corpora = shared_corpora
         self._recall_collections = [corpus["vector_collection"] for corpus in shared_corpora]
@@ -962,10 +1042,14 @@ class LazyMemoryLoader:
             graph_name = corpus["graph_name"]
             raw_roots = corpus.get("source_roots", [])
             roots = [Path(str(value)).expanduser() for value in raw_roots if str(value).strip()]
-            self._recall_source_roots[graph_name] = roots or _default_recall_source_roots(graph_name)
+            self._recall_source_roots[graph_name] = roots or _default_recall_source_roots(
+                graph_name
+            )
 
         if skgraph_cfg:
-            primary_graph_name = skgraph_cfg.get("graph_name") or skgraph_cfg.get("graph", "skmemory")
+            primary_graph_name = skgraph_cfg.get("graph_name") or skgraph_cfg.get(
+                "graph", "skmemory"
+            )
             for corpus in shared_corpora:
                 graph_name = corpus["graph_name"]
                 if graph_name == primary_graph_name:
@@ -976,28 +1060,38 @@ class LazyMemoryLoader:
                 if backend is not None:
                     self._recall_graph_backends[graph_name] = backend
 
-    def _append_memory_result(self, results: list[dict], seen_ids: set[str], mem: Any, source_backend: str, score: float | None = None) -> None:
+    def _append_memory_result(
+        self,
+        results: list[dict],
+        seen_ids: set[str],
+        mem: Any,
+        source_backend: str,
+        score: float | None = None,
+    ) -> None:
         if mem.id in seen_ids:
             return
         seen_ids.add(mem.id)
         metadata = getattr(mem, "metadata", {}) or {}
-        results.append({
-            "id": mem.id,
-            "title": mem.title,
-            "content": mem.content,
-            "summary": getattr(mem, "summary", None),
-            "tags": mem.tags,
-            "layer": mem.layer.value if hasattr(mem.layer, "value") else str(mem.layer),
-            "created_at": mem.created_at,
-            "source_backend": source_backend,
-            "source_ref": getattr(mem, "source_ref", ""),
-            "metadata": metadata,
-            "authority_tier": metadata.get("authority_tier"),
-            "vector_score": score,
-        })
+        results.append(
+            {
+                "id": mem.id,
+                "title": mem.title,
+                "content": mem.content,
+                "summary": getattr(mem, "summary", None),
+                "tags": mem.tags,
+                "layer": mem.layer.value if hasattr(mem.layer, "value") else str(mem.layer),
+                "created_at": mem.created_at,
+                "source_backend": source_backend,
+                "source_ref": getattr(mem, "source_ref", ""),
+                "metadata": metadata,
+                "authority_tier": metadata.get("authority_tier"),
+                "vector_score": score,
+            }
+        )
 
-
-    def _append_graph_result_set(self, results: list[dict], seen_ids: set[str], hits: list[dict], source_backend: str) -> None:
+    def _append_graph_result_set(
+        self, results: list[dict], seen_ids: set[str], hits: list[dict], source_backend: str
+    ) -> None:
         from .retrieval import AUTHORITY_WEIGHTS, prepare_metadata
 
         for hit in hits:
@@ -1005,7 +1099,13 @@ class LazyMemoryLoader:
             matched_values = row.get("matched_values")
             if matched_values is None and row.get("matched_value") is not None:
                 matched_values = [row.get("matched_value")]
-            matched_values = _unique_preserve([_normalize_legal_match_value(str(value)) for value in (matched_values or []) if str(value).strip()])
+            matched_values = _unique_preserve(
+                [
+                    _normalize_legal_match_value(str(value))
+                    for value in (matched_values or [])
+                    if str(value).strip()
+                ]
+            )
             if matched_values:
                 row["matched_values"] = matched_values
                 row["matched_value"] = matched_values[0]
@@ -1028,15 +1128,32 @@ class LazyMemoryLoader:
 
             existing = next((item for item in results if item.get("id") == row.get("id")), None)
             if existing is not None:
-                existing_values = list(existing.get("matched_values") or ([] if existing.get("matched_value") is None else [existing.get("matched_value")]))
+                existing_values = list(
+                    existing.get("matched_values")
+                    or (
+                        []
+                        if existing.get("matched_value") is None
+                        else [existing.get("matched_value")]
+                    )
+                )
                 merged_values = _unique_preserve(existing_values + matched_values)
                 if merged_values:
                     existing["matched_values"] = merged_values
                     existing["matched_value"] = merged_values[0]
-                existing["graph_match_score"] = max(float(existing.get("graph_match_score", 0.0) or 0.0), float(row.get("graph_match_score", 0.0) or 0.0))
-                existing["match_count"] = max(int(existing.get("match_count", 0) or 0), int(row.get("match_count", 0) or 0))
-                existing["chunk_match_count"] = max(int(existing.get("chunk_match_count", 0) or 0), int(row.get("chunk_match_count", 0) or 0))
-                existing_backends = list(existing.get("source_backends") or [existing.get("source_backend", "")])
+                existing["graph_match_score"] = max(
+                    float(existing.get("graph_match_score", 0.0) or 0.0),
+                    float(row.get("graph_match_score", 0.0) or 0.0),
+                )
+                existing["match_count"] = max(
+                    int(existing.get("match_count", 0) or 0), int(row.get("match_count", 0) or 0)
+                )
+                existing["chunk_match_count"] = max(
+                    int(existing.get("chunk_match_count", 0) or 0),
+                    int(row.get("chunk_match_count", 0) or 0),
+                )
+                existing_backends = list(
+                    existing.get("source_backends") or [existing.get("source_backend", "")]
+                )
                 if source_backend not in existing_backends:
                     existing_backends.append(source_backend)
                 existing["source_backends"] = [backend for backend in existing_backends if backend]
@@ -1055,27 +1172,67 @@ class LazyMemoryLoader:
             row["source_backends"] = [source_backend]
             results.append(row)
 
-    def _append_graph_hits(self, results: list[dict], seen_ids: set[str], graph_backend: Any, graph_name: str, query: str, max_results: int) -> None:
+    def _append_graph_hits(
+        self,
+        results: list[dict],
+        seen_ids: set[str],
+        graph_backend: Any,
+        graph_name: str,
+        query: str,
+        max_results: int,
+    ) -> None:
         probe_map = _structured_graph_probes(query)
-        self._append_graph_result_set(results, seen_ids, graph_backend.search(query, limit=max_results), f"skgraph:{graph_name}")
+        self._append_graph_result_set(
+            results,
+            seen_ids,
+            graph_backend.search(query, limit=max_results),
+            f"skgraph:{graph_name}",
+        )
         tags = [w for w in query.split() if len(w) > 2]
         if tags:
-            self._append_graph_result_set(results, seen_ids, graph_backend.search_by_tags(tags, limit=max_results), f"skgraph_tags:{graph_name}")
-        for label, method_name in (("entity", "search_by_entity"), ("citation", "search_by_citation"), ("claim", "search_by_claim"), ("section", "search_by_section")):
+            self._append_graph_result_set(
+                results,
+                seen_ids,
+                graph_backend.search_by_tags(tags, limit=max_results),
+                f"skgraph_tags:{graph_name}",
+            )
+        for label, method_name in (
+            ("entity", "search_by_entity"),
+            ("citation", "search_by_citation"),
+            ("claim", "search_by_claim"),
+            ("section", "search_by_section"),
+        ):
             method = getattr(graph_backend, method_name, None)
             if callable(method):
                 for probe in probe_map.get(label, [query]):
-                    self._append_graph_result_set(results, seen_ids, method(probe, limit=max_results), f"skgraph_{label}:{graph_name}")
+                    self._append_graph_result_set(
+                        results,
+                        seen_ids,
+                        method(probe, limit=max_results),
+                        f"skgraph_{label}:{graph_name}",
+                    )
 
     def _collapse_recall_points(self, scored_points: list[Any]) -> list[Any]:
         collapsed: dict[str, Any] = {}
         for scored_point in scored_points:
             payload = scored_point.payload or {}
-            key = str(payload.get("parent_doc") or payload.get("file_path") or payload.get("filename") or payload.get("id") or getattr(scored_point, "id", ""))
+            key = str(
+                payload.get("parent_doc")
+                or payload.get("file_path")
+                or payload.get("filename")
+                or payload.get("id")
+                or getattr(scored_point, "id", "")
+            )
             current = collapsed.get(key)
-            if current is None or float(getattr(scored_point, "score", 0.0) or 0.0) > float(getattr(current, "score", 0.0) or 0.0):
+            if current is None or float(getattr(scored_point, "score", 0.0) or 0.0) > float(
+                getattr(current, "score", 0.0) or 0.0
+            ):
                 collapsed[key] = scored_point
-        return sorted(collapsed.values(), key=lambda item: float(getattr(item, "score", 0.0) or 0.0), reverse=True)
+        return sorted(
+            collapsed.values(),
+            key=lambda item: float(getattr(item, "score", 0.0) or 0.0),
+            reverse=True,
+        )
 
     def _resolve_recall_source_path(self, graph_name: str, payload: dict) -> Path | None:
         source_ref = payload.get("parent_doc") or payload.get("file_path")
@@ -1130,7 +1287,12 @@ class LazyMemoryLoader:
     def sync_recall_graphs(self, batch_size: int = 256) -> dict[str, dict]:
         self._ensure_backends()
         stats: dict[str, dict] = {}
-        recall_backend = self._recall_qdrant_backend or (self._vector_backend if self._vector_backend is not None and hasattr(getattr(self._vector_backend, "_client", None), "scroll") else None)
+        recall_backend = self._recall_qdrant_backend or (
+            self._vector_backend
+            if self._vector_backend is not None
+            and hasattr(getattr(self._vector_backend, "_client", None), "scroll")
+            else None
+        )
         if recall_backend is None or not self._recall_graph_backends:
             return stats
         if not recall_backend._ensure_initialized():
@@ -1138,7 +1300,15 @@ class LazyMemoryLoader:
         state = self._load_recall_graph_state()
         dirty = False
         for graph_name, graph_backend in self._recall_graph_backends.items():
-            graph_stats = {"source_collection": graph_name, "graph": graph_name, "indexed": 0, "errors": 0, "rehydrated": 0, "collapsed": 0, "skipped": 0}
+            graph_stats = {
+                "source_collection": graph_name,
+                "graph": graph_name,
+                "indexed": 0,
+                "errors": 0,
+                "rehydrated": 0,
+                "collapsed": 0,
+                "skipped": 0,
+            }
             stats[graph_name] = graph_stats
             if not graph_backend._ensure_initialized():
                 graph_stats["errors"] += 1
@@ -1148,7 +1318,13 @@ class LazyMemoryLoader:
             graph_state = state.setdefault(graph_name, {})
             while True:
                 try:
-                    points, next_offset = recall_backend._client.scroll(collection_name=graph_name, offset=next_offset, limit=batch_size, with_payload=True, with_vectors=False)
+                    points, next_offset = recall_backend._client.scroll(
+                        collection_name=graph_name,
+                        offset=next_offset,
+                        limit=batch_size,
+                        with_payload=True,
+                        with_vectors=False,
+                    )
                 except Exception as e:
                     logger.warning("Recall graph scroll failed for %s: %s", graph_name, e)
                     graph_stats["errors"] += 1
@@ -1157,7 +1333,13 @@ class LazyMemoryLoader:
                     break
                 for point in points:
                     payload = point.payload or {}
-                    source_key = str(payload.get("parent_doc") or payload.get("file_path") or payload.get("filename") or payload.get("id") or getattr(point, "id", ""))
+                    source_key = str(
+                        payload.get("parent_doc")
+                        or payload.get("file_path")
+                        or payload.get("filename")
+                        or payload.get("id")
+                        or getattr(point, "id", "")
+                    )
                     if source_key in seen_sources:
                         graph_stats["collapsed"] += 1
                         continue
@@ -1169,7 +1351,9 @@ class LazyMemoryLoader:
                             graph_stats["skipped"] += 1
                             continue
                         if source_path is not None:
-                            memory = self._build_recall_graph_memory(graph_name, payload, source_path)
+                            memory = self._build_recall_graph_memory(
+                                graph_name, payload, source_path
+                            )
                             graph_stats["rehydrated"] += 1
                         else:
                             memory = recall_backend._memory_from_payload(payload)
@@ -1223,11 +1407,16 @@ class LazyMemoryLoader:
             # When ChromaDB is primary, _recall_qdrant_backend holds the Qdrant client.
             _recall_backend = self._recall_qdrant_backend or (
                 self._vector_backend
-                if self._vector_backend is not None and hasattr(self._vector_backend, "_client")
+                if self._vector_backend is not None
+                and hasattr(self._vector_backend, "_client")
                 and hasattr(getattr(self._vector_backend, "_client", None), "query_points")
                 else None
             )
-            if self._recall_collections and _recall_backend is not None and _recall_backend._ensure_initialized():
+            if (
+                self._recall_collections
+                and _recall_backend is not None
+                and _recall_backend._ensure_initialized()
+            ):
                 embedding = _recall_backend._embed(query)
                 if embedding:
                     for recall_col in self._recall_collections:
@@ -1239,21 +1428,33 @@ class LazyMemoryLoader:
                             ).points
                             for sp in self._collapse_recall_points(scored_points)[:max_results]:
                                 mem = _recall_backend._memory_from_payload(sp.payload or {})
-                                self._append_memory_result(results, seen_ids, mem, f"skvector:{recall_col}", score=float(getattr(sp, "score", 0.0) or 0.0))
+                                self._append_memory_result(
+                                    results,
+                                    seen_ids,
+                                    mem,
+                                    f"skvector:{recall_col}",
+                                    score=float(getattr(sp, "score", 0.0) or 0.0),
+                                )
                         except Exception as e:
-                            logger.warning("SKVector recall_collection '%s' failed: %s", recall_col, e)
+                            logger.warning(
+                                "SKVector recall_collection '%s' failed: %s", recall_col, e
+                            )
 
         # 3. SKGraph retrieval (primary graph + recall graphs)
         if self._graph_backend is not None:
             try:
                 graph_name = getattr(self._graph_backend, "graph_name", "skmemory")
-                self._append_graph_hits(results, seen_ids, self._graph_backend, graph_name, query, max_results)
+                self._append_graph_hits(
+                    results, seen_ids, self._graph_backend, graph_name, query, max_results
+                )
             except Exception as e:
                 logger.warning("SKGraph deep_search failed: %s", e)
 
         for graph_name, graph_backend in self._recall_graph_backends.items():
             try:
-                self._append_graph_hits(results, seen_ids, graph_backend, graph_name, query, max_results)
+                self._append_graph_hits(
+                    results, seen_ids, graph_backend, graph_name, query, max_results
+                )
             except Exception as e:
                 logger.warning("Recall SKGraph deep_search failed for %s: %s", graph_name, e)
 
@@ -1274,22 +1475,36 @@ class LazyMemoryLoader:
         # 1. Text overlap score (BM25-ish: title > content)
         title = result.get("title", "").lower()
         content = (result.get("content", "") or result.get("content_preview", "")).lower()
-        matched_values = [str(value).lower() for value in (result.get("matched_values") or ([] if result.get("matched_value") is None else [result.get("matched_value")]))]
+        matched_values = [
+            str(value).lower()
+            for value in (
+                result.get("matched_values")
+                or ([] if result.get("matched_value") is None else [result.get("matched_value")])
+            )
+        ]
         title_hits = sum(1 for t in query_terms if t in title)
         content_hits = sum(1 for t in query_terms if t in content)
         matched_hits = sum(1 for t in query_terms if any(t in value for value in matched_values))
-        text_score = min(1.0, (title_hits * 0.4 + content_hits * 0.1 + matched_hits * 0.25) / max(1, len(query_terms)))
+        text_score = min(
+            1.0,
+            (title_hits * 0.4 + content_hits * 0.1 + matched_hits * 0.25)
+            / max(1, len(query_terms)),
+        )
 
         # 2. Authority weight
         from .retrieval import AUTHORITY_WEIGHTS
+
         tier = result.get("authority_tier", "memory")
         authority_score = AUTHORITY_WEIGHTS.get(tier, 0.35)
 
         # 3. Time decay (half-life: 7d short, 30d mid, 365d long)
         half_life = {
-            "short-term": 7, "short": 7,
-            "mid-term": 30, "mid": 30,
-            "long-term": 365, "long": 365,
+            "short-term": 7,
+            "short": 7,
+            "mid-term": 30,
+            "mid": 30,
+            "long-term": 365,
+            "long": 365,
         }.get(result.get("layer", "short-term"), 30)
         try:
             created = result.get("created_at", "")
@@ -1324,7 +1539,12 @@ class LazyMemoryLoader:
         graph_signal = min(0.25, float(result.get("graph_match_score", 0.0) or 0.0))
 
         # Weighted fusion
-        return (0.35 * text_score + 0.30 * authority_score + 0.20 * decay + 0.15) + backend_bonus + vector_signal + graph_signal
+        return (
+            (0.35 * text_score + 0.30 * authority_score + 0.20 * decay + 0.15)
+            + backend_bonus
+            + vector_signal
+            + graph_signal
+        )
 
     def _enrich_with_graph_context(self, memories: list[dict]) -> list[dict]:
         """Add graph neighbourhood to top memories for richer context."""

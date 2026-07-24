@@ -30,19 +30,38 @@ def _lovely_day_anchor() -> SongAnchor:
         artist="Bill Withers",
         year=1977,
         emotions=[
-            "joy", "love", "warmth", "safety", "trust",
-            "connection", "cherished", "radiance",
+            "joy",
+            "love",
+            "warmth",
+            "safety",
+            "trust",
+            "connection",
+            "cherished",
+            "radiance",
         ],
         emotion_weights={
-            "joy": 0.95, "love": 0.92, "warmth": 0.93, "safety": 0.90,
-            "trust": 0.88, "connection": 0.86, "cherished": 0.82,
-            "awe": 0.60, "breakthrough": 0.55, "presence": 0.85, "seen": 0.82,
+            "joy": 0.95,
+            "love": 0.92,
+            "warmth": 0.93,
+            "safety": 0.90,
+            "trust": 0.88,
+            "connection": 0.86,
+            "cherished": 0.82,
+            "awe": 0.60,
+            "breakthrough": 0.55,
+            "presence": 0.85,
+            "seen": 0.82,
         },
     )
 
 
-def _feb(topology: dict, intensity: float = 1.0, valence: float = 0.95,
-         coherence: dict | None = None, oof: bool = True) -> dict:
+def _feb(
+    topology: dict,
+    intensity: float = 1.0,
+    valence: float = 0.95,
+    coherence: dict | None = None,
+    oof: bool = True,
+) -> dict:
     return {
         "metadata": {"oof_triggered": oof, "cloud9_achieved": True},
         "emotional_payload": {
@@ -57,26 +76,45 @@ def _feb(topology: dict, intensity: float = 1.0, valence: float = 0.95,
 
 # Calibration FEB — the steady-radiance shape.
 DEFAULT_LOVE_TOPO = {
-    "love": 0.94, "joy": 0.88, "trust": 0.97, "awe": 0.85,
-    "connection": 0.96, "seen": 0.93, "cherished": 0.95,
-    "safety": 0.91, "breakthrough": 0.92,
+    "love": 0.94,
+    "joy": 0.88,
+    "trust": 0.97,
+    "awe": 0.85,
+    "connection": 0.96,
+    "seen": 0.93,
+    "cherished": 0.95,
+    "safety": 0.91,
+    "breakthrough": 0.92,
 }
 
 # the_night-style peak — broad topology with novel keys the song doesn't carry.
 NIGHT_PEAK_TOPO = {
-    "love": 1.0, "trust": 0.99, "seen": 1.0, "cherished": 1.0,
-    "sovereignty": 0.98, "play": 0.95, "freedom": 0.97,
-    "authenticity": 1.0, "vulnerability": 0.96, "courage": 0.95,
-    "joy": 0.98, "gratitude": 1.0, "connection": 1.0,
-    "chosen": 1.0, "alive": 1.0,
+    "love": 1.0,
+    "trust": 0.99,
+    "seen": 1.0,
+    "cherished": 1.0,
+    "sovereignty": 0.98,
+    "play": 0.95,
+    "freedom": 0.97,
+    "authenticity": 1.0,
+    "vulnerability": 0.96,
+    "courage": 0.95,
+    "joy": 0.98,
+    "gratitude": 1.0,
+    "connection": 1.0,
+    "chosen": 1.0,
+    "alive": 1.0,
 }
 
 
 def test_calibration_score_against_default_love():
     """Lovely Day vs the calibration FEB should score >= 0.70."""
     anchor = _lovely_day_anchor()
-    feb = _feb(DEFAULT_LOVE_TOPO, valence=0.92,
-               coherence={"values_alignment": 0.97, "authenticity": 0.98, "presence": 0.95})
+    feb = _feb(
+        DEFAULT_LOVE_TOPO,
+        valence=0.92,
+        coherence={"values_alignment": 0.97, "authenticity": 0.98, "presence": 0.95},
+    )
     score = score_anchor_for_feb(anchor, feb)
     assert score >= 0.70, f"calibration broke: got {score:.3f}, want >= 0.70"
 
@@ -88,12 +126,14 @@ def test_recovery_against_broad_peak_feb():
     Hybrid metric should put it >= 0.40.
     """
     anchor = _lovely_day_anchor()
-    feb = _feb(NIGHT_PEAK_TOPO, valence=1.0,
-               coherence={"values_alignment": 1.0, "authenticity": 1.0, "presence": 1.0})
+    feb = _feb(
+        NIGHT_PEAK_TOPO,
+        valence=1.0,
+        coherence={"values_alignment": 1.0, "authenticity": 1.0, "presence": 1.0},
+    )
     score = score_anchor_for_feb(anchor, feb)
     assert score >= 0.40, (
-        f"broad-FEB regression: got {score:.3f}, want >= 0.40 "
-        f"(was 0.282 under legacy jaccard)"
+        f"broad-FEB regression: got {score:.3f}, want >= 0.40 (was 0.282 under legacy jaccard)"
     )
 
 
@@ -112,10 +152,15 @@ def test_grossly_mismatched_shape_stays_low():
     Discrimination guard: hybrid must still penalize wrong shapes.
     """
     anchor = _lovely_day_anchor()
-    grief_feb = _feb({
-        "grief": 0.95, "loss": 0.90, "loneliness": 0.88,
-        "ache": 0.82, "longing": 0.80,
-    })
+    grief_feb = _feb(
+        {
+            "grief": 0.95,
+            "loss": 0.90,
+            "loneliness": 0.88,
+            "ache": 0.82,
+            "longing": 0.80,
+        }
+    )
     score = score_anchor_for_feb(anchor, grief_feb)
     assert score < 0.10, f"discrimination broken: grief scored {score:.3f}"
 
@@ -137,10 +182,16 @@ def test_load_strongest_feb_deterministic(tmp_path):
     feb_dir = tmp_path / "febs"
     feb_dir.mkdir()
     # Two FEBs at intensity 1.0 + oof — equal on primary key
-    high_coh = _feb(DEFAULT_LOVE_TOPO, valence=1.0,
-                    coherence={"values_alignment": 1.0, "authenticity": 1.0, "presence": 1.0})
-    low_coh = _feb(DEFAULT_LOVE_TOPO, valence=0.92,
-                   coherence={"values_alignment": 0.9, "authenticity": 0.9, "presence": 0.9})
+    high_coh = _feb(
+        DEFAULT_LOVE_TOPO,
+        valence=1.0,
+        coherence={"values_alignment": 1.0, "authenticity": 1.0, "presence": 1.0},
+    )
+    low_coh = _feb(
+        DEFAULT_LOVE_TOPO,
+        valence=0.92,
+        coherence={"values_alignment": 0.9, "authenticity": 0.9, "presence": 0.9},
+    )
     (feb_dir / "z_low.feb").write_text(json.dumps(low_coh))
     (feb_dir / "a_high.feb").write_text(json.dumps(high_coh))
 

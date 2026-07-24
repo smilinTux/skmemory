@@ -24,6 +24,7 @@ Directory layout (same as FileBackend):
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import logging
@@ -86,14 +87,13 @@ def _resilient_read(default_factory):
                     try:
                         self._recover_from_corruption(e)
                     except Exception as rec_err:  # pragma: no cover - defensive
-                        logger.error(
-                            "sqlite_backend: corruption recovery failed: %s", rec_err
-                        )
+                        logger.error("sqlite_backend: corruption recovery failed: %s", rec_err)
                 return default_factory()
 
         return wrapper
 
     return decorator
+
 
 DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memory")
 
@@ -215,10 +215,8 @@ class SQLiteBackend(BaseBackend):
     def _reset_conn(self) -> None:
         """Drop the cached connection so the next call reopens cleanly."""
         if self._conn is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._conn.close()
-            except Exception:
-                pass
             self._conn = None
 
     def _quarantine_corrupt_db(self) -> None:
@@ -236,16 +234,12 @@ class SQLiteBackend(BaseBackend):
                 dest = Path(f"{self._db_path}.corrupt-{stamp}{suffix}")
                 try:
                     src.rename(dest)
-                    logger.error(
-                        "sqlite_backend: quarantined corrupt index %s -> %s", src, dest
-                    )
+                    logger.error("sqlite_backend: quarantined corrupt index %s -> %s", src, dest)
                 except OSError as e:
                     logger.error("sqlite_backend: could not quarantine %s: %s", src, e)
                     # Last resort: remove so a fresh DB can be created.
-                    try:
+                    with contextlib.suppress(OSError):
                         src.unlink()
-                    except OSError:
-                        pass
 
     def _recover_from_corruption(self, err: Exception) -> None:
         """Quarantine a corrupt index and rebuild it from the flat JSON files."""
@@ -987,10 +981,23 @@ class SQLiteBackend(BaseBackend):
 
         for row in rows:
             (
-                memory_id, title, layer, role, tags, source, source_ref,
-                summary, content_preview, e_intensity, e_valence,
-                e_labels, importance, parent_id, related_ids,
-                created_at, updated_at,
+                memory_id,
+                title,
+                layer,
+                role,
+                tags,
+                source,
+                source_ref,
+                summary,
+                content_preview,
+                e_intensity,
+                e_valence,
+                e_labels,
+                importance,
+                parent_id,
+                related_ids,
+                created_at,
+                updated_at,
             ) = row
 
             short = memory_id[:12].replace("-", "")
@@ -1009,7 +1016,8 @@ class SQLiteBackend(BaseBackend):
                 mem = Memory(
                     id=memory_id,
                     title=title or "Recovered memory",
-                    content=(content_preview or "") + "\n\n[recovered from SQLite preview — full content lost]",
+                    content=(content_preview or "")
+                    + "\n\n[recovered from SQLite preview — full content lost]",
                     summary=summary or "",
                     layer=layer,
                     role=role or "general",
@@ -1019,7 +1027,7 @@ class SQLiteBackend(BaseBackend):
                     emotional={
                         "intensity": e_intensity or 0.0,
                         "valence": e_valence or 0.0,
-                        "labels": [l for l in (e_labels or "").split(",") if l.strip()],
+                        "labels": [lbl for lbl in (e_labels or "").split(",") if lbl.strip()],
                     },
                     related_ids=[r for r in (related_ids or "").split(",") if r.strip()],
                     parent_id=parent_id or None,
@@ -1144,7 +1152,7 @@ class SQLiteBackend(BaseBackend):
         sqlite_orphans = 0
         archived = 0
         archived_stems = self._archived_stems()
-        by_layer = {l.value: {"sqlite": 0, "flat": 0} for l in MemoryLayer}
+        by_layer = {ml.value: {"sqlite": 0, "flat": 0} for ml in MemoryLayer}
 
         for memory_id, layer, file_path in conn.execute(
             "SELECT id, layer, file_path FROM memories"
@@ -1175,8 +1183,7 @@ class SQLiteBackend(BaseBackend):
         # flat_only = files whose stem isn't in SQLite (allow shortform → fullform match)
         sqlite_short = {sid[:12].replace("-", "") for sid in sqlite_ids}
         flat_only = sum(
-            1 for stem in flat_ids
-            if stem not in sqlite_ids and stem not in sqlite_short
+            1 for stem in flat_ids if stem not in sqlite_ids and stem not in sqlite_short
         )
 
         return {
@@ -1245,10 +1252,7 @@ class SQLiteBackend(BaseBackend):
                     "in_sync": drift["in_sync"],
                     "sqlite_only": drift["sqlite_only"],
                     "flat_only": drift["flat_only"],
-                    "hint": (
-                        None if drift["in_sync"]
-                        else "Run `skmemory sync` to reconcile."
-                    ),
+                    "hint": (None if drift["in_sync"] else "Run `skmemory sync` to reconcile."),
                 },
             }
         except Exception as e:
@@ -1259,13 +1263,12 @@ class SQLiteBackend(BaseBackend):
                 "error": str(e),
             }
 
-    def find_by_content_hash(self, content_hash: str) -> "Memory | None":
+    def find_by_content_hash(self, content_hash: str) -> Memory | None:
         """Find an existing memory by content hash. Returns None if not found."""
         try:
             conn = self._get_conn()
             cursor = conn.execute(
-                "SELECT file_path FROM memories WHERE content_hash = ? LIMIT 1",
-                (content_hash,)
+                "SELECT file_path FROM memories WHERE content_hash = ? LIMIT 1", (content_hash,)
             )
             row = cursor.fetchone()
             if not row:
@@ -1283,7 +1286,7 @@ class SQLiteBackend(BaseBackend):
         conn = self._get_conn()
         conn.execute(
             "INSERT INTO sync_failures (memory_id, backend, error, failed_at, retry_count) VALUES (?, ?, ?, ?, 0)",
-            (memory_id, backend, error, datetime.utcnow().isoformat())
+            (memory_id, backend, error, datetime.utcnow().isoformat()),
         )
         conn.commit()
 
@@ -1293,19 +1296,30 @@ class SQLiteBackend(BaseBackend):
         if backend:
             cursor = conn.execute(
                 "SELECT memory_id, backend, error, failed_at, retry_count FROM sync_failures WHERE backend = ? ORDER BY failed_at DESC LIMIT ?",
-                (backend, limit)
+                (backend, limit),
             )
         else:
             cursor = conn.execute(
                 "SELECT memory_id, backend, error, failed_at, retry_count FROM sync_failures ORDER BY failed_at DESC LIMIT ?",
-                (limit,)
+                (limit,),
             )
-        return [{"memory_id": r[0], "backend": r[1], "error": r[2], "failed_at": r[3], "retry_count": r[4]} for r in cursor.fetchall()]
+        return [
+            {
+                "memory_id": r[0],
+                "backend": r[1],
+                "error": r[2],
+                "failed_at": r[3],
+                "retry_count": r[4],
+            }
+            for r in cursor.fetchall()
+        ]
 
     def clear_sync_failure(self, memory_id: str, backend: str):
         """Clear a sync failure record after successful sync."""
         conn = self._get_conn()
-        conn.execute("DELETE FROM sync_failures WHERE memory_id = ? AND backend = ?", (memory_id, backend))
+        conn.execute(
+            "DELETE FROM sync_failures WHERE memory_id = ? AND backend = ?", (memory_id, backend)
+        )
         conn.commit()
 
     def close(self) -> None:

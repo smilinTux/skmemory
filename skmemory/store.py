@@ -14,6 +14,7 @@ import re
 from collections import Counter
 from datetime import datetime, timezone
 
+from .agents import get_agent_paths
 from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
 from .backends.skgraph_backend import SKGraphBackend
@@ -26,7 +27,6 @@ from .models import (
     MemoryRole,
     SeedMemory,
 )
-from .agents import get_agent_paths
 from .query_sanitizer import sanitize_query
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
 from .validation import (
@@ -57,6 +57,7 @@ def _unique_list(items: list[str]) -> list[str]:
         ordered.append(item)
     return ordered
 
+
 def _memory_signal_set(memory: Memory) -> set[str]:
     signals: set[str] = set()
     for value in memory.tags:
@@ -72,7 +73,11 @@ def _memory_signal_set(memory: Memory) -> set[str]:
 
 
 def _extract_query_terms(query: str) -> list[str]:
-    return [term for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9§.\-]{2,}", query.casefold()) if len(term) > 2]
+    return [
+        term
+        for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9§.\-]{2,}", query.casefold())
+        if len(term) > 2
+    ]
 
 
 def _extract_inline_citations(text: str) -> list[str]:
@@ -132,9 +137,7 @@ class MemoryStore:
         # pass an explicit list (even []) to override, or use
         # register_pre_write_hook() to extend.
         self.pre_write_hooks: list[PreWriteHook] = (
-            list(pre_write_hooks)
-            if pre_write_hooks is not None
-            else default_pre_write_hooks()
+            list(pre_write_hooks) if pre_write_hooks is not None else default_pre_write_hooks()
         )
 
         # Write-ahead log — resilient init so missing agent config doesn't block
@@ -144,6 +147,7 @@ class MemoryStore:
         except Exception as e:
             logger.warning("store.py: %s", e)
             import tempfile
+
             wal_path = (
                 __import__("pathlib").Path(tempfile.gettempdir())
                 / "skmemory_wal"
@@ -290,9 +294,27 @@ class MemoryStore:
 
         # Infer valence from emotional labels if not explicitly set
         if memory.emotional.valence == 0.0 and memory.emotional.labels:
-            POSITIVE = {"joy", "trust", "love", "anticipation", "hope", "gratitude", "excited", "happy"}
-            NEGATIVE = {"fear", "anger", "disgust", "sadness", "grief", "anxiety", "frustrated", "disappointed"}
-            labels_lower = {l.lower() for l in memory.emotional.labels}
+            POSITIVE = {
+                "joy",
+                "trust",
+                "love",
+                "anticipation",
+                "hope",
+                "gratitude",
+                "excited",
+                "happy",
+            }
+            NEGATIVE = {
+                "fear",
+                "anger",
+                "disgust",
+                "sadness",
+                "grief",
+                "anxiety",
+                "frustrated",
+                "disappointed",
+            }
+            labels_lower = {lbl.lower() for lbl in memory.emotional.labels}
             pos = len(labels_lower & POSITIVE)
             neg = len(labels_lower & NEGATIVE)
             if pos > neg:
@@ -342,7 +364,7 @@ class MemoryStore:
 
         return memory
 
-    def snapshot_bulk(self, items: list[dict], progress_cb=None) -> list["Memory"]:
+    def snapshot_bulk(self, items: list[dict], progress_cb=None) -> list[Memory]:
         """Batch save multiple memories efficiently.
 
         Each item dict should have same kwargs as snapshot().
@@ -446,7 +468,9 @@ class MemoryStore:
 
         parent = Memory(
             title=title,
-            content=content if len(content) <= self.max_content_length else (content[:200] + "..."),
+            content=content
+            if len(content) <= self.max_content_length
+            else (content[:200] + "..."),
             summary=content[:200] + ("..." if len(content) > 200 else ""),
             layer=layer,
             role=role,
@@ -634,7 +658,7 @@ class MemoryStore:
                 conn = self.primary._get_conn()
                 conn.execute(
                     "UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?",
-                    (datetime.now(timezone.utc).isoformat(), memory_id)
+                    (datetime.now(timezone.utc).isoformat(), memory_id),
                 )
                 conn.commit()
             except Exception as e:
@@ -815,7 +839,9 @@ class MemoryStore:
         if novelty:
             summary_lines.extend(["", "Novel leads:"])
             for item in novelty[:3]:
-                summary_lines.append(f"- {item['title']}: {', '.join(item['rare_signals'][:3]) or 'low-linked signal'}")
+                summary_lines.append(
+                    f"- {item['title']}: {', '.join(item['rare_signals'][:3]) or 'low-linked signal'}"
+                )
         return self.snapshot(
             title=f"Task Pack: {task}",
             content="\n".join(summary_lines),
@@ -849,11 +875,17 @@ class MemoryStore:
         top_matches: list[dict] = []
         task_lower = task.casefold()
         if "judgment" in task_lower:
-            missing_facts.append("Need judgment date, court, and whether it was default or contested.")
+            missing_facts.append(
+                "Need judgment date, court, and whether it was default or contested."
+            )
         if "repossess" in task_lower or "levy" in task_lower or "execution" in task_lower:
-            missing_facts.append("Need the exact enforcement instrument: repossession notice, levy, writ of execution, or garnishment.")
+            missing_facts.append(
+                "Need the exact enforcement instrument: repossession notice, levy, writ of execution, or garnishment."
+            )
         if "exempt" in task_lower:
-            missing_facts.append("Need jurisdiction and property/funds categories to test exemptions and objection deadlines.")
+            missing_facts.append(
+                "Need jurisdiction and property/funds categories to test exemptions and objection deadlines."
+            )
 
         for memory in direct_hits:
             authority_tier = str(memory.metadata.get("authority_tier", "memory"))
@@ -878,15 +910,23 @@ class MemoryStore:
                         + [f"query_overlap:{item}" for item in overlap[:4]]
                         + [
                             f"citation:{item}"
-                            for item in memory.metadata.get("decomposition", {}).get("citations", [])[:3]
+                            for item in memory.metadata.get("decomposition", {}).get(
+                                "citations", []
+                            )[:3]
                         ]
                     )[:8],
                 }
             )
             lowered = f"{memory.title} {summary}".casefold()
-            if any(token in lowered for token in ("deadline", "hearing", "objection", "within", "notice", "response")):
+            if any(
+                token in lowered
+                for token in ("deadline", "hearing", "objection", "within", "notice", "response")
+            ):
                 deadlines.append(summary)
-            if any(token in lowered for token in ("vacate", "service", "jurisdiction", "default", "void", "exempt")):
+            if any(
+                token in lowered
+                for token in ("vacate", "service", "jurisdiction", "default", "void", "exempt")
+            ):
                 defenses.append(summary)
 
         top_matches.sort(key=lambda item: (-item["ranking_score"], item["title"].casefold()))
@@ -938,7 +978,11 @@ class MemoryStore:
             "missing_facts": missing_facts,
             "recommended_queries": _unique_list(
                 [task]
-                + [f"{task} {item['rare_signals'][0]}" for item in novelty_hits if item["rare_signals"]]
+                + [
+                    f"{task} {item['rare_signals'][0]}"
+                    for item in novelty_hits
+                    if item["rare_signals"]
+                ]
                 + [f"{task} authority", f"{task} deadline", f"{task} exemption"]
             )[:8],
         }

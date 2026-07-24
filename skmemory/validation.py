@@ -15,7 +15,7 @@ the write. Register your own via
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from pydantic import ValidationError
 
@@ -51,8 +51,7 @@ def schema_validator(memory: Memory) -> None:
     """
     if not isinstance(memory, Memory):
         raise SchemaValidationError(
-            f"pre-write rejected: expected a Memory instance, got "
-            f"{type(memory).__name__}"
+            f"pre-write rejected: expected a Memory instance, got {type(memory).__name__}"
         )
 
     try:
@@ -66,8 +65,7 @@ def schema_validator(memory: Memory) -> None:
         )
         ident = getattr(memory, "id", "<unknown>")
         raise SchemaValidationError(
-            f"pre-write rejected memory {ident!s}: malformed against Memory "
-            f"schema — {problems}"
+            f"pre-write rejected memory {ident!s}: malformed against Memory schema — {problems}"
         ) from exc
 
 

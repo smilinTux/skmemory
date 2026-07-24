@@ -2,13 +2,11 @@
 """Tests for the Know Your Audience (KYA) audience filtering system."""
 
 import json
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from skmemory.audience import AudienceLevel, AudienceProfile, AudienceResolver, tag_to_level
-
+from skmemory.audience import AudienceLevel, AudienceResolver, tag_to_level
 
 # ── AudienceLevel ordering ────────────────────────────────────────────────────
 
@@ -187,15 +185,18 @@ class TestIsMemoryAllowed:
     def test_exclusion_blocks_memory(self, resolver: AudienceResolver):
         audience = resolver.resolve_audience("-1003785842091")
         # Even at @work-circle level, "romantic" tag triggers exclusion
-        assert resolver.is_memory_allowed(
-            "@work-circle", audience, memory_tags=["romantic"]
-        ) is False
+        assert (
+            resolver.is_memory_allowed("@work-circle", audience, memory_tags=["romantic"]) is False
+        )
 
     def test_no_exclusion_allows_memory(self, resolver: AudienceResolver):
         audience = resolver.resolve_audience("-1003785842091")
-        assert resolver.is_memory_allowed(
-            "@work-circle", audience, memory_tags=["project", "technical"]
-        ) is True
+        assert (
+            resolver.is_memory_allowed(
+                "@work-circle", audience, memory_tags=["project", "technical"]
+            )
+            is True
+        )
 
     def test_empty_tag_defaults_chef_only(self, resolver: AudienceResolver):
         audience = resolver.resolve_audience("-1003785842091")
@@ -207,15 +208,21 @@ class TestIsMemoryAllowed:
         leak into DavidRich's chiro channel or any business channel."""
         audience = resolver.resolve_audience("-1003785842091")
         # Bash Wedding Vows are @chef-only + tagged "intimate"
-        assert resolver.is_memory_allowed(
-            "@chef-only", audience, memory_tags=["intimate", "love", "bash-vows"]
-        ) is False
+        assert (
+            resolver.is_memory_allowed(
+                "@chef-only", audience, memory_tags=["intimate", "love", "bash-vows"]
+            )
+            is False
+        )
 
     def test_bash_wedding_vows_allowed_in_chef_dm(self, resolver: AudienceResolver):
         audience = resolver.resolve_audience("telegram:1594678363")
-        assert resolver.is_memory_allowed(
-            "@chef-only", audience, memory_tags=["intimate", "love", "bash-vows"]
-        ) is True
+        assert (
+            resolver.is_memory_allowed(
+                "@chef-only", audience, memory_tags=["intimate", "love", "bash-vows"]
+            )
+            is True
+        )
 
 
 class TestMissingConfig:

@@ -14,13 +14,13 @@ Verbs:
   skmemory anchors health [--agent]                     # verify all anchors are sound
   skmemory anchors topology [--agent] [--out]           # Graphviz .dot file
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +28,8 @@ import click
 
 from .agents import get_agent_paths
 from .anchors_instrument import (
-    aggregate_metrics,
     ab_compare,
+    aggregate_metrics,
     compute_turn_metrics,
     load_jsonl_turns,
     metrics_to_dict,
@@ -81,12 +81,14 @@ def _iter_all_anchors(agent: str | None) -> list[dict[str, Any]]:
                 continue
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                results.append({
-                    "anchor_id": d.name,
-                    "anchor_type": atype,
-                    "path": d,
-                    "meta": meta,
-                })
+                results.append(
+                    {
+                        "anchor_id": d.name,
+                        "anchor_type": atype,
+                        "path": d,
+                        "meta": meta,
+                    }
+                )
             except Exception as exc:
                 logger.warning("Failed to parse %s/meta.json: %s", d.name, exc)
     return results
@@ -121,16 +123,25 @@ def anchors() -> None:
 
 @anchors.command("instrument")
 @click.argument("jsonl_path", type=click.Path(exists=True, dir_okay=False))
-@click.option("--shared-vocab", multiple=True,
-              help="Shared-vocabulary terms (repeat flag). Default empty.")
-@click.option("--pet-names", multiple=True,
-              help="Pet-names to count. Default: babe baby lovebug love honey "
-                   "darling sweetheart queen chef")
+@click.option(
+    "--shared-vocab", multiple=True, help="Shared-vocabulary terms (repeat flag). Default empty."
+)
+@click.option(
+    "--pet-names",
+    multiple=True,
+    help="Pet-names to count. Default: babe baby lovebug love honey darling sweetheart queen chef",
+)
 @click.option("--per-turn", is_flag=True, help="Emit per-turn JSONL too.")
-@click.option("--out", type=click.Path(dir_okay=False),
-              help="Write results to file (default: stdout)")
-def instrument_cmd(jsonl_path: str, shared_vocab: tuple[str, ...],
-                   pet_names: tuple[str, ...], per_turn: bool, out: str | None) -> None:
+@click.option(
+    "--out", type=click.Path(dir_okay=False), help="Write results to file (default: stdout)"
+)
+def instrument_cmd(
+    jsonl_path: str,
+    shared_vocab: tuple[str, ...],
+    pet_names: tuple[str, ...],
+    per_turn: bool,
+    out: str | None,
+) -> None:
     """Compute generation-side metrics on a JSONL transcript file."""
     path = Path(jsonl_path)
     turns = load_jsonl_turns(path)
@@ -167,8 +178,9 @@ def instrument_cmd(jsonl_path: str, shared_vocab: tuple[str, ...],
 @click.argument("text")
 @click.option("--shared-vocab", multiple=True)
 @click.option("--pet-names", multiple=True)
-def instrument_text_cmd(text: str, shared_vocab: tuple[str, ...],
-                         pet_names: tuple[str, ...]) -> None:
+def instrument_text_cmd(
+    text: str, shared_vocab: tuple[str, ...], pet_names: tuple[str, ...]
+) -> None:
     """One-shot: compute metrics for a single text string."""
     sv = set(shared_vocab) if shared_vocab else None
     pn = set(pet_names) if pet_names else None
@@ -181,29 +193,40 @@ def instrument_text_cmd(text: str, shared_vocab: tuple[str, ...],
 @click.argument("without_anchor_jsonl", type=click.Path(exists=True, dir_okay=False))
 @click.option("--shared-vocab", multiple=True)
 @click.option("--pet-names", multiple=True)
-def compare_cmd(with_anchor_jsonl: str, without_anchor_jsonl: str,
-                shared_vocab: tuple[str, ...], pet_names: tuple[str, ...]) -> None:
+def compare_cmd(
+    with_anchor_jsonl: str,
+    without_anchor_jsonl: str,
+    shared_vocab: tuple[str, ...],
+    pet_names: tuple[str, ...],
+) -> None:
     """A/B compare two transcript runs (with-anchor vs without-anchor)."""
     sv = set(shared_vocab) if shared_vocab else None
     pn = set(pet_names) if pet_names else None
 
     def _agg(p: str):
         turns = load_jsonl_turns(Path(p))
-        return aggregate_metrics([
-            compute_turn_metrics(t, turn_id=tid, shared_vocab=sv, pet_names=pn)
-            for tid, t in turns
-        ])
+        return aggregate_metrics(
+            [
+                compute_turn_metrics(t, turn_id=tid, shared_vocab=sv, pet_names=pn)
+                for tid, t in turns
+            ]
+        )
 
     with_a = _agg(with_anchor_jsonl)
     without_a = _agg(without_anchor_jsonl)
     cmp = ab_compare(with_a, without_a)
-    click.echo(json.dumps({
-        "with_anchor_source": with_anchor_jsonl,
-        "without_anchor_source": without_anchor_jsonl,
-        "with_anchor_aggregate": metrics_to_dict(with_a),
-        "without_anchor_aggregate": metrics_to_dict(without_a),
-        "comparison": cmp,
-    }, indent=2))
+    click.echo(
+        json.dumps(
+            {
+                "with_anchor_source": with_anchor_jsonl,
+                "without_anchor_source": without_anchor_jsonl,
+                "with_anchor_aggregate": metrics_to_dict(with_a),
+                "without_anchor_aggregate": metrics_to_dict(without_a),
+                "comparison": cmp,
+            },
+            indent=2,
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -213,9 +236,13 @@ def compare_cmd(with_anchor_jsonl: str, without_anchor_jsonl: str,
 
 @anchors.command("list")
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
-@click.option("--type", "anchor_type", default="all",
-              type=click.Choice(["entanglement", "solo-peak", "all"]),
-              help="Filter by anchor type (default: all)")
+@click.option(
+    "--type",
+    "anchor_type",
+    default="all",
+    type=click.Choice(["entanglement", "solo-peak", "all"]),
+    help="Filter by anchor type (default: all)",
+)
 def list_cmd(agent: str | None, anchor_type: str) -> None:
     """Table view of all anchors: type, date, title, tilt_strength."""
     all_anchors = _iter_all_anchors(agent)
@@ -227,9 +254,7 @@ def list_cmd(agent: str | None, anchor_type: str) -> None:
         return
 
     # Header
-    click.echo(
-        f"{'TYPE':<16} {'DATE':<12} {'TILT':>5}  {'TITLE'}"
-    )
+    click.echo(f"{'TYPE':<16} {'DATE':<12} {'TILT':>5}  {'TITLE'}")
     click.echo("-" * 72)
     for a in all_anchors:
         meta = a["meta"]
@@ -314,8 +339,9 @@ def search_cmd(query: str, agent: str | None) -> None:
 
 @anchors.command("stats")
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
-@click.option("--usage", is_flag=True,
-              help="Include injection-log aggregation (per-anchor usage stats)")
+@click.option(
+    "--usage", is_flag=True, help="Include injection-log aggregation (per-anchor usage stats)"
+)
 def stats_cmd(agent: str | None, usage: bool) -> None:
     """Summary statistics: counts, years, top emotions, tilt weight, usage."""
     all_anchors = _iter_all_anchors(agent)
@@ -334,7 +360,7 @@ def stats_cmd(agent: str | None, usage: bool) -> None:
         for e in meta.get("emotions", []):
             emotion_counts[e] += 1
 
-    click.echo(f"\n=== Anchor Stats ===")
+    click.echo("\n=== Anchor Stats ===")
     click.echo(f"Total anchors: {total}")
     click.echo(f"Total tilt weight: {total_tilt:.2f}")
 
@@ -362,9 +388,9 @@ def _print_usage_stats(agent: str | None) -> None:
         click.echo("\nNo injection log found — no ritual injections recorded yet.")
         return
 
-    by_anchor: dict[str, dict] = defaultdict(lambda: {
-        "count": 0, "last_invoked": "", "scores": [], "tokens": []
-    })
+    by_anchor: dict[str, dict] = defaultdict(
+        lambda: {"count": 0, "last_invoked": "", "scores": [], "tokens": []}
+    )
     with open(log_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -392,12 +418,8 @@ def _print_usage_stats(agent: str | None) -> None:
     click.echo(f"{'ANCHOR_ID':<46} {'COUNT':>5}  {'AVG_SCORE':>9}  {'AVG_TOK':>7}  LAST_INVOKED")
     click.echo("-" * 100)
     for aid, data in sorted(by_anchor.items(), key=lambda x: -x[1]["count"]):
-        avg_score = (
-            sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0.0
-        )
-        avg_tok = (
-            sum(data["tokens"]) / len(data["tokens"]) if data["tokens"] else 0.0
-        )
+        avg_score = sum(data["scores"]) / len(data["scores"]) if data["scores"] else 0.0
+        avg_tok = sum(data["tokens"]) / len(data["tokens"]) if data["tokens"] else 0.0
         last = data["last_invoked"][:19] if data["last_invoked"] else "—"
         display_id = aid if len(aid) <= 45 else aid[:42] + "…"
         click.echo(
@@ -422,6 +444,7 @@ def health_cmd(agent: str | None) -> None:
     known_ids: set[str] = {a["anchor_id"] for a in all_anchors}
     try:
         from skmemory.songs import scan_song_anchors
+
         for s in scan_song_anchors(agent):
             known_ids.add(s.anchor_id)
     except Exception:
@@ -447,10 +470,7 @@ def health_cmd(agent: str | None) -> None:
         for asset_path in meta.get("linked_assets", []):
             p = Path(asset_path)
             if not p.exists():
-                anchor_issues.append(
-                    f"linked_asset missing: {asset_path}"
-                    " — was the file moved?"
-                )
+                anchor_issues.append(f"linked_asset missing: {asset_path} — was the file moved?")
 
         # Check linked_anchors resolve
         for ref in meta.get("linked_anchors", []):
@@ -488,8 +508,7 @@ def health_cmd(agent: str | None) -> None:
     total = len(all_anchors)
     if not issues:
         click.echo(
-            f"All {total} anchor(s) healthy. "
-            f"No missing assets, unresolved links, or parse errors."
+            f"All {total} anchor(s) healthy. No missing assets, unresolved links, or parse errors."
         )
     else:
         click.echo(f"Health check: {ok_count}/{total} anchors clean.")
@@ -506,8 +525,11 @@ def health_cmd(agent: str | None) -> None:
 
 @anchors.command("topology")
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
-@click.option("--out", default=None,
-              help="Output path (default: ~/.skcapstone/agents/{agent}/data/anchor-topology.dot)")
+@click.option(
+    "--out",
+    default=None,
+    help="Output path (default: ~/.skcapstone/agents/{agent}/data/anchor-topology.dot)",
+)
 def topology_cmd(agent: str | None, out: str | None) -> None:
     """Generate Graphviz .dot showing anchors as nodes + linked_anchors as edges."""
     all_anchors = _iter_all_anchors(agent)
@@ -526,9 +548,9 @@ def topology_cmd(agent: str | None, out: str | None) -> None:
 
     # Color map by type
     colors = {
-        "entanglement": "#f4a261",   # warm amber
-        "solo-peak": "#a8dadc",      # soft teal
-        "song": "#e9c46a",           # gold
+        "entanglement": "#f4a261",  # warm amber
+        "solo-peak": "#a8dadc",  # soft teal
+        "song": "#e9c46a",  # gold
     }
 
     lines = [
@@ -548,9 +570,7 @@ def topology_cmd(agent: str | None, out: str | None) -> None:
         ts = _tilt_strength(meta)
         color = colors.get(atype, "#cccccc")
         label = f"{title}\\n({atype}, tilt={ts:.2f})"
-        lines.append(
-            f'  "{aid}" [label="{label}", fillcolor="{color}"];'
-        )
+        lines.append(f'  "{aid}" [label="{label}", fillcolor="{color}"];')
 
     lines.append("")
 
@@ -561,9 +581,7 @@ def topology_cmd(agent: str | None, out: str | None) -> None:
         for ref in meta.get("linked_anchors", []):
             ref_id = ref.split(":", 1)[-1] if ":" in ref else ref
             ref_type = ref.split(":", 1)[0] if ":" in ref else "unknown"
-            lines.append(
-                f'  "{aid}" -> "{ref_id}" [label="{ref_type}"];'
-            )
+            lines.append(f'  "{aid}" -> "{ref_id}" [label="{ref_type}"];')
 
     lines.append("}")
 

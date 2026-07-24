@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .decompose import decompose_content
 from .models import Memory, MemoryLayer
@@ -65,7 +66,9 @@ def manifest_path(memory_dir: Path, graph_name: str) -> Path:
     return cache_root(memory_dir, graph_name) / "source-manifest.json"
 
 
-def load_graph_state(memory_dir: Path, graph_name: str, shard_key: str | None = None) -> dict[str, str]:
+def load_graph_state(
+    memory_dir: Path, graph_name: str, shard_key: str | None = None
+) -> dict[str, str]:
     path = graph_state_path(memory_dir, graph_name, shard_key=shard_key)
     if not path.exists():
         return {}
@@ -76,7 +79,9 @@ def load_graph_state(memory_dir: Path, graph_name: str, shard_key: str | None = 
     return data if isinstance(data, dict) else {}
 
 
-def save_graph_state(memory_dir: Path, graph_name: str, state: dict[str, str], shard_key: str | None = None) -> None:
+def save_graph_state(
+    memory_dir: Path, graph_name: str, state: dict[str, str], shard_key: str | None = None
+) -> None:
     path = graph_state_path(memory_dir, graph_name, shard_key=shard_key)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True))
@@ -113,7 +118,9 @@ def load_source_manifest(memory_dir: Path, graph_name: str) -> list[dict[str, An
     return build_source_manifest(data)
 
 
-def write_source_manifest(memory_dir: Path, graph_name: str, entries: Iterable[dict[str, Any]]) -> Path:
+def write_source_manifest(
+    memory_dir: Path, graph_name: str, entries: Iterable[dict[str, Any]]
+) -> Path:
     path = manifest_path(memory_dir, graph_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     manifest = build_source_manifest(entries)
@@ -133,14 +140,36 @@ def compute_source_fingerprint(source_path: Path | None, payload: dict[str, Any]
         }
     else:
         basis = dict(payload)
-    return hashlib.sha256(json.dumps(basis, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(basis, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _score_entity(value: str) -> tuple[int, int, str]:
     text = value.strip()
     words = text.split()
     lowered = text.casefold()
-    legal_bonus = 2 if any(marker in lowered for marker in ("ucc", "usc", "cfr", "trust", "court", "bank", "postal", "credit", "debtor", "secured", "treasurydirect", "treasury")) else 0
+    legal_bonus = (
+        2
+        if any(
+            marker in lowered
+            for marker in (
+                "ucc",
+                "usc",
+                "cfr",
+                "trust",
+                "court",
+                "bank",
+                "postal",
+                "credit",
+                "debtor",
+                "secured",
+                "treasurydirect",
+                "treasury",
+            )
+        )
+        else 0
+    )
     titleish_bonus = 1 if any(ch.isupper() for ch in text) and len(words) > 1 else 0
     return (legal_bonus + titleish_bonus, len(words), lowered)
 
@@ -148,7 +177,24 @@ def _score_entity(value: str) -> tuple[int, int, str]:
 def _score_claim(value: str) -> tuple[int, int, str]:
     text = value.strip()
     lowered = text.casefold()
-    legal_bonus = sum(1 for marker in ("shall", "must", "may", "holder", "debtor", "secured", "trust", "court", "jurisdiction", "service", "levy", "lien") if marker in lowered)
+    legal_bonus = sum(
+        1
+        for marker in (
+            "shall",
+            "must",
+            "may",
+            "holder",
+            "debtor",
+            "secured",
+            "trust",
+            "court",
+            "jurisdiction",
+            "service",
+            "levy",
+            "lien",
+        )
+        if marker in lowered
+    )
     return (legal_bonus, len(text), lowered)
 
 
@@ -169,27 +215,82 @@ def infer_projection_profile(
             return PROJECTION_PROFILE_DEFAULT
         if requested in {PROJECTION_PROFILE_LEGAL, "legal", "legal-recall", "legal_retrieval"}:
             return PROJECTION_PROFILE_LEGAL
-        if requested in {PROJECTION_PROFILE_REFERENCE, "reference", "reference-recall", "reference_retrieval"}:
+        if requested in {
+            PROJECTION_PROFILE_REFERENCE,
+            "reference",
+            "reference-recall",
+            "reference_retrieval",
+        }:
             return PROJECTION_PROFILE_REFERENCE
-        if requested in {PROJECTION_PROFILE_WORKFLOW, "workflow", "workflow-recall", "workflow_retrieval", "process"}:
+        if requested in {
+            PROJECTION_PROFILE_WORKFLOW,
+            "workflow",
+            "workflow-recall",
+            "workflow_retrieval",
+            "process",
+        }:
             return PROJECTION_PROFILE_WORKFLOW
     joined = _path_text(graph_name, source_ref, payload.get("category"), payload.get("type"))
     if graph_name.casefold().startswith("hammertime") or "hammertime" in joined:
         return PROJECTION_PROFILE_LEGAL
-    if any(marker in joined for marker in ("reference", "knowledge", "guides", "template", "templates", "reference-books", "byteclave")):
+    if any(
+        marker in joined
+        for marker in (
+            "reference",
+            "knowledge",
+            "guides",
+            "template",
+            "templates",
+            "reference-books",
+            "byteclave",
+        )
+    ):
         return PROJECTION_PROFILE_REFERENCE
-    if any(marker in joined for marker in ("workflow", "process", "protocol", "playbook", "runbook")):
+    if any(
+        marker in joined for marker in ("workflow", "process", "protocol", "playbook", "runbook")
+    ):
         return PROJECTION_PROFILE_WORKFLOW
     return PROJECTION_PROFILE_DEFAULT
 
 
-def _is_hammertime_projection(graph_name: str, source_ref: str, payload: dict[str, Any], requested_profile: str | None = None) -> bool:
-    return infer_projection_profile(graph_name, source_ref, payload, requested_profile) == PROJECTION_PROFILE_LEGAL
+def _is_hammertime_projection(
+    graph_name: str, source_ref: str, payload: dict[str, Any], requested_profile: str | None = None
+) -> bool:
+    return (
+        infer_projection_profile(graph_name, source_ref, payload, requested_profile)
+        == PROJECTION_PROFILE_LEGAL
+    )
 
 
 def _looks_legal_entity(value: str) -> bool:
     lowered = value.casefold()
-    if any(marker in lowered for marker in ("ucc", "u.s.c", "usc", "c.f.r", "cfr", "internal revenue", "postal", "treasury", "treasurydirect", "trust", "court", "clerk", "debtor", "creditor", "secured", "lien", "levy", "notary", "executor", "bank", "state", "united states")):
+    if any(
+        marker in lowered
+        for marker in (
+            "ucc",
+            "u.s.c",
+            "usc",
+            "c.f.r",
+            "cfr",
+            "internal revenue",
+            "postal",
+            "treasury",
+            "treasurydirect",
+            "trust",
+            "court",
+            "clerk",
+            "debtor",
+            "creditor",
+            "secured",
+            "lien",
+            "levy",
+            "notary",
+            "executor",
+            "bank",
+            "state",
+            "united states",
+        )
+    ):
         return True
     words = value.split()
     return len(words) >= 2 and any(ch.isupper() for ch in value)
@@ -197,21 +298,86 @@ def _looks_legal_entity(value: str) -> bool:
 
 def _looks_legal_claim(value: str) -> bool:
     lowered = value.casefold()
-    if any(marker in lowered for marker in ("shall", "must", "may", "holder", "debtor", "secured", "trust", "court", "jurisdiction", "service", "levy", "lien", "notary", "executor", "affidavit", "notice", "claim", "rebut", "postal", "treasury")):
+    if any(
+        marker in lowered
+        for marker in (
+            "shall",
+            "must",
+            "may",
+            "holder",
+            "debtor",
+            "secured",
+            "trust",
+            "court",
+            "jurisdiction",
+            "service",
+            "levy",
+            "lien",
+            "notary",
+            "executor",
+            "affidavit",
+            "notice",
+            "claim",
+            "rebut",
+            "postal",
+            "treasury",
+        )
+    ):
         return True
-    return "§" in value or " ucc " in f" {lowered} " or " usc " in f" {lowered} " or " cfr " in f" {lowered} "
+    return (
+        "§" in value
+        or " ucc " in f" {lowered} "
+        or " usc " in f" {lowered} "
+        or " cfr " in f" {lowered} "
+    )
 
 
 def _looks_legal_section(value: str) -> bool:
     lowered = value.casefold()
-    return any(marker in lowered for marker in ("section", "article", "chapter", "notice", "demand", "claim", "affidavit", "jurisdiction", "service", "levy", "lien", "trust", "executor", "postal", "treasury", "ucc"))
+    return any(
+        marker in lowered
+        for marker in (
+            "section",
+            "article",
+            "chapter",
+            "notice",
+            "demand",
+            "claim",
+            "affidavit",
+            "jurisdiction",
+            "service",
+            "levy",
+            "lien",
+            "trust",
+            "executor",
+            "postal",
+            "treasury",
+            "ucc",
+        )
+    )
 
 
 def _looks_reference_entity(value: str) -> bool:
     lowered = value.casefold()
     if lowered.startswith("generic entity"):
         return False
-    if any(marker in lowered for marker in ("api", "sdk", "tool", "service", "endpoint", "platform", "framework", "registry", "template", "guide", "reference", "library")):
+    if any(
+        marker in lowered
+        for marker in (
+            "api",
+            "sdk",
+            "tool",
+            "service",
+            "endpoint",
+            "platform",
+            "framework",
+            "registry",
+            "template",
+            "guide",
+            "reference",
+            "library",
+        )
+    ):
         return True
     return len(value.split()) >= 2 and any(ch.isupper() for ch in value)
 
@@ -220,34 +386,115 @@ def _looks_reference_claim(value: str) -> bool:
     lowered = value.casefold()
     if lowered.startswith("generic claim"):
         return False
-    return any(marker in lowered for marker in ("supports", "provides", "includes", "allows", "returns", "uses", "requires", "endpoint", "parameter", "configuration", "template", "reference"))
+    return any(
+        marker in lowered
+        for marker in (
+            "supports",
+            "provides",
+            "includes",
+            "allows",
+            "returns",
+            "uses",
+            "requires",
+            "endpoint",
+            "parameter",
+            "configuration",
+            "template",
+            "reference",
+        )
+    )
 
 
 def _looks_reference_section(value: str) -> bool:
     lowered = value.casefold()
-    return any(marker in lowered for marker in ("overview", "usage", "reference", "api", "configuration", "example", "examples", "template", "parameter", "tool", "endpoint"))
+    return any(
+        marker in lowered
+        for marker in (
+            "overview",
+            "usage",
+            "reference",
+            "api",
+            "configuration",
+            "example",
+            "examples",
+            "template",
+            "parameter",
+            "tool",
+            "endpoint",
+        )
+    )
 
 
 def _looks_workflow_entity(value: str) -> bool:
     lowered = value.casefold()
     if lowered.startswith("generic entity"):
         return False
-    return any(marker in lowered for marker in ("step", "agent", "service", "queue", "task", "workflow", "process", "pipeline", "job", "stage", "state", "trigger"))
+    return any(
+        marker in lowered
+        for marker in (
+            "step",
+            "agent",
+            "service",
+            "queue",
+            "task",
+            "workflow",
+            "process",
+            "pipeline",
+            "job",
+            "stage",
+            "state",
+            "trigger",
+        )
+    )
 
 
 def _looks_workflow_claim(value: str) -> bool:
     lowered = value.casefold()
     if lowered.startswith("generic claim"):
         return False
-    return any(marker in lowered for marker in ("step", "run", "execute", "verify", "check", "start", "stop", "restart", "schedule", "route", "complete", "handoff", "pipeline", "workflow"))
+    return any(
+        marker in lowered
+        for marker in (
+            "step",
+            "run",
+            "execute",
+            "verify",
+            "check",
+            "start",
+            "stop",
+            "restart",
+            "schedule",
+            "route",
+            "complete",
+            "handoff",
+            "pipeline",
+            "workflow",
+        )
+    )
 
 
 def _looks_workflow_section(value: str) -> bool:
     lowered = value.casefold()
-    return any(marker in lowered for marker in ("step", "workflow", "process", "runbook", "procedure", "checklist", "setup", "verification", "operation", "routing"))
+    return any(
+        marker in lowered
+        for marker in (
+            "step",
+            "workflow",
+            "process",
+            "runbook",
+            "procedure",
+            "checklist",
+            "setup",
+            "verification",
+            "operation",
+            "routing",
+        )
+    )
 
 
-def _projection_limits(graph_name: str, source_ref: str, payload: dict[str, Any], requested_profile: str | None = None) -> dict[str, int]:
+def _projection_limits(
+    graph_name: str, source_ref: str, payload: dict[str, Any], requested_profile: str | None = None
+) -> dict[str, int]:
     profile = infer_projection_profile(graph_name, source_ref, payload, requested_profile)
     if profile == PROJECTION_PROFILE_LEGAL:
         return {
@@ -287,7 +534,9 @@ def project_decomposition(
     projection_profile: str | None = None,
 ) -> dict[str, Any]:
     payload = payload or {}
-    resolved_profile = infer_projection_profile(graph_name, source_ref, payload, projection_profile)
+    resolved_profile = infer_projection_profile(
+        graph_name, source_ref, payload, projection_profile
+    )
     limits = _projection_limits(graph_name, source_ref, payload, resolved_profile)
     all_citations = _unique_preserve(decomposition.get("citations", []))
     raw_sections = _unique_preserve(decomposition.get("section_titles", []))
@@ -295,40 +544,94 @@ def project_decomposition(
     raw_claims = _unique_preserve(decomposition.get("claims", []))
     citations = all_citations[: limits["citations"]]
     if resolved_profile == PROJECTION_PROFILE_LEGAL:
-        section_titles = [value for value in raw_sections if _looks_legal_section(value)][: limits["sections"]]
+        section_titles = [value for value in raw_sections if _looks_legal_section(value)][
+            : limits["sections"]
+        ]
         if not section_titles:
             section_titles = raw_sections[: limits["sections"]]
-        entities = sorted([value for value in raw_entities if _looks_legal_entity(value)], key=_score_entity, reverse=True)[: limits["entities"]]
+        entities = sorted(
+            [value for value in raw_entities if _looks_legal_entity(value)],
+            key=_score_entity,
+            reverse=True,
+        )[: limits["entities"]]
         if len(entities) < min(16, limits["entities"]):
-            fallback_entities = [value for value in sorted(raw_entities, key=_score_entity, reverse=True) if value not in entities]
+            fallback_entities = [
+                value
+                for value in sorted(raw_entities, key=_score_entity, reverse=True)
+                if value not in entities
+            ]
             entities = (entities + fallback_entities)[: limits["entities"]]
-        claims = sorted([value for value in raw_claims if _looks_legal_claim(value)], key=_score_claim, reverse=True)[: limits["claims"]]
+        claims = sorted(
+            [value for value in raw_claims if _looks_legal_claim(value)],
+            key=_score_claim,
+            reverse=True,
+        )[: limits["claims"]]
         if len(claims) < min(12, limits["claims"]):
-            fallback_claims = [value for value in sorted(raw_claims, key=_score_claim, reverse=True) if value not in claims]
+            fallback_claims = [
+                value
+                for value in sorted(raw_claims, key=_score_claim, reverse=True)
+                if value not in claims
+            ]
             claims = (claims + fallback_claims)[: limits["claims"]]
     elif resolved_profile == PROJECTION_PROFILE_REFERENCE:
-        section_titles = [value for value in raw_sections if _looks_reference_section(value)][: limits["sections"]]
+        section_titles = [value for value in raw_sections if _looks_reference_section(value)][
+            : limits["sections"]
+        ]
         if len(section_titles) < min(16, limits["sections"]):
             section_titles = raw_sections[: limits["sections"]]
-        entities = sorted([value for value in raw_entities if _looks_reference_entity(value)], key=_score_entity, reverse=True)[: limits["entities"]]
+        entities = sorted(
+            [value for value in raw_entities if _looks_reference_entity(value)],
+            key=_score_entity,
+            reverse=True,
+        )[: limits["entities"]]
         if len(entities) < min(24, limits["entities"]):
-            fallback_entities = [value for value in sorted(raw_entities, key=_score_entity, reverse=True) if value not in entities]
+            fallback_entities = [
+                value
+                for value in sorted(raw_entities, key=_score_entity, reverse=True)
+                if value not in entities
+            ]
             entities = (entities + fallback_entities)[: limits["entities"]]
-        claims = sorted([value for value in raw_claims if _looks_reference_claim(value)], key=_score_claim, reverse=True)[: limits["claims"]]
+        claims = sorted(
+            [value for value in raw_claims if _looks_reference_claim(value)],
+            key=_score_claim,
+            reverse=True,
+        )[: limits["claims"]]
         if len(claims) < min(20, limits["claims"]):
-            fallback_claims = [value for value in sorted(raw_claims, key=_score_claim, reverse=True) if value not in claims]
+            fallback_claims = [
+                value
+                for value in sorted(raw_claims, key=_score_claim, reverse=True)
+                if value not in claims
+            ]
             claims = (claims + fallback_claims)[: limits["claims"]]
     elif resolved_profile == PROJECTION_PROFILE_WORKFLOW:
-        section_titles = [value for value in raw_sections if _looks_workflow_section(value)][: limits["sections"]]
+        section_titles = [value for value in raw_sections if _looks_workflow_section(value)][
+            : limits["sections"]
+        ]
         if len(section_titles) < min(16, limits["sections"]):
             section_titles = raw_sections[: limits["sections"]]
-        entities = sorted([value for value in raw_entities if _looks_workflow_entity(value)], key=_score_entity, reverse=True)[: limits["entities"]]
+        entities = sorted(
+            [value for value in raw_entities if _looks_workflow_entity(value)],
+            key=_score_entity,
+            reverse=True,
+        )[: limits["entities"]]
         if len(entities) < min(16, limits["entities"]):
-            fallback_entities = [value for value in sorted(raw_entities, key=_score_entity, reverse=True) if value not in entities]
+            fallback_entities = [
+                value
+                for value in sorted(raw_entities, key=_score_entity, reverse=True)
+                if value not in entities
+            ]
             entities = (entities + fallback_entities)[: limits["entities"]]
-        claims = sorted([value for value in raw_claims if _looks_workflow_claim(value)], key=_score_claim, reverse=True)[: limits["claims"]]
+        claims = sorted(
+            [value for value in raw_claims if _looks_workflow_claim(value)],
+            key=_score_claim,
+            reverse=True,
+        )[: limits["claims"]]
         if len(claims) < min(20, limits["claims"]):
-            fallback_claims = [value for value in sorted(raw_claims, key=_score_claim, reverse=True) if value not in claims]
+            fallback_claims = [
+                value
+                for value in sorted(raw_claims, key=_score_claim, reverse=True)
+                if value not in claims
+            ]
             claims = (claims + fallback_claims)[: limits["claims"]]
     else:
         section_titles = raw_sections[: limits["sections"]]
@@ -357,7 +660,16 @@ def project_decomposition(
     }
 
 
-def build_cache_document(*, graph_name: str, source_ref: str, source_path: Path, payload: dict[str, Any], host: str = "", decompose_kwargs: dict[str, Any] | None = None, projection_profile: str | None = None) -> dict[str, Any]:
+def build_cache_document(
+    *,
+    graph_name: str,
+    source_ref: str,
+    source_path: Path,
+    payload: dict[str, Any],
+    host: str = "",
+    decompose_kwargs: dict[str, Any] | None = None,
+    projection_profile: str | None = None,
+) -> dict[str, Any]:
     content = source_path.read_text(errors="ignore")
     decomposition = decompose_content(content, **(decompose_kwargs or {})).model_dump()
     projection = project_decomposition(
@@ -387,14 +699,18 @@ def build_cache_document(*, graph_name: str, source_ref: str, source_path: Path,
     }
 
 
-def write_cache_document(memory_dir: Path, graph_name: str, source_ref: str, cache_doc: dict[str, Any]) -> Path:
+def write_cache_document(
+    memory_dir: Path, graph_name: str, source_ref: str, cache_doc: dict[str, Any]
+) -> Path:
     path = cache_doc_path(memory_dir, graph_name, source_ref)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(cache_doc, indent=2, sort_keys=True))
     return path
 
 
-def load_cache_document(memory_dir: Path, graph_name: str, source_ref: str) -> dict[str, Any] | None:
+def load_cache_document(
+    memory_dir: Path, graph_name: str, source_ref: str
+) -> dict[str, Any] | None:
     path = cache_doc_path(memory_dir, graph_name, source_ref)
     if not path.exists():
         return None
@@ -420,20 +736,26 @@ def iter_cache_documents(memory_dir: Path, graph_name: str):
             yield path, data
 
 
-def memory_from_cache_document(cache_doc: dict[str, Any], *, target_graph_name: str | None = None) -> Memory:
+def memory_from_cache_document(
+    cache_doc: dict[str, Any], *, target_graph_name: str | None = None
+) -> Memory:
     source_ref = str(cache_doc.get("source_ref", ""))
     source_collection = str(cache_doc.get("source_collection") or cache_doc.get("graph_name", ""))
-    graph_name = str(target_graph_name or cache_doc.get("target_graph_name") or cache_doc.get("graph_name", ""))
+    graph_name = str(
+        target_graph_name or cache_doc.get("target_graph_name") or cache_doc.get("graph_name", "")
+    )
     projection = dict(cache_doc.get("projection") or {})
     projection_profile = str(projection.get("projection_profile") or PROJECTION_PROFILE_DEFAULT)
-    tags = _unique_preserve([
-        "recall-graph",
-        f"recall:{graph_name}",
-        f"recall-source:{source_collection}",
-        f"projection:{projection_profile}",
-        "category:" + str(cache_doc.get("category", "document")),
-        "type:" + str(cache_doc.get("type", "document")),
-    ])
+    tags = _unique_preserve(
+        [
+            "recall-graph",
+            f"recall:{graph_name}",
+            f"recall-source:{source_collection}",
+            f"projection:{projection_profile}",
+            "category:" + str(cache_doc.get("category", "document")),
+            "type:" + str(cache_doc.get("type", "document")),
+        ]
+    )
     metadata = prepare_metadata(
         title=str(cache_doc.get("source_name", source_ref or "document")),
         source=f"recall:{graph_name}",
@@ -454,7 +776,7 @@ def memory_from_cache_document(cache_doc: dict[str, Any], *, target_graph_name: 
         },
     )
     memory = Memory(
-        id=hashlib.sha256(f"{graph_name}:{source_ref}".encode("utf-8")).hexdigest()[:16],
+        id=hashlib.sha256(f"{graph_name}:{source_ref}".encode()).hexdigest()[:16],
         title=str(cache_doc.get("source_name", source_ref or "document")),
         content=str(cache_doc.get("content_preview", "")),
         summary=str(cache_doc.get("summary", "")),

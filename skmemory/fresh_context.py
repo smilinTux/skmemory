@@ -37,7 +37,8 @@ Example::
 from __future__ import annotations
 
 import logging
-from typing import Callable, Protocol, TypeVar, runtime_checkable
+from collections.abc import Callable
+from typing import Protocol, TypeVar, runtime_checkable
 
 logger = logging.getLogger("skmemory.fresh_context")
 

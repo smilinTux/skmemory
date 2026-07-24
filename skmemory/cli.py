@@ -183,15 +183,21 @@ def _get_store(
 
     if vector is None and chroma_enabled:
         try:
+            from .agents import get_agent_paths
             from .backends.chroma_backend import SKChromaBackend
 
-            from .agents import get_agent_paths
             agent_paths = get_agent_paths()
-            persist_dir = cfg.chroma_persist_dir if cfg and cfg.chroma_persist_dir else str(
-                agent_paths["base"] / "memory" / "chroma"
+            persist_dir = (
+                cfg.chroma_persist_dir
+                if cfg and cfg.chroma_persist_dir
+                else str(agent_paths["base"] / "memory" / "chroma")
             )
-            chroma_collection = cfg.chroma_collection if cfg and cfg.chroma_collection else "skmemory"
-            chroma_embedding = cfg.chroma_embedding_model if cfg and cfg.chroma_embedding_model else None
+            chroma_collection = (
+                cfg.chroma_collection if cfg and cfg.chroma_collection else "skmemory"
+            )
+            chroma_embedding = (
+                cfg.chroma_embedding_model if cfg and cfg.chroma_embedding_model else None
+            )
             state_path = agent_paths["base"] / "memory" / "chroma-state.json"
 
             chroma_kwargs = {
@@ -372,7 +378,11 @@ def cli(
 @click.option("--emotions", default="", help="Comma-separated emotion labels")
 @click.option("--resonance", default="", help="What this moment felt like")
 @click.option("--source", default="cli", help="Memory source identifier")
-@click.option("--decompose/--no-decompose", default=False, help="Decompose long-form content into chunk memories")
+@click.option(
+    "--decompose/--no-decompose",
+    default=False,
+    help="Decompose long-form content into chunk memories",
+)
 @click.pass_context
 def snapshot(
     ctx: click.Context,
@@ -413,9 +423,7 @@ def snapshot(
     click.echo(f"  Layer: {memory.layer.value}")
     click.echo(f"  Emotional: {memory.emotional.signature()}")
     if memory.metadata.get("decomposition"):
-        click.echo(
-            f"  Decomposed: {len(memory.metadata.get('chunk_memory_ids', []))} chunks"
-        )
+        click.echo(f"  Decomposed: {len(memory.metadata.get('chunk_memory_ids', []))} chunks")
 
 
 @cli.command("ingest-file")
@@ -775,22 +783,25 @@ def health(ctx: click.Context) -> None:
     click.echo(json.dumps(status, indent=2))
 
 
-
-
 @cli.group()
 def corpora() -> None:
     """Inspect shared corpus registry and cache coverage."""
 
 
 @corpora.command("status")
-@click.option("--name", "names", multiple=True, help="Filter by shared corpus name, vector collection, or graph name.")
+@click.option(
+    "--name",
+    "names",
+    multiple=True,
+    help="Filter by shared corpus name, vector collection, or graph name.",
+)
 @click.option("--pretty/--compact", default=True, help="Pretty-print JSON output.")
 @click.pass_context
 def corpora_status(ctx: click.Context, names: tuple[str, ...], pretty: bool) -> None:
     """Show agent-local backend identity plus shared corpus registry status."""
-    from .corpus_registry import build_corpus_registry_report
-
     import os
+
+    from .corpus_registry import build_corpus_registry_report
 
     agent = ctx.obj.get("agent") or os.environ.get("SKMEMORY_AGENT") or "jarvis"
     report = build_corpus_registry_report(agent=agent, names=list(names) or None)
@@ -916,7 +927,9 @@ def task_pack() -> None:
 @click.argument("task")
 @click.option("--query", default=None, help="Override retrieval query used to assemble the pack.")
 @click.option("--limit", type=int, default=8, help="Number of related memories to include.")
-@click.option("--layer", type=click.Choice(["short-term", "mid-term", "long-term"]), default="mid-term")
+@click.option(
+    "--layer", type=click.Choice(["short-term", "mid-term", "long-term"]), default="mid-term"
+)
 @click.option("--tags", default="", help="Comma-separated extra tags.")
 @click.pass_context
 def task_pack_create(
@@ -936,7 +949,9 @@ def task_pack_create(
         layer=MemoryLayer(layer),
         tags=[item.strip() for item in tags.split(",") if item.strip()],
     )
-    click.echo(json.dumps({"id": pack.id, "title": pack.title, "metadata": pack.metadata}, indent=2))
+    click.echo(
+        json.dumps({"id": pack.id, "title": pack.title, "metadata": pack.metadata}, indent=2)
+    )
 
 
 @task_pack.command("show")
@@ -1025,8 +1040,14 @@ def routing_probe() -> None:
 
 
 @cli.command()
-@click.option("--vector", is_flag=True, help="Also sync flat-file memories into the ChromaDB vector index.")
-@click.option("--force", is_flag=True, help="Skip the safety export of SQLite-only memories before rebuilding (DESTRUCTIVE).")
+@click.option(
+    "--vector", is_flag=True, help="Also sync flat-file memories into the ChromaDB vector index."
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip the safety export of SQLite-only memories before rebuilding (DESTRUCTIVE).",
+)
 @click.pass_context
 def reindex(ctx: click.Context, vector: bool, force: bool) -> None:
     """Rebuild the SQLite index from JSON files on disk.
@@ -1112,9 +1133,13 @@ def export_flat(ctx: click.Context, show_ids: bool) -> None:
 
 
 @cli.command("sync")
-@click.option("--quiet", "-q", is_flag=True, help="Only print if changes were made (cron-friendly).")
+@click.option(
+    "--quiet", "-q", is_flag=True, help="Only print if changes were made (cron-friendly)."
+)
 @click.option("--vector", is_flag=True, help="Also re-sync flat-file memories into ChromaDB.")
-@click.option("--graph", is_flag=True, help="Also re-sync flat-file memories into FalkorDB (SKGraph).")
+@click.option(
+    "--graph", is_flag=True, help="Also re-sync flat-file memories into FalkorDB (SKGraph)."
+)
 @click.pass_context
 def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None:
     """Reconcile SQLite ↔ flat files (bidirectional, idempotent).
@@ -1133,6 +1158,7 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
     Designed to be safe to run on a timer (see skmemory-sync@.service).
     """
     from .agents import get_agent_paths
+
     store: MemoryStore = ctx.obj["store"]
     agent = get_agent_paths()["base"].name
 
@@ -1148,9 +1174,12 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
         try:
             from .backends.chroma_backend import SKChromaBackend
             from .config import load_config
+
             paths = get_agent_paths()
             cfg = load_config()
-            chroma_collection = cfg.chroma_collection if cfg and cfg.chroma_collection else "skmemory"
+            chroma_collection = (
+                cfg.chroma_collection if cfg and cfg.chroma_collection else "skmemory"
+            )
             be = SKChromaBackend(
                 persist_dir=str(paths["base"] / "memory" / "chroma"),
                 collection=chroma_collection,
@@ -1188,7 +1217,9 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
         orphan_stats["exported"] > 0
         or (chroma_stats and (chroma_stats["indexed"] > 0 or chroma_stats["removed"] > 0))
         or (graph_stats and graph_stats["indexed"] > 0)
-        or (recall_graph_stats and any(item["indexed"] > 0 for item in recall_graph_stats.values()))
+        or (
+            recall_graph_stats and any(item["indexed"] > 0 for item in recall_graph_stats.values())
+        )
     )
     if quiet and not changed:
         return
@@ -1199,11 +1230,13 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
         f"orphan_errors={orphan_stats['errors']}"
         + (
             f" chroma_indexed={chroma_stats['indexed']} chroma_removed={chroma_stats['removed']} chroma_errors={chroma_stats['errors']}"
-            if chroma_stats else ""
+            if chroma_stats
+            else ""
         )
         + (
             f" graph_indexed={graph_stats['indexed']} graph_errors={graph_stats['errors']}"
-            if graph_stats else ""
+            if graph_stats
+            else ""
         )
     )
 
@@ -1992,9 +2025,7 @@ def quadrant_stats(ctx: click.Context) -> None:
     default=2,
     help="Minimum memories sharing a tag for it to become a MOC.",
 )
-@click.option(
-    "--max-clusters", type=int, default=40, help="Max number of tag-cluster MOCs."
-)
+@click.option("--max-clusters", type=int, default=40, help="Max number of tag-cluster MOCs.")
 @click.option(
     "--max-entries",
     type=int,
@@ -2030,9 +2061,7 @@ def moc_generate(
 
     mocs = []
     if kind in ("all", "quadrants"):
-        mocs.append(
-            build_quadrant_moc(memories, max_entries_per_section=max_entries)
-        )
+        mocs.append(build_quadrant_moc(memories, max_entries_per_section=max_entries))
     if kind in ("all", "tags"):
         mocs.extend(
             build_tag_cluster_mocs(
@@ -2541,7 +2570,9 @@ def fortress_audit(n: int, as_json: bool) -> None:
 
 @fortress_group.command("seal")
 @click.option("--dry-run", is_flag=True, help="Show how many would be sealed without writing")
-@click.option("--limit", type=int, default=0, help="Cap how many to seal in this pass (0 = no cap)")
+@click.option(
+    "--limit", type=int, default=0, help="Cap how many to seal in this pass (0 = no cap)"
+)
 @click.option("--json", "as_json", is_flag=True, help="Output result as JSON")
 @click.pass_context
 def fortress_seal(ctx: click.Context, dry_run: bool, limit: int, as_json: bool) -> None:
@@ -3045,12 +3076,14 @@ def _auto_register_once() -> None:
 # Register subcommand groups from sibling modules
 try:
     from .songs_cli import songs as _songs_group
+
     cli.add_command(_songs_group)
 except Exception:  # pragma: no cover — defensive, don't break cli on import error
     pass
 
 try:
     from .anchors_cli import anchors as _anchors_group
+
     cli.add_command(_anchors_group)
 except Exception:  # pragma: no cover — defensive, don't break cli on import error
     pass

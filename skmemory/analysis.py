@@ -42,7 +42,9 @@ _AUTHORITY_PATTERNS: list[tuple[str, tuple[str, ...]]] = [
 ]
 
 
-def infer_authority(title: str, content: str, source: str, source_ref: str, tags: list[str]) -> dict[str, Any]:
+def infer_authority(
+    title: str, content: str, source: str, source_ref: str, tags: list[str]
+) -> dict[str, Any]:
     """Infer a coarse authority tier for a memory or artifact."""
     haystack = " ".join(
         [
@@ -95,9 +97,13 @@ def score_novelty(
     seen_citations: set[str],
 ) -> dict[str, Any]:
     """Score novelty based on entities/citations not repeated elsewhere."""
-    entities = [entity for entity in signals.get("entities", []) if entity.casefold() not in seen_entities]
+    entities = [
+        entity for entity in signals.get("entities", []) if entity.casefold() not in seen_entities
+    ]
     citations = [
-        citation for citation in signals.get("citations", []) if citation.casefold() not in seen_citations
+        citation
+        for citation in signals.get("citations", [])
+        if citation.casefold() not in seen_citations
     ]
     score = round(min(1.0, 0.12 * len(entities) + 0.18 * len(citations)), 3)
     return {
@@ -126,24 +132,38 @@ def build_query_brief(query: str, result_rows: list[dict[str, Any]]) -> dict[str
             seen[f"citation:{citation}"] += 1
         for claim in row.get("claims", [])[:3]:
             lowered = claim.lower()
-            if any(marker in lowered for marker in ("must", "shall", "hearing", "deadline", "within")):
+            if any(
+                marker in lowered for marker in ("must", "shall", "hearing", "deadline", "within")
+            ):
                 deadlines.append(claim[:220])
-            if any(marker in lowered for marker in ("vacate", "service", "jurisdiction", "exempt", "objection")):
+            if any(
+                marker in lowered
+                for marker in ("vacate", "service", "jurisdiction", "exempt", "objection")
+            ):
                 defenses.append(claim[:220])
 
     if not deadlines:
-        missing.append("Exact jurisdiction and filing deadline not established from retrieved materials.")
+        missing.append(
+            "Exact jurisdiction and filing deadline not established from retrieved materials."
+        )
     if not any("state" in token.lower() for token in pivots.entities):
         missing.append("State-specific procedure not identified in the query.")
-    if not any(token in query.lower() for token in ("judgment", "levy", "writ", "repossession", "garnishment")):
+    if not any(
+        token in query.lower()
+        for token in ("judgment", "levy", "writ", "repossession", "garnishment")
+    ):
         missing.append("Exact enforcement instrument is not explicit.")
 
-    for citation_key, count in seen.most_common(6):
+    for citation_key, _count in seen.most_common(6):
         citation = citation_key.split(":", 1)[1]
-        actions.append(f"Verify controlling authority around {citation} and compare it against local procedure.")
+        actions.append(
+            f"Verify controlling authority around {citation} and compare it against local procedure."
+        )
 
     if not actions:
-        actions.append("Confirm enforcement posture, deadlines, and exemptions before drafting a response.")
+        actions.append(
+            "Confirm enforcement posture, deadlines, and exemptions before drafting a response."
+        )
 
     return {
         "query": query,

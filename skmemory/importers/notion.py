@@ -25,20 +25,21 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any
 
 from ..admission import (
+    SENTINEL_UNRECOVERABLE_SOURCE,
     AdmissionPolicy,
     Gate2Result,
-    SENTINEL_UNRECOVERABLE_SOURCE,
     admit,
     enqueue_review,
     evaluate_rerun,
     recover,
 )
-from ..models import EmotionalSnapshot, Memory, MemoryLayer, MemoryRole
+from ..models import EmotionalSnapshot, MemoryLayer, MemoryRole
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +117,7 @@ def iter_rows(source_path: Path | str) -> Iterator[dict[str, Any]]:
         yield from _iter_jsonl(p)
         return
     raise ValueError(
-        f"notion importer: unsupported source path {p!r} "
-        "(expected a directory or a .jsonl file)"
+        f"notion importer: unsupported source path {p!r} (expected a directory or a .jsonl file)"
     )
 
 

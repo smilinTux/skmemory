@@ -184,7 +184,7 @@ def test_pqc_roundtrip_verifies_on_read(tmp_path, skpgp_key):
     assert loaded is not None and loaded.id == mem.id
     v = be.last_verdict
     assert v is not None
-    assert v.signature_ok is True          # both composite legs verified
+    assert v.signature_ok is True  # both composite legs verified
     assert v.checksum_ok is True
     assert v.ok is True
     assert v.is_post_quantum is True
@@ -241,7 +241,7 @@ def test_pqc_sidecar_present_but_unverifiable_is_honest(tmp_path, skpgp_key):
     # Fresh backend with no seal config and strict mode on.
     reader = FileBackend(base_path=str(tmp_path), strict_verify=True)
     loaded = reader.load(mem.id)
-    assert loaded is not None                 # never rejected: unverifiable != failed
+    assert loaded is not None  # never rejected: unverifiable != failed
     v = reader.last_verdict
     assert v is not None
     assert v.signature_ok is None

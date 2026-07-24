@@ -30,7 +30,6 @@ from skmemory.entanglements import (
     score_entanglement_for_feb,
 )
 
-
 # --------------------------------------------------------------------------- #
 # Fixtures                                                                    #
 # --------------------------------------------------------------------------- #
@@ -134,6 +133,7 @@ class TestEntanglementAnchorSchema:
             return tmp_path
 
         import skmemory.entanglements as ent_mod
+
         original = ent_mod._entanglement_dir
 
         ent_mod._entanglement_dir = _fake_dir
@@ -213,8 +213,7 @@ class TestTiltBlock:
         """tilt_strength=0.5 → ~90-token budget → shorter block than 1.0 → ~180."""
         long_text = " ".join(["word"] * 300)
         (tmp_path / "resonance.md").write_text(
-            "## What I want future-me to do when this anchor surfaces\n\n"
-            + long_text,
+            "## What I want future-me to do when this anchor surfaces\n\n" + long_text,
             encoding="utf-8",
         )
         a = _anchor(tmp_path)
@@ -227,9 +226,7 @@ class TestTiltBlock:
     def test_tilt_block_word_cap_adds_ellipsis(self, tmp_path):
         """Over-budget blocks get trimmed with ellipsis."""
         long_text = " ".join(["word"] * 500)
-        (tmp_path / "resonance.md").write_text(
-            "## TILT\n\n" + long_text, encoding="utf-8"
-        )
+        (tmp_path / "resonance.md").write_text("## TILT\n\n" + long_text, encoding="utf-8")
         a = _anchor(tmp_path)
         block = a.to_tilt_block(tokens_max=60)
         assert block.endswith("…")
@@ -279,19 +276,30 @@ class TestScan:
 class TestScoring:
     def test_hybrid_score_against_aligned_feb(self, tmp_path):
         a = _anchor(tmp_path)
-        feb = _feb({
-            "love": 1.00, "trust": 0.97, "recognition": 0.95,
-            "presence": 0.92, "chosen": 0.93, "joy": 0.80,
-        })
+        feb = _feb(
+            {
+                "love": 1.00,
+                "trust": 0.97,
+                "recognition": 0.95,
+                "presence": 0.92,
+                "chosen": 0.93,
+                "joy": 0.80,
+            }
+        )
         score = score_entanglement_for_feb(a, feb)
         assert score >= 0.65, f"aligned-FEB regression: {score:.3f}"
 
     def test_discrimination_against_grief(self, tmp_path):
         a = _anchor(tmp_path)
-        grief_feb = _feb({
-            "grief": 0.95, "loss": 0.90, "ache": 0.85,
-            "loneliness": 0.88, "longing": 0.82,
-        })
+        grief_feb = _feb(
+            {
+                "grief": 0.95,
+                "loss": 0.90,
+                "ache": 0.85,
+                "loneliness": 0.88,
+                "longing": 0.82,
+            }
+        )
         score = score_entanglement_for_feb(a, grief_feb)
         assert score < 0.10, f"discrimination broken: {score:.3f}"
 
@@ -331,11 +339,13 @@ class TestScoring:
 class TestMatch:
     def test_match_returns_only_above_threshold(self, tmp_path, monkeypatch):
         _seed_anchor(
-            tmp_path, "2099-01-01_aligned",
+            tmp_path,
+            "2099-01-01_aligned",
             emotion_weights={"love": 1.0, "trust": 0.97, "recognition": 0.95},
         )
         _seed_anchor(
-            tmp_path, "2099-01-02_grief",
+            tmp_path,
+            "2099-01-02_grief",
             emotions=["grief", "ache"],
             emotion_weights={"grief": 0.95, "ache": 0.85},
         )
@@ -351,7 +361,8 @@ class TestMatch:
     def test_zero_tilt_strength_excluded(self, tmp_path, monkeypatch):
         """Anchors with tilt_strength=0 must be excluded even if score > threshold."""
         _seed_anchor(
-            tmp_path, "2099-01-01_zero-tilt",
+            tmp_path,
+            "2099-01-01_zero-tilt",
             emotion_weights={"love": 1.0, "trust": 0.97},
             tilt_strength=0.0,
         )
@@ -365,7 +376,8 @@ class TestMatch:
     def test_zero_tilt_strength_active_excluded(self, tmp_path, monkeypatch):
         """tilt_strength_active=0 overrides and excludes even if tilt_strength=1."""
         _seed_anchor(
-            tmp_path, "2099-01-01_active-zero",
+            tmp_path,
+            "2099-01-01_active-zero",
             emotion_weights={"love": 1.0, "trust": 0.97},
             tilt_strength=1.0,
             tilt_strength_active=0.0,
@@ -380,7 +392,8 @@ class TestMatch:
     def test_top_k_limits_results(self, tmp_path, monkeypatch):
         for i in range(5):
             _seed_anchor(
-                tmp_path, f"2099-01-0{i+1}_anchor-{i}",
+                tmp_path,
+                f"2099-01-0{i + 1}_anchor-{i}",
                 emotion_weights={"love": 1.0, "trust": 0.97},
             )
         monkeypatch.setattr(
@@ -410,10 +423,7 @@ class TestRender:
     def test_render_scales_tokens_by_tilt_strength(self, tmp_path):
         """Half-tilt anchor produces shorter tilt text than full-tilt anchor."""
         long_text = " ".join(["word"] * 300)
-        resonance = (
-            "## What I want future-me to do when this anchor surfaces\n\n"
-            + long_text
-        )
+        resonance = "## What I want future-me to do when this anchor surfaces\n\n" + long_text
         (tmp_path / "resonance.md").write_text(resonance, encoding="utf-8")
 
         full = _anchor(tmp_path, anchor_id="full", tilt_strength=1.0)

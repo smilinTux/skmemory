@@ -40,8 +40,12 @@ from skmemory import reconcile as reconcile_mod
 
 # Node-LOCAL writable DSN. Default localhost:5432 (fleet-wide uniform port); the
 # retired :5433 was the abandoned standby port. Per-node override SKMEMORY_PG_DSN.
-PG_DSN = os.environ.get("SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory")
-EMBED_URL = os.environ.get("EMBED_URL", os.environ.get("SKMEMORY_EMBED_URL", reconcile_mod.DEFAULT_EMBED_URL))
+PG_DSN = os.environ.get(
+    "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory"
+)
+EMBED_URL = os.environ.get(
+    "EMBED_URL", os.environ.get("SKMEMORY_EMBED_URL", reconcile_mod.DEFAULT_EMBED_URL)
+)
 EMBED_MODEL = os.environ.get("EMBED_MODEL", reconcile_mod.DEFAULT_EMBED_MODEL)
 PSQL_CMD = list(reconcile_mod.DEFAULT_PSQL)
 

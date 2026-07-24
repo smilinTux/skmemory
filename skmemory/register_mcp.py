@@ -155,9 +155,7 @@ def main():
         default="all",
         help="Target environment (default: all)",
     )
-    parser.add_argument(
-        "--agent", default=None, help="Agent name (default: active agent)"
-    )
+    parser.add_argument("--agent", default=None, help="Agent name (default: active agent)")
     parser.add_argument(
         "--dry-run", action="store_true", help="Show what would be done without making changes"
     )

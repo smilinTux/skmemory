@@ -83,7 +83,9 @@ class TestLocalWritableDSN:
             f"skmem-pg DSN must resolve to a LOCAL host, got {host!r} -- agents connect "
             "only to localhost; there is no remote primary."
         )
-        assert u.port != 5433, ":5433 is the retired standby port; skmem-pg is a local writable primary"
+        assert u.port != 5433, (
+            ":5433 is the retired standby port; skmem-pg is a local writable primary"
+        )
 
     @requires_skmem_pg
     def test_live_pg_is_writable_primary_not_replica(self):
@@ -206,7 +208,7 @@ class TestAgtypeParsing:
         assert result["properties"] == {}
 
     def test_parses_path_suffix(self):
-        raw = '[1, 2, 3]::path'
+        raw = "[1, 2, 3]::path"
         result = self.be._agtype(raw)
         assert result == [1, 2, 3]
 
@@ -287,7 +289,9 @@ class TestGraphNameValidation:
         assert be.graph == "opus_knowledge"
 
     def test_safe_dsn_redacts_password(self):
-        be = AGEGraphBackend(dsn="postgresql://postgres:supersecret@localhost:5432/skmemory", graph="x")
+        be = AGEGraphBackend(
+            dsn="postgresql://postgres:supersecret@localhost:5432/skmemory", graph="x"
+        )
         redacted = be._safe_dsn()
         assert "supersecret" not in redacted
         assert "postgres:***@" in redacted
@@ -601,7 +605,9 @@ class TestSearch:
 class TestClusters:
     def test_find_clusters_returns_well_connected_hub(self, backend):
         shared_tag = f"hub-{uuid.uuid4().hex[:8]}"
-        hub = make_memory(title="Cluster Hub", tags=[shared_tag, "a", "b"], source=f"src-{uuid.uuid4().hex[:6]}")
+        hub = make_memory(
+            title="Cluster Hub", tags=[shared_tag, "a", "b"], source=f"src-{uuid.uuid4().hex[:6]}"
+        )
         backend.index_memory(hub)
 
         results = backend.find_clusters(min_size=3)
@@ -914,7 +920,9 @@ class TestAgeConfigWireIn:
         assert isinstance(loader._graph_backend, _DummyLoaderGraph)
         assert loader._graph_backend.graph_name == "age-backend"
 
-    def test_ensure_backends_falls_back_to_skgraph_when_age_not_configured(self, monkeypatch, tmp_path):
+    def test_ensure_backends_falls_back_to_skgraph_when_age_not_configured(
+        self, monkeypatch, tmp_path
+    ):
         loader = _make_context_loader(
             monkeypatch,
             tmp_path,

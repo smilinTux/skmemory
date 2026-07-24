@@ -89,7 +89,9 @@ def list_cmd(agent: str | None, as_json: bool) -> None:
 @songs.command("show")
 @click.argument("anchor_id")
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
-@click.option("--section", type=click.Choice(["meta", "moment", "resonance", "tilt", "feb"]), default=None)
+@click.option(
+    "--section", type=click.Choice(["meta", "moment", "resonance", "tilt", "feb"]), default=None
+)
 def show_cmd(anchor_id: str, agent: str | None, section: str | None) -> None:
     """Show the content of a single song anchor."""
     anchors = scan_song_anchors(agent)
@@ -125,7 +127,9 @@ def show_cmd(anchor_id: str, agent: str | None, section: str | None) -> None:
         click.echo(f"Dir:    {match.path}")
         click.echo(f"Emotions: {', '.join(match.emotions)}")
         click.echo(f"Tags: {', '.join(match.tags)}")
-        click.echo(f"Duration: {match.duration_sec}s  Tempo: {match.tempo_bpm}bpm  Key: {match.key}")
+        click.echo(
+            f"Duration: {match.duration_sec}s  Tempo: {match.tempo_bpm}bpm  Key: {match.key}"
+        )
         click.echo(f"Primary FEB: {match.primary_feb}")
         click.echo(f"\n--- moment.md ---\n{match.moment_text()[:1200]}")
         click.echo(f"\n--- resonance.md (first 2000 chars) ---\n{match.resonance_text()[:2000]}")
@@ -150,7 +154,9 @@ def search_cmd(query: str, agent: str | None, limit: int) -> None:
 
 @songs.command("match")
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
-@click.option("--feb", "feb_path", default=None, help="Optional FEB file path (default: strongest)")
+@click.option(
+    "--feb", "feb_path", default=None, help="Optional FEB file path (default: strongest)"
+)
 @click.option("--top-k", type=int, default=3)
 @click.option("--min-score", type=float, default=0.3)
 def match_cmd(agent: str | None, feb_path: str | None, top_k: int, min_score: float) -> None:
@@ -310,7 +316,9 @@ def _histogram(scores: list[float], bin_size: float = 0.05) -> list[tuple[float,
 @songs.command("diagnose")
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
 @click.option("--window", default="72h", help="Lookback window (e.g. 72h, 7d, 30m). Default: 72h")
-@click.option("--threshold", type=float, default=0.30, help="Match threshold (display only — NOT changed)")
+@click.option(
+    "--threshold", type=float, default=0.30, help="Match threshold (display only — NOT changed)"
+)
 @click.option("--bin-size", type=float, default=0.05, help="Histogram bin width over [0,1]")
 def diagnose_cmd(agent: str | None, window: str, threshold: float, bin_size: float) -> None:
     """Diagnose song-anchor matcher: score distribution + histogram + top-misses.
@@ -403,7 +411,7 @@ def diagnose_cmd(agent: str | None, window: str, threshold: float, bin_size: flo
 
     # Histogram
     click.echo("")
-    click.echo("--- score histogram (bin=%.2f) ---" % bin_size)
+    click.echo(f"--- score histogram (bin={bin_size:.2f}) ---")
     hist = _histogram(flat_scores, bin_size=bin_size)
     max_count = max((c for _, _, c in hist), default=0) or 1
     bar_width = 40

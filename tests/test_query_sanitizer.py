@@ -1,5 +1,5 @@
 """Tests for skmemory.query_sanitizer"""
-import pytest
+
 from skmemory.query_sanitizer import sanitize_query
 
 

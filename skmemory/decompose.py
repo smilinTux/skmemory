@@ -116,7 +116,7 @@ def _chunk_content(content: str, chunk_target: int, chunk_overlap: int) -> list[
             if split <= start:
                 split = content.rfind(". ", start, end)
             if split > start + 200:
-                end = split + (0 if content[split:split + 2] == "\n\n" else 1)
+                end = split + (0 if content[split : split + 2] == "\n\n" else 1)
         chunk = content[start:end].strip()
         if chunk:
             chunks.append((start, chunk))
@@ -137,7 +137,9 @@ def decompose_content(
     citations = _extract_citations(content)
     entities = _extract_entities(content)
     claims = _extract_claims(content)
-    heading_spans = [(match.start(), match.group(2).strip()) for match in _RE_HEADING.finditer(content)]
+    heading_spans = [
+        (match.start(), match.group(2).strip()) for match in _RE_HEADING.finditer(content)
+    ]
 
     raw_chunks = _chunk_content(content, chunk_target, chunk_overlap)
     total_chunks = len(raw_chunks)
@@ -146,7 +148,9 @@ def decompose_content(
         chunk_claims = _extract_claims(text)
         chunk_citations = _extract_citations(text)
         chunk_entities = _extract_entities(text)
-        chunk_id = hashlib.md5(f"{offset}:{text}".encode("utf-8", errors="replace")).hexdigest()[:12]
+        chunk_id = hashlib.md5(f"{offset}:{text}".encode("utf-8", errors="replace")).hexdigest()[
+            :12
+        ]
         chunks.append(
             DecomposedChunk(
                 chunk_id=chunk_id,

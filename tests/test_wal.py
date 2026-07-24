@@ -1,7 +1,7 @@
 """Tests for skmemory.wal — Write-Ahead Log"""
-import json
+
 import pytest
-from pathlib import Path
+
 from skmemory.wal import WriteAheadLog
 
 

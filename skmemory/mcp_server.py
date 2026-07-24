@@ -33,10 +33,10 @@ Client configuration (Cursor / Claude Desktop / Claude Code CLI):
 
 from __future__ import annotations
 
-import os
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from mcp.server import Server
@@ -75,9 +75,7 @@ def _get_store() -> MemoryStore:
                     vector = pg
                     logger.info("mcp_server.py: vector backend = PGVectorBackend")
                 else:
-                    logger.warning(
-                        "mcp_server.py pgvector unhealthy, falling back: %s", health
-                    )
+                    logger.warning("mcp_server.py pgvector unhealthy, falling back: %s", health)
             except Exception as e:
                 logger.warning("mcp_server.py pgvector: %s", e)
         # NOTE (prb-6f069c5e, local-per-node rebuild model): reconsider this Chroma
@@ -91,8 +89,9 @@ def _get_store() -> MemoryStore:
         # to avoid a behavior change; slated to become fail-loud + SQLite-recency.
         if vector is None:
             try:
-                from .backends.chroma_backend import SKChromaBackend
                 from .agents import get_agent_paths
+                from .backends.chroma_backend import SKChromaBackend
+
                 agent_paths = get_agent_paths()
                 persist_dir = str(agent_paths["memory"] / "chroma")
                 state_path = agent_paths["memory"] / "chroma-state.json"
@@ -622,8 +621,15 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "Text to extract memory-worthy moments from."},
-                    "min_length": {"type": "integer", "description": "Minimum extracted-segment length (default: 20).", "default": 20},
+                    "text": {
+                        "type": "string",
+                        "description": "Text to extract memory-worthy moments from.",
+                    },
+                    "min_length": {
+                        "type": "integer",
+                        "description": "Minimum extracted-segment length (default: 20).",
+                        "default": 20,
+                    },
                 },
                 "required": ["text"],
             },
@@ -638,9 +644,19 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "conversation": {"type": "string", "description": "Full conversation transcript text."},
-                    "session_id": {"type": "string", "description": "Session identifier (default: auto from CLAUDE_SESSION_ID env or 'mcp-session')."},
-                    "min_length": {"type": "integer", "description": "Minimum extracted-segment length (default: 100 — same as the Stop hook).", "default": 100},
+                    "conversation": {
+                        "type": "string",
+                        "description": "Full conversation transcript text.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session identifier (default: auto from CLAUDE_SESSION_ID env or 'mcp-session').",
+                    },
+                    "min_length": {
+                        "type": "integer",
+                        "description": "Minimum extracted-segment length (default: 100 — same as the Stop hook).",
+                        "default": 100,
+                    },
                 },
                 "required": ["conversation"],
             },
@@ -655,9 +671,19 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "context": {"type": "string", "description": "Current conversation context to snapshot."},
-                    "session_id": {"type": "string", "description": "Session identifier (default: auto)."},
-                    "tail_chars": {"type": "integer", "description": "How many trailing characters to save (default: 4000).", "default": 4000},
+                    "context": {
+                        "type": "string",
+                        "description": "Current conversation context to snapshot.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session identifier (default: auto).",
+                    },
+                    "tail_chars": {
+                        "type": "integer",
+                        "description": "How many trailing characters to save (default: 4000).",
+                        "default": 4000,
+                    },
                 },
                 "required": ["context"],
             },
@@ -1005,22 +1031,42 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "memory_extract":
             from .extractor import extract_memories
+
             text = arguments["text"]
             min_length = int(arguments.get("min_length", 20))
             extracted = extract_memories(text, min_length=min_length)
-            return _json_response([
-                {"type": e.type, "content": e.content, "confidence": e.confidence, "source_line": e.source_line}
-                for e in extracted
-            ])
+            return _json_response(
+                [
+                    {
+                        "type": e.type,
+                        "content": e.content,
+                        "confidence": e.confidence,
+                        "source_line": e.source_line,
+                    }
+                    for e in extracted
+                ]
+            )
 
         elif name == "memory_save_session":
             import os
+
             from .extractor import extract_memories
+
             conversation = arguments["conversation"]
-            session_id = arguments.get("session_id") or os.environ.get("CLAUDE_SESSION_ID") or "mcp-session"
+            session_id = (
+                arguments.get("session_id") or os.environ.get("CLAUDE_SESSION_ID") or "mcp-session"
+            )
             min_length = int(arguments.get("min_length", 100))
             if len(conversation) < min_length:
-                return _json_response({"extracted": 0, "saved": 0, "session_id": session_id, "memories": [], "skipped": "below_min_length"})
+                return _json_response(
+                    {
+                        "extracted": 0,
+                        "saved": 0,
+                        "session_id": session_id,
+                        "memories": [],
+                        "skipped": "below_min_length",
+                    }
+                )
             extracted = extract_memories(conversation)
             saved_memories = []
             for mem in extracted:
@@ -1038,20 +1084,27 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                             "tool": "memory_save_session",
                         },
                     )
-                    saved_memories.append({"id": memory.id, "type": mem.type, "title": memory.title})
+                    saved_memories.append(
+                        {"id": memory.id, "type": mem.type, "title": memory.title}
+                    )
                 except Exception as exc:
                     logger.warning("memory_save_session: failed to save extracted memory: %s", exc)
-            return _json_response({
-                "extracted": len(extracted),
-                "saved": len(saved_memories),
-                "session_id": session_id,
-                "memories": saved_memories,
-            })
+            return _json_response(
+                {
+                    "extracted": len(extracted),
+                    "saved": len(saved_memories),
+                    "session_id": session_id,
+                    "memories": saved_memories,
+                }
+            )
 
         elif name == "memory_pre_compact":
             import os
+
             context = arguments["context"]
-            session_id = arguments.get("session_id") or os.environ.get("CLAUDE_SESSION_ID") or "mcp-session"
+            session_id = (
+                arguments.get("session_id") or os.environ.get("CLAUDE_SESSION_ID") or "mcp-session"
+            )
             tail_chars = int(arguments.get("tail_chars", 4000))
             content = context[-tail_chars:] if len(context) > tail_chars else context
             memory = store.snapshot(
@@ -1061,14 +1114,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 tags=["pre-compact", "auto-save", f"session:{session_id}"],
                 source="mcp:memory_pre_compact",
                 source_ref=f"session:{session_id}",
-                metadata={"tool": "memory_pre_compact", "original_length": len(context), "saved_length": len(content)},
+                metadata={
+                    "tool": "memory_pre_compact",
+                    "original_length": len(context),
+                    "saved_length": len(content),
+                },
             )
-            return _json_response({
-                "memory_id": memory.id,
-                "session_id": session_id,
-                "content_length": len(content),
-                "original_length": len(context),
-            })
+            return _json_response(
+                {
+                    "memory_id": memory.id,
+                    "session_id": session_id,
+                    "content_length": len(content),
+                    "original_length": len(context),
+                }
+            )
 
         else:
             return _error_response(f"Unknown tool: {name}")

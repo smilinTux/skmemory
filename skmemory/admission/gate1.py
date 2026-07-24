@@ -11,16 +11,17 @@ influence future retrieval?* — that's Gate 2.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 from .constants import (
     DEPRECATED_SOURCE_MAPPING,
-    Gate1Class,
-    Gate1Outcome,
     KNOWN_SOURCE_VOCAB,
     SENTINEL_UNRECOVERABLE_SOURCE,
     ZERO_EVENT_TAG_MARKERS,
+    Gate1Class,
+    Gate1Outcome,
 )
 
 
@@ -54,9 +55,7 @@ def _has_canonical_provenance(row: Mapping[str, Any]) -> bool:
     parents = row.get("parent_eids")
     if not isinstance(src, str) or src not in KNOWN_SOURCE_VOCAB:
         return False
-    if not isinstance(parents, list):
-        return False
-    return True
+    return isinstance(parents, list)
 
 
 def _is_zero_event_artifact(row: Mapping[str, Any]) -> bool:
@@ -110,9 +109,7 @@ def recover(row: Mapping[str, Any]) -> Gate1Result:
         raw_source = row.get("source")
 
     # Class 5 — Null/empty/garbage. FAIL.
-    if raw_source is None or (
-        isinstance(raw_source, str) and not raw_source.strip()
-    ):
+    if raw_source is None or (isinstance(raw_source, str) and not raw_source.strip()):
         return Gate1Result(
             cls=Gate1Class.NULL_OR_EMPTY,
             outcome=Gate1Outcome.FAIL,

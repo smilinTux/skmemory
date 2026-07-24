@@ -4,10 +4,12 @@ These tests verify that tags, layer, and source filters are correctly
 passed through the search() API. They run against the FileBackend (no
 ChromaDB required) to keep tests self-contained.
 """
+
 import pytest
-from skmemory.store import MemoryStore
-from skmemory.models import Memory, MemoryLayer, MemoryRole
+
 from skmemory.backends.file_backend import FileBackend
+from skmemory.models import Memory, MemoryLayer
+from skmemory.store import MemoryStore
 
 
 @pytest.fixture

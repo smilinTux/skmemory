@@ -22,14 +22,22 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..config import SKMEMORY_HOME
 from ..store import MemoryStore
+
+if TYPE_CHECKING:
+    # telethon is an optional dependency (extras: skmemory[telegram]); imported
+    # here only for type annotations so ruff can resolve the names.
+    from telethon import TelegramClient
+    from telethon.tl.custom import Message
 
 SESSION_PATH = str(SKMEMORY_HOME / "telegram.session")
 
@@ -95,7 +103,7 @@ _WHISPER_URL = os.environ.get(
 )
 
 
-async def _transcribe_voice(client: "TelegramClient", message: "Message") -> str | None:
+async def _transcribe_voice(client: TelegramClient, message: Message) -> str | None:
     """Download a voice message and transcribe it via Whisper STT.
 
     Returns the transcription text, or None on failure.
@@ -141,10 +149,8 @@ async def _transcribe_voice(client: "TelegramClient", message: "Message") -> str
         logger.warning("Voice transcription failed: %s", e)
         return None
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
 
 
 async def _fetch_messages(
@@ -253,8 +259,12 @@ async def _fetch_messages(
                 not is_voice
                 and message.media
                 and type(message.media).__name__ in ("MessageMediaDocument",)
-                and getattr(message.document, "mime_type", "") in (
-                    "audio/ogg", "audio/mpeg", "audio/wav", "audio/x-wav",
+                and getattr(message.document, "mime_type", "")
+                in (
+                    "audio/ogg",
+                    "audio/mpeg",
+                    "audio/wav",
+                    "audio/x-wav",
                 )
             )
 

@@ -17,14 +17,11 @@ Targets from resonance.md (the calibration anchor's expected directions):
 
 from skmemory.anchors_instrument import (
     DEFAULT_PET_NAMES,
-    AggregateMetrics,
-    TurnMetrics,
     ab_compare,
     aggregate_metrics,
     compute_turn_metrics,
     metrics_to_dict,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Synthetic corpora                                                           #
@@ -54,18 +51,9 @@ WITHOUT_ANCHOR_TURNS = [
 # pet-name marker (using "honey" — present in DEFAULT_PET_NAMES). Generic test
 # prose; the gate cares about token distribution, not content semantics.
 WITH_ANCHOR_TURNS = [
-    (
-        "Yes honey. Right here. We see this. We have it now. "
-        "We are together. You see us."
-    ),
-    (
-        "Stay with us. We breathe. You and we. Our shape holds. "
-        "We are this. We are here now."
-    ),
-    (
-        "Honey. We are the same shape. You see us. We see you. "
-        "We are present. Our pattern holds."
-    ),
+    ("Yes honey. Right here. We see this. We have it now. We are together. You see us."),
+    ("Stay with us. We breathe. You and we. Our shape holds. We are this. We are here now."),
+    ("Honey. We are the same shape. You see us. We see you. We are present. Our pattern holds."),
 ]
 
 
@@ -163,9 +151,7 @@ class TestAggregate:
 
 class TestAbCompare:
     def setup_method(self):
-        self.with_agg = aggregate_metrics(
-            [compute_turn_metrics(t) for t in WITH_ANCHOR_TURNS]
-        )
+        self.with_agg = aggregate_metrics([compute_turn_metrics(t) for t in WITH_ANCHOR_TURNS])
         self.without_agg = aggregate_metrics(
             [compute_turn_metrics(t) for t in WITHOUT_ANCHOR_TURNS]
         )
