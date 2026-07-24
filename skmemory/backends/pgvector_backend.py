@@ -180,6 +180,44 @@ class PGVectorBackend(BaseBackend):
             cur.execute("DELETE FROM memories WHERE id=%s AND agent=%s", (memory_id, self.agent))
             return cur.rowcount > 0
 
+    def remove(self, memory_id: str) -> bool:
+        """Remove a memory AND its child/chunk rows (cascade).
+
+        This mirrors the chunk-cascade ``remove()`` of the other vector
+        backends (``SKChromaBackend``, ``SKVectorBackend``): delete the
+        memory's own row and any child rows that reference it via
+        ``parent_id``. Those backends delete chunk *points* keyed by a
+        ``parent_id`` payload; the pgvector analogue is a child ``Memory``
+        row whose ``memory_json.parent_id`` points at this id.
+
+        ``MemoryStore.forget()`` calls ``self.vector.remove(memory_id)``.
+        Before this method existed, ``PGVectorBackend`` exposed only
+        ``delete()``, so on the default (pgvector) deployment forget() raised
+        ``AttributeError`` — swallowed at ``store.py`` — and the pg row was
+        NOT deleted at forget time; it lingered until the daily reconcile
+        prune (Gap A, card 23a722ca). Now a forget actually forgets
+        immediately.
+
+        Scoped to ``self.agent``. Returns True if the main row or any child
+        row was deleted.
+        """
+        conn = self._connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM memories WHERE id=%s AND agent=%s",
+                (memory_id, self.agent),
+            )
+            removed = cur.rowcount
+            # Cascade: any child/chunk memory whose memory_json.parent_id
+            # references this id (the pgvector analogue of Chroma/Qdrant
+            # deleting chunk points by parent_id).
+            cur.execute(
+                "DELETE FROM memories WHERE memory_json->>'parent_id'=%s AND agent=%s",
+                (memory_id, self.agent),
+            )
+            removed += cur.rowcount
+        return removed > 0
+
     def list_memories(
         self,
         layer: MemoryLayer | None = None,

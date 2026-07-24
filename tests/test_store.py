@@ -14,6 +14,37 @@ from skmemory.models import (
 from skmemory.store import MemoryStore
 
 
+class _RecordingVector:
+    """A minimal vector backend that records the ids passed to remove().
+
+    Has the methods MemoryStore touches on write/forget (save, remove) so it can
+    stand in for a real vector backend without a live store.
+    """
+
+    def __init__(self) -> None:
+        self.removed: list[str] = []
+
+    def save(self, memory) -> str:  # noqa: ANN001
+        return memory.id
+
+    def remove(self, memory_id: str) -> bool:
+        self.removed.append(memory_id)
+        return True
+
+
+class _VectorNoRemove:
+    """A vector backend that (like the old PGVectorBackend) has delete() but no
+    remove() — used to prove forget() surfaces the gap instead of swallowing it."""
+
+    def save(self, memory) -> str:  # noqa: ANN001
+        return memory.id
+
+    def delete(self, memory_id: str) -> bool:
+        return True
+
+    # intentionally NO remove()
+
+
 @pytest.fixture
 def store(tmp_path: Path) -> MemoryStore:
     """Create a MemoryStore with a temporary file backend.
@@ -204,6 +235,33 @@ class TestForget:
     def test_forget_nonexistent(self, store: MemoryStore) -> None:
         """Forgetting a nonexistent memory returns False."""
         assert store.forget("nope") is False
+
+    def test_forget_calls_vector_remove(self, tmp_path: Path) -> None:
+        """forget() cascades to the vector backend's remove() (not delete())."""
+        backend = FileBackend(base_path=str(tmp_path / "memories"))
+        vec = _RecordingVector()
+        store = MemoryStore(primary=backend, vector=vec)
+        mem = store.snapshot(title="v", content="c")
+        store.forget(mem.id)
+        assert mem.id in vec.removed
+
+    def test_forget_warns_when_vector_backend_lacks_remove(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """A vector backend without remove() must be surfaced as a WARNING,
+        not silently swallowed (Gap A: pgvector shipped delete() but no
+        remove(), so forget() left rows behind and logged nothing useful)."""
+        import logging
+
+        backend = FileBackend(base_path=str(tmp_path / "memories"))
+        vec = _VectorNoRemove()
+        store = MemoryStore(primary=backend, vector=vec)
+        mem = store.snapshot(title="v", content="c")
+        with caplog.at_level(logging.WARNING, logger="skmemory.store"):
+            store.forget(mem.id)
+        assert any(
+            "no remove()" in rec.getMessage() for rec in caplog.records
+        ), f"expected a 'no remove()' warning, got {[r.getMessage() for r in caplog.records]}"
 
 
 class TestPromote:

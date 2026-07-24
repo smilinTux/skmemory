@@ -1005,12 +1005,31 @@ class MemoryStore:
             self._wal.log_failed("forget", memory_id, str(exc))
             raise
 
-        # Also remove from vector backend
+        # Also remove from vector backend (cascade chunks). Check for remove()
+        # explicitly: a vector backend that lacks it means a forget silently
+        # leaves its rows behind (they linger until reconcile). Surface that
+        # loudly instead of swallowing an AttributeError, so a future gap like
+        # Gap A (pgvector shipped with delete() but no remove()) is visible.
         if self.vector:
-            try:
-                self.vector.remove(memory_id)
-            except Exception as e:
-                logger.warning("SKVector remove failed: %s", e)
+            remover = getattr(self.vector, "remove", None)
+            if callable(remover):
+                try:
+                    remover(memory_id)
+                except Exception as e:
+                    logger.warning(
+                        "vector backend %s remove(%s) failed: %s",
+                        type(self.vector).__name__,
+                        memory_id,
+                        e,
+                    )
+            else:
+                logger.warning(
+                    "vector backend %s has no remove(); memory %s NOT removed "
+                    "from the vector store at forget time (lingers until "
+                    "reconcile) — add a remove() to this backend",
+                    type(self.vector).__name__,
+                    memory_id,
+                )
 
         # Also remove from graph backend
         if self.graph:
