@@ -222,6 +222,106 @@ class TestBackendConfigRouting:
             graph_name="aster-memory",
         )
 
+    def test_get_store_wires_age_graph_when_pgvector_and_no_skgraph(self, monkeypatch):
+        """Gap B (card dc8280a7): on the default skmem-pg deployment (pgvector
+        enabled, no FalkorDB SKGraph URL), _get_store() must wire the AGE graph
+        into the graph role so forget() cascades a DETACH DELETE to the AGE
+        <agent>_knowledge graph.
+
+        Fail-before: the graph role stayed None (AGE was never wired in
+        _get_store), so forget() orphaned the AGE Memory node.
+        """
+        monkeypatch.setenv("SKMEMORY_PG_DSN", "postgresql://u:p@node/skmemory")
+        cfg = SKMemoryConfig(
+            backends_enabled=["pgvector"],
+            pgvector_dsn="postgresql://ignored/db",
+        )
+        with (
+            patch("skmemory.config.load_config", return_value=cfg),
+            patch("skmemory.config.merge_env_and_config", return_value=(None, None, None)),
+            patch(
+                "skmemory.config.build_endpoint_list",
+                side_effect=lambda single_url, endpoints, default_role="primary": [],
+            ),
+            patch("skmemory.backends.pgvector_backend.PGVectorBackend"),
+        ):
+            store = _get_store()
+
+        from skmemory.backends.age_backend import AGEGraphBackend
+
+        assert isinstance(store.graph, AGEGraphBackend)
+        # DSN precedence: node-local SKMEMORY_PG_DSN env wins over cfg.pgvector_dsn.
+        assert store.graph.dsn == "postgresql://u:p@node/skmemory"
+
+    def test_get_store_age_dsn_falls_back_to_cfg_pgvector_dsn(self, monkeypatch):
+        """When SKMEMORY_PG_DSN is unset, the AGE graph uses cfg.pgvector_dsn."""
+        monkeypatch.delenv("SKMEMORY_PG_DSN", raising=False)
+        cfg = SKMemoryConfig(
+            backends_enabled=["pgvector"],
+            pgvector_dsn="postgresql://cfg-host/skmemory",
+        )
+        with (
+            patch("skmemory.config.load_config", return_value=cfg),
+            patch("skmemory.config.merge_env_and_config", return_value=(None, None, None)),
+            patch(
+                "skmemory.config.build_endpoint_list",
+                side_effect=lambda single_url, endpoints, default_role="primary": [],
+            ),
+            patch("skmemory.backends.pgvector_backend.PGVectorBackend"),
+        ):
+            store = _get_store()
+
+        assert store.graph.dsn == "postgresql://cfg-host/skmemory"
+
+    def test_get_store_falkordb_skgraph_not_clobbered_by_age(self, monkeypatch):
+        """A configured FalkorDB SKGraph keeps the graph role; AGE does not
+        displace it (AGE only fills an otherwise-empty graph role)."""
+        monkeypatch.setenv("SKMEMORY_PG_DSN", "postgresql://u:p@node/skmemory")
+        cfg = SKMemoryConfig(
+            backends_enabled=["pgvector"],
+            skgraph_url="redis://graph.example:6379",
+            skgraph_graph_name="aster-memory",
+        )
+        with (
+            patch("skmemory.config.load_config", return_value=cfg),
+            patch(
+                "skmemory.config.merge_env_and_config",
+                return_value=(None, None, cfg.skgraph_url),
+            ),
+            patch(
+                "skmemory.config.build_endpoint_list",
+                side_effect=lambda single_url, endpoints, default_role="primary": [],
+            ),
+            patch("skmemory.backends.pgvector_backend.PGVectorBackend"),
+            patch("skmemory.backends.skgraph_backend.SKGraphBackend") as mock_skgraph,
+        ):
+            store = _get_store()
+
+        # graph role holds the FalkorDB SKGraph mock, not an AGEGraphBackend.
+        assert store.graph is mock_skgraph.return_value
+
+    def test_get_store_age_wiring_degrades_when_construction_fails(self, monkeypatch):
+        """If AGE construction raises, the graph role stays None and _get_store
+        still returns a usable store (forget() must not hard-fail)."""
+        monkeypatch.setenv("SKMEMORY_PG_DSN", "postgresql://u:p@node/skmemory")
+        cfg = SKMemoryConfig(backends_enabled=["pgvector"])
+        with (
+            patch("skmemory.config.load_config", return_value=cfg),
+            patch("skmemory.config.merge_env_and_config", return_value=(None, None, None)),
+            patch(
+                "skmemory.config.build_endpoint_list",
+                side_effect=lambda single_url, endpoints, default_role="primary": [],
+            ),
+            patch("skmemory.backends.pgvector_backend.PGVectorBackend"),
+            patch(
+                "skmemory.backends.age_backend.AGEGraphBackend",
+                side_effect=RuntimeError("skmem-pg unreachable"),
+            ),
+        ):
+            store = _get_store()
+
+        assert store.graph is None
+
     def test_get_store_passes_vector_collection_from_config(self):
         """Configured SKVector collection should be forwarded to the backend."""
         cfg = SKMemoryConfig(

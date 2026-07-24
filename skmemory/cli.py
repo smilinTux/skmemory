@@ -273,6 +273,30 @@ def _get_store(
             logger.warning("cli.py: %s", e)
             click.echo("Warning: Could not initialize SKGraph backend", err=True)
 
+    # Gap B (card dc8280a7): on the default skmem-pg deployment there is no
+    # FalkorDB SKGraph URL, so the graph role stays empty and forget() never
+    # deletes the memory's node in the live AGE ``<agent>_knowledge`` graph —
+    # a forgotten memory remains reachable by graph traversal. When pgvector
+    # (skmem-pg) is the vector backend and no FalkorDB graph was wired, wire the
+    # AGE graph into the graph role so forget() also cascades a DETACH DELETE
+    # there. Construction is lazy (no connection opened here), and an
+    # unavailable/absent skmem-pg degrades gracefully: AGEGraphBackend.remove_memory
+    # returns False and never raises, so forget() still succeeds for the other
+    # stores. DSN precedence mirrors the pgvector backend: node-local
+    # SKMEMORY_PG_DSN wins over the (Syncthing-shared) yaml, else the AGE default.
+    if graph is None and pgvector_enabled:
+        try:
+            import os
+
+            from .backends.age_backend import AGEGraphBackend
+
+            age_dsn = os.environ.get("SKMEMORY_PG_DSN") or (
+                cfg.pgvector_dsn if cfg and cfg.pgvector_dsn else None
+            )
+            graph = AGEGraphBackend(dsn=age_dsn)
+        except Exception as e:
+            logger.warning("cli.py: %s", e)
+
     return MemoryStore(primary=None, vector=vector, graph=graph, use_sqlite=not legacy_files)
 
 

@@ -61,6 +61,7 @@ def _get_store() -> MemoryStore:
     global _store
     if _store is None:
         vector = None
+        graph = None
         # PGVector (Postgres) is the default sovereign vector store. It works OOTB on
         # any host running the local skmem-pg container + mxbai embedder; if the DB is
         # unreachable we health-gate and fall back to Chroma. Set
@@ -74,6 +75,19 @@ def _get_store() -> MemoryStore:
                 if health.get("ok"):
                     vector = pg
                     logger.info("mcp_server.py: vector backend = PGVectorBackend")
+                    # Gap B (card dc8280a7): wire the live skmem-pg AGE graph into the
+                    # graph role so forget() also cascades a DETACH DELETE to the AGE
+                    # <agent>_knowledge graph. Without this the MCP store built a
+                    # graph-less MemoryStore and a forgotten memory's AGE node was
+                    # orphaned. Construction is lazy (no connection here); an
+                    # unavailable graph degrades gracefully (remove_memory returns
+                    # False and never raises), so forget() still succeeds otherwise.
+                    try:
+                        from .backends.age_backend import AGEGraphBackend
+
+                        graph = AGEGraphBackend(dsn=os.environ.get("SKMEMORY_PG_DSN"))
+                    except Exception as e:
+                        logger.warning("mcp_server.py age: %s", e)
                 else:
                     logger.warning("mcp_server.py pgvector unhealthy, falling back: %s", health)
             except Exception as e:
@@ -98,7 +112,7 @@ def _get_store() -> MemoryStore:
                 vector = SKChromaBackend(persist_dir=persist_dir, state_path=state_path)
             except Exception as e:
                 logger.warning("mcp_server.py: %s", e)
-        _store = MemoryStore(vector=vector)
+        _store = MemoryStore(vector=vector, graph=graph)
     return _store
 
 
