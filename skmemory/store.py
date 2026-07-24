@@ -29,6 +29,7 @@ from .models import (
 )
 from .query_sanitizer import sanitize_query
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
+from .skseed_validation import annotate_truth_score, resolve_auto_validate
 from .validation import (
     PreWriteHook,
     default_pre_write_hooks,
@@ -118,6 +119,7 @@ class MemoryStore:
         content_overflow_strategy: str = CONTENT_OVERFLOW_STRATEGY,
         decompose_min_length: int = DECOMPOSE_MIN_LENGTH,
         pre_write_hooks: list[PreWriteHook] | None = None,
+        skseed_auto_validate: bool | None = None,
     ) -> None:
         if primary is not None:
             self.primary = primary
@@ -138,6 +140,16 @@ class MemoryStore:
         # register_pre_write_hook() to extend.
         self.pre_write_hooks: list[PreWriteHook] = (
             list(pre_write_hooks) if pre_write_hooks is not None else default_pre_write_hooks()
+        )
+
+        # Write-time SKSeed truth-check (card 9b72c6c2). Advisory + fail-open:
+        # when enabled it annotates a memory with an advisory ``truth_score`` on
+        # write; it never blocks, and no-ops when skseed is absent. Explicit
+        # bool overrides; None resolves env > config > False.
+        self.skseed_auto_validate: bool = (
+            skseed_auto_validate
+            if skseed_auto_validate is not None
+            else resolve_auto_validate()
         )
 
         # Write-ahead log — resilient init so missing agent config doesn't block
@@ -321,6 +333,14 @@ class MemoryStore:
                 memory.emotional.valence = min(1.0, 0.3 + 0.2 * pos)
             elif neg > pos:
                 memory.emotional.valence = max(-1.0, -0.3 - 0.2 * neg)
+
+        # Write-time SKSeed truth-check (card 9b72c6c2). Advisory: annotates an
+        # advisory ``truth_score`` into metadata and flags contradictions with
+        # existing memories. Fail-open — never blocks the write, no-ops without
+        # skseed. Runs before seal() so the annotation is captured, though the
+        # integrity hash intentionally covers content/title/emotion only.
+        if self.skseed_auto_validate:
+            annotate_truth_score(memory, store=self)
 
         # Memory.intent auto-fill removed 2026-05-10 (no consumer; map keys
         # didn't match actual source distribution). Field still declared for
