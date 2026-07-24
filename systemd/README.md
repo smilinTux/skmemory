@@ -5,7 +5,7 @@ memory-integrity state coherent without manual intervention.
 
 | Template | Purpose | Cadence |
 |---|---|---|
-| `skmemory-sync@.{service,timer}` | SQLite ↔ flat-file ↔ vector ↔ graph reconciliation | every 6h |
+| `skmemory-sync@.{service,timer}` | SQLite ↔ flat-file + skmem-pg (pgvector) + AGE graph reconciliation | every 6h |
 | `skmemory-fortress-verify@.{service,timer}` | SHA-256 integrity verify of all memories; alert on tamper | daily 03:00 |
 
 ## Install (one-shot, recommended)
@@ -47,19 +47,50 @@ systemctl --user enable --now skmemory-fortress-verify@lumina.timer
 
 ## sync timer details
 
-`skmemory sync --quiet --vector --graph`:
+`skmemory sync --quiet --vector --graph` targets the **live stack**:
+the node-local **skmem-pg** container (pgvector) and its **Apache AGE**
+knowledge graph. The retired ChromaDB and FalkorDB targets were removed
+(card 162a19eb).
 
 1. **export-flat** — writes any SQLite-only memories out as JSON
    (recovers orphans created by importers/dreamers that wrote SQLite
    without a flat file).
 2. **reindex** (safe) — picks up any flat-only files into the SQLite
    index. Orphans are pre-exported in step 1, so no destruction.
-3. **chroma sync** (`--vector`) — re-syncs the local ChromaDB vector
-   store from flat files.
-4. **graph sync** (`--graph`) — re-syncs FalkorDB knowledge graph.
+3. **pgvector reconcile** (`--vector`) — delegates to the vendored
+   production engine (`python -m skmemory.reconcile`): backfills flat
+   memories missing from skmem-pg, applies the **guarded** orphan prune
+   (cold-boot / mid-Syncthing-sync safe — refuses to wipe a derived
+   index from an empty/partial flat source), and embeds any null-vector
+   rows via mxbai on `.100`.
+4. **AGE graph sync** (`--graph`) — backfills the
+   `<agent>_knowledge` property graph in skmem-pg (memory nodes +
+   Tag/Source/RELATED_TO/SUPERSEDES/MENTIONS/CITES/ASSERTS/IN_SECTION
+   edges) from flat files. Idempotent (MERGE semantics).
+
+Both phases talk only to the **node-local** container
+(`localhost:5432` / `docker exec skmem-pg`), so the timer must run on
+every node, for every agent whose flat files that node serves. DSN
+override per node is `SKMEMORY_PG_DSN` (default the local container);
+embed endpoint/model come from the agent's `skmemory.yaml`
+(`embed_url` / `embed_model`) or the reconcile env defaults.
 
 `--quiet` suppresses output unless something actually changed, so the
 log only grows when work happens.
+
+> **Deploy note (not auto-applied):** the tracked unit already invokes
+> `skmemory sync --quiet --vector --graph`, so no `ExecStart` edit is
+> needed. To roll this retarget onto a node, refresh the installed unit
+> copies and reload:
+>
+> ```bash
+> cd ~/clawd/skcapstone-repos/skmemory
+> scripts/install-systemd.sh --agents lumina,opus,jarvis --sync --no-fortress
+> systemctl --user restart skmemory-sync@lumina.timer   # or wait for next tick
+> ```
+>
+> Requires the node-local `skmem-pg` container running and reachable
+> (`docker ps | grep skmem-pg`).
 
 ## fortress-verify timer details
 

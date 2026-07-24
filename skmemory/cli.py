@@ -1136,9 +1136,16 @@ def export_flat(ctx: click.Context, show_ids: bool) -> None:
 @click.option(
     "--quiet", "-q", is_flag=True, help="Only print if changes were made (cron-friendly)."
 )
-@click.option("--vector", is_flag=True, help="Also re-sync flat-file memories into ChromaDB.")
 @click.option(
-    "--graph", is_flag=True, help="Also re-sync flat-file memories into FalkorDB (SKGraph)."
+    "--vector",
+    is_flag=True,
+    help="Also reconcile flat-file memories into skmem-pg (pgvector) — backfill, "
+    "guarded prune, and embed against the node-local container.",
+)
+@click.option(
+    "--graph",
+    is_flag=True,
+    help="Also reconcile flat-file memories into the AGE knowledge graph in skmem-pg.",
 )
 @click.pass_context
 def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None:
@@ -1149,18 +1156,29 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
       2. reindex     — pick up any flat-only files into the SQLite index
                        (safe mode: orphans are pre-exported in step 1, so
                        nothing is destroyed).
-      3. (--vector)  — backfill ChromaDB from flat files.
-      4. (--graph)   — backfill FalkorDB graph nodes + relationships
-                       (Tag, Source, RELATED_TO, PROMOTED_FROM, MENTIONS,
-                       CITES, ASSERTS, IN_SECTION) from flat files.
+      3. (--vector)  — reconcile flat files into skmem-pg (pgvector) via the
+                       vendored :mod:`skmemory.reconcile` engine: backfill
+                       missing rows, guarded orphan prune (cold-boot safe),
+                       and embed any null-vector rows against mxbai on .100.
+      4. (--graph)   — backfill the Apache AGE knowledge graph
+                       (``<agent>_knowledge`` in skmem-pg) with memory nodes +
+                       relationships (Tag, Source, RELATED_TO, SUPERSEDES,
+                       MENTIONS, CITES, ASSERTS, IN_SECTION) from flat files.
+
+    The retired ChromaDB and FalkorDB sync targets have been removed
+    (card 162a19eb): the live stack is pgvector + AGE in the node-local
+    skmem-pg container.
 
     Pass --quiet for cron use: no output unless something actually changed.
     Designed to be safe to run on a timer (see skmemory-sync@.service).
     """
+    import os
+
     from .agents import get_agent_paths
 
     store: MemoryStore = ctx.obj["store"]
-    agent = get_agent_paths()["base"].name
+    paths = get_agent_paths()
+    agent = paths["base"].name
 
     # Phase 1: rescue SQLite-only orphans to flat files
     orphan_stats = store.export_orphans_to_flat()
@@ -1168,58 +1186,61 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
     # Phase 2: pick up flat-only files (safe — orphans already exported)
     indexed = store.reindex(force=False)
 
-    # Phase 3 (optional): chroma vector backfill
-    chroma_stats = None
-    if vector:
+    cfg = None
+    if vector or graph:
         try:
-            from .backends.chroma_backend import SKChromaBackend
             from .config import load_config
 
-            paths = get_agent_paths()
             cfg = load_config()
-            chroma_collection = (
-                cfg.chroma_collection if cfg and cfg.chroma_collection else "skmemory"
-            )
-            be = SKChromaBackend(
-                persist_dir=str(paths["base"] / "memory" / "chroma"),
-                collection=chroma_collection,
-                state_path=paths["base"] / "memory" / "chroma-state.json",
-            )
-            if be._ensure_initialized():
-                chroma_stats = be.sync_all(paths["base"] / "memory", agent)
+        except Exception as e:  # config is optional; reconcile has env defaults
+            logger.warning("cli.py: config load failed: %s", e)
+
+    # Phase 3 (optional): pgvector reconcile against node-local skmem-pg.
+    # Delegates to the vendored production engine (skmemory.reconcile), which
+    # backfills missing rows, applies the guarded prune, and embeds null rows.
+    pg_stats = None
+    if vector:
+        try:
+            from . import reconcile as _reconcile
+
+            recon_kwargs: dict = {}
+            if cfg and getattr(cfg, "embed_url", None):
+                recon_kwargs["embed_url"] = cfg.embed_url
+            if cfg and getattr(cfg, "embed_model", None):
+                recon_kwargs["embed_model"] = cfg.embed_model
+            pg_stats = _reconcile.reconcile(agent, verbose=not quiet, **recon_kwargs)
         except Exception as e:
             logger.warning("cli.py: %s", e)
-            click.echo(f"chroma sync failed: {e}", err=True)
+            click.echo(f"pgvector reconcile failed: {e}", err=True)
 
-    # Phase 4 (optional): SKGraph (FalkorDB) backfill
+    # Phase 4 (optional): AGE knowledge-graph backfill in skmem-pg.
     graph_stats = None
-    recall_graph_stats = None
     if graph:
         try:
-            paths = get_agent_paths()
-            if store.graph is not None:
-                graph_stats = store.graph.sync_all(paths["base"] / "memory", agent)
-            else:
-                click.echo(
-                    "graph sync skipped: SKGraph backend not configured "
-                    "(check ~/.skcapstone/agents/<agent>/config/skgraph.yaml).",
-                    err=True,
-                )
+            from .backends.age_backend import AGEGraphBackend
 
-            from .context_loader import LazyMemoryLoader
-
-            recall_graph_stats = LazyMemoryLoader(agent).sync_recall_graphs()
+            # DSN precedence mirrors the pgvector backend: node-local env wins
+            # over the (Syncthing-shared) yaml, else the container default.
+            pg_dsn = os.environ.get("SKMEMORY_PG_DSN") or (
+                cfg.pgvector_dsn if cfg and getattr(cfg, "pgvector_dsn", None) else None
+            )
+            age = AGEGraphBackend(dsn=pg_dsn, agent=agent)
+            graph_stats = age.sync_all(paths["base"] / "memory", agent)
         except Exception as e:
             logger.warning("cli.py: %s", e)
-            click.echo(f"graph sync failed: {e}", err=True)
+            click.echo(f"AGE graph sync failed: {e}", err=True)
 
     changed = (
         orphan_stats["exported"] > 0
-        or (chroma_stats and (chroma_stats["indexed"] > 0 or chroma_stats["removed"] > 0))
-        or (graph_stats and graph_stats["indexed"] > 0)
         or (
-            recall_graph_stats and any(item["indexed"] > 0 for item in recall_graph_stats.values())
+            pg_stats
+            and (
+                (pg_stats.get("backfilled") or 0) > 0
+                or (pg_stats.get("pruned") or 0) > 0
+                or (pg_stats.get("null_embedded") or 0) > 0
+            )
         )
+        or (graph_stats and graph_stats.get("indexed", 0) > 0)
     )
     if quiet and not changed:
         return
@@ -1229,8 +1250,10 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
         f"sqlite_total={indexed} "
         f"orphan_errors={orphan_stats['errors']}"
         + (
-            f" chroma_indexed={chroma_stats['indexed']} chroma_removed={chroma_stats['removed']} chroma_errors={chroma_stats['errors']}"
-            if chroma_stats
+            f" pg_backfilled={pg_stats.get('backfilled')} "
+            f"pg_pruned={pg_stats.get('pruned')} "
+            f"pg_embedded={pg_stats.get('embedded')}/{pg_stats.get('total')}"
+            if pg_stats
             else ""
         )
         + (
