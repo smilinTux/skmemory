@@ -1,5 +1,5 @@
 [Unit]
-Description=SKMemory bidirectional sync (SQLite ↔ flat files) for %i
+Description=SKMemory sync (flat files -> SQLite + skmem-pg pgvector + AGE graph) for %i
 After=network.target
 
 [Service]
