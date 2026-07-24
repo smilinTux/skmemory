@@ -50,6 +50,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from ..models import Memory
@@ -94,6 +95,18 @@ def _default_agent() -> str:
         or os.environ.get("SKCAPSTONE_AGENT")
         or "lumina"
     )
+
+
+def _now_iso() -> str:
+    """Current UTC instant as an ISO-8601 string (transaction time).
+
+    Same format the :class:`~skmemory.models.Memory` model stamps into
+    ``created_at`` / ``updated_at`` (``datetime.now(timezone.utc).isoformat()``),
+    so the bitemporal ``recorded_at`` / ``valid_to`` edge props compare
+    lexicographically against node ``created_at`` values (fixed-width UTC
+    ISO strings with a ``+00:00`` offset sort in true chronological order).
+    """
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _unique(values: Any) -> list[str]:
@@ -312,15 +325,50 @@ class AGEGraphBackend:
         rows = self._cypher(query, {"a_id": a_id, "b_id": b_id}, cols="b agtype")
         return bool(rows)
 
-    def _merge_supersedes(self, child_id: str, parent_id: str) -> bool:
+    def _merge_supersedes(
+        self, child_id: str, parent_id: str, child_recorded_at: str | None = None
+    ) -> bool:
+        """MERGE a ``(child)-[:SUPERSEDES]->(parent)`` edge that CLOSES the
+        parent's validity (bitemporal supersession).
+
+        When ``child`` supersedes ``parent``, the parent fact stops being the
+        currently-valid one. We record that on the SUPERSEDES edge with three
+        bitemporal props (matching the ep-bitemporal-kg edge schema):
+
+        * ``valid_to``   = the superseding memory's recorded instant
+          (``child_recorded_at``). This is the moment the parent stopped being
+          current — i.e. "set parent edge valid_to = new.recorded_at".
+        * ``valid_from`` = the parent's own valid-time start (its
+          ``created_at`` when known), so the edge spans the parent's whole
+          currency window; falls back to ``valid_to`` (a degenerate window)
+          only when the parent node has no ``created_at`` yet.
+        * ``recorded_at``= transaction time: when we first learned of the
+          supersession (index time), stamped once via ``coalesce`` so re-index
+          keeps the original value.
+
+        ``valid_to`` is derived from the child's stable ``created_at`` (not
+        wall-clock ``now``), so re-indexing the same superseding memory is
+        idempotent in both edge COUNT and edge PROP values.
+        """
+        recorded = child_recorded_at or _now_iso()
         query = (
             "MATCH (child:Memory {id: $child_id}) "
             "MERGE (parent:Memory {id: $parent_id}) "
-            "MERGE (child)-[:SUPERSEDES]->(parent) "
+            "MERGE (child)-[e:SUPERSEDES]->(parent) "
+            "SET e.valid_to = $valid_to, "
+            "e.recorded_at = coalesce(e.recorded_at, $now), "
+            "e.valid_from = coalesce(e.valid_from, coalesce(parent.created_at, $valid_to)) "
             "RETURN parent"
         )
         rows = self._cypher(
-            query, {"child_id": child_id, "parent_id": parent_id}, cols="parent agtype"
+            query,
+            {
+                "child_id": child_id,
+                "parent_id": parent_id,
+                "valid_to": recorded,
+                "now": _now_iso(),
+            },
+            cols="parent agtype",
         )
         return bool(rows)
 
@@ -390,7 +438,11 @@ class AGEGraphBackend:
                     self._merge_related(memory.id, related_id)
 
             if memory.parent_id and memory.parent_id != memory.id:
-                self._merge_supersedes(memory.id, memory.parent_id)
+                # Supersession CLOSES the parent's validity: the parent edge's
+                # valid_to is set to this (superseding) memory's recorded instant.
+                self._merge_supersedes(
+                    memory.id, memory.parent_id, child_recorded_at=memory.created_at
+                )
 
             for entity in self._entities_for(memory):
                 self._merge_edge_to_named(memory.id, "Entity", "name", entity, "MENTIONS")
@@ -564,6 +616,104 @@ class AGEGraphBackend:
             query, {"id": memory_id}, cols="id agtype, title agtype, layer agtype, depth agtype"
         )
         return self._rows_to_dicts(rows, ["id", "title", "layer", "depth"])
+
+    # ─────────────────────────────────────────────────────────
+    # Bitemporal / point-in-time reads (ep-bitemporal-kg)
+    # ─────────────────────────────────────────────────────────
+
+    def _superseded_ids_as_of(self, ts: str) -> set[str]:
+        """IDs of memories whose validity was already CLOSED as of ``ts``.
+
+        A memory is superseded-as-of-``ts`` iff it has an incoming
+        ``SUPERSEDES`` edge whose ``valid_to`` is non-null and ``<= ts``.
+        (Timestamps are fixed-width UTC ISO strings, so the ``<=`` compares
+        chronologically.) Split out from :meth:`currently_valid_memories` and
+        done as a separate query — rather than an ``EXISTS {}`` subquery or a
+        ``WHERE`` on an ``OPTIONAL MATCH`` — because AGE 1.x's Cypher subset
+        does not reliably support either construct.
+        """
+        if self.graph is None:
+            return set()
+        rows = self._cypher(
+            "MATCH (:Memory)-[e:SUPERSEDES]->(p:Memory) "
+            "WHERE e.valid_to IS NOT NULL AND e.valid_to <= $ts "
+            "RETURN DISTINCT p.id",
+            {"ts": ts},
+            cols="id agtype",
+        )
+        out: set[str] = set()
+        for row in rows:
+            pid = self._agtype(row[0])
+            if pid:
+                out.add(pid)
+        return out
+
+    def currently_valid_memories(
+        self, as_of: str | None = None, limit: int = 200
+    ) -> list[dict]:
+        """Memories that are the currently-valid fact as of ``as_of`` (default now).
+
+        A memory is valid at time ``T`` iff:
+
+        * it has come into being — its ``created_at`` is null or ``<= T``; and
+        * it has NOT been superseded as of ``T`` — no incoming ``SUPERSEDES``
+          edge carries a ``valid_to <= T``.
+
+        Because a superseding memory CLOSES its parent's validity (the parent's
+        incoming SUPERSEDES edge gets ``valid_to = child.created_at``), the
+        superseded parent drops out of this current view while remaining in the
+        graph for history and lineage traversal. Passing an ``as_of`` in the
+        past returns the *then*-valid set: before a supersession the parent is
+        still valid and the (not-yet-created) child is excluded.
+
+        Args:
+            as_of: ISO-8601 UTC timestamp to evaluate validity at. ``None``
+                (default) means "now" — the currently-valid set.
+            limit: Maximum candidate memories to scan/return.
+
+        Returns:
+            list[dict]: Valid memory stubs (``id``, ``title``, ``layer``,
+                ``created_at``), superseded ones excluded.
+        """
+        if self.graph is None:
+            return []
+        ts = as_of or _now_iso()
+        superseded = self._superseded_ids_as_of(ts)
+        rows = self._cypher(
+            "MATCH (m:Memory) "
+            "WHERE m.created_at IS NULL OR m.created_at <= $ts "
+            "RETURN m.id, m.title, m.layer, m.created_at "
+            "LIMIT $limit",
+            {"ts": ts, "limit": int(limit)},
+            cols="id agtype, title agtype, layer agtype, created_at agtype",
+        )
+        out: list[dict] = []
+        for row in self._rows_to_dicts(rows, ["id", "title", "layer", "created_at"]):
+            if row["id"] in superseded:
+                continue
+            out.append(row)
+        return out
+
+    def is_currently_valid(self, memory_id: str, as_of: str | None = None) -> bool:
+        """Whether ``memory_id`` is a currently-valid (non-superseded) fact.
+
+        Convenience over :meth:`currently_valid_memories`: returns True iff the
+        memory exists, has come into being by ``as_of`` (default now), and has
+        not been superseded as of that time.
+        """
+        if self.graph is None:
+            return False
+        ts = as_of or _now_iso()
+        if memory_id in self._superseded_ids_as_of(ts):
+            return False
+        rows = self._cypher(
+            "MATCH (m:Memory {id: $id}) "
+            "WHERE m.created_at IS NULL OR m.created_at <= $ts "
+            "RETURN m.id",
+            {"id": memory_id, "ts": ts},
+            cols="id agtype",
+        )
+        return bool(rows)
 
     def search_by_tags(self, tags: list[str], limit: int = 20) -> list[dict]:
         """Find memories sharing any of the given tags (OR logic).

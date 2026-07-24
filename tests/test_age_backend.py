@@ -565,6 +565,106 @@ class TestLineage:
 
 
 @requires_skmem_pg
+class TestBitemporalSupersession:
+    """Supersession closes the prior memory's validity (card 1ecb519d).
+
+    When a child memory supersedes a parent (``parent_id`` set), indexing the
+    child must CLOSE the parent's validity interval by stamping the parent's
+    incoming SUPERSEDES edge with ``valid_to = child.created_at``. Thereafter:
+
+    * the currently-valid view returns the child, not the superseded parent;
+    * an ``as_of`` query *before* the supersession returns the parent (the
+      then-current fact) and excludes the not-yet-created child;
+    * the parent is retained in the graph (history / lineage), never orphaned.
+
+    The throwaway graph is shared across the session and other tests add their
+    own memories, so every assertion here is scoped to THIS test's unique ids
+    (membership checks), never the exact contents of the whole current view.
+    """
+
+    # Fixed, well-separated instants so the "before" query sits strictly
+    # between the parent's and child's creation. UTC ISO, matching the model.
+    PARENT_AT = "2020-01-01T00:00:00+00:00"
+    BEFORE_AT = "2021-01-01T00:00:00+00:00"
+    CHILD_AT = "2022-01-01T00:00:00+00:00"
+
+    def _pair(self, backend):
+        parent = make_memory(title="Old Fact")
+        parent.created_at = self.PARENT_AT
+        backend.index_memory(parent)
+
+        child = make_memory(title="New Fact", parent_id=parent.id)
+        child.created_at = self.CHILD_AT
+        backend.index_memory(child)
+        return parent, child
+
+    def test_supersession_stamps_valid_to_on_parent_edge(self, backend):
+        """The SUPERSEDES edge to the parent carries valid_to = child.created_at
+        (plus a valid_from and a recorded_at)."""
+        parent, child = self._pair(backend)
+        rows = backend._cypher(
+            "MATCH (c:Memory {id: $cid})-[e:SUPERSEDES]->(p:Memory {id: $pid}) "
+            "RETURN e.valid_from, e.valid_to, e.recorded_at",
+            {"cid": child.id, "pid": parent.id},
+            cols="valid_from agtype, valid_to agtype, recorded_at agtype",
+        )
+        assert rows, "SUPERSEDES edge should exist"
+        parsed = backend._rows_to_dicts(rows, ["valid_from", "valid_to", "recorded_at"])[0]
+        assert parsed["valid_to"] == self.CHILD_AT
+        assert parsed["valid_from"] == self.PARENT_AT
+        assert parsed["recorded_at"]  # transaction time stamped (non-null)
+
+    def test_currently_valid_returns_child_not_parent(self, backend):
+        parent, child = self._pair(backend)
+        current_ids = {r["id"] for r in backend.currently_valid_memories()}
+        assert child.id in current_ids
+        assert parent.id not in current_ids
+        assert backend.is_currently_valid(child.id) is True
+        assert backend.is_currently_valid(parent.id) is False
+
+    def test_as_of_before_supersession_returns_parent_not_child(self, backend):
+        parent, child = self._pair(backend)
+        then_ids = {r["id"] for r in backend.currently_valid_memories(as_of=self.BEFORE_AT)}
+        # Before the supersession the parent was the current fact...
+        assert parent.id in then_ids
+        # ...and the superseding child did not yet exist.
+        assert child.id not in then_ids
+        assert backend.is_currently_valid(parent.id, as_of=self.BEFORE_AT) is True
+        assert backend.is_currently_valid(child.id, as_of=self.BEFORE_AT) is False
+
+    def test_superseded_parent_retained_in_history(self, backend):
+        """Closing validity must NOT delete the parent — it stays queryable for
+        lineage / history even though it dropped out of the current view."""
+        parent, child = self._pair(backend)
+        assert backend.get(parent.id) is not None
+        lineage_ids = {entry["id"] for entry in backend.get_lineage(child.id)}
+        assert parent.id in lineage_ids
+
+    def test_supersession_reindex_is_idempotent(self, backend):
+        """Re-indexing the superseding child keeps valid_to stable (derived from
+        the child's created_at, not wall-clock now) and does not flip the
+        current view."""
+        parent, child = self._pair(backend)
+        backend.index_memory(child)  # re-index
+        rows = backend._cypher(
+            "MATCH (c:Memory {id: $cid})-[e:SUPERSEDES]->(p:Memory {id: $pid}) "
+            "RETURN e.valid_to",
+            {"cid": child.id, "pid": parent.id},
+            cols="valid_to agtype",
+        )
+        assert backend._agtype(rows[0][0]) == self.CHILD_AT
+        current_ids = {r["id"] for r in backend.currently_valid_memories()}
+        assert child.id in current_ids and parent.id not in current_ids
+
+    def test_unsuperseded_memory_is_currently_valid(self, backend):
+        """A memory with no incoming SUPERSEDES edge is currently valid."""
+        mem = make_memory(title="Standalone Current")
+        backend.index_memory(mem)
+        assert backend.is_currently_valid(mem.id) is True
+        assert mem.id in {r["id"] for r in backend.currently_valid_memories()}
+
+
+@requires_skmem_pg
 class TestSearch:
     def test_search_by_tags_or_logic(self, backend):
         tag_a = f"tagA-{uuid.uuid4().hex[:8]}"
