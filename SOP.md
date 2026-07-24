@@ -164,6 +164,31 @@ Library release (PyPI + npm):
 Service deploy (per-agent sync): `skmemory-sync@<agent>.timer` (systemd, in
 `systemd/`) keeps SQLite ⇄ flat files ⇄ vector in lockstep.
 
+### Node operations (vendored ops scripts)
+
+The three scripts that keep a skmemory node alive are vendored in-repo (coord
+`ce559215`) so any node is rebuildable from source. Previously they lived only on
+`.158` outside any git repo, so losing that host destroyed the only copy. All
+host-specifics (agent, DSN, container, backup dir, embed URL, alert lib) are
+env-parametrized; the defaults reproduce the original `.158` behavior. Install as
+daily cron entries / systemd timers per node, per agent. Full env contract, secrets
+note, and an example crontab live in
+[`deploy/ops/README.md`](./deploy/ops/README.md).
+
+| Script | Purpose | Env contract (key vars) | Schedule |
+|---|---|---|---|
+| [`deploy/skmem-pg/skmem_reconcile.py`](./deploy/skmem-pg/skmem_reconcile.py) (in-package `skmemory/reconcile.py`) | Idempotent flat↔pg reconcile: backfill missing memories (embed + upsert), prune pg rows whose flat file is gone, re-embed NULL-vector rows. Rebuilds the derived `memories` cache from the Syncthing-synced flat JSON source of truth. Invariant covered by `tests/test_reconcile_invariant.py`. | `SKAGENT`/argv[1] (`lumina`), `EMBED_URL` (mxbai on .100), `EMBED_MODEL` (`mxbai-embed-large`) | daily |
+| [`deploy/ops/skmem-pg-backup.sh`](./deploy/ops/skmem-pg-backup.sh) | Daily `pg_dump -Fc` of the node-local skmem-pg container to the agent's `backups/` dir; retains the newest N. Fast-recovery path (seconds vs full re-embed) complementing the rebuild-from-source guarantee. | `SKAGENT` (`lumina`), `SKMEM_BACKUP_DIR`, `SKMEM_PG_CONTAINER` (`skmem-pg`), `SKMEM_PG_USER` (`postgres`), `SKMEM_PG_DB` (`skmemory`), `SKMEM_BACKUP_RETAIN` (`14`) | daily |
+| [`deploy/ops/skmem-health.sh`](./deploy/ops/skmem-health.sh) | Deterministic full-stack health probe (flat writes, SQLite index + functional query, skmem-pg reachability + functional vector/hybrid retrieval, backups lineage, skwhisper). Prints a `[PASS]/[WARN]/[FAIL]` digest, archives a dated report under `logs/skmem-health/`, persists run-over-run state, and fires `sk_alert` (deduped, 6h TTL) on WARN/FAIL. No LLM decides "healthy". | `SKAGENT` (`lumina`), `SKMEMORY_HEALTH_DSN` (node-local `localhost:5432`), `SKMEM_EMBED_URL`, `SKMEM_EMBED_MODEL`, `SKMEM_BACKUP_ROOT`, `SKALERT_LIB` (optional) | daily |
+
+**Secrets note.** No secret values are committed. The one credential-shaped default,
+`postgresql://postgres:skmemory@localhost:5432/skmemory`, is the node-local skmem-pg
+dev password already used throughout the repo (see `tests/test_reconcile_invariant.py`,
+`skmemory/backends/*`); it is not a production secret. Override it per node with
+`SKMEMORY_HEALTH_DSN`. See [`deploy/skmem-pg/README.md`](./deploy/skmem-pg/README.md)
+for the skmem-pg image build (schema + extensions) and
+[SECURITY.md](./SECURITY.md) for the secret-handling rules.
+
 ### Front-end / Exposure
 
 Per [sk-standards `UNIFIED_INGRESS_STANDARD.md`](https://github.com/smilinTux/sk-standards/blob/main/standards/UNIFIED_INGRESS_STANDARD.md):

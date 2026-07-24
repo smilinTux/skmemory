@@ -6,6 +6,50 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`deploy/ops/` production ops scripts (coord `ce559215`).** Vendored the two
+  scripts that keep a skmemory node alive but previously lived only on `.158`
+  outside any repo (`~/.skcapstone/scripts/`, `~/.hermes/scripts/`), so losing that
+  host destroyed the only copy. Both are fully env-parametrized; the defaults
+  reproduce the original `.158` behavior so each runs unchanged there.
+  - `skmem-pg-backup.sh` - daily `pg_dump -Fc` of the node-local skmem-pg container
+    to the agent's `backups/` dir, retaining the newest N (default 14,
+    `SKMEM_BACKUP_RETAIN`). skmem-pg is a rebuildable derived cache, so the dump is a
+    fast-recovery path (seconds vs a full re-embed), not the system of record.
+  - `skmem-health.sh` - deterministic full-stack health probe (flat-file writes,
+    SQLite index freshness + WAL, skmem-pg reachability + functional vector/hybrid
+    retrieval, backups lineage, skwhisper ingestion). Emits a
+    `[PASS]/[WARN]/[FAIL]` digest to stdout, archives a dated report under
+    `logs/skmem-health/`, persists run-over-run state, and fires `sk_alert`
+    (deduped, 6h TTL) on WARN/FAIL when the optional alert lib is present. No LLM
+    decides "healthy".
+  - `deploy/ops/README.md` - purpose, per-script env contract, secrets note, and an
+    example daily crontab; cross-links `deploy/skmem-pg/` reconcile tooling.
+
+### Changed
+
+- **License metadata made consistent (`__license__` AGPL -> GPL-3.0-or-later,
+  coord `cd1ae924`).** `skmemory/__init__.py` was the lone outlier declaring
+  AGPL-3.0 while `LICENSE` (GNU GPL v3), `pyproject.toml`
+  (`license = {text = "GPL-3.0-or-later"}` + GPLv3+ classifier), and the README
+  badge/footer all say GPL. `LICENSE` is the source of truth; corrected the outlier
+  so every declaration agrees. No relicensing - metadata only.
+- **ruff `check` + `format` now clean across `skmemory/` + `tests/` (coord
+  `296da789`).** The CI lint job was red: 151 lint errors and 73 files needing
+  formatting. Auto-fixed the safe import/annotation modernizations (I001/UP/F401)
+  and applied the remaining SIM/B905/UP031/E402/E741/F821 fixes by hand, then ran
+  `ruff format`. Both `ruff check` and `ruff format --check` now exit 0, so the CI
+  lint gate is green. Changes are whitespace/style + safe refactors; no runtime
+  semantics changed.
+
+### Fixed
+
+- **Duplicate test-method shadow (`test_proud`).** The ruff sweep surfaced a real
+  F811 bug: `tests/test_extractor.py` defined `test_proud` twice, so the second
+  definition silently shadowed the first and one assertion never ran. Renamed the
+  duplicate to `test_proud_circle` so both tests execute.
+
 ## [0.11.3] - 2026-07-12
 
 ### [CHANGED] skmem-pg is local-per-node rebuild-from-source, not replicated-central (prb-6f069c5e)
