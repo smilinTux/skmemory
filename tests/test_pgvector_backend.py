@@ -141,6 +141,97 @@ def test_remove_true_when_only_children_deleted(monkeypatch):
     assert be.remove("parent-only") is True
 
 
+# --- Card 41ec2201: pin + verify embedding model identity across endpoints ------
+#
+# Fleet standard is mxbai-embed-large (1024-dim) everywhere. If an endpoint silently
+# serves a DIFFERENT model, or a redeploy swaps it, the returned vectors become
+# incompatible with the stored ones and recall corrupts with NO error. The backend
+# now verifies the embedding's dimension (and the served model name when reported)
+# on every embed, raising EmbeddingModelMismatch instead of poisoning the store.
+
+
+def _backend_with_embed_fn(monkeypatch, embed_fn, **kwargs):
+    mod = _reload_backend(monkeypatch, None)
+    be = mod.PGVectorBackend(agent="lumina", embed_fn=embed_fn, **kwargs)
+    return mod, be
+
+
+def test_matching_dimension_passes(monkeypatch):
+    """A vector whose length equals the pinned vector_dim is returned unchanged."""
+    vec = [0.1] * 1024
+    _mod, be = _backend_with_embed_fn(monkeypatch, lambda _t: list(vec))
+    assert be._embed("hello") == vec
+
+
+def test_mismatched_dimension_raises(monkeypatch):
+    """A wrong-dimension vector (e.g. a swapped 384-dim model) fails loudly."""
+    mod, be = _backend_with_embed_fn(monkeypatch, lambda _t: [0.1] * 384)
+    with pytest.raises(mod.EmbeddingModelMismatch) as exc:
+        be._embed("hello")
+    msg = str(exc.value)
+    assert "1024" in msg and "384" in msg  # names expected-vs-actual dimension
+
+
+def test_save_fails_loudly_on_dimension_mismatch(monkeypatch):
+    """The mismatch surfaces at write time (save) BEFORE any row is stored,
+    so a swapped model can never silently poison the store."""
+    from skmemory.models import Memory
+
+    mod, be = _backend_with_embed_fn(monkeypatch, lambda _t: [0.1] * 512)
+    mem = Memory(title="t", content="c")
+    with pytest.raises(mod.EmbeddingModelMismatch):
+        be.save(mem)  # raises in _embed, before _connection() is touched
+
+
+def test_empty_vector_passes_through(monkeypatch):
+    """An empty vector means the embed call failed upstream; that stays a graceful
+    [] (handled elsewhere), it must NOT be turned into a mismatch error."""
+    _mod, be = _backend_with_embed_fn(monkeypatch, lambda _t: [])
+    assert be._embed("hello") == []
+
+
+def test_verify_can_be_disabled(monkeypatch):
+    """SKMEMORY_EMBED_VERIFY=0 / verify_embedding=False is an ops escape hatch:
+    a mismatched vector is returned unchecked."""
+    _mod, be = _backend_with_embed_fn(
+        monkeypatch, lambda _t: [0.1] * 384, verify_embedding=False
+    )
+    assert be._embed("hello") == [0.1] * 384
+
+
+def test_model_name_mismatch_raises(monkeypatch):
+    """When the endpoint reports serving a genuinely different model, raise even if
+    the dimension happens to match."""
+    mod = _reload_backend(monkeypatch, None)
+    be = mod.PGVectorBackend(agent="lumina", embed_model="mxbai-embed-large")
+    with pytest.raises(mod.EmbeddingModelMismatch) as exc:
+        be._verify_embedding([0.1] * 1024, served_model="nomic-embed-text")
+    assert "nomic-embed-text" in str(exc.value)
+
+
+def test_model_name_tolerant_match(monkeypatch):
+    """Ollama tags, org prefixes, and version suffixes for the SAME model must not
+    trip the guard (mxbai-embed-large ~ mxbai-embed-large:latest ~
+    mixedbread-ai/mxbai-embed-large-v1)."""
+    mod = _reload_backend(monkeypatch, None)
+    be = mod.PGVectorBackend(agent="lumina", embed_model="mxbai-embed-large")
+    for served in (
+        "mxbai-embed-large",
+        "mxbai-embed-large:latest",
+        "mixedbread-ai/mxbai-embed-large-v1",
+    ):
+        assert be._verify_embedding([0.1] * 1024, served_model=served) == [0.1] * 1024
+
+
+def test_env_disables_verification(monkeypatch):
+    """The module-level default honors SKMEMORY_EMBED_VERIFY at import time."""
+    monkeypatch.setenv("SKMEMORY_EMBED_VERIFY", "0")
+    mod = _reload_backend(monkeypatch, None)
+    assert mod.DEFAULT_EMBED_VERIFY is False
+    be = mod.PGVectorBackend(agent="lumina", embed_fn=lambda _t: [0.1] * 384)
+    assert be._embed("hello") == [0.1] * 384
+
+
 # Restore a clean module state for any later test in the session.
 @pytest.fixture(autouse=True, scope="module")
 def _restore_module():

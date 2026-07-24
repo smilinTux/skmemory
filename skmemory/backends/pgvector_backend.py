@@ -47,6 +47,56 @@ DEFAULT_EMBED_URL = os.environ.get("SKMEMORY_EMBED_URL", "http://localhost:11434
 DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")
 VECTOR_DIM = 1024
 
+# Fleet standard is mxbai-embed-large everywhere. If an endpoint silently serves a
+# DIFFERENT model (or a redeploy swaps it), stored vectors become incompatible with
+# query vectors and recall is corrupted with no error. We pin the expected model +
+# dimension and verify each embedding at runtime so a mismatch fails LOUDLY instead
+# of silently poisoning the store. Ops escape hatch: SKMEMORY_EMBED_VERIFY=0.
+DEFAULT_EMBED_VERIFY = os.environ.get("SKMEMORY_EMBED_VERIFY", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+
+
+class EmbeddingModelMismatch(RuntimeError):
+    """Raised when the embedding endpoint's output does not match the pinned model.
+
+    Signals that the served model identity (vector dimension and/or model name)
+    diverged from what was configured, so writing the returned vector would poison
+    the store. Failing here is deliberate: a loud error beats silent corruption.
+    """
+
+
+def _normalize_model_name(name: str) -> str:
+    """Reduce a model id to a comparable base name.
+
+    Strips an Ollama tag (``mxbai-embed-large:latest`` -> ``mxbai-embed-large``)
+    and any org/path prefix (``mixedbread-ai/mxbai-embed-large-v1`` ->
+    ``mxbai-embed-large-v1``), lowercased. Used for tolerant identity matching.
+    """
+    base = (name or "").strip().lower()
+    base = base.split(":", 1)[0]  # drop Ollama tag
+    base = base.rsplit("/", 1)[-1]  # drop org/path prefix
+    return base
+
+
+def _model_names_match(expected: str, actual: str) -> bool:
+    """True when two model ids plausibly name the same model.
+
+    Tolerant of tags, org prefixes, and version suffixes (``mxbai-embed-large``
+    vs ``mxbai-embed-large-v1``) by treating the shorter normalized name being a
+    substring of the longer as a match. A genuinely different model
+    (``nomic-embed-text``) is not contained and so is rejected.
+    """
+    exp = _normalize_model_name(expected)
+    act = _normalize_model_name(actual)
+    if not exp or not act:
+        return True  # nothing to compare against -> do not block
+    short, long = (exp, act) if len(exp) <= len(act) else (act, exp)
+    return short in long
+
 
 class PGVectorBackend(BaseBackend):
     """Postgres + pgvector storage with hybrid (vector + BM25) search."""
@@ -59,11 +109,15 @@ class PGVectorBackend(BaseBackend):
         embed_model: str = DEFAULT_EMBED_MODEL,
         vector_dim: int = VECTOR_DIM,
         agent: str | None = None,
+        verify_embedding: bool = DEFAULT_EMBED_VERIFY,
     ):
         self.dsn = dsn
         self.embed_url = embed_url
         self.embed_model = embed_model
         self.vector_dim = vector_dim
+        # Pin + verify the embedding model identity (dimension, and model name when
+        # the endpoint reports it) on every embed. Off via SKMEMORY_EMBED_VERIFY=0.
+        self.verify_embedding = verify_embedding
         # Agent isolation: one pg shared across agents, scoped by this column.
         self.agent = (
             agent
@@ -85,10 +139,37 @@ class PGVectorBackend(BaseBackend):
             register_vector(self._conn)
         return self._conn
 
+    def _verify_embedding(self, vec: list[float], served_model: str | None = None) -> list[float]:
+        """Verify a vector matches the pinned model identity, else raise.
+
+        An empty vector means the embed call failed upstream; that is handled
+        gracefully elsewhere (returns []), so we pass it through unchecked. A
+        non-empty vector whose dimension differs from the pinned ``vector_dim``,
+        or a ``served_model`` name that names a different model, raises
+        ``EmbeddingModelMismatch`` naming expected-vs-actual.
+        """
+        if not self.verify_embedding or not vec:
+            return vec
+        if len(vec) != self.vector_dim:
+            raise EmbeddingModelMismatch(
+                "embedding dimension mismatch: expected "
+                f"{self.vector_dim} (model {self.embed_model!r}) but endpoint "
+                f"{self.embed_url!r} returned {len(vec)}. The served embedding model "
+                "does not match the pinned one; refusing to store an incompatible "
+                "vector. Set SKMEMORY_EMBED_VERIFY=0 to override."
+            )
+        if served_model and not _model_names_match(self.embed_model, served_model):
+            raise EmbeddingModelMismatch(
+                f"embedding model mismatch: expected {self.embed_model!r} but endpoint "
+                f"{self.embed_url!r} reported serving {served_model!r}. Refusing to store "
+                "a vector from an unexpected model. Set SKMEMORY_EMBED_VERIFY=0 to override."
+            )
+        return vec
+
     def _embed(self, text: str) -> list[float]:
         """Embed text. Uses injected embed_fn, else the remote HTTP endpoint."""
         if self._embed_fn is not None:
-            return self._embed_fn(text)
+            return self._verify_embedding(self._embed_fn(text))
         import httpx
 
         # mxbai-embed-large caps at 512 tokens and this Ollama build 400s on overflow
@@ -105,13 +186,16 @@ class PGVectorBackend(BaseBackend):
                 )
                 r.raise_for_status()
                 data = r.json()
+                # Ollama and OpenAI-compatible endpoints echo the served model name;
+                # verify it (and the dimension) so a swapped model fails loudly.
+                served_model = data.get("model") if isinstance(data, dict) else None
                 # Ollama: {"embeddings": [[...]]} | OpenAI: {"data":[{"embedding":[...]}]}
                 if "embeddings" in data:
-                    return data["embeddings"][0]
+                    return self._verify_embedding(data["embeddings"][0], served_model)
                 if "data" in data:
-                    return data["data"][0]["embedding"]
+                    return self._verify_embedding(data["data"][0]["embedding"], served_model)
                 if "embedding" in data:
-                    return data["embedding"]
+                    return self._verify_embedding(data["embedding"], served_model)
                 return []
             except httpx.HTTPStatusError as e:
                 # 400 == over context window: shrink and retry, else give up.
@@ -120,6 +204,10 @@ class PGVectorBackend(BaseBackend):
                     continue
                 logger.warning("embed failed (%s): %s", self.embed_url, e)
                 return []
+            except EmbeddingModelMismatch:
+                # A pinned-model mismatch is not a transient embed failure: it must
+                # surface loudly, not be swallowed into an empty vector.
+                raise
             except Exception as e:  # noqa: BLE001
                 logger.warning("embed failed (%s): %s", self.embed_url, e)
                 return []
