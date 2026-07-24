@@ -243,3 +243,40 @@ class TestSKGraphBackendMethods:
         """search_by_tags returns empty list for empty tag list."""
         fake = FakeSKGraphBackend()
         assert fake.search_by_tags([]) == []
+
+
+class TestForgetAGEGraphIntegration:
+    """Gap B (card dc8280a7): when the AGE graph is wired into the graph role,
+    forget() must cascade the DETACH DELETE to it, and an unavailable AGE graph
+    must degrade gracefully (forget still succeeds for the other stores)."""
+
+    def test_forget_invokes_age_remove_memory(self, tmp_path: Path) -> None:
+        """With an AGEGraphBackend wired as the graph role, forget() calls its
+        remove_memory (the DETACH DELETE) with the memory id."""
+        from skmemory.backends.age_backend import AGEGraphBackend
+
+        age = MagicMock(spec=AGEGraphBackend)
+        age.remove_memory.return_value = True
+        backend = FileBackend(base_path=str(tmp_path / "memories"))
+        store = MemoryStore(primary=backend, graph=age)
+
+        mem = store.snapshot(title="AGE forget", content="delete my node")
+        store.forget(mem.id)
+
+        age.remove_memory.assert_called_once_with(mem.id)
+
+    def test_forget_survives_age_unavailable(self, tmp_path: Path) -> None:
+        """An AGE graph that is down (remove_memory returns False, the backend's
+        documented graceful-degrade value) must not break forget()."""
+        from skmemory.backends.age_backend import AGEGraphBackend
+
+        age = MagicMock(spec=AGEGraphBackend)
+        age.remove_memory.return_value = False  # AGE/skmem-pg unreachable
+        backend = FileBackend(base_path=str(tmp_path / "memories"))
+        store = MemoryStore(primary=backend, graph=age)
+
+        mem = store.snapshot(title="AGE down", content="graph unreachable")
+        deleted = store.forget(mem.id)
+
+        assert deleted is True
+        age.remove_memory.assert_called_once_with(mem.id)
