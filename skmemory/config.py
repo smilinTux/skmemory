@@ -77,6 +77,19 @@ class SharedCorpusConfig(BaseModel):
     enabled: bool = True
 
 
+class SKSeedConfig(BaseModel):
+    """Write-time SKSeed truth-check settings (card 9b72c6c2).
+
+    When ``auto_validate`` is enabled, ``MemoryStore.snapshot`` runs the SKSeed
+    collider truth-check on each new memory and annotates it with an advisory
+    ``truth_score`` (plus any contradictions found). Advisory + fail-open: it
+    never blocks a write, and no-ops when the optional ``skseed`` package is
+    absent. Default off, so the standard write path pays no cost.
+    """
+
+    auto_validate: bool = False
+
+
 class SKMemoryConfig(BaseModel):
     """Persistent configuration for SKMemory backends."""
 
@@ -111,6 +124,10 @@ class SKMemoryConfig(BaseModel):
     recall_collections: list[str] = Field(default_factory=list)
     recall_graphs: list[str] = Field(default_factory=list)
     recall_source_roots: dict[str, list[str]] = Field(default_factory=dict)
+
+    # SKSeed write-time truth-check (card 9b72c6c2). Nested so YAML reads as
+    # ``skseed.auto_validate``.
+    skseed: SKSeedConfig = Field(default_factory=SKSeedConfig)
 
     # Multi-endpoint HA support
     skvector_endpoints: list[EndpointConfig] = Field(default_factory=list)
