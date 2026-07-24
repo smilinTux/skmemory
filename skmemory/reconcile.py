@@ -17,12 +17,26 @@ node, for every agent whose flat files that node serves.
 Vendored from `~/skmem-build/skmem_reconcile.py` (the previously out-of-repo
 production engine) so the rebuild path is versioned and testable in-repo.
 
+Prune guardrail (cold-boot safety, card 6b8b3ced): the prune step deletes pg
+rows whose flat file is gone. On a freshly wiped / mid-Syncthing-sync machine
+the flat store can be empty or nearly so *before* it is restored; a naive prune
+then deletes every derived pg row for that agent and reports success. reconcile
+therefore REFUSES a destructive prune when the flat source is empty/below a floor
+or when the prune would remove more than a capped fraction of the current pg rows,
+unless an explicit force override is given. Refusals log loudly and (best effort)
+alert to sk-alert.
+
 Usage:
-    python -m skmemory.reconcile [AGENT]        # default: $SKAGENT or lumina
+    python -m skmemory.reconcile [AGENT] [--force]   # default: $SKAGENT or lumina
 
 Env:
     EMBED_URL    (default http://192.168.0.100:11434/api/embed)
     EMBED_MODEL  (default mxbai-embed-large)
+    SKMEMORY_RECONCILE_PRUNE_FLOOR         (default 1)   flat count must be >= this to prune
+    SKMEMORY_RECONCILE_MAX_PRUNE_FRACTION  (default 0.20) refuse if prune > this fraction of pg
+    SKMEMORY_RECONCILE_PRUNE_MIN_SAMPLE    (default 20)  fraction cap only applies at pg >= this
+    SKMEMORY_RECONCILE_PRUNE_ALERT_ROWS    (default 50)  alert when a prune removes >= this many
+    SKMEMORY_RECONCILE_FORCE               (1 to force prune past the guardrail)
 """
 
 from __future__ import annotations
@@ -43,9 +57,82 @@ DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "mxbai-embed-large")
 # Node-LOCAL psql. No host param: acts only on the box it runs on.
 DEFAULT_PSQL = ["docker", "exec", "-i", "skmem-pg", "psql", "-U", "postgres", "-d", "skmemory"]
 
+# --- prune guardrail defaults (cold-boot / empty-source safety) --------------
+# Minimum flat-source count required before ANY destructive prune is allowed.
+# The default of 1 means an empty flat store (0 files) NEVER prunes -- that is
+# the cold-boot / unrestored-machine case where the flat tree has not synced yet.
+DEFAULT_PRUNE_FLOOR = int(os.environ.get("SKMEMORY_RECONCILE_PRUNE_FLOOR", "1"))
+# Refuse (absent force) if the prune would remove more than this fraction of the
+# current pg rows for the agent. Guards a partial/mid-sync flat store that is
+# non-empty but has lost most of its files.
+DEFAULT_MAX_PRUNE_FRACTION = float(os.environ.get("SKMEMORY_RECONCILE_MAX_PRUNE_FRACTION", "0.20"))
+# The fraction cap only applies once pg holds at least this many rows. Below it a
+# single legitimate delete can trivially exceed any fraction (1 of 3 = 33%), so the
+# fraction heuristic is meaningless on tiny stores; the empty/floor guard still
+# fully protects the true cold-boot wipe (large pg, empty/near-empty flat) at any
+# size, since that is caught by the floor check regardless of sample size.
+DEFAULT_PRUNE_MIN_SAMPLE = int(os.environ.get("SKMEMORY_RECONCILE_PRUNE_MIN_SAMPLE", "20"))
+# Alert (best effort) when an allowed prune removes at least this many rows.
+DEFAULT_PRUNE_ALERT_ROWS = int(os.environ.get("SKMEMORY_RECONCILE_PRUNE_ALERT_ROWS", "50"))
+
 
 def default_agent() -> str:
     return os.environ.get("SKAGENT", "lumina")
+
+
+def prune_guard(
+    flat_count: int,
+    pg_count: int,
+    would_prune: int,
+    *,
+    floor: int = DEFAULT_PRUNE_FLOOR,
+    max_fraction: float = DEFAULT_MAX_PRUNE_FRACTION,
+    min_sample: int = DEFAULT_PRUNE_MIN_SAMPLE,
+    force: bool = False,
+) -> tuple[bool, str]:
+    """Decide whether a destructive prune is safe. Pure; no I/O.
+
+    Returns ``(allowed, reason)``. A prune is REFUSED (``allowed=False``) when,
+    absent ``force``, the flat source looks empty/unrestored (``flat_count <
+    floor``) or -- once pg holds at least ``min_sample`` rows -- the prune would
+    remove more than ``max_fraction`` of the current pg rows. This is the
+    cold-boot / mid-Syncthing-sync guardrail: a wiped or half-synced flat tree
+    must never wipe the derived pg index. The fraction cap is skipped on tiny
+    stores (``pg_count < min_sample``) where a single legitimate delete would
+    trivially exceed any fraction; the floor check still guards the true
+    cold-boot wipe (large pg + empty flat) at any size.
+    """
+    if would_prune <= 0:
+        return True, "noop (nothing to prune)"
+    if force:
+        return True, f"force override (would prune {would_prune}/{pg_count})"
+    if flat_count < floor:
+        return False, (
+            f"flat source count {flat_count} < floor {floor}: empty/unrestored flat "
+            f"store, refusing destructive prune of {would_prune}/{pg_count} pg rows "
+            "(cold-boot guard; set SKMEMORY_RECONCILE_FORCE=1 or pass --force to override)"
+        )
+    if pg_count >= min_sample:
+        frac = would_prune / pg_count
+        if frac > max_fraction:
+            return False, (
+                f"prune would remove {would_prune}/{pg_count} rows ({frac:.1%}) > cap "
+                f"{max_fraction:.1%}: refusing (suspected partial/mid-sync flat store; "
+                "set SKMEMORY_RECONCILE_FORCE=1 or pass --force to override)"
+            )
+    return True, f"ok (prune {would_prune}/{pg_count})"
+
+
+def _alert(message: str, *, level: str = "warn", key: str | None = None) -> None:
+    """Best-effort sk-alert. Never raises; a missing/failed alerter is non-fatal."""
+    cmd = ["sk-alert", "-l", level]
+    if key:
+        cmd += ["-k", key]
+    cmd.append(message)
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except Exception:
+        pass
 
 
 def _mem_dir(agent: str) -> str:
@@ -60,6 +147,10 @@ def reconcile(
     embed_model: str | None = None,
     psql_cmd: list[str] | None = None,
     verbose: bool = True,
+    force_prune: bool | None = None,
+    prune_floor: int | None = None,
+    max_prune_fraction: float | None = None,
+    prune_min_sample: int | None = None,
 ) -> dict:
     """Reconcile one agent's flat JSON memories into the node-local skmem-pg.
 
@@ -76,6 +167,14 @@ def reconcile(
     embed_url = embed_url or DEFAULT_EMBED_URL
     embed_model = embed_model or DEFAULT_EMBED_MODEL
     PSQL = list(psql_cmd) if psql_cmd else list(DEFAULT_PSQL)
+    floor = DEFAULT_PRUNE_FLOOR if prune_floor is None else prune_floor
+    max_frac = DEFAULT_MAX_PRUNE_FRACTION if max_prune_fraction is None else max_prune_fraction
+    min_sample = DEFAULT_PRUNE_MIN_SAMPLE if prune_min_sample is None else prune_min_sample
+    force = (
+        os.environ.get("SKMEMORY_RECONCILE_FORCE", "").lower() in ("1", "true", "yes")
+        if force_prune is None
+        else force_prune
+    )
 
     def psql(sql, want=False):
         args = PSQL + (["-tAF\t", "-c", sql] if want else ["-c", sql])
@@ -184,20 +283,56 @@ def reconcile(
         )
         psql("DROP TABLE IF EXISTS memories_bf;")
 
-    # 2. prune orphans (pg rows for this agent with no flat file)
-    psql("DROP TABLE IF EXISTS flat_ids; CREATE TABLE flat_ids (id text primary key);")
-    subprocess.run(
-        PSQL + ["-c", "COPY flat_ids FROM STDIN;"],
-        input="\n".join(flat.keys()),
-        capture_output=True,
-        text=True,
+    # 2. prune orphans (pg rows for this agent with no flat file) -- GUARDED.
+    # would_prune is computed in Python from the already-agent-scoped pg_ids and
+    # flat keys (same set semantics as the SQL DELETE below), so the guardrail can
+    # veto the destructive DELETE before it runs.
+    orphan_ids = pg_ids - set(flat.keys())
+    would_prune = len(orphan_ids)
+    allowed, reason = prune_guard(
+        len(flat),
+        len(pg_ids),
+        would_prune,
+        floor=floor,
+        max_fraction=max_frac,
+        min_sample=min_sample,
+        force=force,
     )
-    pruned = psql(
-        f"WITH d AS (DELETE FROM memories m WHERE m.agent='{agent}' AND NOT EXISTS "
-        "(SELECT 1 FROM flat_ids f WHERE f.id=m.id) RETURNING 1) SELECT count(*) FROM d;",
-        True,
-    ).strip()
-    psql("DROP TABLE IF EXISTS flat_ids;")
+    prune_skipped = not allowed
+    prune_reason = reason
+    if not allowed:
+        log(f"[{agent}] PRUNE REFUSED: {reason}")
+        _alert(
+            f"🚨 skmem-pg reconcile [{agent}] REFUSED prune of {would_prune}/{len(pg_ids)} "
+            f"rows: {reason}",
+            level="crit",
+            key=f"skmem-reconcile-prune-refused-{agent}",
+        )
+        pruned = "0"
+    else:
+        psql("DROP TABLE IF EXISTS flat_ids; CREATE TABLE flat_ids (id text primary key);")
+        subprocess.run(
+            PSQL + ["-c", "COPY flat_ids FROM STDIN;"],
+            input="\n".join(flat.keys()),
+            capture_output=True,
+            text=True,
+        )
+        pruned = psql(
+            f"WITH d AS (DELETE FROM memories m WHERE m.agent='{agent}' AND NOT EXISTS "
+            "(SELECT 1 FROM flat_ids f WHERE f.id=m.id) RETURNING 1) SELECT count(*) FROM d;",
+            True,
+        ).strip()
+        psql("DROP TABLE IF EXISTS flat_ids;")
+        try:
+            if int(pruned) >= DEFAULT_PRUNE_ALERT_ROWS:
+                _alert(
+                    f"⚠️ skmem-pg reconcile [{agent}] pruned {pruned} orphan rows "
+                    f"(flat={len(flat)}, pg={len(pg_ids)})",
+                    level="warn",
+                    key=f"skmem-reconcile-prune-large-{agent}",
+                )
+        except (TypeError, ValueError):
+            pass
 
     # 3. embed any null-vector rows
     nulls = [
@@ -248,6 +383,8 @@ def reconcile(
         "missing": len(missing),
         "backfilled": loaded,
         "pruned": pruned_n,
+        "prune_skipped": prune_skipped,
+        "prune_reason": prune_reason,
         "null_embedded": len(nulls),
         "embedded": embedded,
         "total": total,
@@ -256,8 +393,15 @@ def reconcile(
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    agent = argv[0] if argv else default_agent()
-    reconcile(agent)
+    force = False
+    positional = []
+    for a in argv:
+        if a in ("--force", "-f"):
+            force = True
+        else:
+            positional.append(a)
+    agent = positional[0] if positional else default_agent()
+    reconcile(agent, force_prune=force)
 
 
 if __name__ == "__main__":
