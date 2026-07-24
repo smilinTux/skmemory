@@ -181,6 +181,20 @@ def run_post_install() -> None:
 
     maybe_install_fortress_timer()
 
+    # Optional skcapstone backbone integration (default-on by presence).
+    # Registers the promotion sweep with the fleet scheduler and advertises
+    # skmemory to service discovery. No-op when skcapstone is absent.
+    try:
+        from . import integration
+
+        if integration.ensure_schedule():
+            print("  skcapstone: registered promotion sweep with fleet scheduler")
+            integration.register_self()
+        else:
+            print("  skcapstone: not present — using native scheduler/timer")
+    except Exception as exc:  # never fail install on integration
+        logger.debug("skcapstone integration skipped: %s", exc)
+
     print("skmemory: post-install complete.")
 
 
