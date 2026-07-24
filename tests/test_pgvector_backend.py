@@ -56,6 +56,91 @@ def test_backend_default_dsn_is_local(monkeypatch):
     assert "localhost:5432" in be.dsn
 
 
+# --- Gap A: forget() must delete the pgvector row immediately (card 23a722ca) ---
+#
+# MemoryStore.forget() calls self.vector.remove(memory_id). PGVectorBackend used
+# to expose only delete() (no remove()), so on the default (pgvector) deployment
+# forget() raised AttributeError, which store.py swallowed — the pg row survived
+# until the daily reconcile prune. remove() now cascades the delete like the
+# other vector backends. These run without a live DB by faking the connection.
+
+
+class _FakeCursor:
+    """Records executed SQL and returns a scripted rowcount per execute()."""
+
+    def __init__(self, rowcounts):
+        self._rowcounts = list(rowcounts)
+        self.executed = []
+        self.rowcount = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        self.rowcount = self._rowcounts.pop(0) if self._rowcounts else 0
+
+
+class _FakeConn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.closed = False
+
+    def cursor(self):
+        return self._cursor
+
+
+def _backend_with_cursor(monkeypatch, rowcounts):
+    mod = _reload_backend(monkeypatch, None)
+    be = mod.PGVectorBackend(agent="lumina")
+    cur = _FakeCursor(rowcounts)
+    be._conn = _FakeConn(cur)  # _connection() returns this (not closed) as-is
+    return be, cur
+
+
+def test_pgvector_backend_exposes_remove(monkeypatch):
+    """forget() calls vector.remove(); the pgvector backend must have it.
+
+    Fail-before: PGVectorBackend had no remove() (only delete()), so this
+    attribute was missing and forget() raised AttributeError.
+    """
+    mod = _reload_backend(monkeypatch, None)
+    assert callable(getattr(mod.PGVectorBackend, "remove", None))
+
+
+def test_remove_deletes_row_and_cascades_chunks(monkeypatch):
+    """remove() deletes the memory's own row (scoped id+agent) AND cascades to
+    child/chunk rows via memory_json.parent_id — matching the other backends."""
+    be, cur = _backend_with_cursor(monkeypatch, rowcounts=[1, 2])
+    result = be.remove("mem-123")
+
+    assert result is True
+    # main-row delete: scoped to id + agent
+    assert any(
+        "DELETE FROM memories" in sql and "id=%s" in sql and params == ("mem-123", "lumina")
+        for sql, params in cur.executed
+    ), f"no scoped main-row delete in {cur.executed}"
+    # chunk/child cascade: delete rows whose memory_json.parent_id == id
+    assert any(
+        "parent_id" in sql and params == ("mem-123", "lumina") for sql, params in cur.executed
+    ), f"no parent_id cascade delete in {cur.executed}"
+
+
+def test_remove_returns_false_when_nothing_deleted(monkeypatch):
+    """No matching row and no children -> nothing removed -> False."""
+    be, _cur = _backend_with_cursor(monkeypatch, rowcounts=[0, 0])
+    assert be.remove("ghost") is False
+
+
+def test_remove_true_when_only_children_deleted(monkeypatch):
+    """A child/chunk cascade alone still counts as a removal."""
+    be, _cur = _backend_with_cursor(monkeypatch, rowcounts=[0, 3])
+    assert be.remove("parent-only") is True
+
+
 # Restore a clean module state for any later test in the session.
 @pytest.fixture(autouse=True, scope="module")
 def _restore_module():
