@@ -311,9 +311,7 @@ def score_entanglement_for_feb(
         return 0.0
 
     weight_total = sum(float(v) for v in weights.values())
-    coverage_num = sum(
-        min(float(weights[e]), float(topo.get(e, 0.0))) for e in weights
-    )
+    coverage_num = sum(min(float(weights[e]), float(topo.get(e, 0.0))) for e in weights)
     coverage = coverage_num / weight_total if weight_total > 0 else 0.0
 
     if metric == "coverage":
@@ -398,11 +396,7 @@ def add_resonance_revision(
         raise ValueError(f"Entanglement anchor not found: {anchor_id}")
     res_path = d / "resonance.md"
     ts = datetime.now(timezone.utc).isoformat()
-    entry = (
-        f"\n\n---\n\n"
-        f"## Revision — {ts} — {author}\n\n"
-        f"{note.strip()}\n"
-    )
+    entry = f"\n\n---\n\n## Revision — {ts} — {author}\n\n{note.strip()}\n"
     if res_path.exists():
         with open(res_path, "a", encoding="utf-8") as f:
             f.write(entry)

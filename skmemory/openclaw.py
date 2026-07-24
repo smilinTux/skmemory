@@ -72,8 +72,8 @@ class SKMemoryPlugin:
         # Prefer ChromaDB (local, embedded) by default
         if vector is None and use_chroma:
             try:
-                from .backends.chroma_backend import SKChromaBackend
                 from .agents import get_agent_paths
+                from .backends.chroma_backend import SKChromaBackend
 
                 agent_paths = get_agent_paths()
                 memory_root = agent_paths["base"] / "memory"

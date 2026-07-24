@@ -164,7 +164,9 @@ class TestSearch:
 
     def test_create_task_pack_links_related_memories(self, store: MemoryStore) -> None:
         """Task packs store linked memories and pack metadata."""
-        mem = store.snapshot(title="Default judgment note", content="Vacate service defects and check hearing date.")
+        mem = store.snapshot(
+            title="Default judgment note", content="Vacate service defects and check hearing date."
+        )
         pack = store.create_task_pack("Judgment defense", query="default judgment", limit=3)
 
         assert "task_pack" in pack.metadata

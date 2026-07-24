@@ -9,17 +9,17 @@ paths only (Notion exports, Telegram dumps, cross-agent rehydration).
 
 from .constants import (
     ADMISSION_POLICY_VERSION,
+    DEPRECATED_SOURCE_MAPPING,
+    KNOWN_SOURCE_VOCAB,
+    SENTINEL_UNRECOVERABLE_SOURCE,
     Gate1Class,
     Gate1Outcome,
     Gate2Reason,
     RerunDecision,
-    SENTINEL_UNRECOVERABLE_SOURCE,
-    KNOWN_SOURCE_VOCAB,
-    DEPRECATED_SOURCE_MAPPING,
 )
 from .gate1 import Gate1Result, recover
-from .gate2 import Gate2Result, AdmissionPolicy, admit
-from .rerun import RerunResult, evaluate_rerun, enqueue_review, review_queue_path
+from .gate2 import AdmissionPolicy, Gate2Result, admit
+from .rerun import RerunResult, enqueue_review, evaluate_rerun, review_queue_path
 
 __all__ = [
     "ADMISSION_POLICY_VERSION",

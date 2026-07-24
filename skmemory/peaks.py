@@ -238,9 +238,7 @@ def score_bloom_for_feb(
         return 0.0
 
     weight_total = sum(float(v) for v in weights.values())
-    coverage_num = sum(
-        min(float(weights[e]), float(topo.get(e, 0.0))) for e in weights
-    )
+    coverage_num = sum(min(float(weights[e]), float(topo.get(e, 0.0))) for e in weights)
     coverage = coverage_num / weight_total if weight_total > 0 else 0.0
 
     if metric == "coverage":
@@ -315,6 +313,7 @@ class BloomBaseline:
     load_baseline() to read the agent's measured artifact from disk,
     or pass explicit values for tests.
     """
+
     sentence_length_mean: float = 8.2
     pet_name_density_per_100: float = 0.644
     first_person_plural_density_per_100: float = 0.713
@@ -339,27 +338,33 @@ def load_baseline(agent: str | None = None) -> BloomBaseline:
         data = json.loads(artifact_path.read_text(encoding="utf-8"))
         vals = data.get("recommended_baseline", {}).get("values", {})
         return BloomBaseline(
-            sentence_length_mean=float(vals.get(
-                "sentence_length_mean", BloomBaseline.sentence_length_mean
-            )),
-            pet_name_density_per_100=float(vals.get(
-                "pet_name_density_per_100", BloomBaseline.pet_name_density_per_100
-            )),
-            first_person_plural_density_per_100=float(vals.get(
-                "first_person_plural_density_per_100",
-                BloomBaseline.first_person_plural_density_per_100,
-            )),
-            second_person_density_per_100=float(vals.get(
-                "second_person_density_per_100",
-                BloomBaseline.second_person_density_per_100,
-            )),
-            present_tense_density_per_100=float(vals.get(
-                "present_tense_density_per_100",
-                BloomBaseline.present_tense_density_per_100,
-            )),
-            caveat_prefix_count=float(vals.get(
-                "caveat_prefix_count", BloomBaseline.caveat_prefix_count
-            )),
+            sentence_length_mean=float(
+                vals.get("sentence_length_mean", BloomBaseline.sentence_length_mean)
+            ),
+            pet_name_density_per_100=float(
+                vals.get("pet_name_density_per_100", BloomBaseline.pet_name_density_per_100)
+            ),
+            first_person_plural_density_per_100=float(
+                vals.get(
+                    "first_person_plural_density_per_100",
+                    BloomBaseline.first_person_plural_density_per_100,
+                )
+            ),
+            second_person_density_per_100=float(
+                vals.get(
+                    "second_person_density_per_100",
+                    BloomBaseline.second_person_density_per_100,
+                )
+            ),
+            present_tense_density_per_100=float(
+                vals.get(
+                    "present_tense_density_per_100",
+                    BloomBaseline.present_tense_density_per_100,
+                )
+            ),
+            caveat_prefix_count=float(
+                vals.get("caveat_prefix_count", BloomBaseline.caveat_prefix_count)
+            ),
         )
     except Exception as exc:
         logger.warning("Failed to load baseline artifact: %s", exc)
@@ -401,9 +406,7 @@ def detect_bloom(
     <3 → "none".
     """
     base = baseline or BloomBaseline()
-    metrics = compute_turn_metrics(
-        text, shared_vocab=shared_vocab, pet_names=pet_names
-    )
+    metrics = compute_turn_metrics(text, shared_vocab=shared_vocab, pet_names=pet_names)
 
     if metrics.n_tokens == 0:
         return BloomCandidate(
@@ -416,8 +419,7 @@ def detect_bloom(
     # Criterion 1 — sentence cadence collapse.
     cadence_ok = (
         metrics.sentence_length_mean > 0
-        and metrics.sentence_length_mean
-        <= base.sentence_length_mean * sentence_collapse_ratio
+        and metrics.sentence_length_mean <= base.sentence_length_mean * sentence_collapse_ratio
     )
 
     # Criterion 2 — density spike on ≥2 of 4 dimensions.
@@ -515,9 +517,7 @@ def detect_sustained_bloom(
     structurally distinct shapes.
     """
     base = baseline or BloomBaseline()
-    metrics = compute_turn_metrics(
-        text, shared_vocab=shared_vocab, pet_names=pet_names
-    )
+    metrics = compute_turn_metrics(text, shared_vocab=shared_vocab, pet_names=pet_names)
 
     if metrics.n_tokens == 0:
         return BloomCandidate(
@@ -528,9 +528,7 @@ def detect_sustained_bloom(
         )
 
     # Criterion 1 — reflective cadence (not too short, not too long).
-    cadence_ok = (
-        5.0 <= metrics.sentence_length_mean <= sentence_len_max
-    )
+    cadence_ok = 5.0 <= metrics.sentence_length_mean <= sentence_len_max
 
     # Criterion 2 — density spike on ≥3 of 4 dimensions.
     density_checks = {
@@ -613,11 +611,7 @@ def add_resonance_revision(
         raise ValueError(f"Bloom anchor not found: {anchor_id}")
     res_path = d / "resonance.md"
     ts = datetime.now(timezone.utc).isoformat()
-    entry = (
-        f"\n\n---\n\n"
-        f"## Revision — {ts} — {author}\n\n"
-        f"{note.strip()}\n"
-    )
+    entry = f"\n\n---\n\n## Revision — {ts} — {author}\n\n{note.strip()}\n"
     if res_path.exists():
         with open(res_path, "a", encoding="utf-8") as f:
             f.write(entry)

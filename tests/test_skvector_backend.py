@@ -121,7 +121,9 @@ class TestInitialization:
         qb = SKVectorBackend()
         assert qb.requested_embedding_model == "mxbai-embed-large"
         # Resolves to a local path containing the model directory
-        assert "models" in qb.embedding_model_name and "mxbai-embed-large" in qb.embedding_model_name
+        assert (
+            "models" in qb.embedding_model_name and "mxbai-embed-large" in qb.embedding_model_name
+        )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -179,9 +181,6 @@ class TestSave:
         assert result == sample_memory.id
         mock_qdrant_client.upsert.assert_called_once()
 
-
-
-
     def test_memory_to_payload_exposes_recall_source_fields(self, backend):
         mem = Memory(
             title="Shared corpus doc",
@@ -195,7 +194,11 @@ class TestSave:
                 "type": "process",
                 "category": "workflow",
                 "parent_doc": "cover-letters/README.md",
-                "decomposition": {"chunk_index": 0, "total_chunks": 1, "section_title": "Overview"},
+                "decomposition": {
+                    "chunk_index": 0,
+                    "total_chunks": 1,
+                    "section_title": "Overview",
+                },
             },
         )
         payload = backend._memory_to_payload(mem)
@@ -204,6 +207,7 @@ class TestSave:
         assert payload["type"] == "process"
         assert payload["category"] == "workflow"
         assert payload["parent_doc"] == "cover-letters/README.md"
+
 
 # ═══════════════════════════════════════════════════════════
 # Search
@@ -232,7 +236,6 @@ class TestSearch:
         results = backend.search_text("secret recipe")
         assert len(results) == 1
         assert results[0].title == "The Secret Recipe"
-
 
     def test_search_text_handles_legacy_payloads(self, backend, mock_qdrant_client):
         scored_point = MagicMock()
@@ -265,7 +268,6 @@ class TestSearch:
         assert call_kwargs is not None
         # query_filter should be set when layer is provided
         assert "query_filter" in call_kwargs.kwargs or call_kwargs.args
-
 
     def test_search_text_with_tags_and_source_filters(self, backend, mock_qdrant_client):
         mock_qdrant_client.query_points.return_value.points = []

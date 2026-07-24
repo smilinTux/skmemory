@@ -31,15 +31,15 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import IO
 
 logger = logging.getLogger("skmemory.hooks")
 
 _HOOK_LOCK_FILE = "/tmp/skmemory-hook.lock"
 
 
-def _acquire_hook_lock(timeout: int = 30) -> "IO | None":
+def _acquire_hook_lock(timeout: int = 30) -> IO | None:
     """Serialize concurrent hook calls to prevent memory pile-up.
 
     Multiple sessions ending simultaneously each spawn a fresh Python process
@@ -50,7 +50,10 @@ def _acquire_hook_lock(timeout: int = 30) -> "IO | None":
     if the lock could not be acquired within timeout seconds.
     """
     import time
-    fh = open(_HOOK_LOCK_FILE, "w")
+
+    # Lock handle is intentionally returned to the caller to hold open for the
+    # duration of the critical section; a context manager would release it early.
+    fh = open(_HOOK_LOCK_FILE, "w")  # noqa: SIM115
     deadline = time.monotonic() + timeout
     while True:
         try:
@@ -72,6 +75,7 @@ def _get_store():
     Avoids the ~1.8GB SentenceTransformer load the CLI would trigger.
     """
     from ..store import MemoryStore
+
     return MemoryStore()
 
 

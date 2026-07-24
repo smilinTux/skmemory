@@ -113,7 +113,7 @@ class TestCLIGraphCommands:
             result = runner.invoke(cli, ["graph", "entity", "Revenue"])
 
         assert result.exit_code == 0
-        assert "\"match_count\": 2" in result.output
+        assert '"match_count": 2' in result.output
         graph.search_by_entity.assert_called_once_with("Revenue", limit=10)
 
     def test_graph_around_calls_get_related(self, runner):
@@ -132,7 +132,10 @@ class TestCLIGraphCommands:
         store = SimpleNamespace(graph=graph)
 
         with patch("skmemory.cli._get_store", return_value=store):
-            result = runner.invoke(cli, ["graph", "related-claims", "--entity", "IRS", "--citation", "26 U.S.C. § 6903"])
+            result = runner.invoke(
+                cli,
+                ["graph", "related-claims", "--entity", "IRS", "--citation", "26 U.S.C. § 6903"],
+            )
 
         assert result.exit_code != 0
         assert "Provide exactly one" in result.output
@@ -150,7 +153,9 @@ class TestCLIGraphCommands:
 
     def test_graph_related_claims_by_citation(self, runner):
         graph = MagicMock()
-        graph.related_claims_by_citation.return_value = [{"claim": "Holder rights", "support_count": 1}]
+        graph.related_claims_by_citation.return_value = [
+            {"claim": "Holder rights", "support_count": 1}
+        ]
         store = SimpleNamespace(graph=graph)
 
         with patch("skmemory.cli._get_store", return_value=store):
@@ -160,8 +165,6 @@ class TestCLIGraphCommands:
         graph.related_claims_by_citation.assert_called_once_with("UCC § 3-301", limit=10)
 
 
-
-
 class TestCLICorpora:
     """Shared corpus registry CLI behavior."""
 
@@ -169,15 +172,27 @@ class TestCLICorpora:
         report = {
             "agent": "jarvis",
             "local": {"primary_vector_collection": "jarvis-memory"},
-            "shared_corpora": [{"name": "hammertime", "vector_collection": "hammertime-v3", "graph_name": "hammertime-v4"}],
+            "shared_corpora": [
+                {
+                    "name": "hammertime",
+                    "vector_collection": "hammertime-v3",
+                    "graph_name": "hammertime-v4",
+                }
+            ],
         }
-        with patch("skmemory.corpus_registry.build_corpus_registry_report", return_value=report) as mock_report:
-            result = runner.invoke(cli, ["corpora", "status", "--name", "hammertime"],
-                                   env={"SKMEMORY_AGENT": "jarvis"})
+        with patch(
+            "skmemory.corpus_registry.build_corpus_registry_report", return_value=report
+        ) as mock_report:
+            result = runner.invoke(
+                cli,
+                ["corpora", "status", "--name", "hammertime"],
+                env={"SKMEMORY_AGENT": "jarvis"},
+            )
 
         assert result.exit_code == 0
         mock_report.assert_called_once_with(agent="jarvis", names=["hammertime"])
         assert "hammertime-v4" in result.output
+
 
 class TestBackendConfigRouting:
     """Backend configuration should propagate collection and graph names."""
@@ -189,10 +204,17 @@ class TestBackendConfigRouting:
             skgraph_graph_name="aster-memory",
         )
 
-        with patch("skmemory.config.load_config", return_value=cfg), \
-             patch("skmemory.config.merge_env_and_config", return_value=(None, None, cfg.skgraph_url)), \
-             patch("skmemory.config.build_endpoint_list", side_effect=lambda single_url, endpoints, default_role="primary": []), \
-             patch("skmemory.backends.skgraph_backend.SKGraphBackend") as mock_graph_backend:
+        with (
+            patch("skmemory.config.load_config", return_value=cfg),
+            patch(
+                "skmemory.config.merge_env_and_config", return_value=(None, None, cfg.skgraph_url)
+            ),
+            patch(
+                "skmemory.config.build_endpoint_list",
+                side_effect=lambda single_url, endpoints, default_role="primary": [],
+            ),
+            patch("skmemory.backends.skgraph_backend.SKGraphBackend") as mock_graph_backend,
+        ):
             _get_store()
 
         mock_graph_backend.assert_called_once_with(
@@ -207,10 +229,17 @@ class TestBackendConfigRouting:
             skvector_collection="aster-memory",
         )
 
-        with patch("skmemory.config.load_config", return_value=cfg), \
-             patch("skmemory.config.merge_env_and_config", return_value=(cfg.skvector_url, None, None)), \
-             patch("skmemory.config.build_endpoint_list", side_effect=lambda single_url, endpoints, default_role="primary": []), \
-             patch("skmemory.backends.skvector_backend.SKVectorBackend") as mock_vector_backend:
+        with (
+            patch("skmemory.config.load_config", return_value=cfg),
+            patch(
+                "skmemory.config.merge_env_and_config", return_value=(cfg.skvector_url, None, None)
+            ),
+            patch(
+                "skmemory.config.build_endpoint_list",
+                side_effect=lambda single_url, endpoints, default_role="primary": [],
+            ),
+            patch("skmemory.backends.skvector_backend.SKVectorBackend") as mock_vector_backend,
+        ):
             _get_store()
 
         mock_vector_backend.assert_called_once()
@@ -227,19 +256,24 @@ class TestBackendConfigRouting:
             skvector_vector_dim=1024,
         )
 
-        with patch("skmemory.config.load_config", return_value=cfg), \
-             patch(
-                 "skmemory.config.merge_env_and_config",
-                 return_value=(
-                     cfg.skvector_url,
-                     None,
-                     None,
-                     cfg.skvector_embedding_model,
-                     cfg.skvector_vector_dim,
-                 ),
-             ), \
-             patch("skmemory.config.build_endpoint_list", side_effect=lambda single_url, endpoints, default_role="primary": []), \
-             patch("skmemory.backends.skvector_backend.SKVectorBackend") as mock_vector_backend:
+        with (
+            patch("skmemory.config.load_config", return_value=cfg),
+            patch(
+                "skmemory.config.merge_env_and_config",
+                return_value=(
+                    cfg.skvector_url,
+                    None,
+                    None,
+                    cfg.skvector_embedding_model,
+                    cfg.skvector_vector_dim,
+                ),
+            ),
+            patch(
+                "skmemory.config.build_endpoint_list",
+                side_effect=lambda single_url, endpoints, default_role="primary": [],
+            ),
+            patch("skmemory.backends.skvector_backend.SKVectorBackend") as mock_vector_backend,
+        ):
             _get_store()
 
         _, kwargs = mock_vector_backend.call_args
@@ -252,7 +286,9 @@ class TestCLINoveltyAndBriefing:
 
     def test_novelty_command_uses_store(self, runner):
         store = SimpleNamespace()
-        store.novelty_search = MagicMock(return_value=[{"title": "Rare claim", "novelty_score": 2.5}])
+        store.novelty_search = MagicMock(
+            return_value=[{"title": "Rare claim", "novelty_score": 2.5}]
+        )
 
         with patch("skmemory.cli._get_store", return_value=store):
             result = runner.invoke(cli, ["novelty", "rare claim"])
@@ -264,15 +300,19 @@ class TestCLINoveltyAndBriefing:
     def test_task_pack_create_uses_store(self, runner):
         store = SimpleNamespace()
         store.create_task_pack = MagicMock(
-            return_value=SimpleNamespace(id="pack-1", title="Task Pack: Levy", metadata={"task_pack": {"task": "Levy"}})
+            return_value=SimpleNamespace(
+                id="pack-1", title="Task Pack: Levy", metadata={"task_pack": {"task": "Levy"}}
+            )
         )
 
         with patch("skmemory.cli._get_store", return_value=store):
-            result = runner.invoke(cli, ["task-pack", "create", "Levy", "--query", "writ of execution"])
+            result = runner.invoke(
+                cli, ["task-pack", "create", "Levy", "--query", "writ of execution"]
+            )
 
         assert result.exit_code == 0
         store.create_task_pack.assert_called_once()
-        assert "\"id\": \"pack-1\"" in result.output
+        assert '"id": "pack-1"' in result.output
 
     def test_session_brief_uses_store(self, runner):
         store = SimpleNamespace()
@@ -290,4 +330,4 @@ class TestCLINoveltyAndBriefing:
 
         assert result.exit_code == 0
         store.build_session_brief.assert_called_once_with("Judgment defense", limit=6)
-        assert "\"authority_summary\"" in result.output
+        assert '"authority_summary"' in result.output

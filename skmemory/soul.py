@@ -38,7 +38,11 @@ def _default_soul_path() -> str:
     then falls back to shared root (~/.skcapstone/soul/base.json).
     """
     # Try agent-specific soul first
-    agent = os.environ.get("SKAGENT") or os.environ.get("SKMEMORY_AGENT") or os.environ.get("SKCAPSTONE_AGENT")
+    agent = (
+        os.environ.get("SKAGENT")
+        or os.environ.get("SKMEMORY_AGENT")
+        or os.environ.get("SKCAPSTONE_AGENT")
+    )
     if agent:
         if platform.system() == "Windows":
             local = os.environ.get("LOCALAPPDATA", "")

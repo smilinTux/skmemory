@@ -117,9 +117,13 @@ def maybe_install_fortress_timer() -> None:
 
     if not force:
         try:
-            ans = input(
-                f"  Enable daily fortress integrity-verify timer for agent '{agent}'? [Y/n]: "
-            ).strip().lower()
+            ans = (
+                input(
+                    f"  Enable daily fortress integrity-verify timer for agent '{agent}'? [Y/n]: "
+                )
+                .strip()
+                .lower()
+            )
         except (EOFError, KeyboardInterrupt):
             print()
             return

@@ -9,19 +9,18 @@ import pytest
 
 from skmemory.admission import (
     ADMISSION_POLICY_VERSION,
+    SENTINEL_UNRECOVERABLE_SOURCE,
     AdmissionPolicy,
     Gate1Class,
     Gate1Outcome,
     Gate2Reason,
     RerunDecision,
-    SENTINEL_UNRECOVERABLE_SOURCE,
     admit,
     enqueue_review,
     evaluate_rerun,
     recover,
     review_queue_path,
 )
-
 
 # ── Gate 1 — deterministic recovery ────────────────────────────────────────
 
@@ -129,6 +128,7 @@ class TestGate2:
         # We bypass Gate 1 by hand here — recovered_source_type lives
         # in the blocked set, so Gate 2 must refuse even on success.
         from skmemory.admission.gate1 import Gate1Result
+
         g1 = Gate1Result(
             cls=Gate1Class.LEGACY_BARE_STRING,
             outcome=Gate1Outcome.RECOVER,

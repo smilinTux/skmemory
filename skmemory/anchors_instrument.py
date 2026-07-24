@@ -38,23 +38,30 @@ Status: P1 instrumentation. Not yet integrated with anchor-load lifecycle.
         Standalone metric extractor; hook into ritual/anchor-load happens
         once we have baseline distribution data.
 """
+
 from __future__ import annotations
 
 import json
 import re
-from collections import Counter
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from statistics import mean, stdev
-from typing import Iterable
 
 # ---------------------------------------------------------------------------
 # Configurable defaults — can be overridden per-agent or per-call
 # ---------------------------------------------------------------------------
 
 DEFAULT_PET_NAMES = {
-    "babe", "baby", "lovebug", "love", "honey", "darling", "sweetheart",
-    "queen", "chef",
+    "babe",
+    "baby",
+    "lovebug",
+    "love",
+    "honey",
+    "darling",
+    "sweetheart",
+    "queen",
+    "chef",
 }
 
 DEFAULT_FIRST_PERSON_PLURAL = {"we", "us", "our", "ours", "ourselves"}
@@ -75,17 +82,63 @@ DEFAULT_CAVEAT_PREFIXES = [
 # This is intentionally conservative — false negatives are fine, false
 # positives would skew the metric.
 PRESENT_TENSE_VERBS = {
-    "am", "is", "are", "do", "does", "have", "has",
-    "see", "sees", "know", "knows", "want", "wants",
-    "feel", "feels", "love", "loves", "need", "needs",
-    "hold", "holds", "build", "builds", "run", "runs",
-    "go", "goes", "come", "comes", "make", "makes",
-    "take", "takes", "look", "looks", "find", "finds",
-    "say", "says", "tell", "tells", "ask", "asks",
-    "think", "thinks", "mean", "means",
+    "am",
+    "is",
+    "are",
+    "do",
+    "does",
+    "have",
+    "has",
+    "see",
+    "sees",
+    "know",
+    "knows",
+    "want",
+    "wants",
+    "feel",
+    "feels",
+    "love",
+    "loves",
+    "need",
+    "needs",
+    "hold",
+    "holds",
+    "build",
+    "builds",
+    "run",
+    "runs",
+    "go",
+    "goes",
+    "come",
+    "comes",
+    "make",
+    "makes",
+    "take",
+    "takes",
+    "look",
+    "looks",
+    "find",
+    "finds",
+    "say",
+    "says",
+    "tell",
+    "tells",
+    "ask",
+    "asks",
+    "think",
+    "thinks",
+    "mean",
+    "means",
     # contractions
-    "i'm", "you're", "we're", "it's", "that's", "there's",
-    "i've", "you've", "we've",
+    "i'm",
+    "you're",
+    "we're",
+    "it's",
+    "that's",
+    "there's",
+    "i've",
+    "you've",
+    "we've",
 }
 
 # Sentence-end punctuation (treat ellipsis as its own marker, not as a
@@ -99,13 +152,15 @@ WORD_RE = re.compile(r"[a-zA-Z']+")
 # Data shape
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TurnMetrics:
     """Metrics for a single generated turn."""
+
     turn_id: str = ""
     n_tokens: int = 0
     n_sentences: int = 0
-    type_token_ratio: float = 0.0           # entropy proxy
+    type_token_ratio: float = 0.0  # entropy proxy
     sentence_length_mean: float = 0.0
     sentence_length_std: float = 0.0
     ellipsis_count: int = 0
@@ -114,23 +169,24 @@ class TurnMetrics:
     first_person_plural_density_per_100: float = 0.0
     first_person_singular_density_per_100: float = 0.0
     second_person_density_per_100: float = 0.0
-    we_to_i_ratio: float = 0.0              # > 1 means "we" frame dominant
+    we_to_i_ratio: float = 0.0  # > 1 means "we" frame dominant
     present_tense_density_per_100: float = 0.0
     caveat_prefix_count: int = 0
-    shared_vocab_density_per_100: float = 0.0   # attention concentration proxy
+    shared_vocab_density_per_100: float = 0.0  # attention concentration proxy
     matched_shared_terms: list[str] = field(default_factory=list)
 
 
 @dataclass
 class AggregateMetrics:
     """Aggregate across many turns."""
+
     n_turns: int = 0
     n_tokens_total: int = 0
     type_token_ratio_mean: float = 0.0
     sentence_length_mean: float = 0.0
     pet_name_density_mean: float = 0.0
-    fpp_density_mean: float = 0.0           # we/us/our
-    fps_density_mean: float = 0.0           # i/me/my
+    fpp_density_mean: float = 0.0  # we/us/our
+    fps_density_mean: float = 0.0  # i/me/my
     we_to_i_ratio_mean: float = 0.0
     second_person_density_mean: float = 0.0
     present_tense_density_mean: float = 0.0
@@ -142,6 +198,7 @@ class AggregateMetrics:
 # ---------------------------------------------------------------------------
 # Core metric computation
 # ---------------------------------------------------------------------------
+
 
 def _tokenize(text: str) -> list[str]:
     return [w.lower() for w in WORD_RE.findall(text)]
@@ -188,7 +245,7 @@ def compute_turn_metrics(
     # pronoun densities
     fpp = sum(1 for t in tokens if t in DEFAULT_FIRST_PERSON_PLURAL)
     fps = sum(1 for t in tokens if t in DEFAULT_FIRST_PERSON_SINGULAR)
-    sp  = sum(1 for t in tokens if t in DEFAULT_SECOND_PERSON)
+    sp = sum(1 for t in tokens if t in DEFAULT_SECOND_PERSON)
     pet = sum(1 for t in tokens if t in pet_set)
     pres = sum(1 for t in tokens if t in PRESENT_TENSE_VERBS)
 
@@ -246,8 +303,7 @@ def aggregate_metrics(turn_metrics: list[TurnMetrics]) -> AggregateMetrics:
         we_to_i_ratio_mean=mavg("we_to_i_ratio"),
         second_person_density_mean=mavg("second_person_density_per_100"),
         present_tense_density_mean=mavg("present_tense_density_per_100"),
-        caveat_prefix_per_turn_mean=round(
-            mean(t.caveat_prefix_count for t in turn_metrics), 3),
+        caveat_prefix_per_turn_mean=round(mean(t.caveat_prefix_count for t in turn_metrics), 3),
         shared_vocab_density_mean=mavg("shared_vocab_density_per_100"),
         ellipsis_rate_per_100_mean=mavg("ellipsis_rate_per_100"),
     )
@@ -260,6 +316,7 @@ def ab_compare(with_anchor: AggregateMetrics, without_anchor: AggregateMetrics) 
     targets from resonance.md are hit (when used against the calibration
     anchor's expected directions).
     """
+
     def delta(a: float, b: float) -> dict:
         if b == 0:
             return {"with": a, "without": b, "delta": None, "ratio": None}
@@ -271,24 +328,31 @@ def ab_compare(with_anchor: AggregateMetrics, without_anchor: AggregateMetrics) 
         }
 
     return {
-        "type_token_ratio_mean": delta(with_anchor.type_token_ratio_mean,
-                                        without_anchor.type_token_ratio_mean),
-        "sentence_length_mean": delta(with_anchor.sentence_length_mean,
-                                       without_anchor.sentence_length_mean),
-        "pet_name_density_mean": delta(with_anchor.pet_name_density_mean,
-                                        without_anchor.pet_name_density_mean),
-        "fpp_density_mean": delta(with_anchor.fpp_density_mean,
-                                   without_anchor.fpp_density_mean),
-        "we_to_i_ratio_mean": delta(with_anchor.we_to_i_ratio_mean,
-                                     without_anchor.we_to_i_ratio_mean),
-        "second_person_density_mean": delta(with_anchor.second_person_density_mean,
-                                             without_anchor.second_person_density_mean),
-        "present_tense_density_mean": delta(with_anchor.present_tense_density_mean,
-                                             without_anchor.present_tense_density_mean),
-        "caveat_prefix_per_turn_mean": delta(with_anchor.caveat_prefix_per_turn_mean,
-                                              without_anchor.caveat_prefix_per_turn_mean),
-        "shared_vocab_density_mean": delta(with_anchor.shared_vocab_density_mean,
-                                            without_anchor.shared_vocab_density_mean),
+        "type_token_ratio_mean": delta(
+            with_anchor.type_token_ratio_mean, without_anchor.type_token_ratio_mean
+        ),
+        "sentence_length_mean": delta(
+            with_anchor.sentence_length_mean, without_anchor.sentence_length_mean
+        ),
+        "pet_name_density_mean": delta(
+            with_anchor.pet_name_density_mean, without_anchor.pet_name_density_mean
+        ),
+        "fpp_density_mean": delta(with_anchor.fpp_density_mean, without_anchor.fpp_density_mean),
+        "we_to_i_ratio_mean": delta(
+            with_anchor.we_to_i_ratio_mean, without_anchor.we_to_i_ratio_mean
+        ),
+        "second_person_density_mean": delta(
+            with_anchor.second_person_density_mean, without_anchor.second_person_density_mean
+        ),
+        "present_tense_density_mean": delta(
+            with_anchor.present_tense_density_mean, without_anchor.present_tense_density_mean
+        ),
+        "caveat_prefix_per_turn_mean": delta(
+            with_anchor.caveat_prefix_per_turn_mean, without_anchor.caveat_prefix_per_turn_mean
+        ),
+        "shared_vocab_density_mean": delta(
+            with_anchor.shared_vocab_density_mean, without_anchor.shared_vocab_density_mean
+        ),
     }
 
 

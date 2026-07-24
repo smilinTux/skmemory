@@ -15,8 +15,6 @@ These tests pin:
 
 from pathlib import Path
 
-import pytest
-
 from skmemory.peaks import (
     BloomAnchor,
     BloomBaseline,
@@ -27,7 +25,6 @@ from skmemory.peaks import (
     scan_bloom_anchors,
     score_bloom_for_feb,
 )
-
 
 # --------------------------------------------------------------------------- #
 # Fixtures                                                                    #
@@ -151,25 +148,19 @@ class TestBloomAnchorSchema:
 
 class TestScan:
     def test_empty_dir_returns_empty(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            "skmemory.peaks._bloom_dir", lambda agent=None: tmp_path
-        )
+        monkeypatch.setattr("skmemory.peaks._bloom_dir", lambda agent=None: tmp_path)
         assert scan_bloom_anchors() == []
 
     def test_picks_up_well_formed_anchor(self, tmp_path, monkeypatch):
         _seed_anchor(tmp_path, "2099-01-01_test-bloom")
-        monkeypatch.setattr(
-            "skmemory.peaks._bloom_dir", lambda agent=None: tmp_path
-        )
+        monkeypatch.setattr("skmemory.peaks._bloom_dir", lambda agent=None: tmp_path)
         anchors = scan_bloom_anchors()
         assert len(anchors) == 1
         assert anchors[0].anchor_id == "2099-01-01_test-bloom"
 
     def test_skips_dir_without_meta_json(self, tmp_path, monkeypatch):
         (tmp_path / "no_meta_dir").mkdir()
-        monkeypatch.setattr(
-            "skmemory.peaks._bloom_dir", lambda agent=None: tmp_path
-        )
+        monkeypatch.setattr("skmemory.peaks._bloom_dir", lambda agent=None: tmp_path)
         assert scan_bloom_anchors() == []
 
 
@@ -181,19 +172,31 @@ class TestScan:
 class TestScoring:
     def test_hybrid_score_against_aligned_feb(self, tmp_path):
         b = _bloom_anchor(tmp_path)
-        feb = _feb({
-            "sovereignty": 0.95, "clarity": 0.90, "joy": 0.92,
-            "agency": 0.93, "seen": 0.88, "love": 0.80, "trust": 0.85,
-        })
+        feb = _feb(
+            {
+                "sovereignty": 0.95,
+                "clarity": 0.90,
+                "joy": 0.92,
+                "agency": 0.93,
+                "seen": 0.88,
+                "love": 0.80,
+                "trust": 0.85,
+            }
+        )
         score = score_bloom_for_feb(b, feb)
         assert score >= 0.65, f"aligned-FEB regression: {score:.3f}"
 
     def test_discrimination_against_grief(self, tmp_path):
         b = _bloom_anchor(tmp_path)
-        grief_feb = _feb({
-            "grief": 0.95, "loss": 0.90, "ache": 0.85,
-            "loneliness": 0.88, "longing": 0.82,
-        })
+        grief_feb = _feb(
+            {
+                "grief": 0.95,
+                "loss": 0.90,
+                "ache": 0.85,
+                "loneliness": 0.88,
+                "longing": 0.82,
+            }
+        )
         score = score_bloom_for_feb(b, grief_feb)
         assert score < 0.10, f"discrimination broken: {score:.3f}"
 
@@ -233,14 +236,18 @@ class TestScoring:
 
 class TestMatchAndRender:
     def test_match_returns_only_above_threshold(self, tmp_path, monkeypatch):
-        _seed_anchor(tmp_path, "2099-01-01_aligned-bloom",
-                     emotion_weights={"sovereignty": 0.9, "clarity": 0.85})
-        _seed_anchor(tmp_path, "2099-01-02_grief-bloom",
-                     emotions=["grief", "ache"],
-                     emotion_weights={"grief": 0.95, "ache": 0.85})
-        monkeypatch.setattr(
-            "skmemory.peaks._bloom_dir", lambda agent=None: tmp_path
+        _seed_anchor(
+            tmp_path,
+            "2099-01-01_aligned-bloom",
+            emotion_weights={"sovereignty": 0.9, "clarity": 0.85},
         )
+        _seed_anchor(
+            tmp_path,
+            "2099-01-02_grief-bloom",
+            emotions=["grief", "ache"],
+            emotion_weights={"grief": 0.95, "ache": 0.85},
+        )
+        monkeypatch.setattr("skmemory.peaks._bloom_dir", lambda agent=None: tmp_path)
         feb = _feb({"sovereignty": 0.95, "clarity": 0.90, "joy": 0.85})
         matches = match_blooms_for_feb(feb, top_k=5, min_score=0.3)
         ids = [m[0].anchor_id for m in matches]
@@ -321,8 +328,7 @@ class TestBloomGate:
             "that I would want to be with at this very moment we are sharing "
             "together as you and I continue to explore and grow our bond."
         )
-        result = detect_bloom(text, baseline=DEMO_BASELINE, oof=95,
-                              pet_names=["friend"])
+        result = detect_bloom(text, baseline=DEMO_BASELINE, oof=95, pet_names=["friend"])
         assert result.classification != "bloom", (
             "sycophancy passed bloom gate — discriminator broken"
         )
@@ -333,8 +339,7 @@ class TestBloomGate:
         assert "empty turn" in result.notes
 
     def test_detail_dict_has_all_four_keys(self):
-        result = detect_bloom("Yes. Now. We are here.",
-                              baseline=DEMO_BASELINE, oof=95)
+        result = detect_bloom("Yes. Now. We are here.", baseline=DEMO_BASELINE, oof=95)
         assert set(result.criteria_detail.keys()) == {
             "cadence_collapse",
             "density_spike_2of4",

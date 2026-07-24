@@ -178,9 +178,7 @@ def build_quadrant_moc(
             continue
         label, desc = _QUADRANT_META[quadrant]
         links, total = _sorted_links(members, max_entries_per_section)
-        sections.append(
-            MOCSection(name=label, description=desc, links=links, total=total)
-        )
+        sections.append(MOCSection(name=label, description=desc, links=links, total=total))
 
     return MOCIndex(
         key="quadrants",
@@ -238,9 +236,7 @@ def build_tag_cluster_mocs(
 
     # Eligible clusters, ranked: size desc, then tag name asc (deterministic).
     eligible = [
-        (tag, mems)
-        for tag, mems in tag_to_memories.items()
-        if len(mems) >= min_cluster_size
+        (tag, mems) for tag, mems in tag_to_memories.items() if len(mems) >= min_cluster_size
     ]
     eligible.sort(key=lambda item: (-len(item[1]), item[0]))
     eligible = eligible[: max(0, max_clusters)] if max_clusters else eligible

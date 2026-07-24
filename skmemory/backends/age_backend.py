@@ -174,7 +174,9 @@ class AGEGraphBackend:
         """DSN with any password redacted, for logging/health output."""
         return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", self.dsn)
 
-    def _cypher(self, query: str, params: dict | None = None, cols: str = "v agtype") -> list[tuple]:
+    def _cypher(
+        self, query: str, params: dict | None = None, cols: str = "v agtype"
+    ) -> list[tuple]:
         """Run a Cypher query against the target graph.
 
         Args:
@@ -283,7 +285,9 @@ class AGEGraphBackend:
     # Write operations
     # ─────────────────────────────────────────────────────────
 
-    def _merge_edge_to_named(self, mem_id: str, label: str, key: str, value: str, rel: str) -> bool:
+    def _merge_edge_to_named(
+        self, mem_id: str, label: str, key: str, value: str, rel: str
+    ) -> bool:
         """MERGE a `(label {key: value})` node and a `(Memory)-[:rel]->(node)` edge.
 
         `label`, `key`, `rel` are internal constants only (never user input),
@@ -315,7 +319,9 @@ class AGEGraphBackend:
             "MERGE (child)-[:SUPERSEDES]->(parent) "
             "RETURN parent"
         )
-        rows = self._cypher(query, {"child_id": child_id, "parent_id": parent_id}, cols="parent agtype")
+        rows = self._cypher(
+            query, {"child_id": child_id, "parent_id": parent_id}, cols="parent agtype"
+        )
         return bool(rows)
 
     def index_memory(self, memory: Memory) -> bool:
@@ -372,7 +378,9 @@ class AGEGraphBackend:
 
         try:
             if memory.source:
-                self._merge_edge_to_named(memory.id, "Source", "name", memory.source, "FROM_SOURCE")
+                self._merge_edge_to_named(
+                    memory.id, "Source", "name", memory.source, "FROM_SOURCE"
+                )
 
             for tag in _unique(memory.tags):
                 self._merge_edge_to_named(memory.id, "Tag", "name", tag, "TAGGED_WITH")
@@ -389,7 +397,9 @@ class AGEGraphBackend:
         except Exception as exc:  # noqa: BLE001
             # The core node write already succeeded; a relationship failure
             # shouldn't fail the whole index — log and move on.
-            logger.warning("AGEGraphBackend: relationship indexing failed for %s: %s", memory.id, exc)
+            logger.warning(
+                "AGEGraphBackend: relationship indexing failed for %s: %s", memory.id, exc
+            )
 
         return True
 
@@ -505,13 +515,19 @@ class AGEGraphBackend:
         for rel_type in ("RELATED_TO", "SUPERSEDES"):
             query = (
                 "MATCH (start:Memory {id: $id}) "
-                "MATCH path = (start)-[:" + rel_type + "*1.." + str(safe_depth) + "]-(related:Memory) "
+                "MATCH path = (start)-[:"
+                + rel_type
+                + "*1.."
+                + str(safe_depth)
+                + "]-(related:Memory) "
                 "WHERE related.id <> $id "
                 "WITH related, min(length(path)) AS distance "
                 "RETURN related.id, related.title, related.layer, distance"
             )
             rows = self._cypher(
-                query, {"id": memory_id}, cols="id agtype, title agtype, layer agtype, distance agtype"
+                query,
+                {"id": memory_id},
+                cols="id agtype, title agtype, layer agtype, distance agtype",
             )
             for row in self._rows_to_dicts(rows, ["id", "title", "layer", "distance"]):
                 rid = row["id"]
@@ -544,7 +560,9 @@ class AGEGraphBackend:
             "RETURN anc.id, anc.title, anc.layer, length(path) "
             "ORDER BY length(path) ASC"
         )
-        rows = self._cypher(query, {"id": memory_id}, cols="id agtype, title agtype, layer agtype, depth agtype")
+        rows = self._cypher(
+            query, {"id": memory_id}, cols="id agtype, title agtype, layer agtype, depth agtype"
+        )
         return self._rows_to_dicts(rows, ["id", "title", "layer", "depth"])
 
     def search_by_tags(self, tags: list[str], limit: int = 20) -> list[dict]:
@@ -566,7 +584,9 @@ class AGEGraphBackend:
             "LIMIT $limit"
         )
         rows = self._cypher(
-            query, {"tags": list(tags), "limit": int(limit)}, cols="id agtype, title agtype, layer agtype"
+            query,
+            {"tags": list(tags), "limit": int(limit)},
+            cols="id agtype, title agtype, layer agtype",
         )
         return self._rows_to_dicts(rows, ["id", "title", "layer"])
 
@@ -590,7 +610,9 @@ class AGEGraphBackend:
             "LIMIT $limit"
         )
         rows = self._cypher(
-            cyq, {"pattern": pattern, "limit": int(limit)}, cols="id agtype, title agtype, layer agtype, entity agtype"
+            cyq,
+            {"pattern": pattern, "limit": int(limit)},
+            cols="id agtype, title agtype, layer agtype, entity agtype",
         )
         return self._rows_to_dicts(rows, ["id", "title", "layer", "entity"])
 
@@ -614,7 +636,9 @@ class AGEGraphBackend:
             "ORDER BY connections DESC LIMIT 50"
         )
         rows = self._cypher(
-            cyq, {"min_size": int(min_size)}, cols="id agtype, title agtype, layer agtype, connections agtype"
+            cyq,
+            {"min_size": int(min_size)},
+            cols="id agtype, title agtype, layer agtype, connections agtype",
         )
         return self._rows_to_dicts(rows, ["id", "title", "layer", "connections"])
 
@@ -760,12 +784,16 @@ class AGEGraphBackend:
                     else:
                         stats["errors"] += 1
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("AGEGraphBackend sync_all: failed on %s: %s", json_file.name, exc)
+                    logger.warning(
+                        "AGEGraphBackend sync_all: failed on %s: %s", json_file.name, exc
+                    )
                     stats["errors"] += 1
 
         logger.info(
             "AGEGraphBackend sync_all for '%s': indexed=%d errors=%d",
-            agent_name, stats["indexed"], stats["errors"],
+            agent_name,
+            stats["indexed"],
+            stats["errors"],
         )
         return stats
 
@@ -794,7 +822,9 @@ class AGEGraphBackend:
             "AGEGraphBackend.related_claims_by_citation is deferred to a follow-on pass."
         )
 
-    def update_emotional(self, memory_id: str, intensity: float, valence: float, labels: list[str]) -> bool:
+    def update_emotional(
+        self, memory_id: str, intensity: float, valence: float, labels: list[str]
+    ) -> bool:
         raise NotImplementedError(
             "AGEGraphBackend.update_emotional is deferred — re-run index_memory() "
             "with the updated Memory object instead."

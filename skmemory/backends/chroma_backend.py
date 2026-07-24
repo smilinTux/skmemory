@@ -14,12 +14,11 @@ Requires:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from ..models import Memory, MemoryLayer
 from ..query_sanitizer import sanitize_query
@@ -163,9 +162,7 @@ class SKChromaBackend(BaseBackend):
             try:
                 from sentence_transformers import SentenceTransformer
             except ImportError:
-                logger.warning(
-                    "sentence-transformers not installed: pip install skmemory[chroma]"
-                )
+                logger.warning("sentence-transformers not installed: pip install skmemory[chroma]")
                 return False
 
         try:
@@ -177,9 +174,13 @@ class SKChromaBackend(BaseBackend):
 
             if self._embed_fn is None:
                 from sentence_transformers import SentenceTransformer
+
                 self._embedder = SentenceTransformer(self.embedding_model_name)
-                get_dim = getattr(self._embedder, "get_embedding_dimension",
-                          getattr(self._embedder, "get_sentence_embedding_dimension", None))
+                get_dim = getattr(
+                    self._embedder,
+                    "get_embedding_dimension",
+                    getattr(self._embedder, "get_sentence_embedding_dimension", None),
+                )
                 if callable(get_dim):
                     resolved_dim = get_dim()
                     if isinstance(resolved_dim, int) and resolved_dim > 0:
@@ -336,7 +337,7 @@ class SKChromaBackend(BaseBackend):
             result = self._collection.get(**kwargs)
 
             memories = []
-            for doc in (result.get("documents") or []):
+            for doc in result.get("documents") or []:
                 if doc:
                     try:
                         memories.append(Memory.model_validate_json(doc))
@@ -400,7 +401,7 @@ class SKChromaBackend(BaseBackend):
             results = self._collection.query(**kwargs)
 
             memories = []
-            for doc in (results.get("documents", [[]])[0]):
+            for doc in results.get("documents", [[]])[0]:
                 if doc:
                     try:
                         memories.append(Memory.model_validate_json(doc))
@@ -449,7 +450,7 @@ class SKChromaBackend(BaseBackend):
             distances = (results.get("distances") or [[]])[0]
 
             matches = []
-            for doc_id, doc, distance in zip(ids, documents, distances):
+            for doc_id, doc, distance in zip(ids, documents, distances, strict=False):
                 if not doc:
                     continue
                 try:
@@ -510,7 +511,9 @@ class SKChromaBackend(BaseBackend):
                     self.save(memory)
                     stats["indexed"] += 1
                 except Exception as e:
-                    logger.warning("ChromaDB sync_all: failed to process %s: %s", json_file.name, e)
+                    logger.warning(
+                        "ChromaDB sync_all: failed to process %s: %s", json_file.name, e
+                    )
                     stats["errors"] += 1
 
         # Remove stale entries

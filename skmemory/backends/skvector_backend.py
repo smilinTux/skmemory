@@ -18,9 +18,9 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
@@ -78,7 +78,9 @@ def _candidate_local_model_paths(model_name: str) -> list[Path]:
     hammertime_root = os.environ.get("HAMMERTIME_ROOT")
     if hammertime_root:
         candidates.append(Path(hammertime_root) / "models" / "mxbai-embed-large")
-    candidates.append(Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/models/mxbai-embed-large"))
+    candidates.append(
+        Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/models/mxbai-embed-large")
+    )
     return candidates
 
 
@@ -241,8 +243,11 @@ class SKVectorBackend(BaseBackend):
             if self._embed_fn is None:
                 self._embedder = SentenceTransformer(self.embedding_model_name)
                 # get_embedding_dimension (new API) or get_sentence_embedding_dimension (legacy)
-                get_dim = getattr(self._embedder, "get_embedding_dimension",
-                          getattr(self._embedder, "get_sentence_embedding_dimension", None))
+                get_dim = getattr(
+                    self._embedder,
+                    "get_embedding_dimension",
+                    getattr(self._embedder, "get_sentence_embedding_dimension", None),
+                )
                 if callable(get_dim):
                     resolved_dim = get_dim()
                     if isinstance(resolved_dim, int) and resolved_dim > 0:
@@ -377,20 +382,44 @@ class SKVectorBackend(BaseBackend):
         )
 
         known_keys = {
-            "memory_json", "title", "layer", "tier", "tags", "source", "created_at",
-            "emotional_intensity", "intensity", "emotional_valence", "emotional_labels",
-            "emotions", "content", "content_preview", "summary", "role", "file_path",
-            "filename", "type", "category", "is_chunk", "chunk_index", "total_chunks",
-            "section_title", "parent_id", "parent_doc", "authority_tier",
+            "memory_json",
+            "title",
+            "layer",
+            "tier",
+            "tags",
+            "source",
+            "created_at",
+            "emotional_intensity",
+            "intensity",
+            "emotional_valence",
+            "emotional_labels",
+            "emotions",
+            "content",
+            "content_preview",
+            "summary",
+            "role",
+            "file_path",
+            "filename",
+            "type",
+            "category",
+            "is_chunk",
+            "chunk_index",
+            "total_chunks",
+            "section_title",
+            "parent_id",
+            "parent_doc",
+            "authority_tier",
         }
         metadata = {k: v for k, v in payload.items() if k not in known_keys}
         for key in ("file_path", "filename", "type", "category", "parent_doc", "authority_tier"):
             if payload.get(key) is not None:
                 metadata.setdefault(key, payload.get(key))
 
-
         from ..retrieval import prepare_metadata
-        source_ref = payload.get("parent_doc") or payload.get("file_path") or payload.get("filename") or ""
+
+        source_ref = (
+            payload.get("parent_doc") or payload.get("file_path") or payload.get("filename") or ""
+        )
         metadata = prepare_metadata(
             title=title,
             source=payload.get("source") or payload.get("type") or "skvector",
@@ -592,9 +621,7 @@ class SKVectorBackend(BaseBackend):
 
             # Delete the main point
             point_id = self._id_to_point_id(memory_id)
-            self._client.delete(
-                collection_name=self.collection, points_selector=[point_id]
-            )
+            self._client.delete(collection_name=self.collection, points_selector=[point_id])
             # Change 3: delete all chunk points where parent_id matches
             self._client.delete(
                 collection_name=self.collection,
@@ -701,6 +728,7 @@ class SKVectorBackend(BaseBackend):
         must_conditions = []
 
         from qdrant_client.models import FieldCondition, Filter, MatchValue
+
         if layer is not None:
             layer_value = layer.value if hasattr(layer, "value") else layer
             must_conditions.append(
@@ -708,13 +736,9 @@ class SKVectorBackend(BaseBackend):
             )
         if tags:
             for tag in tags:
-                must_conditions.append(
-                    FieldCondition(key="tags", match=MatchValue(value=tag))
-                )
+                must_conditions.append(FieldCondition(key="tags", match=MatchValue(value=tag)))
         if source is not None:
-            must_conditions.append(
-                FieldCondition(key="source", match=MatchValue(value=source))
-            )
+            must_conditions.append(FieldCondition(key="source", match=MatchValue(value=source)))
         if is_chunk is not None:
             must_conditions.append(
                 FieldCondition(key="is_chunk", match=MatchValue(value=is_chunk))
@@ -803,9 +827,7 @@ class SKVectorBackend(BaseBackend):
                     self.remove(stale_id)
                     stats["removed"] += 1
                 except Exception as e:
-                    logger.warning(
-                        "SKVector sync_all: failed to remove stale %s: %s", stale_id, e
-                    )
+                    logger.warning("SKVector sync_all: failed to remove stale %s: %s", stale_id, e)
                     stats["errors"] += 1
 
         logger.info(

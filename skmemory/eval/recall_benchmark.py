@@ -259,11 +259,16 @@ def run_benchmark(
 
 def _print_report(result: dict) -> None:
     k_values = result["k_values"]
-    print(f"skmemory recall benchmark — {result['num_queries']} known-item queries, "
-          f"{result['num_fixture_memories']} fixture memories\n")
+    print(
+        f"skmemory recall benchmark — {result['num_queries']} known-item queries, "
+        f"{result['num_fixture_memories']} fixture memories\n"
+    )
 
-    header = "query".ljust(44) + "".join(f"recall@{k}".rjust(11) for k in k_values) + \
-        "".join(f"ndcg@{k}".rjust(11) for k in k_values)
+    header = (
+        "query".ljust(44)
+        + "".join(f"recall@{k}".rjust(11) for k in k_values)
+        + "".join(f"ndcg@{k}".rjust(11) for k in k_values)
+    )
     print(header)
     print("-" * len(header))
     for row in result["per_query"]:

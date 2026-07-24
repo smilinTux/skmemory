@@ -27,7 +27,6 @@ from .anchor import WarmthAnchor, load_anchor, save_anchor
 from .importers.telegram import import_telegram
 from .journal import Journal, JournalEntry
 from .lovenote import LoveNote, LoveNoteChain
-from .openclaw import SKMemoryPlugin
 from .moc import (
     MOCIndex,
     MOCLink,
@@ -38,6 +37,7 @@ from .moc import (
     render_moc_markdown,
     write_mocs,
 )
+from .openclaw import SKMemoryPlugin
 from .quadrants import Quadrant, classify_memory, tag_with_quadrant
 from .ritual import RitualResult, perform_ritual, quick_rehydrate
 from .sealing import (

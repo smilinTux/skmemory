@@ -24,6 +24,7 @@ Env:
     EMBED_URL    (default http://192.168.0.100:11434/api/embed)
     EMBED_MODEL  (default mxbai-embed-large)
 """
+
 from __future__ import annotations
 
 import csv
@@ -144,7 +145,9 @@ def reconcile(
             for (mid, o), e in zip(pairs, embs, strict=False):
                 tags = (
                     "{"
-                    + ",".join('"' + str(t).replace('"', '\\"') + '"' for t in (o.get("tags") or []))
+                    + ",".join(
+                        '"' + str(t).replace('"', '\\"') + '"' for t in (o.get("tags") or [])
+                    )
                     + "}"
                 )
                 cr = o.get("created_at") or "1970-01-01T00:00:00+00:00"

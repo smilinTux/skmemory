@@ -12,7 +12,7 @@ transcripts and Claude Code hooks.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -22,10 +22,11 @@ from dataclasses import dataclass, field
 @dataclass
 class ExtractedMemory:
     """A potential memory-worthy moment extracted from conversation text."""
-    type: str           # "decision" | "preference" | "milestone" | "problem" | "emotional"
-    content: str        # The extracted text
-    confidence: float   # 0-1
-    source_line: int    # Line number in original text
+
+    type: str  # "decision" | "preference" | "milestone" | "problem" | "emotional"
+    content: str  # The extracted text
+    confidence: float  # 0-1
+    source_line: int  # Line number in original text
 
 
 # ---------------------------------------------------------------------------
@@ -92,10 +93,19 @@ def _get_compiled(patterns: list[str]) -> list[re.Pattern]:
 # Code line detection
 # ---------------------------------------------------------------------------
 
-_CODE_INDICATORS = frozenset([
-    "import ", "from ", "def ", "class ", "return ",
-    "if __name__", "#!/", "```", ">>>",
-])
+_CODE_INDICATORS = frozenset(
+    [
+        "import ",
+        "from ",
+        "def ",
+        "class ",
+        "return ",
+        "if __name__",
+        "#!/",
+        "```",
+        ">>>",
+    ]
+)
 
 _CODE_CHARS = frozenset(["()", "{}", "=>", "->", "==", "!=", "<=", ">=", "+="])
 
@@ -111,18 +121,16 @@ def _is_code_line(line: str) -> bool:
         return True
     # Lines that are mostly symbols/operators
     alpha_ratio = sum(1 for c in stripped if c.isalpha()) / max(len(stripped), 1)
-    if alpha_ratio < 0.3:
-        return True
-    return False
+    return alpha_ratio < 0.3
 
 
 # ---------------------------------------------------------------------------
 # Sentence extraction and cleanup
 # ---------------------------------------------------------------------------
 
-_MARKDOWN_RE = re.compile(r'[*_`#>~]')
-_BULLET_RE = re.compile(r'^[-•]\s*')
-_NUMBER_RE = re.compile(r'^\d+\.\s*')
+_MARKDOWN_RE = re.compile(r"[*_`#>~]")
+_BULLET_RE = re.compile(r"^[-•]\s*")
+_NUMBER_RE = re.compile(r"^\d+\.\s*")
 
 
 def _extract_sentence(line: str) -> str:
@@ -167,12 +175,14 @@ def extract_memories(text: str, min_length: int = 20) -> list[ExtractedMemory]:
                 if pattern.search(line):
                     sentence = _extract_sentence(line)
                     if len(sentence) >= min_length:
-                        results.append(ExtractedMemory(
-                            type=mem_type,
-                            content=sentence,
-                            confidence=0.6,
-                            source_line=i,
-                        ))
+                        results.append(
+                            ExtractedMemory(
+                                type=mem_type,
+                                content=sentence,
+                                confidence=0.6,
+                                source_line=i,
+                            )
+                        )
                     break  # One match per line per type
 
     return _deduplicate(results)

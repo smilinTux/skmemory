@@ -1,18 +1,15 @@
 """Tests for skmemory.hooks.claude_code_hooks"""
+
 import json
-import os
-import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from skmemory.hooks.claude_code_hooks import (
-    handle_stop,
-    handle_precompact,
-    install_hooks,
-    _get_session_id,
     _get_agent,
+    _get_session_id,
+    handle_precompact,
+    handle_stop,
+    install_hooks,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -20,19 +17,23 @@ from skmemory.hooks.claude_code_hooks import (
 
 SHORT_CONVERSATION = "hi"
 
-LONG_CONVERSATION = """
+LONG_CONVERSATION = (
+    """
 Chef: We decided to use ChromaDB for vector search going forward.
 Lumina: Great call. I prefer flat files for primary storage though.
 Chef: Agreed. Finally shipped v0.9.4 with the WAL integration.
 Lumina: All tests pass on the new branch.
 Chef: Found a bug in the tail() method — root cause was off-by-one on the slice.
 Lumina: This is a real breakthrough for the sovereign memory system.
-""" * 5  # repeat to be > 100 chars
+"""
+    * 5
+)  # repeat to be > 100 chars
 
 
 # ---------------------------------------------------------------------------
 # Test _get_session_id and _get_agent
 # ---------------------------------------------------------------------------
+
 
 class TestHelpers:
     def test_get_session_id_from_env(self, monkeypatch):
@@ -53,6 +54,7 @@ class TestHelpers:
 # Test handle_stop
 # ---------------------------------------------------------------------------
 
+
 class TestHandleStop:
     def test_empty_conversation_does_nothing(self):
         # Should not raise, should return without saving
@@ -62,27 +64,39 @@ class TestHandleStop:
 
     def test_short_conversation_does_nothing(self):
         with patch("skmemory.hooks.claude_code_hooks._get_store") as mock_store:
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available", return_value="hi"):
+            with patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available", return_value="hi"
+            ):
                 handle_stop()
             mock_store.assert_not_called()
 
     def test_long_conversation_extracts_memories(self):
         mock_store_instance = MagicMock()
-        with patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance):
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value=LONG_CONVERSATION):
-                handle_stop()
+        with (
+            patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance),
+            patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available",
+                return_value=LONG_CONVERSATION,
+            ),
+        ):
+            handle_stop()
         # Should have called snapshot at least once
         assert mock_store_instance.snapshot.call_count >= 1
 
     def test_stop_uses_correct_tags(self):
         mock_store_instance = MagicMock()
-        with patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance):
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value=LONG_CONVERSATION):
-                with patch("skmemory.hooks.claude_code_hooks._get_session_id",
-                           return_value="test-session-xyz"):
-                    handle_stop()
+        with (
+            patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance),
+            patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available",
+                return_value=LONG_CONVERSATION,
+            ),
+            patch(
+                "skmemory.hooks.claude_code_hooks._get_session_id",
+                return_value="test-session-xyz",
+            ),
+        ):
+            handle_stop()
 
         # All calls should include "auto-extract" tag
         for call in mock_store_instance.snapshot.call_args_list:
@@ -92,10 +106,14 @@ class TestHandleStop:
 
     def test_stop_source_is_claude_code_hook(self):
         mock_store_instance = MagicMock()
-        with patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance):
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value=LONG_CONVERSATION):
-                handle_stop()
+        with (
+            patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance),
+            patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available",
+                return_value=LONG_CONVERSATION,
+            ),
+        ):
+            handle_stop()
 
         for call in mock_store_instance.snapshot.call_args_list:
             assert call.kwargs.get("source") == "claude-code-hook"
@@ -103,16 +121,21 @@ class TestHandleStop:
     def test_stop_snapshot_failure_does_not_crash(self):
         mock_store_instance = MagicMock()
         mock_store_instance.snapshot.side_effect = RuntimeError("disk full")
-        with patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance):
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value=LONG_CONVERSATION):
-                # Should not raise even if snapshot fails
-                handle_stop()
+        with (
+            patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance),
+            patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available",
+                return_value=LONG_CONVERSATION,
+            ),
+        ):
+            # Should not raise even if snapshot fails
+            handle_stop()
 
 
 # ---------------------------------------------------------------------------
 # Test handle_precompact
 # ---------------------------------------------------------------------------
+
 
 class TestHandlePrecompact:
     def test_empty_conversation_does_nothing(self):
@@ -122,27 +145,36 @@ class TestHandlePrecompact:
 
     def test_short_conversation_does_nothing(self):
         with patch("skmemory.hooks.claude_code_hooks._get_store") as mock_store:
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value="x" * 100):
+            with patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available", return_value="x" * 100
+            ):
                 handle_precompact()
             mock_store.assert_not_called()
 
     def test_long_conversation_saves_snapshot(self):
         mock_store_instance = MagicMock()
         long_text = "context " * 200  # > 200 chars
-        with patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance):
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value=long_text):
-                handle_precompact()
+        with (
+            patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance),
+            patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available",
+                return_value=long_text,
+            ),
+        ):
+            handle_precompact()
         mock_store_instance.snapshot.assert_called_once()
 
     def test_precompact_uses_last_4000_chars(self):
         mock_store_instance = MagicMock()
         long_text = "A" * 3000 + "B" * 3000  # 6000 chars total
-        with patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance):
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value=long_text):
-                handle_precompact()
+        with (
+            patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance),
+            patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available",
+                return_value=long_text,
+            ),
+        ):
+            handle_precompact()
 
         call_kwargs = mock_store_instance.snapshot.call_args.kwargs
         content = call_kwargs["content"]
@@ -153,12 +185,18 @@ class TestHandlePrecompact:
     def test_precompact_tags(self):
         mock_store_instance = MagicMock()
         long_text = "context " * 200
-        with patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance):
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value=long_text):
-                with patch("skmemory.hooks.claude_code_hooks._get_session_id",
-                           return_value="sess-123"):
-                    handle_precompact()
+        with (
+            patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance),
+            patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available",
+                return_value=long_text,
+            ),
+            patch(
+                "skmemory.hooks.claude_code_hooks._get_session_id",
+                return_value="sess-123",
+            ),
+        ):
+            handle_precompact()
 
         call_kwargs = mock_store_instance.snapshot.call_args.kwargs
         assert "pre-compact" in call_kwargs["tags"]
@@ -169,16 +207,21 @@ class TestHandlePrecompact:
         mock_store_instance = MagicMock()
         mock_store_instance.snapshot.side_effect = RuntimeError("oops")
         long_text = "context " * 200
-        with patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance):
-            with patch("skmemory.hooks.claude_code_hooks._read_stdin_if_available",
-                       return_value=long_text):
-                # Should not raise
-                handle_precompact()
+        with (
+            patch("skmemory.hooks.claude_code_hooks._get_store", return_value=mock_store_instance),
+            patch(
+                "skmemory.hooks.claude_code_hooks._read_stdin_if_available",
+                return_value=long_text,
+            ),
+        ):
+            # Should not raise
+            handle_precompact()
 
 
 # ---------------------------------------------------------------------------
 # Test install_hooks
 # ---------------------------------------------------------------------------
+
 
 class TestInstallHooks:
     def test_creates_settings_file(self, tmp_path):

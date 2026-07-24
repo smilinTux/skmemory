@@ -21,12 +21,11 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 __all__ = ["freshness_multiplier", "backfill_last_invoked"]
 
 
-def freshness_multiplier(last_invoked_iso: Optional[str], *, now: Optional[datetime] = None) -> float:
+def freshness_multiplier(last_invoked_iso: str | None, *, now: datetime | None = None) -> float:
     """
     Compute decay multiplier for an anchor based on last invocation time.
 

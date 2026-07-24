@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from skmemory.admission import (
-    AdmissionPolicy,
     SENTINEL_UNRECOVERABLE_SOURCE,
     review_queue_path,
 )

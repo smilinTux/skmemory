@@ -707,9 +707,7 @@ def run_setup_wizard(
                 key_raw = input_fn("SKVector API key (press Enter if none): ").strip()
                 skvector_key = key_raw or None
                 if not embedding_model and not non_interactive:
-                    model_raw = input_fn(
-                        "SKVector embedding model [mxbai-embed-large]: "
-                    ).strip()
+                    model_raw = input_fn("SKVector embedding model [mxbai-embed-large]: ").strip()
                     embedding_model = model_raw or "mxbai-embed-large"
                 if not vector_dim and not non_interactive:
                     dim_raw = input_fn("SKVector vector dimension [1024]: ").strip()
@@ -906,7 +904,9 @@ def run_setup_wizard(
 
     cfg = SKMemoryConfig(
         skvector_url="http://localhost:6333" if enable_skvector else None,
-        skvector_embedding_model=((embedding_model or "mxbai-embed-large") if enable_skvector else None),
+        skvector_embedding_model=(
+            (embedding_model or "mxbai-embed-large") if enable_skvector else None
+        ),
         skvector_vector_dim=((vector_dim or 1024) if enable_skvector else None),
         skgraph_url="redis://localhost:6379" if enable_skgraph else None,
         backends_enabled=backends_enabled,

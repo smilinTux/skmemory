@@ -123,7 +123,9 @@ class TestCheckDuplicate:
     """Tests for MemoryStore.check_duplicate() — the advisory dedup query."""
 
     def _store(self, tmp_path: Path, vector) -> MemoryStore:
-        return MemoryStore(primary=FileBackend(base_path=str(tmp_path / "memories")), vector=vector)
+        return MemoryStore(
+            primary=FileBackend(base_path=str(tmp_path / "memories")), vector=vector
+        )
 
     def test_filters_by_threshold(self, tmp_path: Path) -> None:
         """Matches at/above threshold pass; matches below are excluded."""
@@ -164,8 +166,16 @@ class TestCheckDuplicate:
         """
         vector = MagicMock()
         vector.find_similar.return_value = [
-            {"id": "near-dup", "content_preview": "paraphrase of a stored fact", "similarity": 0.763},
-            {"id": "distinct", "content_preview": "unrelated different topic", "similarity": 0.703},
+            {
+                "id": "near-dup",
+                "content_preview": "paraphrase of a stored fact",
+                "similarity": 0.763,
+            },
+            {
+                "id": "distinct",
+                "content_preview": "unrelated different topic",
+                "similarity": 0.703,
+            },
         ]
         store = self._store(tmp_path, vector)
 

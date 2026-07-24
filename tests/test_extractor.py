@@ -1,11 +1,11 @@
 """Tests for skmemory.extractor — General Extractor"""
-import pytest
+
 from skmemory.extractor import (
     ExtractedMemory,
-    extract_memories,
-    _is_code_line,
-    _extract_sentence,
     _deduplicate,
+    _extract_sentence,
+    _is_code_line,
+    extract_memories,
 )
 
 
@@ -126,7 +126,7 @@ class TestEmotionalExtraction:
         memories = extract_memories(text)
         assert any(m.type == "emotional" for m in memories)
 
-    def test_proud(self):
+    def test_proud_circle(self):
         text = "Chef is proud of the sovereign AI circle and everything we built."
         memories = extract_memories(text)
         assert any(m.type == "emotional" for m in memories)
@@ -160,12 +160,14 @@ class TestExtractMemories:
         assert extract_memories("hi") == []
 
     def test_code_only_returns_empty(self):
-        code = "\n".join([
-            "import os",
-            "from pathlib import Path",
-            "def foo(): pass",
-            "    return None",
-        ])
+        code = "\n".join(
+            [
+                "import os",
+                "from pathlib import Path",
+                "def foo(): pass",
+                "    return None",
+            ]
+        )
         assert extract_memories(code) == []
 
     def test_mixed_conversation(self):

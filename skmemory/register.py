@@ -601,7 +601,9 @@ def register_package(
     result: dict = {"name": name, "environments": environments}
 
     if dry_run:
-        mcp_envs = [env for env in environments if env in {"claude-code", "cursor", "opencode", "mcporter"}]
+        mcp_envs = [
+            env for env in environments if env in {"claude-code", "cursor", "opencode", "mcporter"}
+        ]
         result["skill"] = {
             "action": "dry-run",
             "path": str((workspace or Path.home() / "clawd") / "skills" / name / "SKILL.md"),

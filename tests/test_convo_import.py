@@ -44,9 +44,7 @@ def _claude_code_jsonl(tmp_path: Path) -> Path:
         {"type": "user", "message": {"content": "How do I write a decorator?"}},
         {
             "type": "assistant",
-            "message": {
-                "content": [{"type": "text", "text": "Use functools.wraps like this."}]
-            },
+            "message": {"content": [{"type": "text", "text": "Use functools.wraps like this."}]},
         },
         {"type": "user", "message": {"content": "Thanks, show a full example"}},
         {"type": "assistant", "message": {"content": "def foo(): return 'bar'"}},

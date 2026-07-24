@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from skmemory.backends.file_backend import FileBackend
-from skmemory.models import Memory, MemoryLayer
+from skmemory.models import Memory
 from skmemory.store import MemoryStore
 from skmemory.validation import (
     SchemaValidationError,

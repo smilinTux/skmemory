@@ -39,7 +39,7 @@ try:
         SKMEMORY_HOME = _agent_base
     # When SKMEMORY_HOME is overridden via env var, derive config paths from it
     # so all reads and writes stay within the specified directory.
-    if SKMEMORY_HOME == _agent_base:
+    if _agent_base == SKMEMORY_HOME:
         CONFIG_DIR = default_paths["config"]
         CONFIG_PATH = default_paths["config_yaml"]
     else:
@@ -56,6 +56,7 @@ except ValueError:
 
 
 logger = logging.getLogger("skmemory.config")
+
 
 class EndpointConfig(BaseModel):
     """A single backend endpoint with role and optional Tailscale IP."""

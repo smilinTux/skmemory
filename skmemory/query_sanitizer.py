@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 
 # Sentence boundary pattern: split on . ! ? followed by whitespace or end
-_SENTENCE_SPLIT = re.compile(r'(?<=[.!?])\s+')
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 # Common system prompt markers to strip
 _SYSTEM_MARKERS = [
@@ -75,7 +75,7 @@ def sanitize_query(raw_query: str) -> str:
 
 def _extract_last_question(text: str) -> str | None:
     """Scan backwards for the last sentence ending with '?'."""
-    positions = [i for i, c in enumerate(text) if c == '?']
+    positions = [i for i, c in enumerate(text) if c == "?"]
     if not positions:
         return None
 
@@ -84,15 +84,15 @@ def _extract_last_question(text: str) -> str | None:
     # Walk backwards to find the start of that sentence
     start = 0
     for i in range(qmark_pos - 1, -1, -1):
-        if text[i] in '.!?' and i < qmark_pos - 1:
-            if i + 1 < len(text) and text[i + 1] == ' ':
+        if text[i] in ".!?" and i < qmark_pos - 1:
+            if i + 1 < len(text) and text[i + 1] == " ":
                 start = i + 1
                 break
-        elif text[i] == '\n':
+        elif text[i] == "\n":
             start = i + 1
             break
 
-    result = text[start:qmark_pos + 1].strip()
+    result = text[start : qmark_pos + 1].strip()
     result = _strip_system_prefix(result)
 
     return result if result else None
@@ -116,7 +116,7 @@ def _is_system_prompt_line(line: str) -> bool:
 
 def _strip_system_prefix(text: str) -> str:
     """Remove common system prompt prefixes from extracted text."""
-    lines = text.split('\n')
+    lines = text.split("\n")
     while lines and _is_system_prompt_line(lines[0]):
         lines.pop(0)
-    return '\n'.join(lines).strip()
+    return "\n".join(lines).strip()

@@ -111,8 +111,6 @@ class SKGraphBackend:
             logger.warning("SKGraph connection failed: %s", exc)
             return False
 
-
-
     @staticmethod
     def _ordered_unique(values: Iterable[str]) -> list[str]:
         seen: set[str] = set()
@@ -128,7 +126,9 @@ class SKGraphBackend:
             ordered.append(clean)
         return ordered
 
-    def _run_batch_edge_query(self, query: str, memory_id: str, parameter_name: str, values: Iterable[str]) -> None:
+    def _run_batch_edge_query(
+        self, query: str, memory_id: str, parameter_name: str, values: Iterable[str]
+    ) -> None:
         items = self._ordered_unique(values)
         if not items:
             return
@@ -268,7 +268,7 @@ class SKGraphBackend:
                     self._graph.query(
                         "MATCH (later:Memory {id: $later_id}), (earlier:Memory {id: $earlier_id}) "
                         "MERGE (later)-[:PRECEDED_BY]->(earlier)",
-                        {"later_id": memory.id, "earlier_id": prior_id}
+                        {"later_id": memory.id, "earlier_id": prior_id},
                     )
                 except Exception as e:
                     logger.warning("PRECEDED_BY edge failed: %s", e)
@@ -288,12 +288,23 @@ class SKGraphBackend:
 
             # Decomposition-derived structure edges
             decomposition = memory.metadata.get("decomposition", {})
-            sections = [decomposition.get("section_title")] if decomposition.get("section_title") else []
+            sections = (
+                [decomposition.get("section_title")] if decomposition.get("section_title") else []
+            )
             sections.extend(decomposition.get("section_titles", []))
             self._run_batch_edge_query(Q.CREATE_IN_SECTION_BATCH, memory.id, "sections", sections)
-            self._run_batch_edge_query(Q.CREATE_MENTIONS_ENTITY_BATCH, memory.id, "entities", decomposition.get("entities", []))
-            self._run_batch_edge_query(Q.CREATE_CITES_BATCH, memory.id, "citations", decomposition.get("citations", []))
-            self._run_batch_edge_query(Q.CREATE_ASSERTS_BATCH, memory.id, "claims", decomposition.get("claims", []))
+            self._run_batch_edge_query(
+                Q.CREATE_MENTIONS_ENTITY_BATCH,
+                memory.id,
+                "entities",
+                decomposition.get("entities", []),
+            )
+            self._run_batch_edge_query(
+                Q.CREATE_CITES_BATCH, memory.id, "citations", decomposition.get("citations", [])
+            )
+            self._run_batch_edge_query(
+                Q.CREATE_ASSERTS_BATCH, memory.id, "claims", decomposition.get("claims", [])
+            )
 
             # For non-decomposed memories, extract entities inline
             if not memory.metadata.get("decomposition") and len(memory.content) > 50:
@@ -304,7 +315,7 @@ class SKGraphBackend:
             logger.warning("SKGraph index failed: %s", exc)
             return False
 
-    def _wire_related(self, memory_id: str, memory: "Memory") -> None:
+    def _wire_related(self, memory_id: str, memory: Memory) -> None:
         """Create weighted RELATED_TO edges from multiple signals."""
         signals = []
 
@@ -313,7 +324,7 @@ class SKGraphBackend:
             try:
                 result = self._graph.query(
                     "MATCH (sibling:Memory {parent_id: $parent_id}) WHERE sibling.id <> $my_id RETURN sibling.id",
-                    {"parent_id": memory.parent_id, "my_id": memory_id}
+                    {"parent_id": memory.parent_id, "my_id": memory_id},
                 )
                 for row in result.result_set:
                     signals.append((row[0], "sibling", 0.9))
@@ -325,21 +336,23 @@ class SKGraphBackend:
             try:
                 result = self._graph.query(
                     "MATCH (m:Memory) WHERE m.source_ref = $ref AND m.id <> $my_id RETURN m.id LIMIT 5",
-                    {"ref": memory.source_ref, "my_id": memory_id}
+                    {"ref": memory.source_ref, "my_id": memory_id},
                 )
                 for row in result.result_set:
                     signals.append((row[0], "same_session", 0.7))
             except Exception as e:
-                logger.warning("skgraph: same_session signal query failed for %s: %s", memory_id, e)
+                logger.warning(
+                    "skgraph: same_session signal query failed for %s: %s", memory_id, e
+                )
 
         # Create edges with weight and reason properties
-        for (other_id, reason, weight) in signals:
+        for other_id, reason, weight in signals:
             try:
                 self._graph.query(
                     "MATCH (a:Memory {id: $a_id}), (b:Memory {id: $b_id}) "
                     "MERGE (a)-[r:RELATED_TO]->(b) "
                     "SET r.weight = $weight, r.reason = $reason",
-                    {"a_id": memory_id, "b_id": other_id, "weight": weight, "reason": reason}
+                    {"a_id": memory_id, "b_id": other_id, "weight": weight, "reason": reason},
                 )
             except Exception as e:
                 logger.warning("RELATED_TO wire failed: %s", e)
@@ -347,8 +360,9 @@ class SKGraphBackend:
     def _extract_and_index_entities(self, memory_id: str, content: str) -> None:
         """Extract entities from short memory content and create MENTIONS edges."""
         import re
+
         # Reuse entity extraction pattern from decompose.py
-        entity_pattern = re.compile(r'\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,3})\b')
+        entity_pattern = re.compile(r"\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,3})\b")
         SKIP_WORDS = {"The", "This", "That", "These", "Those", "When", "Where", "What"}
 
         entities = []
@@ -366,12 +380,14 @@ class SKGraphBackend:
                     "MATCH (m:Memory {id: $mem_id}) "
                     "MERGE (e:Entity {name: $entity}) "
                     "MERGE (m)-[:MENTIONS]->(e)",
-                    {"mem_id": memory_id, "entity": entity}
+                    {"mem_id": memory_id, "entity": entity},
                 )
             except Exception as e:
                 logger.warning("Entity index failed for '%s': %s", entity, e)
 
-    def update_emotional(self, memory_id: str, intensity: float, valence: float, labels: list[str]) -> bool:
+    def update_emotional(
+        self, memory_id: str, intensity: float, valence: float, labels: list[str]
+    ) -> bool:
         """Update emotional fields on an existing Memory node.
 
         Args:
@@ -388,7 +404,7 @@ class SKGraphBackend:
         try:
             self._graph.query(
                 "MATCH (m:Memory {id: $id}) SET m.intensity = $intensity, m.valence = $valence, m.labels = $labels",
-                {"id": memory_id, "intensity": intensity, "valence": valence, "labels": labels}
+                {"id": memory_id, "intensity": intensity, "valence": valence, "labels": labels},
             )
             return True
         except Exception as e:
@@ -409,30 +425,36 @@ class SKGraphBackend:
             return {}
         try:
             result = self._graph.query(
-                "MATCH path = (center:Memory {id: $id})-[*1.." + str(depth) + "]-(neighbor:Memory) "
+                "MATCH path = (center:Memory {id: $id})-[*1.."
+                + str(depth)
+                + "]-(neighbor:Memory) "
                 "WITH neighbor, min(length(path)) as distance, "
                 "     [r in relationships(path) | type(r)] as edge_types "
                 "RETURN neighbor.id, neighbor.title, neighbor.layer, distance, edge_types[0] "
                 "ORDER BY distance ASC LIMIT 20",
-                {"id": memory_id}
+                {"id": memory_id},
             )
             related = []
             for row in result.result_set:
-                related.append({
-                    "id": row[0], "title": row[1], "layer": row[2],
-                    "distance": row[3], "edge_type": row[4]
-                })
+                related.append(
+                    {
+                        "id": row[0],
+                        "title": row[1],
+                        "layer": row[2],
+                        "distance": row[3],
+                        "edge_type": row[4],
+                    }
+                )
 
             # Get tags and entities for center
             tag_result = self._graph.query(
-                "MATCH (m:Memory {id: $id})-[:TAGGED]->(t:Tag) RETURN t.name",
-                {"id": memory_id}
+                "MATCH (m:Memory {id: $id})-[:TAGGED]->(t:Tag) RETURN t.name", {"id": memory_id}
             )
             tags = [r[0] for r in tag_result.result_set]
 
             entity_result = self._graph.query(
                 "MATCH (m:Memory {id: $id})-[:MENTIONS]->(e:Entity) RETURN e.name LIMIT 10",
-                {"id": memory_id}
+                {"id": memory_id},
             )
             entities = [r[0] for r in entity_result.result_set]
 
@@ -665,7 +687,9 @@ class SKGraphBackend:
             existing["match_count"] = len(existing["source_memory_ids"])
             if result.get("is_chunk"):
                 existing["chunk_match_count"] += 1
-            existing["intensity"] = max(existing["intensity"], result.get("canonical_intensity") or result["intensity"])
+            existing["intensity"] = max(
+                existing["intensity"], result.get("canonical_intensity") or result["intensity"]
+            )
 
         collapsed = list(grouped.values())
         collapsed.sort(key=lambda row: (-row["intensity"], -row["match_count"], row["title"]))
@@ -919,6 +943,7 @@ class SKGraphBackend:
         """
         import json
         from pathlib import Path
+
         stats = {"indexed": 0, "errors": 0}
 
         if not self._ensure_initialized():
@@ -939,14 +964,14 @@ class SKGraphBackend:
                     else:
                         stats["errors"] += 1
                 except Exception as exc:
-                    logger.warning(
-                        "SKGraph sync_all: failed on %s: %s", json_file.name, exc
-                    )
+                    logger.warning("SKGraph sync_all: failed on %s: %s", json_file.name, exc)
                     stats["errors"] += 1
 
         logger.info(
             "SKGraph sync_all for '%s': indexed=%d errors=%d",
-            agent_name, stats["indexed"], stats["errors"],
+            agent_name,
+            stats["indexed"],
+            stats["errors"],
         )
         return stats
 

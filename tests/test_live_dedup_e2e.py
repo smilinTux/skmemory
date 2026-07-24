@@ -82,7 +82,9 @@ def test_pg_dsn_is_local_writable_not_standby():
     assert host in ("localhost", "127.0.0.1", "::1"), (
         f"skmem-pg write DSN must be LOCAL, got {host!r} -- agents connect only to localhost."
     )
-    assert u.port != 5433, ":5433 is the retired standby port; skmem-pg is a local writable primary"
+    assert u.port != 5433, (
+        ":5433 is the retired standby port; skmem-pg is a local writable primary"
+    )
 
     import psycopg
 
@@ -93,7 +95,9 @@ def test_pg_dsn_is_local_writable_not_standby():
             in_recovery = cur.fetchone()[0]
     finally:
         conn.close()
-    assert in_recovery is False, "skmem-pg write path must target a writable primary, not a standby"
+    assert in_recovery is False, (
+        "skmem-pg write path must target a writable primary, not a standby"
+    )
 
 
 @pytest.fixture
@@ -133,7 +137,9 @@ def store(pg_backend, tmp_path):
     from skmemory.backends.file_backend import FileBackend
     from skmemory.store import MemoryStore
 
-    return MemoryStore(primary=FileBackend(base_path=str(tmp_path / "memories")), vector=pg_backend)
+    return MemoryStore(
+        primary=FileBackend(base_path=str(tmp_path / "memories")), vector=pg_backend
+    )
 
 
 def _live_memories_count() -> int:
@@ -214,12 +220,12 @@ class TestLiveDedupEndToEnd:
         unrelated = "Zatarain's jambalaya is made with chicken thighs and three peppers."
         unrelated_matches = store.check_duplicate(unrelated)
         raw_unrelated_candidates = pg_backend.find_similar(unrelated, k=5)
-        top_unrelated_sim = (
-            max((c["similarity"] for c in raw_unrelated_candidates), default=0.0)
-        )
+        top_unrelated_sim = max((c["similarity"] for c in raw_unrelated_candidates), default=0.0)
         print(f"[live-dedup] unrelated candidates (raw): {raw_unrelated_candidates}")
         print(f"[live-dedup] unrelated -> top candidate similarity: {top_unrelated_sim}")
-        print(f"[live-dedup] check_duplicate(unrelated) matched ids: {[m['id'] for m in unrelated_matches]}")
+        print(
+            f"[live-dedup] check_duplicate(unrelated) matched ids: {[m['id'] for m in unrelated_matches]}"
+        )
 
         assert top_unrelated_sim < DEFAULT_THRESHOLD, (
             f"unrelated content's top similarity {top_unrelated_sim} cleared the "

@@ -43,9 +43,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DSN = os.environ.get(
     "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory"
 )
-DEFAULT_EMBED_URL = os.environ.get(
-    "SKMEMORY_EMBED_URL", "http://localhost:11434/api/embed"
-)
+DEFAULT_EMBED_URL = os.environ.get("SKMEMORY_EMBED_URL", "http://localhost:11434/api/embed")
 DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")
 VECTOR_DIM = 1024
 
@@ -179,9 +177,7 @@ class PGVectorBackend(BaseBackend):
     def delete(self, memory_id: str) -> bool:
         conn = self._connection()
         with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM memories WHERE id=%s AND agent=%s", (memory_id, self.agent)
-            )
+            cur.execute("DELETE FROM memories WHERE id=%s AND agent=%s", (memory_id, self.agent))
             return cur.rowcount > 0
 
     def list_memories(

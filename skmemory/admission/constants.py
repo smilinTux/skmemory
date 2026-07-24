@@ -10,7 +10,6 @@ from __future__ import annotations
 from enum import Enum
 from typing import Final
 
-
 # Bumped whenever the policy semantics change. Stamped onto every
 # admission decision so re-runs can distinguish stored-decision-vs-now.
 ADMISSION_POLICY_VERSION: Final[str] = "1.0.0"
@@ -74,9 +73,9 @@ class Gate1Class(str, Enum):
 class Gate1Outcome(str, Enum):
     """What Gate 1 emits per row."""
 
-    SKIP = "skip"      # Already canonical, no recovery work needed.
+    SKIP = "skip"  # Already canonical, no recovery work needed.
     RECOVER = "recover"  # Reconstructed; flows to Gate 2.
-    FAIL = "fail"      # Stored under sentinel; never visible to retrieval.
+    FAIL = "fail"  # Stored under sentinel; never visible to retrieval.
 
 
 class Gate2Reason(str, Enum):
