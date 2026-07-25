@@ -19,6 +19,7 @@ from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
 from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
+from .cascade import CascadeExecutor, CascadeStep
 from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
 from .models import (
     EmotionalSnapshot,
@@ -167,6 +168,11 @@ class MemoryStore:
                 / "write_log.jsonl"
             )
         self._wal = WriteAheadLog(wal_path)
+
+        # Executor for fanning a single op out across the derived backends
+        # (vector + graph). Centralises the best-effort partial-failure handling
+        # that store operations used to hand-roll at each call site.
+        self._cascade = CascadeExecutor(logger)
 
     def _enrich_metadata(
         self,
@@ -1058,38 +1064,46 @@ class MemoryStore:
         if mem_dir:
             write_tombstone(mem_dir, memory_id, reason="forget")
 
-        # Also remove from vector backend (cascade chunks). Check for remove()
-        # explicitly: a vector backend that lacks it means a forget silently
-        # leaves its rows behind (they linger until reconcile). Surface that
-        # loudly instead of swallowing an AttributeError, so a future gap like
-        # Gap A (pgvector shipped with delete() but no remove()) is visible.
-        if self.vector:
-            remover = getattr(self.vector, "remove", None)
-            if callable(remover):
-                try:
-                    remover(memory_id)
-                except Exception as e:
-                    logger.warning(
-                        "vector backend %s remove(%s) failed: %s",
-                        type(self.vector).__name__,
-                        memory_id,
-                        e,
-                    )
-            else:
-                logger.warning(
-                    "vector backend %s has no remove(); memory %s NOT removed "
-                    "from the vector store at forget time (lingers until "
-                    "reconcile); add a remove() to this backend",
-                    type(self.vector).__name__,
-                    memory_id,
-                )
-
-        # Also remove from graph backend
-        if self.graph:
-            try:
-                self.graph.remove_memory(memory_id)
-            except Exception as e:
-                logger.warning("SKGraph remove failed: %s", e)
+        # Fan the removal out to the derived backends through the cascade
+        # executor (best-effort, per-backend reporting). Two steps:
+        #
+        #  * vector.remove(id) - checked for presence: a vector backend that
+        #    lacks remove() means a forget silently leaves its rows behind (they
+        #    linger until reconcile), so surface that loudly instead of
+        #    swallowing an AttributeError (Gap A: pgvector once shipped delete()
+        #    but no remove()).
+        #  * graph.remove_memory(id) - called directly; any failure (including a
+        #    missing method) is caught and warned, never fatal.
+        vname = type(self.vector).__name__ if self.vector else ""
+        self._cascade.run(
+            "forget",
+            [
+                CascadeStep(
+                    role="vector",
+                    backend=self.vector,
+                    method="remove",
+                    args=(memory_id,),
+                    check_presence=True,
+                    warn_missing=(
+                        f"vector backend {vname} has no remove(); memory "
+                        f"{memory_id} NOT removed from the vector store at "
+                        f"forget time (lingers until reconcile); add a "
+                        f"remove() to this backend"
+                    ),
+                    warn_fail=lambda e: (
+                        f"vector backend {vname} remove({memory_id}) failed: {e}"
+                    ),
+                ),
+                CascadeStep(
+                    role="graph",
+                    backend=self.graph,
+                    method="remove_memory",
+                    args=(memory_id,),
+                    check_presence=False,
+                    warn_fail=lambda e: f"SKGraph remove failed: {e}",
+                ),
+            ],
+        )
 
         return deleted
 
