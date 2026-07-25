@@ -26,6 +26,17 @@ or when the prune would remove more than a capped fraction of the current pg row
 unless an explicit force override is given. Refusals log loudly and (best effort)
 alert to sk-alert.
 
+Resurrection guard (card 7d3e9fcc): the backfill step re-inserts any flat memory
+missing from pg. That is a resurrection hazard for a *deliberately forgotten*
+memory: `SKMemoryStore.forget` deletes it from the flat store + pgvector + AGE,
+but a stale flat copy that reappears later (Syncthing re-delivering the file from
+a node that has not seen the delete, a second source path, or an ingest
+re-import) looks like a brand-new "missing" memory and would be re-inserted.
+forget() therefore records a durable tombstone next to the flat memories (see
+`skmemory.tombstones`); reconcile loads those ids and REFUSES to backfill any
+tombstoned memory, even with a stale flat copy present, and treats a tombstoned
+row still in pg as an orphan to be pruned. Forgotten memories stay gone.
+
 Usage:
     python -m skmemory.reconcile [AGENT] [--force]   # default: $SKAGENT or lumina
     python -m skmemory.reconcile --all [--force]     # every provisioned agent
@@ -53,6 +64,8 @@ import subprocess
 import sys
 
 import requests
+
+from skmemory.tombstones import load_tombstones
 
 LAYERS = ["short-term", "mid-term", "long-term"]
 DEFAULT_EMBED_URL = os.environ.get("EMBED_URL", "http://192.168.0.100:11434/api/embed")
@@ -257,9 +270,32 @@ def reconcile(
             stem = os.path.splitext(os.path.basename(fp))[0]
             if stem:
                 flat[stem] = fp
+
+    # Resurrection guard (card 7d3e9fcc): a deliberately forgotten memory must
+    # never be re-created by reconcile. forget() records a durable tombstone
+    # (see skmemory.tombstones) that rides the same Syncthing sync as the flat
+    # memories. Any tombstoned id is dropped from the flat truth here, so it is
+    # never backfilled -- even when a stale flat copy has reappeared (Syncthing
+    # re-deliver, a second source path, or an ingest re-import) -- and, if it is
+    # somehow still in pg, it is left as an orphan and pruned out (through the
+    # guarded prune below) so "forgotten" stays gone from the derived index too.
+    tombstoned = load_tombstones(mem)
+    resurrection_blocked = sorted(i for i in flat if i in tombstoned)
+    for i in resurrection_blocked:
+        del flat[i]
+    if resurrection_blocked:
+        log(
+            f"[{agent}] resurrection-guard: refused to resurrect "
+            f"{len(resurrection_blocked)} tombstoned memory(ies) with a stale flat "
+            "copy present (forgotten memories stay gone)"
+        )
+
     pg_ids = set(psql(f"select id from memories where agent='{agent}';", True).split())
     missing = [i for i in flat if i not in pg_ids]
-    log(f"[{agent}] flat={len(flat)} pg={len(pg_ids)} missing={len(missing)}")
+    log(
+        f"[{agent}] flat={len(flat)} pg={len(pg_ids)} missing={len(missing)} "
+        f"tombstoned={len(tombstoned)} resurrection_blocked={len(resurrection_blocked)}"
+    )
 
     # 1. backfill missing (embed + upsert)
     loaded = 0
@@ -429,6 +465,8 @@ def reconcile(
         "pruned": pruned_n,
         "prune_skipped": prune_skipped,
         "prune_reason": prune_reason,
+        "tombstoned": len(tombstoned),
+        "resurrection_blocked": len(resurrection_blocked),
         "null_embedded": len(nulls),
         "embedded": embedded,
         "total": total,
