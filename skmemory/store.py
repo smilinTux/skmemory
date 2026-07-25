@@ -30,6 +30,7 @@ from .models import (
 from .query_sanitizer import sanitize_query
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
 from .skseed_validation import annotate_truth_score, resolve_auto_validate
+from .tombstones import write_tombstone
 from .validation import (
     PreWriteHook,
     default_pre_write_hooks,
@@ -1007,8 +1008,31 @@ class MemoryStore:
             )[:8],
         }
 
+    def _tombstone_mem_dir(self) -> str | None:
+        """Resolve the flat-memory dir where a forget tombstone should live.
+
+        This must be the same per-agent memory dir that
+        :func:`skmemory.reconcile.reconcile` scans, so the tombstone it writes is
+        the one reconcile honours. Prefer the primary flat backend's
+        ``base_path`` (a :class:`FileBackend` uses exactly that dir); fall back
+        to the active agent's ``memory`` dir. Returns ``None`` if neither can be
+        resolved (a forget must never fail because a marker location is unknown).
+        """
+        base = getattr(self.primary, "base_path", None)
+        if base is not None:
+            return str(base)
+        try:
+            return str(get_agent_paths()["base"] / "memory")
+        except Exception as e:
+            logger.warning("store.py: could not resolve tombstone dir: %s", e)
+            return None
+
     def forget(self, memory_id: str) -> bool:
-        """Delete a memory from all backends.
+        """Delete a memory from all backends and record a durable tombstone.
+
+        The tombstone (see :mod:`skmemory.tombstones`) is what stops a later
+        reconcile from resurrecting the memory when a stale flat copy reappears
+        (Syncthing re-deliver, a second source path, or an ingest re-import).
 
         Args:
             memory_id: The memory to remove.
@@ -1024,6 +1048,15 @@ class MemoryStore:
             logger.warning("store.py: %s", exc)
             self._wal.log_failed("forget", memory_id, str(exc))
             raise
+
+        # Resurrection guard (card 7d3e9fcc): record that this id was
+        # deliberately forgotten so a future reconcile refuses to re-create it
+        # from a stale flat copy. Best effort and non-fatal: the delete above
+        # has already happened, so a marker that cannot be written must not turn
+        # a successful forget into a failure.
+        mem_dir = self._tombstone_mem_dir()
+        if mem_dir:
+            write_tombstone(mem_dir, memory_id, reason="forget")
 
         # Also remove from vector backend (cascade chunks). Check for remove()
         # explicitly: a vector backend that lacks it means a forget silently
@@ -1046,7 +1079,7 @@ class MemoryStore:
                 logger.warning(
                     "vector backend %s has no remove(); memory %s NOT removed "
                     "from the vector store at forget time (lingers until "
-                    "reconcile) — add a remove() to this backend",
+                    "reconcile); add a remove() to this backend",
                     type(self.vector).__name__,
                     memory_id,
                 )
