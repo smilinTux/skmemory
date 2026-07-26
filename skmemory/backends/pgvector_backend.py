@@ -15,6 +15,11 @@ index.db), NOT a replicated system of record:
   - Embedding: HTTP endpoint (default the local Ollama mxbai-embed-large server) so
     the model is served once per host, not loaded in every skmemory process. Inject
     your own via `embed_fn`, or override SKMEMORY_EMBED_URL / SKMEMORY_EMBED_MODEL.
+    The embed server runs on a GPU box whose VRAM can flap, so a comma-separated
+    SKMEMORY_EMBED_URLS lets a node fail over to a secondary endpoint. Whatever the
+    endpoint, the write path NEVER stores a NULL/empty/zero vector: if every
+    endpoint is down it raises EmbeddingUnavailable rather than silently poisoning
+    recall with an unsearchable row.
 
 1024-dim vector space (mxbai-embed-large) -> drop-in with the existing schema.
 """
@@ -47,6 +52,26 @@ DEFAULT_EMBED_URL = os.environ.get("SKMEMORY_EMBED_URL", "http://localhost:11434
 DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")
 VECTOR_DIM = 1024
 
+
+def _parse_embed_urls(raw: str | None, primary: str) -> list[str]:
+    """Build the ordered embed-endpoint list from a comma-separated string.
+
+    The embed server sits on a GPU box with documented VRAM flapping, so a node
+    can list a secondary (or more) to fail over to. Blanks are dropped and order
+    is preserved; if nothing usable is given we fall back to the single
+    ``primary`` URL so unconfigured nodes keep today's behavior. Duplicates are
+    collapsed (first-wins) so a repeated URL is not retried twice.
+    """
+    urls = [u.strip() for u in (raw or "").split(",") if u.strip()]
+    if not urls:
+        urls = [primary]
+    return list(dict.fromkeys(u for u in urls if u))
+
+
+# Endpoint failover: SKMEMORY_EMBED_URLS = "primary,secondary,..." (comma-separated).
+# Defaults to the single SKMEMORY_EMBED_URL so an unconfigured node is unchanged.
+DEFAULT_EMBED_URLS = _parse_embed_urls(os.environ.get("SKMEMORY_EMBED_URLS"), DEFAULT_EMBED_URL)
+
 # Fleet standard is mxbai-embed-large everywhere. If an endpoint silently serves a
 # DIFFERENT model (or a redeploy swaps it), stored vectors become incompatible with
 # query vectors and recall is corrupted with no error. We pin the expected model +
@@ -66,6 +91,16 @@ class EmbeddingModelMismatch(RuntimeError):
     Signals that the served model identity (vector dimension and/or model name)
     diverged from what was configured, so writing the returned vector would poison
     the store. Failing here is deliberate: a loud error beats silent corruption.
+    """
+
+
+class EmbeddingUnavailable(RuntimeError):
+    """Raised on the WRITE path when no embed endpoint yields a usable vector.
+
+    Every configured endpoint was down / timed out / returned a non-200 or an
+    empty/all-zero embedding. Storing that as a NULL/zero vector would silently
+    poison recall (the row can never match a semantic query), so save() fails
+    loudly instead. Query paths still degrade gracefully to BM25/text search.
     """
 
 
@@ -106,13 +141,27 @@ class PGVectorBackend(BaseBackend):
         dsn: str = DEFAULT_DSN,
         embed_fn: Callable[[str], list[float]] | None = None,
         embed_url: str = DEFAULT_EMBED_URL,
+        embed_urls: list[str] | None = None,
         embed_model: str = DEFAULT_EMBED_MODEL,
         vector_dim: int = VECTOR_DIM,
         agent: str | None = None,
         verify_embedding: bool = DEFAULT_EMBED_VERIFY,
     ):
         self.dsn = dsn
-        self.embed_url = embed_url
+        # Ordered embed endpoints for failover. Precedence:
+        #   explicit embed_urls -> explicit single embed_url -> SKMEMORY_EMBED_URLS
+        #   env (which itself defaults to the single SKMEMORY_EMBED_URL).
+        # self.embed_url stays the PRIMARY so existing callers/error text/to_dict
+        # keep working; failover walks self.embed_urls in order.
+        if embed_urls is not None:
+            self.embed_urls = list(dict.fromkeys(u for u in embed_urls if u))
+        elif embed_url != DEFAULT_EMBED_URL:
+            self.embed_urls = [embed_url]
+        else:
+            self.embed_urls = list(DEFAULT_EMBED_URLS)
+        if not self.embed_urls:
+            self.embed_urls = [embed_url]
+        self.embed_url = self.embed_urls[0]
         self.embed_model = embed_model
         self.vector_dim = vector_dim
         # Pin + verify the embedding model identity (dimension, and model name when
@@ -166,21 +215,64 @@ class PGVectorBackend(BaseBackend):
             )
         return vec
 
-    def _embed(self, text: str) -> list[float]:
-        """Embed text. Uses injected embed_fn, else the remote HTTP endpoint."""
+    def _finalize_embedding(self, vec: list[float], required: bool) -> list[float]:
+        """Gate the final vector for the caller's tolerance.
+
+        Query paths pass ``required=False`` and tolerate an empty ``[]`` (they
+        degrade to BM25/text). The WRITE path passes ``required=True``: an
+        empty, or all-zero, vector would be stored as a NULL/unsearchable row
+        that silently poisons recall, so we raise ``EmbeddingUnavailable``
+        instead. (A wrong-dimension vector already raised in ``_verify_embedding``.)
+        """
+        if not required:
+            return vec
+        if not vec or not any(vec):
+            raise EmbeddingUnavailable(
+                "embedding unavailable: every configured embed endpoint "
+                f"({', '.join(self.embed_urls)}) was down, timed out, or returned an "
+                "empty/all-zero vector. Refusing to store a NULL embedding that would "
+                "silently break recall for this memory. Bring an embed server back up, "
+                "or configure a fallback via SKMEMORY_EMBED_URLS."
+            )
+        return vec
+
+    def _embed(self, text: str, *, required: bool = False) -> list[float]:
+        """Embed text, with endpoint failover.
+
+        Uses the injected ``embed_fn`` when present, else walks ``embed_urls`` in
+        order, returning the first usable vector. On the WRITE path pass
+        ``required=True`` so a total failure raises ``EmbeddingUnavailable``
+        rather than yielding an empty vector that would be stored as NULL. A
+        pinned-model mismatch (``EmbeddingModelMismatch``) always propagates.
+        """
         if self._embed_fn is not None:
-            return self._verify_embedding(self._embed_fn(text))
-        import httpx
+            vec = self._verify_embedding(self._embed_fn(text))
+            return self._finalize_embedding(vec, required)
 
         # mxbai-embed-large caps at 512 tokens and this Ollama build 400s on overflow
         # (its `truncate` flag is a no-op). ~1400 chars clears 512 tokens for typical
         # text; for denser text we halve and retry until it fits. The full memory is
         # still stored in content/memory_json and BM25-searchable, so recall is intact.
         text = (text or "")[:1400]
+        vec: list[float] = []
+        for url in self.embed_urls:
+            vec = self._embed_one(url, text)
+            if vec:
+                break  # first endpoint that yields a vector wins
+        return self._finalize_embedding(vec, required)
+
+    def _embed_one(self, url: str, text: str) -> list[float]:
+        """Embed via a SINGLE endpoint. Returns ``[]`` on transient failure
+        (connection/timeout/non-200) so the caller can fail over to the next URL;
+        raises ``EmbeddingModelMismatch`` on a pinned-model mismatch (a config
+        error, identical on every endpoint, so failover cannot help). A 400
+        (over-context) shrinks the text and retries the same endpoint."""
+        import httpx
+
         while text:
             try:
                 r = httpx.post(
-                    self.embed_url,
+                    url,
                     json={"model": self.embed_model, "input": text, "truncate": True},
                     timeout=60.0,
                 )
@@ -198,18 +290,18 @@ class PGVectorBackend(BaseBackend):
                     return self._verify_embedding(data["embedding"], served_model)
                 return []
             except httpx.HTTPStatusError as e:
-                # 400 == over context window: shrink and retry, else give up.
+                # 400 == over context window: shrink and retry, else give up on this url.
                 if e.response.status_code == 400 and len(text) > 200:
                     text = text[: len(text) // 2]
                     continue
-                logger.warning("embed failed (%s): %s", self.embed_url, e)
+                logger.warning("embed failed (%s): %s", url, e)
                 return []
             except EmbeddingModelMismatch:
                 # A pinned-model mismatch is not a transient embed failure: it must
-                # surface loudly, not be swallowed into an empty vector.
+                # surface loudly, not be swallowed into an empty vector or a retry.
                 raise
             except Exception as e:  # noqa: BLE001
-                logger.warning("embed failed (%s): %s", self.embed_url, e)
+                logger.warning("embed failed (%s): %s", url, e)
                 return []
         return []
 
@@ -219,7 +311,9 @@ class PGVectorBackend(BaseBackend):
 
     # --- BaseBackend ---------------------------------------------------------
     def save(self, memory: Memory) -> str:
-        emb = self._embed(self._searchable(memory)) or None
+        # required=True: never store a NULL/empty/zero embedding (would poison
+        # recall). If every endpoint is down this raises EmbeddingUnavailable.
+        emb = self._embed(self._searchable(memory), required=True)
         conn = self._connection()
         with conn.cursor() as cur:
             cur.execute(
@@ -491,6 +585,7 @@ class PGVectorBackend(BaseBackend):
                 "dsn": self.dsn.split("@")[-1],
                 "memories": n,
                 "embed_url": self.embed_url,
+                "embed_urls": list(self.embed_urls),
                 "vector_dim": self.vector_dim,
             }
         except Exception as e:  # noqa: BLE001
