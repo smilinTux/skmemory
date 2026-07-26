@@ -117,6 +117,35 @@ $$;
 
 
 --
+-- Name: hybrid_search_docs_public(text, public.vector, integer, text, integer, double precision); Type: FUNCTION; Schema: public; Owner: -
+--
+-- FAIL-CLOSED public reader (card 7d6e91e7). hybrid_search_docs above ranks over
+-- the BASE `docs` table (which still holds @chef-only / private rows) and is the
+-- PRIVILEGED / Chef-authorized reader. Per skingest SECURITY.md, every NON-Chef
+-- reader of the shared docs table (skmemory pgvector, dashboards, ad-hoc SQL)
+-- MUST read the `docs_public` VIEW, never base `docs`. This sibling ranks every
+-- leg over `docs_public`, which excludes private / @chef-only rows server-side,
+-- so a private row can never enter its result set.
+
+CREATE FUNCTION public.hybrid_search_docs_public(q_text text, q_vec public.vector, k integer DEFAULT 10, agent_filter text DEFAULT NULL::text, rrf_k integer DEFAULT 60, vec_w double precision DEFAULT 2.0) RETURNS TABLE(id bigint, corpus text, source text, content text, vec_rank integer, bm25_rank integer, score double precision)
+    LANGUAGE sql STABLE
+    AS $$
+WITH vec AS (
+  SELECT d.id, row_number() OVER (ORDER BY d.embedding <=> q_vec) AS rnk
+  FROM docs_public d WHERE q_vec IS NOT NULL AND d.embedding IS NOT NULL AND (agent_filter IS NULL OR d.agent = agent_filter)
+  ORDER BY d.embedding <=> q_vec LIMIT 100),
+bm AS (
+  SELECT d.id, row_number() OVER (ORDER BY paradedb.score(d.id) DESC) AS rnk
+  FROM docs_public d WHERE d.content @@@ q_text AND (agent_filter IS NULL OR d.agent = agent_filter)
+  ORDER BY paradedb.score(d.id) DESC LIMIT 100)
+SELECT d.id, d.corpus, d.source, left(d.content,160), vec.rnk::int, bm.rnk::int,
+       (vec_w*COALESCE(1.0/(rrf_k+vec.rnk),0) + COALESCE(1.0/(rrf_k+bm.rnk),0))::float
+FROM docs_public d LEFT JOIN vec ON vec.id=d.id LEFT JOIN bm ON bm.id=d.id
+WHERE vec.id IS NOT NULL OR bm.id IS NOT NULL ORDER BY 7 DESC LIMIT k;
+$$;
+
+
+--
 -- Name: hybrid_search_memories(text, public.vector, integer, text, integer, double precision); Type: FUNCTION; Schema: public; Owner: -
 --
 
