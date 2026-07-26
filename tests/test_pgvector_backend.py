@@ -232,6 +232,197 @@ def test_env_disables_verification(monkeypatch):
     assert be._embed("hello") == [0.1] * 384
 
 
+# --- Card d3498d86: embed-endpoint failover + fail-loud NULL-embedding handling -
+#
+# The embed server sits on a GPU box with documented VRAM flapping. Before this,
+# PGVectorBackend took a SINGLE embed_url and, when it was down / returned empty,
+# _embed() returned [] and save() stored that as a NULL vector (an unsearchable
+# row that silently poisons recall). Now: (1) SKMEMORY_EMBED_URLS lets a node fail
+# over to a secondary endpoint, and (2) the WRITE path raises EmbeddingUnavailable
+# rather than store a NULL/empty/zero vector. Query paths still degrade to text.
+
+
+class _FakeResp:
+    """Minimal httpx.Response stand-in for the embed HTTP call."""
+
+    def __init__(self, json_data):
+        self._json = json_data
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._json
+
+
+def _fake_post(behaviors):
+    """Build a fake ``httpx.post`` that dispatches on URL.
+
+    ``behaviors`` maps url -> either an Exception (raised, simulating a down
+    endpoint) or a dict (returned as the JSON body of a 200). An unlisted url
+    raises ConnectError. Records the URLs called, in order.
+    """
+    import httpx
+
+    calls = []
+
+    def post(url, json=None, timeout=None):  # noqa: A002 - mirror httpx signature
+        calls.append(url)
+        b = behaviors.get(url)
+        if b is None:
+            raise httpx.ConnectError(f"no route to {url}")
+        if isinstance(b, Exception):
+            raise b
+        return _FakeResp(b)
+
+    return post, calls
+
+
+def _ok_body(dim=1024, model="mxbai-embed-large"):
+    return {"embeddings": [[0.1] * dim], "model": model}
+
+
+PRIMARY = "http://primary:11434/api/embed"
+SECONDARY = "http://secondary:11434/api/embed"
+
+
+def _http_backend(monkeypatch, embed_urls, behaviors):
+    """A backend wired to real _embed HTTP path with httpx.post faked."""
+    mod = _reload_backend(monkeypatch, None)
+    be = mod.PGVectorBackend(agent="lumina", embed_urls=embed_urls)
+    post, calls = _fake_post(behaviors)
+    monkeypatch.setattr("httpx.post", post)
+    return mod, be, calls
+
+
+def test_failover_to_secondary_when_primary_down(monkeypatch):
+    """Primary endpoint is down -> _embed fails over to the secondary and returns
+    its vector. Fail-before: only one embed_url existed, so a down primary meant
+    an empty vector with no second chance."""
+    import httpx
+
+    _mod, be, calls = _http_backend(
+        monkeypatch,
+        [PRIMARY, SECONDARY],
+        {PRIMARY: httpx.ConnectError("down"), SECONDARY: _ok_body()},
+    )
+    vec = be._embed("hello", required=True)
+    assert vec == [0.1] * 1024
+    assert calls == [PRIMARY, SECONDARY]  # tried primary, then failed over
+
+
+def test_all_endpoints_down_raises_on_write(monkeypatch):
+    """Every endpoint down on the WRITE path -> EmbeddingUnavailable, nothing
+    stored. Fail-before: _embed returned [] and save stored a NULL vector."""
+    import httpx
+
+    from skmemory.models import Memory
+
+    mod, be, _calls = _http_backend(
+        monkeypatch,
+        [PRIMARY, SECONDARY],
+        {PRIMARY: httpx.ConnectError("down"), SECONDARY: httpx.ConnectError("down")},
+    )
+    # If _embed did not raise first, save() would touch _connection(); make that
+    # explode so a regression (storing NULL) can never pass silently.
+    monkeypatch.setattr(
+        be, "_connection", lambda: (_ for _ in ()).throw(AssertionError("row was written!"))
+    )
+    with pytest.raises(mod.EmbeddingUnavailable):
+        be.save(Memory(title="t", content="c"))
+
+
+def test_all_endpoints_down_query_stays_graceful(monkeypatch):
+    """The READ path tolerates a total embed outage: _embed(required=False)
+    returns [] so search can degrade to BM25/text instead of raising."""
+    import httpx
+
+    _mod, be, calls = _http_backend(
+        monkeypatch,
+        [PRIMARY, SECONDARY],
+        {PRIMARY: httpx.ConnectError("down"), SECONDARY: httpx.ConnectError("down")},
+    )
+    assert be._embed("query text") == []  # required defaults False
+    assert calls == [PRIMARY, SECONDARY]  # both endpoints were attempted
+
+
+def test_save_raises_on_empty_embedding(monkeypatch):
+    """An empty embedding on the write path raises and stores nothing (never a
+    NULL vector). Fail-before: save() did `self._embed(...) or None` -> NULL."""
+    from skmemory.models import Memory
+
+    mod, be = _backend_with_embed_fn(monkeypatch, lambda _t: [])
+    monkeypatch.setattr(
+        be, "_connection", lambda: (_ for _ in ()).throw(AssertionError("row was written!"))
+    )
+    with pytest.raises(mod.EmbeddingUnavailable):
+        be.save(Memory(title="t", content="c"))
+
+
+def test_save_raises_on_all_zero_embedding(monkeypatch):
+    """An all-zero vector is degenerate (matches nothing under cosine); it must
+    fail loudly on write rather than be stored as a dead row."""
+    from skmemory.models import Memory
+
+    mod, be = _backend_with_embed_fn(monkeypatch, lambda _t: [0.0] * 1024)
+    monkeypatch.setattr(
+        be, "_connection", lambda: (_ for _ in ()).throw(AssertionError("row was written!"))
+    )
+    with pytest.raises(mod.EmbeddingUnavailable):
+        be.save(Memory(title="t", content="c"))
+
+
+def test_happy_path_save_stores_the_vector(monkeypatch):
+    """A good embedding is stored as the embedding column value (not NULL), and
+    only the primary endpoint is contacted when it succeeds."""
+    from skmemory.models import Memory
+
+    _mod, be, calls = _http_backend(monkeypatch, [PRIMARY, SECONDARY], {PRIMARY: _ok_body()})
+    cur = _FakeCursor([1])
+    be._conn = _FakeConn(cur)
+    be.save(Memory(title="t", content="c"))
+    assert calls == [PRIMARY]  # secondary never needed
+    # the INSERT carried the real 1024-dim vector as its last param, not None
+    insert = next((p for sql, p in cur.executed if "INSERT INTO memories" in sql), None)
+    assert insert is not None
+    assert insert[-1] == [0.1] * 1024
+
+
+def test_model_mismatch_does_not_failover(monkeypatch):
+    """A pinned-model mismatch is a config error identical on every endpoint, so
+    it raises immediately without trying the secondary (failover cannot help)."""
+    mod, be, calls = _http_backend(
+        monkeypatch,
+        [PRIMARY, SECONDARY],
+        {PRIMARY: _ok_body(dim=384), SECONDARY: _ok_body()},
+    )
+    with pytest.raises(mod.EmbeddingModelMismatch):
+        be._embed("hello", required=True)
+    assert calls == [PRIMARY]  # did NOT fall through to secondary
+
+
+def test_embed_urls_from_env(monkeypatch):
+    """SKMEMORY_EMBED_URLS (comma-separated) drives the ordered endpoint list at
+    import time; the primary is embed_url, blanks/dupes are collapsed in order."""
+    monkeypatch.setenv("SKMEMORY_EMBED_URLS", f"{PRIMARY}, {SECONDARY} ,,{PRIMARY}")
+    mod = _reload_backend(monkeypatch, None)
+    assert mod.DEFAULT_EMBED_URLS == [PRIMARY, SECONDARY]
+    be = mod.PGVectorBackend(agent="lumina")
+    assert be.embed_urls == [PRIMARY, SECONDARY]
+    assert be.embed_url == PRIMARY  # primary stays the reported/back-compat url
+
+
+def test_single_url_default_unchanged(monkeypatch):
+    """With nothing configured a node still has exactly one endpoint (today's
+    behavior): default embed_urls == [default embed_url]."""
+    monkeypatch.delenv("SKMEMORY_EMBED_URLS", raising=False)
+    monkeypatch.delenv("SKMEMORY_EMBED_URL", raising=False)
+    mod = _reload_backend(monkeypatch, None)
+    be = mod.PGVectorBackend(agent="lumina")
+    assert be.embed_urls == [mod.DEFAULT_EMBED_URL]
+    assert be.embed_url == mod.DEFAULT_EMBED_URL
+
+
 # Restore a clean module state for any later test in the session.
 @pytest.fixture(autouse=True, scope="module")
 def _restore_module():
