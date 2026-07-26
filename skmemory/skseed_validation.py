@@ -191,9 +191,7 @@ def annotate_truth_score(
             "validated_by": "skseed",
         }
 
-        contradictions = _find_contradictions(
-            memory, store, result, active, contradiction_limit
-        )
+        contradictions = _find_contradictions(memory, store, result, active, contradiction_limit)
         if contradictions:
             detail["contradictions"] = contradictions
 

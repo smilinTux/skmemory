@@ -80,7 +80,9 @@ class TestSyncRetarget:
         age_inst = MagicMock()
         age_inst.sync_all.return_value = {"indexed": 3, "errors": 0}
         with (
-            patch("skmemory.backends.age_backend.AGEGraphBackend", return_value=age_inst) as age_cls,
+            patch(
+                "skmemory.backends.age_backend.AGEGraphBackend", return_value=age_inst
+            ) as age_cls,
             patch("skmemory.config.load_config", return_value=None),
         ):
             result = runner.invoke(cli, ["sync", "--graph"], obj={"store": fake_store})
@@ -108,9 +110,7 @@ class TestSyncRetarget:
         assert kwargs["embed_url"] == "http://192.168.0.100:11434/api/embed"
         assert kwargs["embed_model"] == "mxbai-embed-large"
 
-    def test_graph_honors_pg_dsn_env_over_yaml(
-        self, runner, agent_paths, fake_store, monkeypatch
-    ):
+    def test_graph_honors_pg_dsn_env_over_yaml(self, runner, agent_paths, fake_store, monkeypatch):
         """SKMEMORY_PG_DSN env wins over the (Syncthing-shared) yaml DSN."""
         monkeypatch.setenv("SKMEMORY_PG_DSN", "postgresql://postgres:x@10.0.0.9:5432/skmemory")
         cfg = SimpleNamespace(
@@ -121,12 +121,16 @@ class TestSyncRetarget:
         age_inst = MagicMock()
         age_inst.sync_all.return_value = {"indexed": 0, "errors": 0}
         with (
-            patch("skmemory.backends.age_backend.AGEGraphBackend", return_value=age_inst) as age_cls,
+            patch(
+                "skmemory.backends.age_backend.AGEGraphBackend", return_value=age_inst
+            ) as age_cls,
             patch("skmemory.config.load_config", return_value=cfg),
         ):
             result = runner.invoke(cli, ["sync", "--graph"], obj={"store": fake_store})
         assert result.exit_code == 0, result.output
-        assert age_cls.call_args.kwargs.get("dsn") == "postgresql://postgres:x@10.0.0.9:5432/skmemory"
+        assert (
+            age_cls.call_args.kwargs.get("dsn") == "postgresql://postgres:x@10.0.0.9:5432/skmemory"
+        )
 
     def test_quiet_no_output_when_nothing_changed(self, runner, agent_paths, fake_store):
         """--quiet stays silent on a clean idempotent run (cron-friendly)."""
@@ -134,9 +138,7 @@ class TestSyncRetarget:
             patch("skmemory.reconcile.reconcile", return_value=_pg_stats(backfilled=0)),
             patch("skmemory.config.load_config", return_value=None),
         ):
-            result = runner.invoke(
-                cli, ["sync", "--quiet", "--vector"], obj={"store": fake_store}
-            )
+            result = runner.invoke(cli, ["sync", "--quiet", "--vector"], obj={"store": fake_store})
         assert result.exit_code == 0, result.output
         assert result.output.strip() == ""
 

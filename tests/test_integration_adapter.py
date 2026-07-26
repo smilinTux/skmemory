@@ -12,11 +12,20 @@ mode writes there rather than the real ~/.skcapstone tree.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 
 import pytest
 
 from skmemory import integration
+
+# The "present" (integrated) tests assert integration.is_present() is True, which
+# requires the skcapstone sibling importable. A bare CI runner installs only
+# skmemory, so gate those; the standalone/absent tests still run everywhere.
+requires_skcapstone = pytest.mark.skipif(
+    importlib.util.find_spec("skcapstone") is None,
+    reason="skcapstone (integrated mode) not installed",
+)
 
 
 def _home():
@@ -30,6 +39,7 @@ def _home():
 # Standalone mode (operator forced)
 # --------------------------------------------------------------------------
 
+
 def test_standalone_env_disables_integration(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SK_STANDALONE", "1")
     assert integration.is_present() is False
@@ -41,6 +51,7 @@ def test_standalone_env_disables_integration(monkeypatch: pytest.MonkeyPatch):
 # --------------------------------------------------------------------------
 # Absent mode (package not importable)
 # --------------------------------------------------------------------------
+
 
 def test_absent_skcapstone_falls_back(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SK_STANDALONE", raising=False)
@@ -55,6 +66,8 @@ def test_absent_skcapstone_falls_back(monkeypatch: pytest.MonkeyPatch):
 # Integrated mode (skcapstone present)
 # --------------------------------------------------------------------------
 
+
+@requires_skcapstone
 def test_present_alert_publishes_topic(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SK_STANDALONE", raising=False)
     assert integration.is_present() is True
@@ -72,6 +85,7 @@ def test_present_alert_publishes_topic(monkeypatch: pytest.MonkeyPatch):
     assert data["payload"]["message"] == "boom"
 
 
+@requires_skcapstone
 def test_present_ensure_schedule_writes_dropin(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SK_STANDALONE", raising=False)
     assert integration.ensure_schedule(interval_hours=6) is True
@@ -91,6 +105,7 @@ def test_present_ensure_schedule_writes_dropin(monkeypatch: pytest.MonkeyPatch):
     assert not fragment.exists()
 
 
+@requires_skcapstone
 def test_present_register_self_writes_registry(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SK_STANDALONE", raising=False)
     assert integration.register_self(pid_file="/tmp/skmemory.pid") is True

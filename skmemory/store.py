@@ -149,9 +149,7 @@ class MemoryStore:
         # write; it never blocks, and no-ops when skseed is absent. Explicit
         # bool overrides; None resolves env > config > False.
         self.skseed_auto_validate: bool = (
-            skseed_auto_validate
-            if skseed_auto_validate is not None
-            else resolve_auto_validate()
+            skseed_auto_validate if skseed_auto_validate is not None else resolve_auto_validate()
         )
 
         # Write-ahead log — resilient init so missing agent config doesn't block
@@ -1090,9 +1088,7 @@ class MemoryStore:
                         f"forget time (lingers until reconcile); add a "
                         f"remove() to this backend"
                     ),
-                    warn_fail=lambda e: (
-                        f"vector backend {vname} remove({memory_id}) failed: {e}"
-                    ),
+                    warn_fail=lambda e: f"vector backend {vname} remove({memory_id}) failed: {e}",
                 ),
                 CascadeStep(
                     role="graph",

@@ -21,7 +21,6 @@ from skmemory.eval.groundedness_scorer import (
     split_claims,
 )
 
-
 # ── a deterministic mock judge ────────────────────────────────────────────
 #
 # "supported" iff every content word of the claim appears in some citation.
@@ -48,9 +47,7 @@ def _make_mock_judge(return_shape: str = "verdict"):
     return judge
 
 
-SUPPORTED_ANSWER = (
-    "The server runs on port 11434. skmem-pg uses pgvector."
-)
+SUPPORTED_ANSWER = "The server runs on port 11434. skmem-pg uses pgvector."
 CITATIONS = [
     "The server runs on port 11434 for embeddings.",
     "skmem-pg uses pgvector and BM25.",
@@ -85,9 +82,7 @@ def test_split_claims_empty():
 
 
 def test_supported_answer_scores_high_zero_flags():
-    result = score_groundedness(
-        SUPPORTED_ANSWER, CITATIONS, judge_fn=_make_mock_judge("verdict")
-    )
+    result = score_groundedness(SUPPORTED_ANSWER, CITATIONS, judge_fn=_make_mock_judge("verdict"))
     assert isinstance(result, GroundednessResult)
     assert result.score == 1.0
     assert result.num_claims == 2
@@ -99,9 +94,7 @@ def test_supported_answer_scores_high_zero_flags():
 def test_supported_answer_all_return_shapes_agree():
     """bool / str / ClaimVerdict judge returns all yield the same result."""
     for shape in ("verdict", "bool", "str"):
-        result = score_groundedness(
-            SUPPORTED_ANSWER, CITATIONS, judge_fn=_make_mock_judge(shape)
-        )
+        result = score_groundedness(SUPPORTED_ANSWER, CITATIONS, judge_fn=_make_mock_judge(shape))
         assert result.score == 1.0, shape
         assert result.flagged_claims == [], shape
 

@@ -11,6 +11,7 @@ Covers three things the card requires:
 from __future__ import annotations
 
 from skmemory.audience import AudienceLevel, AudienceProfile, AudienceResolver
+from skmemory.eval.recall_benchmark import recall_at_k
 from skmemory.eval.retrieval_bench import (
     CORPUS,
     PRIVATE_MEMORIES,
@@ -22,8 +23,6 @@ from skmemory.eval.retrieval_bench import (
     reciprocal_rank,
     run_benchmark,
 )
-from skmemory.eval.recall_benchmark import recall_at_k
-
 
 # ── scoring math ──────────────────────────────────────────────────────────
 
@@ -86,9 +85,7 @@ def test_private_item_leaks_without_filter():
     """The trap query must actually surface a private @chef-only item when NO
     audience filter is applied - otherwise leak_count==0 would be vacuous."""
     public = _public_audience()
-    unfiltered = hybrid_search(
-        CORPUS, "cloud nine emotional continuity depth trust love", k=5
-    )
+    unfiltered = hybrid_search(CORPUS, "cloud nine emotional continuity depth trust love", k=5)
     assert count_leaks(unfiltered, public) > 0
 
 

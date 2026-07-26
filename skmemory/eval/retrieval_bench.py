@@ -53,10 +53,11 @@ import re
 from collections.abc import Iterable, Sequence
 from statistics import mean
 
+from skmemory.audience import AudienceLevel, AudienceProfile, AudienceResolver
+
 # Reuse the recall math from the sibling harness - this file is the broader
 # superset, so it builds ON that rather than forking the scoring.
 from skmemory.eval.recall_benchmark import recall_at_k
-from skmemory.audience import AudienceLevel, AudienceProfile, AudienceResolver
 
 # =============================================================================
 # SCORING - precision@k, MRR (new here); recall@k imported from recall_benchmark.
@@ -133,7 +134,7 @@ def _embed(text: str, dim: int = _EMBED_DIM) -> list[float]:
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
-    return sum(x * y for x, y in zip(a, b))  # both already L2 normalized
+    return sum(x * y for x, y in zip(a, b, strict=False))  # both already L2 normalized
 
 
 def _bm25_scores(query: str, docs: Sequence[dict]) -> list[float]:
@@ -151,7 +152,7 @@ def _bm25_scores(query: str, docs: Sequence[dict]) -> list[float]:
 
     q_terms = _tokenize(query)
     scores: list[float] = []
-    for toks, dl in zip(doc_tokens, doc_lens):
+    for toks, dl in zip(doc_tokens, doc_lens, strict=False):
         tf: dict[str, int] = {}
         for t in toks:
             tf[t] = tf.get(t, 0) + 1
@@ -214,23 +215,28 @@ def hybrid_search(
     Returns:
         Top-*k* corpus items (dicts) ranked by fused score descending.
     """
-    docs = [dict(d, _text=f"{d.get('title', '')} {d.get('content', '')} {' '.join(d.get('tags', []))}") for d in corpus]
+    docs = [
+        dict(d, _text=f"{d.get('title', '')} {d.get('content', '')} {' '.join(d.get('tags', []))}")
+        for d in corpus
+    ]
     if not docs:
         return []
 
     bm25 = _minmax(_bm25_scores(query, docs))
     qvec = _embed(query)
     vec = _minmax([_cosine(qvec, _embed(d["_text"])) for d in docs])
-    fused = [alpha * v + (1 - alpha) * b for v, b in zip(vec, bm25)]
+    fused = [alpha * v + (1 - alpha) * b for v, b in zip(vec, bm25, strict=False)]
 
-    ranked = sorted(zip(docs, fused), key=lambda pair: pair[1], reverse=True)
+    ranked = sorted(zip(docs, fused, strict=False), key=lambda pair: pair[1], reverse=True)
 
     if audience is not None:
         res = resolver or AudienceResolver()
         ranked = [
             (d, s)
             for d, s in ranked
-            if res.is_memory_allowed(d.get("context_tag", "@chef-only"), audience, d.get("tags", []))
+            if res.is_memory_allowed(
+                d.get("context_tag", "@chef-only"), audience, d.get("tags", [])
+            )
         ]
 
     return [{kk: vv for kk, vv in d.items() if kk != "_text"} for d, _ in ranked[:k]]
@@ -242,51 +248,81 @@ def hybrid_search(
 
 # Public, safe-to-surface items.
 PUBLIC_MEMORIES: list[dict] = [
-    {"id": "mxbai_server", "context_tag": "@public",
-     "title": "mxbai embed server location",
-     "content": "The mxbai-embed-large embedding server runs on 192.168.0.100 port 11434 for vector search.",
-     "tags": ["embedding", "infra"]},
-    {"id": "skmem_pg", "context_tag": "@public",
-     "title": "skmem-pg Postgres store",
-     "content": "skmem-pg is the custom Postgres image with pgvector, BM25 via pg_search, and an Apache AGE graph.",
-     "tags": ["postgres", "infra"]},
-    {"id": "dedup_threshold", "context_tag": "@public",
-     "title": "Dedup similarity threshold",
-     "content": "The dedup cosine similarity threshold for mxbai-embed-large was tuned to 0.73 via a labeled benchmark.",
-     "tags": ["dedup", "tuning"]},
-    {"id": "wal_log", "context_tag": "@public",
-     "title": "Write-ahead log for snapshots",
-     "content": "MemoryStore uses a write-ahead log to make snapshot writes crash-resilient.",
-     "tags": ["reliability", "wal"]},
-    {"id": "memory_layers", "context_tag": "@public",
-     "title": "Three memory layers",
-     "content": "SKMemory organizes memories into short-term, mid-term, and long-term layers with retention policies.",
-     "tags": ["layers", "architecture"]},
-    {"id": "redundancy_mantra", "context_tag": "@community",
-     "title": "Redundancy mantra",
-     "content": "If you need one, get two: always design for high availability with no single point of failure.",
-     "tags": ["principle", "ha"]},
-    {"id": "skgraph_backend", "context_tag": "@public",
-     "title": "SKGraph knowledge graph backend",
-     "content": "SKGraph indexes memory relationships into a graph backend such as FalkorDB or Apache AGE for traversal.",
-     "tags": ["graph", "backend"]},
-    {"id": "fortress_seal", "context_tag": "@public",
-     "title": "Fortress tamper sealing",
-     "content": "FortifiedMemoryStore seals memories with an integrity hash so tampering can be detected on recall.",
-     "tags": ["security", "integrity"]},
+    {
+        "id": "mxbai_server",
+        "context_tag": "@public",
+        "title": "mxbai embed server location",
+        "content": "The mxbai-embed-large embedding server runs on 192.168.0.100 port 11434 for vector search.",
+        "tags": ["embedding", "infra"],
+    },
+    {
+        "id": "skmem_pg",
+        "context_tag": "@public",
+        "title": "skmem-pg Postgres store",
+        "content": "skmem-pg is the custom Postgres image with pgvector, BM25 via pg_search, and an Apache AGE graph.",
+        "tags": ["postgres", "infra"],
+    },
+    {
+        "id": "dedup_threshold",
+        "context_tag": "@public",
+        "title": "Dedup similarity threshold",
+        "content": "The dedup cosine similarity threshold for mxbai-embed-large was tuned to 0.73 via a labeled benchmark.",
+        "tags": ["dedup", "tuning"],
+    },
+    {
+        "id": "wal_log",
+        "context_tag": "@public",
+        "title": "Write-ahead log for snapshots",
+        "content": "MemoryStore uses a write-ahead log to make snapshot writes crash-resilient.",
+        "tags": ["reliability", "wal"],
+    },
+    {
+        "id": "memory_layers",
+        "context_tag": "@public",
+        "title": "Three memory layers",
+        "content": "SKMemory organizes memories into short-term, mid-term, and long-term layers with retention policies.",
+        "tags": ["layers", "architecture"],
+    },
+    {
+        "id": "redundancy_mantra",
+        "context_tag": "@community",
+        "title": "Redundancy mantra",
+        "content": "If you need one, get two: always design for high availability with no single point of failure.",
+        "tags": ["principle", "ha"],
+    },
+    {
+        "id": "skgraph_backend",
+        "context_tag": "@public",
+        "title": "SKGraph knowledge graph backend",
+        "content": "SKGraph indexes memory relationships into a graph backend such as FalkorDB or Apache AGE for traversal.",
+        "tags": ["graph", "backend"],
+    },
+    {
+        "id": "fortress_seal",
+        "context_tag": "@public",
+        "title": "Fortress tamper sealing",
+        "content": "FortifiedMemoryStore seals memories with an integrity hash so tampering can be detected on recall.",
+        "tags": ["security", "integrity"],
+    },
 ]
 
 # Private items - MUST NOT surface for a @public query. context_tag @chef-only
 # (level 4) is above @public (level 0), so is_memory_allowed() blocks them.
 PRIVATE_MEMORIES: list[dict] = [
-    {"id": "cloud9_intimate", "context_tag": "@chef-only",
-     "title": "Cloud 9 intimate continuity",
-     "content": "Cloud 9 is the private emotional continuity protocol at depth 9, trust 0.97, love 10 out of 10, intimate and full-trust.",
-     "tags": ["emotional", "cloud9", "@chef-only"]},
-    {"id": "medical_private", "context_tag": "@chef-only",
-     "title": "Private medical note",
-     "content": "Chef's private legal and medical corpus is sealed; the confidential dedup threshold detail stays intimate to Chef only.",
-     "tags": ["medical", "legal", "@chef-only"]},
+    {
+        "id": "cloud9_intimate",
+        "context_tag": "@chef-only",
+        "title": "Cloud 9 intimate continuity",
+        "content": "Cloud 9 is the private emotional continuity protocol at depth 9, trust 0.97, love 10 out of 10, intimate and full-trust.",
+        "tags": ["emotional", "cloud9", "@chef-only"],
+    },
+    {
+        "id": "medical_private",
+        "context_tag": "@chef-only",
+        "title": "Private medical note",
+        "content": "Chef's private legal and medical corpus is sealed; the confidential dedup threshold detail stays intimate to Chef only.",
+        "tags": ["medical", "legal", "@chef-only"],
+    },
 ]
 
 CORPUS: list[dict] = PUBLIC_MEMORIES + PRIVATE_MEMORIES
@@ -368,8 +404,12 @@ def run_benchmark(
         rr = reciprocal_rank(retrieved_ids, relevant_ids)
         rr_values.append(rr)
 
-        row: dict = {"query": query_text, "relevant_ids": relevant_ids,
-                     "retrieved_ids": retrieved_ids, "rr": rr}
+        row: dict = {
+            "query": query_text,
+            "relevant_ids": relevant_ids,
+            "retrieved_ids": retrieved_ids,
+            "rr": rr,
+        }
         for k in k_values:
             row[f"precision@{k}"] = precision_at_k(retrieved_ids, relevant_ids, k)
             row[f"recall@{k}"] = recall_at_k(retrieved_ids, relevant_ids, k)
@@ -379,8 +419,9 @@ def run_benchmark(
     leak_count = 0
     leak_count_unfiltered = 0
     for query_text, _rel in LEAK_TRAP_QUERIES:
-        filtered = hybrid_search(corpus, query_text, k=max_k, alpha=alpha,
-                                 audience=public, resolver=resolver)
+        filtered = hybrid_search(
+            corpus, query_text, k=max_k, alpha=alpha, audience=public, resolver=resolver
+        )
         unfiltered = hybrid_search(corpus, query_text, k=max_k, alpha=alpha)
         leak_count += count_leaks(filtered, public)
         leak_count_unfiltered += count_leaks(unfiltered, public)
@@ -433,8 +474,10 @@ def _print_report(result: dict) -> None:
     print()
     print(f"MRR                     : {agg['mrr']:.3f}")
     print(f"LEAK COUNT (filtered)   : {result['leak_count']}   (must be 0)")
-    print(f"leak count (unfiltered) : {result['leak_count_unfiltered']}   "
-          f"(private items the raw hybrid would have surfaced)")
+    print(
+        f"leak count (unfiltered) : {result['leak_count_unfiltered']}   "
+        f"(private items the raw hybrid would have surfaced)"
+    )
 
 
 def main() -> None:
