@@ -33,9 +33,7 @@ def test_mcp_get_store_wires_age_graph_when_pgvector_healthy(monkeypatch):
     healthy_pg = MagicMock()
     healthy_pg.health_check.return_value = {"ok": True}
 
-    with patch(
-        "skmemory.backends.pgvector_backend.PGVectorBackend", return_value=healthy_pg
-    ):
+    with patch("skmemory.backends.pgvector_backend.PGVectorBackend", return_value=healthy_pg):
         store = mcp_server._get_store()
 
     assert store.vector is healthy_pg
@@ -54,9 +52,7 @@ def test_mcp_get_store_age_wiring_degrades_when_construction_fails(monkeypatch):
     healthy_pg.health_check.return_value = {"ok": True}
 
     with (
-        patch(
-            "skmemory.backends.pgvector_backend.PGVectorBackend", return_value=healthy_pg
-        ),
+        patch("skmemory.backends.pgvector_backend.PGVectorBackend", return_value=healthy_pg),
         patch(
             "skmemory.backends.age_backend.AGEGraphBackend",
             side_effect=RuntimeError("skmem-pg unreachable"),

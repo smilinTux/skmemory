@@ -28,8 +28,9 @@ derived-store fan-out and its partial-failure accounting.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -138,9 +139,7 @@ class CascadeExecutor:
             if step.check_presence:
                 fn = getattr(step.backend, step.method, None)
                 if not callable(fn):
-                    result.steps.append(
-                        StepResult(step.role, bname, step.method, MISSING)
-                    )
+                    result.steps.append(StepResult(step.role, bname, step.method, MISSING))
                     if step.warn_missing:
                         self._log.warning(step.warn_missing)
                     continue
@@ -150,9 +149,7 @@ class CascadeExecutor:
                 fn(*step.args)
                 result.steps.append(StepResult(step.role, bname, step.method, OK))
             except Exception as exc:  # best-effort: record, keep going
-                result.steps.append(
-                    StepResult(step.role, bname, step.method, FAILED, str(exc))
-                )
+                result.steps.append(StepResult(step.role, bname, step.method, FAILED, str(exc)))
                 if step.warn_fail:
                     self._log.warning(step.warn_fail(exc))
 

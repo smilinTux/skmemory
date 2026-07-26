@@ -55,6 +55,7 @@ Env:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import glob
 import io
@@ -163,10 +164,8 @@ def _alert(message: str, *, level: str = "warn", key: str | None = None) -> None
     if key:
         cmd += ["-k", key]
     cmd.append(message)
-    try:
+    with contextlib.suppress(Exception):
         subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    except Exception:
-        pass
 
 
 def _mem_dir(agent: str) -> str:

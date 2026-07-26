@@ -245,9 +245,7 @@ class TestForget:
         store.forget(mem.id)
         assert mem.id in vec.removed
 
-    def test_forget_warns_when_vector_backend_lacks_remove(
-        self, tmp_path: Path, caplog
-    ) -> None:
+    def test_forget_warns_when_vector_backend_lacks_remove(self, tmp_path: Path, caplog) -> None:
         """A vector backend without remove() must be surfaced as a WARNING,
         not silently swallowed (Gap A: pgvector shipped delete() but no
         remove(), so forget() left rows behind and logged nothing useful)."""
@@ -259,9 +257,9 @@ class TestForget:
         mem = store.snapshot(title="v", content="c")
         with caplog.at_level(logging.WARNING, logger="skmemory.store"):
             store.forget(mem.id)
-        assert any(
-            "no remove()" in rec.getMessage() for rec in caplog.records
-        ), f"expected a 'no remove()' warning, got {[r.getMessage() for r in caplog.records]}"
+        assert any("no remove()" in rec.getMessage() for rec in caplog.records), (
+            f"expected a 'no remove()' warning, got {[r.getMessage() for r in caplog.records]}"
+        )
 
 
 class TestPromote:

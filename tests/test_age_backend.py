@@ -647,8 +647,7 @@ class TestBitemporalSupersession:
         parent, child = self._pair(backend)
         backend.index_memory(child)  # re-index
         rows = backend._cypher(
-            "MATCH (c:Memory {id: $cid})-[e:SUPERSEDES]->(p:Memory {id: $pid}) "
-            "RETURN e.valid_to",
+            "MATCH (c:Memory {id: $cid})-[e:SUPERSEDES]->(p:Memory {id: $pid}) RETURN e.valid_to",
             {"cid": child.id, "pid": parent.id},
             cols="valid_to agtype",
         )

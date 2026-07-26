@@ -114,8 +114,23 @@ JudgeFn = Callable[[str, Sequence[str]], object]
 # abbreviation or a decimal point. Deliberately simple + dependency-free; the
 # scorer's job is the entailment call, not perfect NLP segmentation.
 _ABBREV = {
-    "e.g", "i.e", "etc", "vs", "mr", "mrs", "ms", "dr", "st", "no", "fig",
-    "approx", "cf", "al", "inc", "ltd", "co",
+    "e.g",
+    "i.e",
+    "etc",
+    "vs",
+    "mr",
+    "mrs",
+    "ms",
+    "dr",
+    "st",
+    "no",
+    "fig",
+    "approx",
+    "cf",
+    "al",
+    "inc",
+    "ltd",
+    "co",
 }
 # Abbreviations + decimals are neutralized (\x00) before this runs, so any
 # remaining terminator is a real sentence end; the next token may start with a
@@ -170,7 +185,14 @@ def split_claims(answer_text: str) -> list[str]:
 # =============================================================================
 
 _SUPPORTED_WORDS = {"supported", "support", "yes", "true", "entailed", "grounded"}
-_UNSUPPORTED_WORDS = {"unsupported", "no", "false", "contradicted", "hallucinated", "not_supported"}
+_UNSUPPORTED_WORDS = {
+    "unsupported",
+    "no",
+    "false",
+    "contradicted",
+    "hallucinated",
+    "not_supported",
+}
 
 
 def _normalize_verdict(claim: str, raw: object) -> ClaimVerdict:
@@ -196,7 +218,9 @@ def _normalize_verdict(claim: str, raw: object) -> ClaimVerdict:
         supported = raw.get("supported")
         if isinstance(supported, str):
             supported = supported.strip().casefold() in _SUPPORTED_WORDS
-        return ClaimVerdict(claim=claim, supported=bool(supported), reason=str(raw.get("reason", "")))
+        return ClaimVerdict(
+            claim=claim, supported=bool(supported), reason=str(raw.get("reason", ""))
+        )
     # Anything else -> fail closed.
     return ClaimVerdict(claim=claim, supported=False, reason="unparseable judge verdict")
 
@@ -247,8 +271,7 @@ def score_groundedness(
     # a caller passes empty citations with the default judge).
     if not citations:
         verdicts = [
-            ClaimVerdict(claim=c, supported=False, reason="no citations provided")
-            for c in claims
+            ClaimVerdict(claim=c, supported=False, reason="no citations provided") for c in claims
         ]
         return GroundednessResult(
             score=0.0,
@@ -379,9 +402,35 @@ def lexical_overlap_judge(
     and deterministic. Useful as an injected judge for demos; the tests use
     their own explicit mock for clarity.
     """
-    stop = {"the", "and", "for", "with", "that", "this", "are", "was", "were",
-            "has", "have", "from", "into", "its", "their", "a", "an", "of",
-            "to", "in", "on", "is", "it", "as", "at", "by", "or"}
+    stop = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "are",
+        "was",
+        "were",
+        "has",
+        "have",
+        "from",
+        "into",
+        "its",
+        "their",
+        "a",
+        "an",
+        "of",
+        "to",
+        "in",
+        "on",
+        "is",
+        "it",
+        "as",
+        "at",
+        "by",
+        "or",
+    }
     toks = [t for t in re.findall(r"[a-z0-9]+", claim.casefold()) if len(t) >= 3 and t not in stop]
     if not toks:
         return ClaimVerdict(claim=claim, supported=True, reason="no content tokens")

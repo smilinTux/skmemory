@@ -648,9 +648,7 @@ class AGEGraphBackend:
                 out.add(pid)
         return out
 
-    def currently_valid_memories(
-        self, as_of: str | None = None, limit: int = 200
-    ) -> list[dict]:
+    def currently_valid_memories(self, as_of: str | None = None, limit: int = 200) -> list[dict]:
         """Memories that are the currently-valid fact as of ``as_of`` (default now).
 
         A memory is valid at time ``T`` iff:

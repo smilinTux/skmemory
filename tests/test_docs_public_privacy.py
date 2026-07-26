@@ -32,10 +32,7 @@ from pathlib import Path
 import pytest
 
 DEPLOY_SQL = (
-    Path(__file__).resolve().parent.parent
-    / "deploy"
-    / "skmem-pg"
-    / "03-cutover-mxbai.sql"
+    Path(__file__).resolve().parent.parent / "deploy" / "skmem-pg" / "03-cutover-mxbai.sql"
 )
 
 # Isolated scratch scope so the test never touches real corpus rows.
@@ -43,9 +40,7 @@ PROBE_CORPUS = "skmemory-privacy-probe"
 PROBE_AGENT = "privacyprobe"
 PROBE_TERM = "zzqprivacyprobe"  # unique BM25 term shared by both planted rows
 
-DSN = os.environ.get(
-    "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory"
-)
+DSN = os.environ.get("SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory")
 
 
 def _extract_public_fn_ddl() -> str | None:
@@ -135,7 +130,9 @@ def live_conn():
         cur.execute("SELECT 1 FROM information_schema.views WHERE table_name='docs_public'")
         if cur.fetchone() is None:
             conn.close()
-            pytest.skip("docs_public view absent on this skmem-pg -- skingest privacy gate not installed")
+            pytest.skip(
+                "docs_public view absent on this skmem-pg -- skingest privacy gate not installed"
+            )
         cur.execute(ddl)
     yield conn
     with conn.cursor() as cur:
@@ -151,17 +148,30 @@ def _plant_rows(conn) -> tuple[int, int]:
         cur.execute(
             "INSERT INTO docs (corpus, source, chunk_idx, content, meta, agent, embedding) "
             "VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s::vector) RETURNING id",
-            (PROBE_CORPUS, "public.md", 0,
-             f"public probe note {PROBE_TERM} harmless", "{}", PROBE_AGENT, _vec_literal(1)),
+            (
+                PROBE_CORPUS,
+                "public.md",
+                0,
+                f"public probe note {PROBE_TERM} harmless",
+                "{}",
+                PROBE_AGENT,
+                _vec_literal(1),
+            ),
         )
         public_id = cur.fetchone()[0]
         # private @chef-only row -> vector hot at index 0 (== the query vector below)
         cur.execute(
             "INSERT INTO docs (corpus, source, chunk_idx, content, meta, agent, embedding) "
             "VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s::vector) RETURNING id",
-            (PROBE_CORPUS, "sacred.md", 0,
-             f"private probe secret {PROBE_TERM} chef-only",
-             '{"private":"true","context_tag":"@chef-only"}', PROBE_AGENT, _vec_literal(0)),
+            (
+                PROBE_CORPUS,
+                "sacred.md",
+                0,
+                f"private probe secret {PROBE_TERM} chef-only",
+                '{"private":"true","context_tag":"@chef-only"}',
+                PROBE_AGENT,
+                _vec_literal(0),
+            ),
         )
         private_id = cur.fetchone()[0]
     return public_id, private_id

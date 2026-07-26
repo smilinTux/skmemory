@@ -10,6 +10,11 @@ import importlib
 
 import pytest
 
+# The pgvector backend needs psycopg (optional pg extra). A bare CI runner that
+# installs only the base deps lacks it, so skip the whole module there; the
+# backend itself lazy-imports psycopg so production is unaffected.
+pytest.importorskip("psycopg")
+
 
 def _reload_backend(monkeypatch, env_value):
     """Reimport the backend module with SKMEMORY_PG_DSN set/unset so the
@@ -193,9 +198,7 @@ def test_empty_vector_passes_through(monkeypatch):
 def test_verify_can_be_disabled(monkeypatch):
     """SKMEMORY_EMBED_VERIFY=0 / verify_embedding=False is an ops escape hatch:
     a mismatched vector is returned unchecked."""
-    _mod, be = _backend_with_embed_fn(
-        monkeypatch, lambda _t: [0.1] * 384, verify_embedding=False
-    )
+    _mod, be = _backend_with_embed_fn(monkeypatch, lambda _t: [0.1] * 384, verify_embedding=False)
     assert be._embed("hello") == [0.1] * 384
 
 

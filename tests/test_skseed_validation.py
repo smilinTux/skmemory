@@ -123,9 +123,7 @@ class TestEnabledWithSkseed:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Annotating metadata before seal() must not break integrity."""
-        monkeypatch.setattr(
-            skseed_validation, "_build_collider", lambda: _StubCollider()
-        )
+        monkeypatch.setattr(skseed_validation, "_build_collider", lambda: _StubCollider())
         backend = FileBackend(base_path=str(tmp_path / "m"))
         st = MemoryStore(primary=backend, skseed_auto_validate=True)
         mem = st.snapshot(title="t", content="a claim to verify")
@@ -171,9 +169,7 @@ class TestContradictionFlagging:
         collider = _StubCollider(result=result, cross=cross)
 
         new_mem = store.snapshot(title="new", content="the moon is solid rock")
-        detail = skseed_validation.annotate_truth_score(
-            new_mem, store=store, collider=collider
-        )
+        detail = skseed_validation.annotate_truth_score(new_mem, store=store, collider=collider)
         assert detail is not None
         assert "contradictions" in detail
         assert detail["contradictions"][0]["memory_id"] == existing.id
@@ -184,9 +180,7 @@ class TestContradictionFlagging:
         store.snapshot(title="old", content="some prior memory")
         collider = _StubCollider(_StubResult(invariants=[]))
         new_mem = store.snapshot(title="new", content="another memory")
-        detail = skseed_validation.annotate_truth_score(
-            new_mem, store=store, collider=collider
-        )
+        detail = skseed_validation.annotate_truth_score(new_mem, store=store, collider=collider)
         assert detail is not None
         assert "contradictions" not in detail
 
@@ -216,9 +210,7 @@ class TestRealSkseed:
         not skseed_validation.skseed_available(),
         reason="skseed not installed (standalone mode)",
     )
-    def test_real_collider_offline_is_ungraded_and_safe(
-        self, tmp_path: Path
-    ) -> None:
+    def test_real_collider_offline_is_ungraded_and_safe(self, tmp_path: Path) -> None:
         """The real, offline (no-LLM) collider annotates without raising."""
         backend = FileBackend(base_path=str(tmp_path / "m"))
         st = MemoryStore(primary=backend, skseed_auto_validate=True)

@@ -18,15 +18,13 @@ from __future__ import annotations
 import json
 import uuid
 
-import pytest
-
 from skmemory import reconcile as reconcile_mod
 from skmemory.reconcile import prune_guard
-
 
 # --------------------------------------------------------------------------- #
 # 1. Pure guardrail decision (no I/O)                                          #
 # --------------------------------------------------------------------------- #
+
 
 def test_empty_flat_source_refuses_prune():
     """The cold-boot case: flat store is empty but pg is full -> REFUSE."""
@@ -49,9 +47,7 @@ def test_normal_small_delta_is_allowed():
 
 def test_large_fraction_refuses_without_force():
     """Non-empty flat but the prune would wipe most of pg -> REFUSE (mid-sync)."""
-    allowed, reason = prune_guard(
-        flat_count=50, pg_count=1000, would_prune=950, max_fraction=0.20
-    )
+    allowed, reason = prune_guard(flat_count=50, pg_count=1000, would_prune=950, max_fraction=0.20)
     assert allowed is False
     assert "cap" in reason
 
@@ -95,6 +91,7 @@ def test_fraction_cap_applies_only_at_or_above_min_sample():
 # --------------------------------------------------------------------------- #
 # 2. reconcile() wiring against a fake psql (offline; no DELETE, no network)   #
 # --------------------------------------------------------------------------- #
+
 
 class _CP:
     def __init__(self, stdout="", returncode=0):

@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger("skmemory.integration")
 
@@ -139,8 +139,9 @@ def ensure_schedule(interval_hours: float = 6.0) -> bool:
                 "notify_level": "error",
             }
         )
-        logger.info("Registered '%s' with skcapstone scheduler (every %.1fh).",
-                    SWEEP_JOB, interval_hours)
+        logger.info(
+            "Registered '%s' with skcapstone scheduler (every %.1fh).", SWEEP_JOB, interval_hours
+        )
         return True
     except Exception as exc:
         logger.warning("ensure_schedule failed (using native): %s", exc)
@@ -158,7 +159,7 @@ def unregister_schedule() -> bool:
         return False
 
 
-def register_self(pid_file: Optional[str] = None) -> bool:
+def register_self(pid_file: str | None = None) -> bool:
     """Advertise skmemory to skcapstone's discovery registry, if present.
 
     Args:

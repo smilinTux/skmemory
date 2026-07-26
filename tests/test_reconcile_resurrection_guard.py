@@ -26,10 +26,10 @@ from skmemory.tombstones import (
     write_tombstone,
 )
 
-
 # --------------------------------------------------------------------------- #
 # 1. tombstones module (pure file I/O under tmp_path)                          #
 # --------------------------------------------------------------------------- #
+
 
 def test_write_then_load_tombstone(tmp_path):
     mem = tmp_path / "memory"
@@ -70,6 +70,7 @@ def test_malformed_tombstone_still_contributes_its_id(tmp_path):
 # --------------------------------------------------------------------------- #
 # 2. reconcile() resurrection guard against a fake psql (offline)             #
 # --------------------------------------------------------------------------- #
+
 
 class _CP:
     def __init__(self, stdout="", returncode=0):
@@ -119,6 +120,7 @@ class _FakePsql:
 
 def _stub_embed(monkeypatch):
     """Stub the embedding endpoint so backfill needs no network."""
+
     class _R:
         def json(self):
             return {"embeddings": [[0.0, 0.0, 0.0]]}
@@ -232,6 +234,7 @@ def test_tombstoned_row_still_in_pg_is_pruned(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # 3. end-to-end: store.forget() writes the tombstone reconcile then honours    #
 # --------------------------------------------------------------------------- #
+
 
 def test_forget_writes_tombstone_reconcile_honours(monkeypatch, tmp_path):
     """store.forget() records a tombstone; a later reconcile refuses to
