@@ -12,7 +12,7 @@ script runs unchanged there.
 | Script | What it does | Schedule |
 | --- | --- | --- |
 | `skmem_reconcile.py` (in `deploy/skmem-pg/`, module `skmemory/reconcile.py`) | Idempotent flat↔pg reconcile: backfills missing memories (embed + upsert), prunes pg rows whose flat file is gone, re-embeds NULL-vector rows. Rebuilds the `memories` derived cache from the Syncthing-synced flat JSON source of truth. | daily |
-| `skmem-pg-backup.sh` | Daily `pg_dump -Fc` of skmem-pg to the agent's `backups/` dir; retains the newest N (default 14). Fast-recovery path complementing the from-source rebuild. | daily |
+| `skmem-pg-backup.sh` | Daily `pg_dump -Fc` of skmem-pg to the agent's `backups/` dir; retains the newest N (default 14) AND ships the dump OFF-box (fail-loud). Fast-recovery path complementing the from-source rebuild. | daily |
 | `skmem-health.sh` | Deterministic health probe over the whole stack (flat writes, SQLite index + functional query, skmem-pg reachability + functional vector/hybrid retrieval, backups, skwhisper). Prints a `[PASS]/[WARN]/[FAIL]` digest, archives a dated report, and fires sk-alert on WARN/FAIL. | daily |
 
 ## `skmem_reconcile.py`
@@ -86,10 +86,23 @@ deploy/ops/skmem-pg-backup.sh
 | `SKMEM_PG_USER` | `postgres` | postgres role |
 | `SKMEM_PG_DB` | `skmemory` | database name |
 | `SKMEM_BACKUP_RETAIN` | `14` | daily dumps to keep |
+| `SKMEM_BACKUP_OFFBOX` | (unset) | space/comma-separated OFF-box targets: local dir(s) (e.g. the Syncthing tree) and/or remote `user@host:/path` (rsync/ssh). A dump that never leaves the box is not DR. |
+| `SKMEM_BACKUP_OFFBOX_STRICT` | `1` when OFFBOX set | `1` = an off-box failure is fatal (exit non-zero); `0` = downgrade to a warning (only for a peerless node). |
 
-Output: `<container>-<db>-<UTC-timestamp>.dump` (pg custom format). Restore with
-`pg_restore`. skmem-pg is a rebuildable derived cache, so a lost dump is not data
-loss; the dump just makes recovery seconds instead of a full re-embed.
+Output: `<container>-<db>-<UTC-timestamp>.dump` (pg custom format, full schema +
+data + functions, and it DOES carry the AGE `ag_graph` registry). When
+`SKMEM_BACKUP_OFFBOX` is set the dump is also shipped to each target and the run
+FAILS LOUD if any ship fails. When it is unset the run still succeeds but prints a
+loud warning that DR shipping is not configured.
+
+Restore with `scripts/skmem-pg-restore.sh <dump>` (builds/uses the vendored image,
+restores into a FRESH ephemeral container, and VERIFIES hybrid_search + AGE graph;
+refuses to target the live container/port). skmem-pg is a rebuildable derived
+cache, so a lost dump is not data loss; the dump just makes recovery seconds
+instead of a full re-embed, and is the only fast/complete path for the AGE graph.
+See `docs/deploy-plan/skmemory-bulletproof-deploy.md` section 6 for the full
+cold-machine ceremony + flat-files-only fallback, and
+`docs/deploy-plan/restore-drill-log.md` for drill records.
 
 ## `skmem-health.sh`
 

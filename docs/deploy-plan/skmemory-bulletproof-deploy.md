@@ -96,3 +96,104 @@ Critical path: T1 -> T6 -> T11 -> T12. Widest parallel wave after Phase 0: T3, T
 10. **skmemory: extend reconcile to all agents, not just lumina** (medium) - deps: 2, 5
 11. **skmemory: move pg credentials to skvault/capauth and rotate the default password** (medium) - deps: 3, 6
 12. **skmemory: docs and docker-compose overhaul to describe the live pgvector/AGE stack** (low) - deps: 1, 5, 6, 7
+
+## 6. Cold-machine recovery ceremony (G7 / T7 - card 9cdf164d)
+
+This closes the backup/restore half of G7: the dump now leaves the box, the
+restore is scripted and verified, and the ceremony has been drilled.
+
+### 6.1 Backups now ship OFF-box
+
+`deploy/ops/skmem-pg-backup.sh` takes the daily `pg_dump -Fc` AND ships it off the
+box. A dump that lives only on the disk it protects is not DR.
+
+- `SKMEM_BACKUP_OFFBOX` = space- and/or comma-separated targets. Each is either a
+  LOCAL directory (e.g. the Syncthing-replicated tree, so the dump propagates to
+  every node) or a REMOTE rsync/ssh spec `user@host:/path` (e.g. `.41`).
+- Fail-loud: if `SKMEM_BACKUP_OFFBOX` is set and ANY target fails, the whole run
+  exits non-zero (override per-node with `SKMEM_BACKUP_OFFBOX_STRICT=0`, not
+  recommended). If it is UNSET the run still succeeds but prints a loud WARNING,
+  so the .158 daily cron keeps working while nagging until DR is configured.
+- Recommended `.158` cron (synced tree + remote peer):
+
+  ```cron
+  15 3 * * *  SKAGENT=lumina \
+    SKMEM_BACKUP_OFFBOX="$HOME/.skcapstone/backups/skmem-offbox lumina@192.168.0.41:/home/lumina/.skcapstone/backups/skmem-offbox" \
+    /path/to/repo/deploy/ops/skmem-pg-backup.sh >> ~/.skcapstone/agents/lumina/logs/skmem-pg-backup.log 2>&1
+  ```
+
+### 6.2 Scripted restore + verify
+
+`scripts/skmem-pg-restore.sh <dump>` restores a full custom-format dump into a
+FRESH, EPHEMERAL container and verifies it functionally. It hard-refuses to target
+the live container name (`skmem-pg`) or the live port (`5432`).
+
+```sh
+scripts/skmem-pg-restore.sh /path/to/skmem-pg-skmemory-YYYYMMDD-HHMMSS.dump
+```
+
+What it does: builds/uses the vendored `skmem-pg:pg17-bm25-age` image, starts a
+throwaway container on `127.0.0.1:15432` with `shared_preload_libraries=pg_search,age`,
+pre-creates the `vector`/`pg_search`/`age` extensions, `pg_restore`s the dump
+(schema + data + functions), then VERIFIES: both `hybrid_search_*` functions
+exist, `memories`/`docs` are queryable, `hybrid_search_memories` returns rows for
+a sampled content token, and `ag_catalog.ag_graph` lists the restored AGE graphs.
+A full `pg_dump -Fc` carries the `ag_graph` registry rows, so the ~33k-node graph
+comes back with the data (confirmed in the drill; see `restore-drill-log.md`).
+
+The safe self-contained drill (synthetic data, no live access) is
+`scripts/skmem-pg-restore-drill.sh`. Drill #1 (2026-07-26) PASSED in 7 s
+(image pre-built): 25 memories restored, 2 hybrid functions, 10 hybrid rows, 1
+AGE graph. See `docs/deploy-plan/restore-drill-log.md`.
+
+### 6.3 Cold-machine recovery runbook (full box loss)
+
+Recover a node from nothing. Primary path = rebuild-from-source (flat files + git
+wiki are Syncthing/git replicated); the dump is the fast shortcut.
+
+1. **Stand up the image** (one-time; AGE compiles from source, a few minutes):
+   ```sh
+   git clone <repo> skmemory && cd skmemory
+   docker build -t skmem-pg:pg17-bm25-age deploy/skmem-pg
+   ```
+2. **Start the node-local skmem-pg** (loads `schema.sql` on first init):
+   ```sh
+   export SKMEM_PG_PASSWORD=<from skvault>
+   docker compose up -d          # binds 127.0.0.1:5432
+   ```
+3. **Restore the newest off-box dump** for the fast path. First prove it in the
+   ephemeral verifier, THEN load it into the live node-local container:
+   ```sh
+   # a) verify the dump is good (ephemeral, never touches the live container):
+   scripts/skmem-pg-restore.sh /synced/skmem-offbox/skmem-pg-skmemory-<latest>.dump
+   # b) load it into the freshly-created live container (empty DB from step 2):
+   docker exec -i skmem-pg pg_restore --no-owner --no-privileges -d skmemory \
+     < /synced/skmem-offbox/skmem-pg-skmemory-<latest>.dump
+   ```
+4. **Reconcile from the source of truth** to pick up anything newer than the dump
+   and to re-embed NULLs (idempotent, guardrailed against cold-boot wipe):
+   ```sh
+   python -m skmemory.reconcile --all
+   ```
+5. **Health check**: `deploy/ops/skmem-health.sh` should print `[PASS]`.
+
+### 6.4 FALLBACK: flat-files-only rebuild (no usable dump)
+
+If every dump is lost or corrupt, skmem-pg is still fully rebuildable from the
+flat JSON source of truth (the whole point of it being a derived cache). This is
+slower (a full re-embed via mxbai on .100) but loses no memory content.
+
+1. Stand up the image + empty container (ceremony steps 1-2 above). `schema.sql`
+   creates the tables, `hybrid_search_*` functions, and HNSW/BM25 indexes on init.
+2. Rebuild `memories` from flat files, embedding each via mxbai:
+   ```sh
+   SKAGENT=lumina python scripts/migrate-flat-to-pgvector.py
+   ```
+   Resumable (skips ids already embedded), multi-threaded
+   (`MIGRATE_WORKERS`, default 12), and reports rate/ETA. Repeat per agent.
+3. Rebuild `docs` from the git wiki via skingest, then `python -m skmemory.reconcile --all`
+   for the prune/re-embed-NULL pass.
+4. Caveat: the AGE graph (`*_knowledge`) is NOT reconstructed by the flat rebuild.
+   It is regenerated by the graph-ingest pipeline from the same sources, or, if a
+   dump exists, restored per section 6.3. The off-box dump remains the only
+   fast/complete path for the graph, which is why off-box shipping is fail-loud.
