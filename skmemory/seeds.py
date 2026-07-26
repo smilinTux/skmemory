@@ -24,8 +24,14 @@ logger = logging.getLogger("skmemory.seeds")
 
 # Dynamic seed directory based on active agent
 # Resolves to ~/.skcapstone/agents/{agent_name}/seeds/
-default_paths = get_agent_paths()
-DEFAULT_SEED_DIR = str(default_paths["seeds"])
+# Guarded: get_agent_paths() raises "No agent configured" when no non-template
+# agent exists (a bare CI runner / fresh env). Importing skmemory must NEVER fail
+# on that -- it broke ~14 downstream consumer tests. Fall back to no default seed
+# dir; scan_seed_directory("") returns [] (a non-existent path yields no seeds).
+try:
+    DEFAULT_SEED_DIR = str(get_agent_paths()["seeds"])
+except Exception:  # noqa: BLE001 - no agent configured => no default seed dir
+    DEFAULT_SEED_DIR = ""
 
 
 def scan_seed_directory(seed_dir: str = DEFAULT_SEED_DIR) -> list[Path]:
