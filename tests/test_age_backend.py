@@ -664,6 +664,98 @@ class TestBitemporalSupersession:
 
 
 @requires_skmem_pg
+class TestBitemporalOpenEdges:
+    """General (non-SUPERSEDES) edges carry an OPEN bitemporal interval (card
+    8892ac72).
+
+    ``FROM_SOURCE`` / ``TAGGED_WITH`` / ``MENTIONS`` (via ``_merge_edge_to_named``)
+    and ``RELATED_TO`` (via ``_merge_related``) must stamp ``valid_from`` and
+    ``recorded_at`` (present, non-null) while leaving ``valid_to`` NULL (the
+    edge is currently valid, i.e. an open interval). Unlike SUPERSEDES, these
+    edges never close their interval. The stamps are ``coalesce``-idempotent:
+    re-indexing must not overwrite ``valid_from`` nor change edge counts.
+
+    Scoped to unique ids/tags per test since the throwaway graph is shared.
+    """
+
+    def _related_edge_props(self, backend, a_id, b_id):
+        rows = backend._cypher(
+            "MATCH (a:Memory {id: $aid})-[e:RELATED_TO]->(b:Memory {id: $bid}) "
+            "RETURN e.valid_from, e.valid_to, e.recorded_at",
+            {"aid": a_id, "bid": b_id},
+            cols="valid_from agtype, valid_to agtype, recorded_at agtype",
+        )
+        assert rows, "RELATED_TO edge should exist"
+        return backend._rows_to_dicts(rows, ["valid_from", "valid_to", "recorded_at"])[0]
+
+    def _tag_edge_props(self, backend, mem_id, tag):
+        rows = backend._cypher(
+            "MATCH (m:Memory {id: $mid})-[e:TAGGED_WITH]->(t:Tag {name: $tag}) "
+            "RETURN e.valid_from, e.valid_to, e.recorded_at",
+            {"mid": mem_id, "tag": tag},
+            cols="valid_from agtype, valid_to agtype, recorded_at agtype",
+        )
+        assert rows, "TAGGED_WITH edge should exist"
+        return backend._rows_to_dicts(rows, ["valid_from", "valid_to", "recorded_at"])[0]
+
+    def test_related_edge_carries_open_interval(self, backend):
+        """RELATED_TO (from _merge_related): valid_from + recorded_at present,
+        valid_to NULL (open)."""
+        a = make_memory(title="Open Related Parent")
+        backend.index_memory(a)
+        b = make_memory(title="Open Related Child", related_ids=[a.id])
+        backend.index_memory(b)
+
+        props = self._related_edge_props(backend, b.id, a.id)
+        assert props["valid_from"], "valid_from must be stamped (non-null)"
+        assert props["recorded_at"], "recorded_at must be stamped (non-null)"
+        assert props["valid_to"] is None, "valid_to must be NULL (open interval)"
+
+    def test_tagged_edge_carries_open_interval(self, backend):
+        """TAGGED_WITH (from _merge_edge_to_named): open interval."""
+        tag = f"open-{uuid.uuid4().hex[:8]}"
+        mem = make_memory(title="Open Tagged", tags=[tag])
+        backend.index_memory(mem)
+
+        props = self._tag_edge_props(backend, mem.id, tag)
+        assert props["valid_from"]
+        assert props["recorded_at"]
+        assert props["valid_to"] is None
+
+    def test_open_edge_reindex_preserves_valid_from_and_counts(self, backend):
+        """Re-indexing must NOT overwrite valid_from (coalesce-idempotent) and
+        must NOT change edge counts."""
+        a = make_memory(title="Idem Open Parent")
+        backend.index_memory(a)
+        tag = f"openidem-{uuid.uuid4().hex[:8]}"
+        b = make_memory(
+            title="Idem Open Child", tags=[tag], related_ids=[a.id]
+        )
+        backend.index_memory(b)
+
+        first_related = self._related_edge_props(backend, b.id, a.id)
+        first_tag = self._tag_edge_props(backend, b.id, tag)
+        stats_1 = backend.stats()
+
+        backend.index_memory(b)  # re-index
+        backend.index_memory(b)  # and again
+        stats_2 = backend.stats()
+
+        second_related = self._related_edge_props(backend, b.id, a.id)
+        second_tag = self._tag_edge_props(backend, b.id, tag)
+
+        # Counts unchanged.
+        assert stats_1["edge_count"] == stats_2["edge_count"]
+        assert stats_1["node_count"] == stats_2["node_count"]
+        # valid_from not overwritten by the re-index's fresh $now.
+        assert second_related["valid_from"] == first_related["valid_from"]
+        assert second_tag["valid_from"] == first_tag["valid_from"]
+        # Still open after re-index.
+        assert second_related["valid_to"] is None
+        assert second_tag["valid_to"] is None
+
+
+@requires_skmem_pg
 class TestSearch:
     def test_search_by_tags_or_logic(self, backend):
         tag_a = f"tagA-{uuid.uuid4().hex[:8]}"
