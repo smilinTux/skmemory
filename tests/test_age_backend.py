@@ -756,6 +756,99 @@ class TestBitemporalOpenEdges:
 
 
 @requires_skmem_pg
+class TestAsOfTraversal:
+    """Point-in-time neighbors() / supersedes_chain() over the edge validity
+    window (card c915b47d).
+
+    Both walk only edges valid AT ``as_of``: an edge is valid at ``T`` iff
+    ``(valid_from IS NULL OR valid_from <= T) AND (valid_to IS NULL OR
+    valid_to > T)``. A SUPERSEDES edge spans the parent's currency window
+    ``[parent.created_at, child.created_at)`` (``valid_to`` == child's
+    creation), so it is present for an ``as_of`` before the supersession and
+    absent after. Open general edges (``RELATED_TO``, ``valid_to`` NULL) are
+    current once their ``valid_from`` has passed. ``as_of=None`` means now.
+
+    Scoped to unique ids per test (shared throwaway graph), membership checks
+    only.
+    """
+
+    PARENT_AT = "2020-01-01T00:00:00+00:00"
+    BEFORE_AT = "2021-01-01T00:00:00+00:00"
+    CHILD_AT = "2022-01-01T00:00:00+00:00"
+    FUTURE_AT = "2099-01-01T00:00:00+00:00"
+
+    def _pair(self, backend):
+        parent = make_memory(title="AsOf Old Fact")
+        parent.created_at = self.PARENT_AT
+        backend.index_memory(parent)
+        child = make_memory(title="AsOf New Fact", parent_id=parent.id)
+        child.created_at = self.CHILD_AT
+        backend.index_memory(child)
+        return parent, child
+
+    def test_neighbors_supersedes_edge_present_before_valid_to_absent_after(self, backend):
+        """The SUPERSEDES link to the parent is a valid neighbour BEFORE the
+        supersession (as_of inside the parent's window) and drops out at/after
+        valid_to (== child.created_at, in the past relative to now)."""
+        parent, child = self._pair(backend)
+        before_ids = {n["id"] for n in backend.neighbors(child.id, as_of=self.BEFORE_AT)}
+        assert parent.id in before_ids
+        now_ids = {n["id"] for n in backend.neighbors(child.id)}
+        assert parent.id not in now_ids
+
+    def test_neighbors_open_related_edge_current_now_but_not_before_its_start(self, backend):
+        """An open RELATED_TO edge (valid_to NULL, valid_from ~ now) is a valid
+        neighbour NOW but excluded for an as_of before its valid_from (lower
+        bound of the window)."""
+        a = make_memory(title="AsOf Rel Target")
+        backend.index_memory(a)
+        b = make_memory(title="AsOf Rel Source", related_ids=[a.id])
+        backend.index_memory(b)
+        now_ids = {n["id"] for n in backend.neighbors(b.id)}
+        assert a.id in now_ids
+        past_ids = {n["id"] for n in backend.neighbors(b.id, as_of=self.BEFORE_AT)}
+        assert a.id not in past_ids
+
+    def test_neighbors_distance_is_one_for_direct_neighbour(self, backend):
+        parent, child = self._pair(backend)
+        rows = backend.neighbors(child.id, as_of=self.BEFORE_AT)
+        match = next(r for r in rows if r["id"] == parent.id)
+        assert match["distance"] == 1
+        assert "title" in match and "layer" in match
+
+    def test_supersedes_chain_returns_then_parent_before_supersession(self, backend):
+        """supersedes_chain at a PAST ts (before the supersession) returns the
+        then-current parent; the currently-valid (now) chain omits it because
+        the window has closed."""
+        parent, child = self._pair(backend)
+        before_ids = {e["id"] for e in backend.supersedes_chain(child.id, as_of=self.BEFORE_AT)}
+        assert parent.id in before_ids
+        now_ids = {e["id"] for e in backend.supersedes_chain(child.id)}
+        assert parent.id not in now_ids
+
+    def test_supersedes_chain_none_returns_currently_valid_open_window(self, backend):
+        """as_of=None returns the currently-valid lineage: a supersession whose
+        valid_to (== child.created_at) is in the FUTURE keeps the parent in the
+        chain right now, at depth 1."""
+        parent = make_memory(title="AsOf Future Parent")
+        parent.created_at = self.PARENT_AT
+        backend.index_memory(parent)
+        child = make_memory(title="AsOf Future Child", parent_id=parent.id)
+        child.created_at = self.FUTURE_AT
+        backend.index_memory(child)
+        chain = backend.supersedes_chain(child.id)
+        chain_ids = {e["id"] for e in chain}
+        assert parent.id in chain_ids
+        assert next(e for e in chain if e["id"] == parent.id)["depth"] == 1
+
+    def test_neighbors_unknown_id_returns_empty(self, backend):
+        assert backend.neighbors("does-not-exist-" + uuid.uuid4().hex) == []
+
+    def test_supersedes_chain_unknown_id_returns_empty(self, backend):
+        assert backend.supersedes_chain("does-not-exist-" + uuid.uuid4().hex) == []
+
+
+@requires_skmem_pg
 class TestSearch:
     def test_search_by_tags_or_logic(self, backend):
         tag_a = f"tagA-{uuid.uuid4().hex[:8]}"
@@ -958,6 +1051,12 @@ class TestErrorPaths:
 
     def test_get_lineage_on_bad_dsn_returns_empty_list(self, bad_backend):
         assert bad_backend.get_lineage("x") == []
+
+    def test_neighbors_on_bad_dsn_returns_empty_list(self, bad_backend):
+        assert bad_backend.neighbors("x") == []
+
+    def test_supersedes_chain_on_bad_dsn_returns_empty_list(self, bad_backend):
+        assert bad_backend.supersedes_chain("x") == []
 
     def test_search_by_tags_on_bad_dsn_returns_empty_list(self, bad_backend):
         assert bad_backend.search_by_tags(["x"]) == []

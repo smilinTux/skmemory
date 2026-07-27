@@ -736,6 +736,140 @@ class AGEGraphBackend:
         )
         return bool(rows)
 
+    def neighbors(self, memory_id: str, as_of: str | None = None) -> list[dict]:
+        """Direct (1-hop) Memory-to-Memory neighbourhood valid as of ``as_of``.
+
+        Point-in-time counterpart of :meth:`get_related` (card c915b47d):
+        returns the memories directly connected to ``memory_id`` by an edge
+        that was *valid at* ``as_of`` (default now). An edge is valid at time
+        ``T`` iff its interval contains ``T``::
+
+            (valid_from IS NULL OR valid_from <= T)
+            AND (valid_to IS NULL OR valid_to > T)
+
+        The lower-bound NULL guard mirrors :meth:`currently_valid_memories`'
+        ``created_at`` guard, so pre-bitemporal edges (no ``valid_from``) are
+        treated as always-started rather than silently dropped. Open general
+        edges (``RELATED_TO``, ``valid_to`` NULL) are always current once their
+        ``valid_from`` has passed; a ``SUPERSEDES`` edge (whose ``valid_to`` is
+        the child's creation instant) drops out of the neighbourhood once
+        ``as_of`` reaches that instant. So an ``as_of`` *before* a supersession
+        still sees the then-valid link, and *after* it does not.
+
+        Constrained to the two Memory-to-Memory edge types (``RELATED_TO``,
+        ``SUPERSEDES``) exactly like :meth:`get_related`, deliberately excluding
+        the ``TAGGED_WITH`` / ``FROM_SOURCE`` / ``MENTIONS`` hub edges (walking
+        those explodes through shared-tag/source/entity hubs). AGE 1.7.x cannot
+        do relationship-type alternation in a pattern, so each edge type is
+        queried separately and merged in Python (mirroring ``get_related``).
+
+        Args:
+            memory_id: The memory whose neighbourhood to return.
+            as_of: ISO-8601 UTC timestamp to evaluate edge validity at.
+                ``None`` (default) means "now".
+
+        Returns:
+            list[dict]: Neighbour stubs (``id``, ``title``, ``layer``,
+                ``distance`` == 1), sorted by title, capped at 50 (matching
+                :meth:`get_related`'s return shape).
+        """
+        if self.graph is None:
+            return []
+        ts = as_of or _now_iso()
+        merged: dict[str, dict] = {}
+        for rel_type in ("RELATED_TO", "SUPERSEDES"):
+            query = (
+                "MATCH (start:Memory {id: $id})-[e:"
+                + rel_type
+                + "]-(n:Memory) "
+                "WHERE n.id <> $id "
+                "AND (e.valid_from IS NULL OR e.valid_from <= $ts) "
+                "AND (e.valid_to IS NULL OR e.valid_to > $ts) "
+                "RETURN n.id, n.title, n.layer"
+            )
+            rows = self._cypher(
+                query,
+                {"id": memory_id, "ts": ts},
+                cols="id agtype, title agtype, layer agtype",
+            )
+            for row in self._rows_to_dicts(rows, ["id", "title", "layer"]):
+                rid = row["id"]
+                if rid and rid not in merged:
+                    row["distance"] = 1
+                    merged[rid] = row
+        return sorted(merged.values(), key=lambda r: (r["title"] or ""))[:50]
+
+    def supersedes_chain(self, memory_id: str, as_of: str | None = None) -> list[dict]:
+        """Walk the ``SUPERSEDES`` lineage valid as of ``as_of`` (card c915b47d).
+
+        Point-in-time counterpart of :meth:`get_lineage`: follows outgoing
+        ``SUPERSEDES`` edges (toward older, superseded ancestors) but only over
+        edges whose validity interval contains ``as_of`` (default now), using
+        the same window predicate as :meth:`neighbors`::
+
+            (valid_from IS NULL OR valid_from <= T)
+            AND (valid_to IS NULL OR valid_to > T)
+
+        A ``SUPERSEDES`` edge to a parent spans the parent's currency window
+        ``[parent.created_at, child.created_at)`` (``valid_to`` == the child's
+        creation instant, i.e. when the parent stopped being current). So a
+        query *before* a supersession (``as_of`` inside that window) returns the
+        then-current parent, and a query *after* it (``as_of`` >= ``valid_to``)
+        excludes that now-closed link. With ``as_of=None`` the chain is the set
+        of ancestors whose currency window still contains *now* (the
+        currently-valid lineage).
+
+        AGE 1.7.x cannot reliably filter every edge of a variable-length path
+        (no reliable ``ALL(r IN relationships(path) ...)`` / ``EXISTS {}``), so
+        the chain is walked one hop at a time with the window predicate applied
+        per hop and results merged in Python (keeping the minimum depth per
+        ancestor), rather than a single ``*1..N`` pattern.
+
+        Note: :meth:`_superseded_ids_as_of` deliberately is NOT reused here. It
+        selects the *opposite* window (edges already CLOSED as of ``ts``:
+        ``valid_to <= ts``), whereas this chain needs edges still OPEN at ``ts``.
+
+        Args:
+            memory_id: Starting (most recent) memory ID.
+            as_of: ISO-8601 UTC timestamp to evaluate edge validity at.
+                ``None`` (default) means "now".
+
+        Returns:
+            list[dict]: Ancestor stubs (``id``, ``title``, ``layer``,
+                ``depth`` == chain distance), nearest first (matching
+                :meth:`get_lineage`'s return shape).
+        """
+        if self.graph is None:
+            return []
+        ts = as_of or _now_iso()
+        chain: dict[str, dict] = {}
+        visited: set[str] = {memory_id}
+        frontier: list[tuple[str, int]] = [(memory_id, 0)]
+        while frontier:
+            current, dist = frontier.pop(0)
+            if dist >= 10:
+                continue
+            query = (
+                "MATCH (c:Memory {id: $id})-[e:SUPERSEDES]->(p:Memory) "
+                "WHERE (e.valid_from IS NULL OR e.valid_from <= $ts) "
+                "AND (e.valid_to IS NULL OR e.valid_to > $ts) "
+                "RETURN p.id, p.title, p.layer"
+            )
+            rows = self._cypher(
+                query,
+                {"id": current, "ts": ts},
+                cols="id agtype, title agtype, layer agtype",
+            )
+            for row in self._rows_to_dicts(rows, ["id", "title", "layer"]):
+                pid = row["id"]
+                if not pid or pid in visited:
+                    continue
+                visited.add(pid)
+                row["depth"] = dist + 1
+                chain[pid] = row
+                frontier.append((pid, dist + 1))
+        return sorted(chain.values(), key=lambda r: r["depth"])
+
     def search_by_tags(self, tags: list[str], limit: int = 20) -> list[dict]:
         """Find memories sharing any of the given tags (OR logic).
 
