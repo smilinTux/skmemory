@@ -304,25 +304,48 @@ class AGEGraphBackend:
         """MERGE a `(label {key: value})` node and a `(Memory)-[:rel]->(node)` edge.
 
         `label`, `key`, `rel` are internal constants only (never user input),
-        so simple concatenation is safe here — avoids f-string brace escaping.
+        so simple concatenation is safe here (avoids f-string brace escaping).
+
+        The edge carries an OPEN bitemporal interval (matching the
+        ep-bitemporal-kg edge schema): ``valid_from`` + ``recorded_at`` are
+        stamped once via ``coalesce`` so re-index keeps the original values,
+        and ``valid_to`` is left NULL (the edge is currently valid). Unlike
+        SUPERSEDES, which CLOSES an interval, these general edges never set
+        ``valid_to``.
         """
         query = (
             "MATCH (m:Memory {id: $mem_id}) "
             "MERGE (n:" + label + " {" + key + ": $value}) "
-            "MERGE (m)-[:" + rel + "]->(n) "
+            "MERGE (m)-[e:" + rel + "]->(n) "
+            "SET e.valid_from = coalesce(e.valid_from, $now), "
+            "e.recorded_at = coalesce(e.recorded_at, $now) "
             "RETURN n"
         )
-        rows = self._cypher(query, {"mem_id": mem_id, "value": value}, cols="n agtype")
+        rows = self._cypher(
+            query,
+            {"mem_id": mem_id, "value": value, "now": _now_iso()},
+            cols="n agtype",
+        )
         return bool(rows)
 
     def _merge_related(self, a_id: str, b_id: str) -> bool:
+        """MERGE a ``(a)-[:RELATED_TO]->(b)`` edge with an OPEN bitemporal
+        interval: ``valid_from`` + ``recorded_at`` stamped once via
+        ``coalesce`` (idempotent), ``valid_to`` left NULL (currently valid).
+        """
         query = (
             "MATCH (a:Memory {id: $a_id}) "
             "MERGE (b:Memory {id: $b_id}) "
-            "MERGE (a)-[:RELATED_TO]->(b) "
+            "MERGE (a)-[e:RELATED_TO]->(b) "
+            "SET e.valid_from = coalesce(e.valid_from, $now), "
+            "e.recorded_at = coalesce(e.recorded_at, $now) "
             "RETURN b"
         )
-        rows = self._cypher(query, {"a_id": a_id, "b_id": b_id}, cols="b agtype")
+        rows = self._cypher(
+            query,
+            {"a_id": a_id, "b_id": b_id, "now": _now_iso()},
+            cols="b agtype",
+        )
         return bool(rows)
 
     def _merge_supersedes(
