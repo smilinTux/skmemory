@@ -1,0 +1,21 @@
+{
+  "_note": "Regression-gate baseline for skmemory eval harnesses. Regenerate with: python -m skmemory.eval.regression_gate --write-baseline. Every metric is higher-is-better; leak_count must stay 0.",
+  "leak_count": 0,
+  "leak_count_unfiltered": 3,
+  "metrics": {
+    "groundedness.score": 0.75,
+    "recall_bench.ndcg@1": 1.0,
+    "recall_bench.ndcg@3": 1.0,
+    "recall_bench.ndcg@5": 1.0,
+    "recall_bench.recall@1": 1.0,
+    "recall_bench.recall@3": 1.0,
+    "recall_bench.recall@5": 1.0,
+    "retrieval_bench.mrr": 1.0,
+    "retrieval_bench.precision@1": 1.0,
+    "retrieval_bench.precision@3": 0.3333333333333333,
+    "retrieval_bench.precision@5": 0.2,
+    "retrieval_bench.recall@1": 1.0,
+    "retrieval_bench.recall@3": 1.0,
+    "retrieval_bench.recall@5": 1.0
+  }
+}

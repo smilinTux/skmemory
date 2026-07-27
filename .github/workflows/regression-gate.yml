@@ -1,0 +1,60 @@
+name: Eval Regression Gate
+
+# Offline eval-quality regression gate.
+#
+# Runs the three deterministic, fully in-process eval harnesses
+# (recall_benchmark, retrieval_bench, groundedness_scorer with the OFFLINE mock
+# judge) via `python -m skmemory.eval.regression_gate` and compares the metrics
+# against the committed eval/baseline.json. A PR that WORSENS any gated score
+# (recall@k / ndcg@k / precision@k / mrr / groundedness) or leaks a private item
+# (leak_count > 0) makes the gate exit non-zero and turns the PR RED.
+#
+# Scope / cost:
+#   * This job only runs on PRs that touch the retrieval/rank/privacy/eval
+#     surface (the `paths` filter below). Unrelated PRs never trigger it, so it
+#     adds no cost to docs-only or unrelated changes.
+#   * It is fully OFFLINE: no skmem-pg service container, no embedding endpoint,
+#     no network. The harnesses stand the retrieval path up in-process (SQLite
+#     keyword + deterministic hashed-vector BM25 fusion + the real audience
+#     privacy filter), and groundedness uses the deterministic
+#     lexical_overlap_judge, not the live sk-default judge.
+#
+# This workflow is additive: it does not modify or weaken pytest.yml / ci.yml.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "skmemory/backends/pgvector_backend.py"
+      - "skmemory/endpoint_selector.py"
+      - "skmemory/audience.py"
+      - "skmemory/eval/**"
+      - ".github/workflows/regression-gate.yml"
+  workflow_dispatch:
+
+jobs:
+  regression-gate:
+    name: eval regression gate (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package (core deps only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Run eval regression gate vs committed baseline
+        run: |
+          python -m skmemory.eval.regression_gate
+
+      - name: Run gate unit tests
+        run: |
+          python -m pytest tests/test_regression_gate.py \
+            --import-mode=importlib -v --tb=short
