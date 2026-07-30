@@ -363,6 +363,12 @@ def cli(
     smart search reranking, enhanced rituals). Requires Ollama.
     """
     ctx.ensure_object(dict)
+    # The operator facet (explain/observe/act) is store-free and must stay
+    # hermetic: never build a MemoryStore (backends, embeddings) just to print
+    # the operator contract or read fail-safe health probes.
+    if ctx.invoked_subcommand == "operator":
+        ctx.obj["ai"] = None
+        return
     if "store" not in ctx.obj:
         ctx.obj["store"] = _get_store(
             skvector_url,
@@ -3134,6 +3140,62 @@ try:
     cli.add_command(_anchors_group)
 except Exception:  # pragma: no cover — defensive, don't break cli on import error
     pass
+
+
+@cli.group("operator")
+def operator() -> None:
+    """skmemory operator facet: the explain / observe / act contract.
+
+    The canonical CLI that Atlas's skmemory adapter mirrors. `explain` self-
+    describes the operator contract (kinds/conditions/actions), `observe` reports
+    live conditions from real probes (each failing safe = healthy when
+    unreachable), and `act` performs a reversible standard action. reindex is
+    human-approval-only and refuses (it escalates as MAJOR).
+
+    Examples:
+
+        skmemory operator explain
+
+        skmemory operator observe
+
+        skmemory operator act restart_service
+    """
+
+
+@operator.command("explain")
+def operator_explain() -> None:
+    """Print the operator-facet contract (kinds/conditions/actions) as JSON."""
+    from .operator_probe import explain as _explain
+
+    click.echo(json.dumps(_explain(), indent=2))
+
+
+@operator.command("observe")
+def operator_observe() -> None:
+    """Print live operator conditions as JSON from real probes (fails safe)."""
+    from .operator_probe import observe as _observe
+
+    click.echo(json.dumps(_observe(), indent=2))
+
+
+@operator.command("act")
+@click.argument("action")
+@click.option("--unit", default=None, help="Override the systemd unit to restart.")
+def operator_act(action: str, unit: str | None) -> None:
+    """Perform a reversible standard action, or refuse.
+
+    ACTION is restart_service (standard, reversible, low blast; run via
+    `systemctl --user restart <unit>`). reindex is non-standard and
+    human-approval-only: it refuses and reports that it escalates as MAJOR. An
+    unknown action is refused.
+    """
+    from .operator_probe import act as _act
+
+    try:
+        result = _act(action, unit=unit)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+    click.echo(json.dumps(result, indent=2))
 
 
 def main() -> None:
