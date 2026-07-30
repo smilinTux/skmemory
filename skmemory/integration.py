@@ -37,11 +37,34 @@ SERVICE = "skmemory"
 #: Fleet-scheduler job name for the promotion sweep.
 SWEEP_JOB = "skmemory_sweep"
 
-# Optional import — never a hard dependency.
-try:
-    from skcapstone import sdk as _sdk
-except Exception:  # ImportError, or a broken partial install
-    _sdk = None  # type: ignore[assignment]
+# Optional skcapstone SDK — resolved lazily on first use.
+#
+# Importing skcapstone eagerly at module load would pull it into
+# ``sys.modules`` the instant this module is imported, which breaks the L0
+# core-purity invariant: skmemory is a core package and importing it must never
+# drag a higher-layer subapp (skcapstone) in as an import side effect.
+# Deferring the import to first use keeps ``import skmemory`` free of skcapstone
+# while preserving full integrated behaviour when skcapstone IS installed.
+_UNRESOLVED: Any = object()
+_sdk: Any = _UNRESOLVED
+
+
+def _get_sdk() -> Any:
+    """Return the skcapstone ``sdk`` module, or ``None`` when unavailable.
+
+    The import is deferred to first call and then cached (``None`` is a valid,
+    cached "unavailable" result), so merely importing this module never pulls
+    skcapstone into ``sys.modules``.  Tests may still assign the module-level
+    ``_sdk`` directly to force a value.
+    """
+    global _sdk
+    if _sdk is _UNRESOLVED:
+        try:
+            from skcapstone import sdk as resolved
+        except Exception:  # ImportError, or a broken partial install
+            resolved = None
+        _sdk = resolved
+    return _sdk
 
 #: severity → logging method name (native fallback)
 _LOG_METHOD = {
@@ -62,10 +85,11 @@ def is_present() -> bool:
     """
     if os.environ.get("SK_STANDALONE"):
         return False
-    if _sdk is None:
+    sdk = _get_sdk()
+    if sdk is None:
         return False
     try:
-        return bool(_sdk.is_available())
+        return bool(sdk.is_available())
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("skcapstone present-check failed: %s", exc)
         return False
@@ -94,7 +118,7 @@ def alert(event: str, payload: dict[str, Any], level: str = "info") -> bool:
     if is_present():
         try:
             return bool(
-                _sdk.alert(
+                _get_sdk().alert(
                     f"{SERVICE}.{level}",
                     body,
                     level=level,
@@ -128,7 +152,7 @@ def ensure_schedule(interval_hours: float = 6.0) -> bool:
     if not is_present():
         return False
     try:
-        _sdk.register_job(
+        _get_sdk().register_job(
             {
                 "name": SWEEP_JOB,
                 "type": "shell",
@@ -150,10 +174,11 @@ def ensure_schedule(interval_hours: float = 6.0) -> bool:
 
 def unregister_schedule() -> bool:
     """Remove the promotion-sweep drop-in from the fleet scheduler."""
-    if _sdk is None:
+    sdk = _get_sdk()
+    if sdk is None:
         return False
     try:
-        return bool(_sdk.unregister_job(SWEEP_JOB))
+        return bool(sdk.unregister_job(SWEEP_JOB))
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("unregister_schedule failed: %s", exc)
         return False
@@ -171,7 +196,7 @@ def register_self(pid_file: str | None = None) -> bool:
     if not is_present():
         return False
     try:
-        _sdk.register_service(
+        _get_sdk().register_service(
             SERVICE,
             pid_file=pid_file or str(Path("~/.skmemory/daemon.pid").expanduser()),
         )
