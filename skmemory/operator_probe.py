@@ -34,8 +34,8 @@ subapp import (identity, if ever needed here, would come from capauth).
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 #: The two operator conditions, matching Atlas's skmemory_adapter and the manifest.
 CONDITIONS = ["EmbedServing", "ReconcileFresh"]
@@ -91,7 +91,7 @@ def _agent() -> str:
 # --- pure probe logic (unit-tested directly) ---------------------------------
 
 
-def _reconcile_fresh(index_age_s: Optional[float]) -> bool:
+def _reconcile_fresh(index_age_s: float | None) -> bool:
     """The reconcile-freshness rule: a known index older than the max age reads
     as stale. Unknown age (no index yet) fails SAFE (fresh)."""
     if index_age_s is None:
@@ -111,14 +111,7 @@ def _index_path() -> str:
     override = os.environ.get("SKMEMORY_INDEX_DB")
     if override:
         return override
-    return str(
-        Path.home()
-        / ".skcapstone"
-        / "agents"
-        / _agent()
-        / "memory"
-        / "index.db"
-    )
+    return str(Path.home() / ".skcapstone" / "agents" / _agent() / "memory" / "index.db")
 
 
 def _probe_embed_serving() -> bool:
@@ -136,7 +129,7 @@ def _probe_embed_serving() -> bool:
         return True
 
 
-def _probe_index_age() -> Optional[float]:
+def _probe_index_age() -> float | None:
     """Age in seconds of the local SQLite index, or None when no index file is
     found (fails safe: unknown age reads as fresh)."""
     try:
@@ -171,7 +164,7 @@ def explain() -> dict:
     }
 
 
-def observe(probe: Optional[Callable[[], dict]] = None) -> dict:
+def observe(probe: Callable[[], dict] | None = None) -> dict:
     """Read-only skmemory health snapshot in the operator-contract shape.
 
     ``probe`` is injectable so tests are hermetic; the default reads real signals
@@ -195,14 +188,14 @@ def observe(probe: Optional[Callable[[], dict]] = None) -> dict:
     }
 
 
-def _action_meta(action: str) -> Optional[dict]:
+def _action_meta(action: str) -> dict | None:
     for a in _ACTIONS:
         if a["name"] == action:
             return a
     return None
 
 
-def _unit_for(action: str, agent: Optional[str] = None) -> Optional[str]:
+def _unit_for(action: str, agent: str | None = None) -> str | None:
     """The systemd unit a reversible standard action restarts."""
     if action == "restart_service":
         override = os.environ.get("SKMEMORY_UNIT")
@@ -228,9 +221,9 @@ def _default_runner(cmd) -> dict:
 def act(
     action: str,
     *,
-    runner: Optional[Callable[[list], dict]] = None,
-    agent: Optional[str] = None,
-    unit: Optional[str] = None,
+    runner: Callable[[list], dict] | None = None,
+    agent: str | None = None,
+    unit: str | None = None,
 ) -> dict:
     """Perform a reversible standard skmemory action, or refuse.
 

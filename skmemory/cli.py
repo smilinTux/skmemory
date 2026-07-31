@@ -3194,7 +3194,7 @@ def operator_act(action: str, unit: str | None) -> None:
     try:
         result = _act(action, unit=unit)
     except ValueError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(result, indent=2))
 
 
@@ -3220,13 +3220,31 @@ def pg() -> None:
 
 @pg.command("migrate")
 @click.argument("script", required=False)
-@click.option("--container", default=None, help="docker container running psql (default: skmem-pg; env SKMEM_PG_CONTAINER).")
-@click.option("--dsn", default=None, help="libpq DSN; use a local/remote psql instead of docker exec (env SKMEMORY_PG_DSN).")
+@click.option(
+    "--container",
+    default=None,
+    help="docker container running psql (default: skmem-pg; env SKMEM_PG_CONTAINER).",
+)
+@click.option(
+    "--dsn",
+    default=None,
+    help="libpq DSN; use a local/remote psql instead of docker exec (env SKMEMORY_PG_DSN).",
+)
 @click.option("--db", default=None, help="database name (default: skmemory; env SKMEM_PG_DB).")
 @click.option("--user", default=None, help="superuser role (default: postgres).")
-@click.option("--pre-dump/--no-pre-dump", default=True, help="Take a pg_dump -Fc snapshot before applying (default: on).")
-@click.option("--verify/--no-verify", default=True, help="Run the migration's verify script after applying (default: on).")
-@click.option("--dump-dir", default=None, help="Directory for pre-dump files (default: ~/skmem-backups).")
+@click.option(
+    "--pre-dump/--no-pre-dump",
+    default=True,
+    help="Take a pg_dump -Fc snapshot before applying (default: on).",
+)
+@click.option(
+    "--verify/--no-verify",
+    default=True,
+    help="Run the migration's verify script after applying (default: on).",
+)
+@click.option(
+    "--dump-dir", default=None, help="Directory for pre-dump files (default: ~/skmem-backups)."
+)
 @click.option("--dry-run", is_flag=True, help="Print the plan and exit; touch nothing.")
 def pg_migrate(
     script: str | None,
@@ -3279,8 +3297,7 @@ def pg_migrate(
 
     transport = f"dsn={target.dsn}" if target.uses_dsn else f"container={target.container}"
     click.echo(
-        f"skmem-pg migrate plan ({transport}, db={target.db}): "
-        f"{len(migrations)} migration(s)"
+        f"skmem-pg migrate plan ({transport}, db={target.db}): {len(migrations)} migration(s)"
     )
     click.echo(plan.describe())
 
@@ -3296,12 +3313,24 @@ def pg_migrate(
 
 
 @pg.command("roles")
-@click.option("--container", default=None, help="docker container running psql (default: skmem-pg; env SKMEM_PG_CONTAINER).")
-@click.option("--dsn", default=None, help="libpq DSN instead of docker exec (env SKMEMORY_PG_DSN).")
+@click.option(
+    "--container",
+    default=None,
+    help="docker container running psql (default: skmem-pg; env SKMEM_PG_CONTAINER).",
+)
+@click.option(
+    "--dsn", default=None, help="libpq DSN instead of docker exec (env SKMEMORY_PG_DSN)."
+)
 @click.option("--db", default=None, help="database name (default: skmemory; env SKMEM_PG_DB).")
 @click.option("--user", default=None, help="superuser role (default: postgres).")
-@click.option("--skip-missing", is_flag=True, help="Skip a role whose password env var is unset (default: error).")
-@click.option("--dry-run", is_flag=True, help="Print the plan (password redacted) and exit; touch nothing.")
+@click.option(
+    "--skip-missing",
+    is_flag=True,
+    help="Skip a role whose password env var is unset (default: error).",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Print the plan (password redacted) and exit; touch nothing."
+)
 def pg_roles(
     container: str | None,
     dsn: str | None,

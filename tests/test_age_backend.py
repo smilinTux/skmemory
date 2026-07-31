@@ -728,9 +728,7 @@ class TestBitemporalOpenEdges:
         a = make_memory(title="Idem Open Parent")
         backend.index_memory(a)
         tag = f"openidem-{uuid.uuid4().hex[:8]}"
-        b = make_memory(
-            title="Idem Open Child", tags=[tag], related_ids=[a.id]
-        )
+        b = make_memory(title="Idem Open Child", tags=[tag], related_ids=[a.id])
         backend.index_memory(b)
 
         first_related = self._related_edge_props(backend, b.id, a.id)

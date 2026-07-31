@@ -48,6 +48,99 @@ npm install @smilintux/skmemory
 npx @smilintux/skmemory
 ```
 
+### skmem-pg (Postgres backend: pgvector + BM25 + AGE + ops), out of the box
+
+`skmem-pg` is the production storage backend (pgvector + ParadeDB `pg_search` BM25 +
+Apache AGE graphs), run **LOCAL per node** on `127.0.0.1:5432` (no replication, no SPOF;
+flat JSON files stay the source of truth, `memories` is a derived cache). A fresh
+`docker compose up` comes up **fully migrated** with zero manual DDL. Full detail lives in
+[`deploy/skmem-pg/README.md`](./deploy/skmem-pg/README.md); this is the seamless path.
+
+**1. Bring up a fully-migrated instance (fresh node):**
+
+```bash
+# password is required, never committed, no default (compose refuses to start without it):
+export SKMEM_PG_PASSWORD="$(skvault creds-get SKMEM_PG_PASSWORD)"   # or any strong value on first install
+docker compose up -d --build
+```
+
+The compose init wrapper (`deploy/skmem-pg/initdb/00-run-init.sh`) runs once at first
+boot and applies, in order: `schema.sql` (the live post-cutover snapshot: extensions +
+tables + `hybrid_search_docs/memories` + all HNSW/BM25 indexes) then **every forward
+migration in `deploy/skmem-pg/migrations.txt`** (currently `03-ops-namespace.sql`: the
+skbrain `ops` schema + `ops_brain` graph + privacy wall). The two historical, superseded
+migrations (`02-enable-bm25-age.sql`, `03-cutover-mxbai.sql`) are deliberately excluded
+from the manifest: they are already baked into `schema.sql`, and `03-cutover-mxbai.sql` is
+not idempotent, so it must never auto-run. Fresh-boot and live-node paths read the same
+`migrations.txt`, so they never drift.
+
+If a production skmem-pg already listens on 5432, override the port:
+`SKMEM_PG_PORT=15432 docker compose up -d`.
+
+**2. Migrate an existing (live) node** with the idempotent runner instead of re-init:
+
+```bash
+skmemory pg migrate                       # apply every pending forward migration (pre-dump + verify)
+skmemory pg migrate 03-ops-namespace.sql --dry-run   # preview one migration; touch nothing
+```
+
+Every apply runs `ON_ERROR_STOP=1` in one guarded transaction, so a re-run is a safe
+no-op and a partial apply cannot occur. CI never applies migrations.
+
+**3. Bind the ops LOGIN roles** (the one step passwords keep out of the image). The
+migration creates only the NOLOGIN group roles `skbrain_ops_rw` / `skbrain_ops_ro`; bind
+LOGIN roles into them from skvault, no secret ever in the repo, image, argv, or logs:
+
+| Login role | Group | Password env var | skvault entry |
+| --- | --- | --- | --- |
+| `skbrain_projector` | `skbrain_ops_rw` | `SKBRAIN_PG_PROJECTOR_PW` | `SKBRAIN_PG_PROJECTOR_PW` |
+| `skbrain_reader` | `skbrain_ops_ro` | `SKBRAIN_PG_READER_PW` | `SKBRAIN_PG_READER_PW` |
+
+```bash
+# Copy the template, then fill both values FROM SKVAULT (create the entries on first install):
+cp deploy/skmem-pg/skbrain.conf.example ~/.config/environment.d/skbrain.conf
+skvault unlock --word <phrase>
+printf 'SKBRAIN_PG_PROJECTOR_PW=%s\n' "$(skvault creds-get SKBRAIN_PG_PROJECTOR_PW)" >> ~/.config/environment.d/skbrain.conf
+printf 'SKBRAIN_PG_READER_PW=%s\n'    "$(skvault creds-get SKBRAIN_PG_READER_PW)"    >> ~/.config/environment.d/skbrain.conf
+
+skmemory pg roles              # create/ALTER both LOGIN roles + GRANT the groups (idempotent)
+skmemory pg roles --dry-run    # preview with the password redacted; touch nothing
+```
+
+**4. Required environment** (the node-local backend + embeddings):
+
+| Variable | Purpose | Value |
+| --- | --- | --- |
+| `SKMEMORY_PG_DSN` | Node-local skmem-pg DSN read by the store + AGE backend (authoritative; wins over the Syncthing-shared yaml) | `postgresql://postgres:${SKMEM_PG_PASSWORD}@127.0.0.1:5432/skmemory` |
+| `SKMEM_PG_PASSWORD` | Superuser password consumed by `docker compose` (no default) | from skvault `SKMEM_PG_PASSWORD` |
+| `SKBRAIN_PG_PROJECTOR_PW` / `SKBRAIN_PG_READER_PW` | ops LOGIN-role passwords for `skmemory pg roles` | from skvault (see table above), via `~/.config/environment.d/skbrain.conf` |
+| `EMBED_URL` | Embedding backend endpoint | `http://<gpu-node>:11434/api/embed` (default `http://192.168.0.100:11434/api/embed`) |
+| `EMBED_MODEL` | Embedding model | `mxbai-embed-large` (**1024-dim**) |
+
+**Embeddings:** `mxbai-embed-large` at 1024 dimensions everywhere (Ollama `:11434`,
+`ctx=512`), with a `mixedbread-ai/mxbai-embed-large-v1` network fallback. Every `vector(…)`
+column in `schema.sql` and the `ops` namespace is `vector(1024)`; the dimension must match
+across the mesh or cross-collection recall breaks.
+
+**5. Verify health** (read-only, safe against a live instance):
+
+```bash
+# Extensions present (expect: age, pg_search, vector) and ops schema installed:
+docker exec skmem-pg psql -U postgres -d skmemory -c "SELECT extname FROM pg_extension ORDER BY 1;"
+
+# Full ops-namespace verify (schema=1, tables=3, hnsw=1, bm25=1, fn=1, graph=1, public_can_use_ops=f):
+docker exec -i skmem-pg psql -U postgres -d skmemory < deploy/skmem-pg/verify-ops.sql
+
+# App-level health (store health + sync block) and operator observability probe:
+skmemory health
+skmemory operator observe        # EmbedServing / ReconcileFresh conditions
+```
+
+The skos provisioner (OPS1.2) reaches the same end state non-interactively by calling
+`skmemory pg migrate` then `skmemory pg roles` (`--skip-missing` tolerates an un-provisioned
+role). Per-node cold-boot ordering (Syncthing restore + `RESTORE_COMPLETE` sentinel before
+reconcile) is in [`deploy/skmem-pg/README.md`](./deploy/skmem-pg/README.md).
+
 ---
 
 ## Architecture
@@ -555,6 +648,11 @@ skmemory setup
 | Variable | Description |
 |----------|-------------|
 | `SKMEMORY_HOME` | Override the active profile's memory home (defaults under `~/.skcapstone/agents/<agent>/memory`) |
+| `SKMEMORY_PG_DSN` | Node-local skmem-pg DSN for the store + AGE backend (authoritative; wins over the shared yaml). E.g. `postgresql://postgres:${SKMEM_PG_PASSWORD}@127.0.0.1:5432/skmemory`. See the skmem-pg install section under **Install** above |
+| `SKMEM_PG_PASSWORD` | Superuser password for `docker compose` (no default; never committed). Source from skvault `SKMEM_PG_PASSWORD` |
+| `SKMEM_PG_DB` / `SKMEM_PG_PORT` / `SKMEM_PG_CONTAINER` | skmem-pg DB name (`skmemory`), host port (`5432`), and container name (`skmem-pg`) overrides |
+| `SKBRAIN_PG_PROJECTOR_PW` / `SKBRAIN_PG_READER_PW` | ops LOGIN-role passwords read by `skmemory pg roles` (from skvault entries of the same name, via `~/.config/environment.d/skbrain.conf`) |
+| `EMBED_URL` / `EMBED_MODEL` | Embedding endpoint + model (`http://192.168.0.100:11434/api/embed`, `mxbai-embed-large`, 1024-dim) |
 | `SKMEMORY_SKVECTOR_URL` | Qdrant endpoint URL |
 | `SKMEMORY_SKVECTOR_KEY` | Qdrant API key |
 | `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Override the sovereign embedding model (`mxbai-embed-large` by default, fallback: `mixedbread-ai/mxbai-embed-large-v1`) |
@@ -612,9 +710,9 @@ pip install -e ".[dev,all]"
 # Run tests
 pytest
 
-# Lint and format
-ruff check skmemory/
-black skmemory/
+# Lint and format (CI gates on BOTH skmemory/ and tests/):
+ruff check skmemory/ tests/
+ruff format --check skmemory/ tests/   # use `ruff format skmemory/ tests/` to auto-fix
 
 # Run the MCP server locally
 skmemory-mcp

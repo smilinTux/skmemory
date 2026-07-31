@@ -172,8 +172,7 @@ def compare(
         cur_val = cur_metrics[name]
         if cur_val < base_val - epsilon:
             regressions.append(
-                f"{name}: {cur_val:.6f} < baseline {base_val:.6f} "
-                f"(drop {base_val - cur_val:.6f})"
+                f"{name}: {cur_val:.6f} < baseline {base_val:.6f} (drop {base_val - cur_val:.6f})"
             )
 
     # HARD privacy gate: any leak is a regression, independent of the baseline.
@@ -294,8 +293,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline = load_baseline(args.baseline)
     except FileNotFoundError:
         print(
-            f"\nERROR: baseline not found at {args.baseline}. "
-            f"Generate it with --write-baseline.",
+            f"\nERROR: baseline not found at {args.baseline}. Generate it with --write-baseline.",
             file=sys.stderr,
         )
         return 2

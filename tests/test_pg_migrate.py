@@ -62,11 +62,7 @@ def test_manifest_order_is_preserved():
 def test_load_manifest_ignores_comments_and_blanks(tmp_path):
     f = tmp_path / "migrations.txt"
     f.write_text(
-        "# header comment\n"
-        "\n"
-        "01-a.sql | verify-a.sql\n"
-        "   \n"
-        "02-b.sql   # trailing comment\n",
+        "# header comment\n\n01-a.sql | verify-a.sql\n   \n02-b.sql   # trailing comment\n",
         encoding="utf-8",
     )
     entries = load_manifest(f)
@@ -138,8 +134,17 @@ def test_docker_transport_matches_readme_invocation():
     plan = build_migrate_plan(load_manifest(), Target(container="skmem-pg"), pre_dump=False)
     apply = plan.steps[0]
     assert apply.argv == [
-        "docker", "exec", "-i", "skmem-pg",
-        "psql", "-U", "postgres", "-d", "skmemory", "-v", "ON_ERROR_STOP=1",
+        "docker",
+        "exec",
+        "-i",
+        "skmem-pg",
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "skmemory",
+        "-v",
+        "ON_ERROR_STOP=1",
     ]
     # SQL is fed on stdin (the file), not argv.
     assert apply.stdin_path == (DEPLOY_DIR / "03-ops-namespace.sql")
@@ -212,7 +217,9 @@ def test_roles_plan_skip_missing():
 
 
 def test_roles_describe_redacts_password():
-    plan = build_roles_plan(Target(), env={"SKBRAIN_PG_PROJECTOR_PW": "topsecret", "SKBRAIN_PG_READER_PW": "x"})
+    plan = build_roles_plan(
+        Target(), env={"SKBRAIN_PG_PROJECTOR_PW": "topsecret", "SKBRAIN_PG_READER_PW": "x"}
+    )
     text = plan.describe()
     assert "topsecret" not in text
     assert "redacted" in text.lower()
@@ -233,10 +240,12 @@ class _FakeProc:
 def test_run_plan_executes_in_order_and_pipes_stdin(tmp_path):
     sqlfile = tmp_path / "m.sql"
     sqlfile.write_text("SELECT 1;", encoding="utf-8")
-    plan = Plan(steps=[
-        Step(argv=["psql", "a"], label="apply m", stdin_path=sqlfile),
-        Step(argv=["psql", "b"], label="verify m", stdin_path=sqlfile, fatal=False),
-    ])
+    plan = Plan(
+        steps=[
+            Step(argv=["psql", "a"], label="apply m", stdin_path=sqlfile),
+            Step(argv=["psql", "b"], label="verify m", stdin_path=sqlfile, fatal=False),
+        ]
+    )
     calls = []
 
     def fake_runner(argv, input=None, capture_output=False):
@@ -280,7 +289,17 @@ def test_run_plan_predump_writes_stdout_to_file(tmp_path):
 
 
 def test_run_plan_redacts_secret_stderr():
-    plan = Plan(steps=[Step(argv=["psql"], label="bind", stdin_text="CREATE ROLE r LOGIN PASSWORD 'hunter2';", secret=True, fatal=False)])
+    plan = Plan(
+        steps=[
+            Step(
+                argv=["psql"],
+                label="bind",
+                stdin_text="CREATE ROLE r LOGIN PASSWORD 'hunter2';",
+                secret=True,
+                fatal=False,
+            )
+        ]
+    )
 
     def fake_runner(argv, input=None, capture_output=False):
         return _FakeProc(1, stderr=b"error near PASSWORD 'hunter2'")
@@ -295,5 +314,6 @@ def test_idempotent_plan_is_deterministic():
     applies the same guarded, idempotent SQL)."""
     p1 = build_migrate_plan(load_manifest(), Target(), pre_dump=False)
     p2 = build_migrate_plan(load_manifest(), Target(), pre_dump=False)
-    assert [(s.argv, s.stdin_path, s.label) for s in p1.steps] == \
-           [(s.argv, s.stdin_path, s.label) for s in p2.steps]
+    assert [(s.argv, s.stdin_path, s.label) for s in p1.steps] == [
+        (s.argv, s.stdin_path, s.label) for s in p2.steps
+    ]
