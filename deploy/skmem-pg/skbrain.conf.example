@@ -1,0 +1,30 @@
+# skbrain ops role credentials -- env drop-in TEMPLATE (card OPS1.3)
+# =====================================================================
+# Copy to ~/.config/environment.d/skbrain.conf and fill the values FROM SKVAULT
+# (never commit real passwords). `skmemory pg roles` reads these to create/ALTER
+# the LOGIN roles bound into the NOLOGIN group roles from 03-ops-namespace.sql:
+#     skbrain_projector -> skbrain_ops_rw   (the projector: read+write ops)
+#     skbrain_reader    -> skbrain_ops_ro   (Atlas/operator retrieval: read-only)
+#
+# skvault entries (create on first install if absent):
+#     SKBRAIN_PG_PROJECTOR_PW   -> password for skbrain_projector
+#     SKBRAIN_PG_READER_PW      -> password for skbrain_reader
+#
+# Populate this file from skvault, e.g.:
+#     skvault unlock --word <phrase>
+#     printf 'SKBRAIN_PG_PROJECTOR_PW=%s\n' "$(skvault creds-get SKBRAIN_PG_PROJECTOR_PW)" \
+#         >> ~/.config/environment.d/skbrain.conf
+#     printf 'SKBRAIN_PG_READER_PW=%s\n'    "$(skvault creds-get SKBRAIN_PG_READER_PW)" \
+#         >> ~/.config/environment.d/skbrain.conf
+#
+# Then bind the roles (idempotent):
+#     skmemory pg roles
+#
+# DSN drop-ins for consumers (projector / reader). skmem-pg is LOCAL per node,
+# 127.0.0.1:5432. Keep the password out of shell history; source from env.
+#     SKBRAIN_PG_PROJECTOR_DSN=postgresql://skbrain_projector:${SKBRAIN_PG_PROJECTOR_PW}@127.0.0.1:5432/skmemory
+#     SKBRAIN_PG_READER_DSN=postgresql://skbrain_reader:${SKBRAIN_PG_READER_PW}@127.0.0.1:5432/skmemory
+# =====================================================================
+
+SKBRAIN_PG_PROJECTOR_PW=CHANGME-from-skvault
+SKBRAIN_PG_READER_PW=CHANGME-from-skvault

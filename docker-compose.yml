@@ -9,9 +9,12 @@
 #   export SKMEM_PG_PASSWORD=change-me
 #   docker compose up -d --build
 #
-# Fresh initialization loads deploy/skmem-pg/schema.sql (live .158 schema
-# snapshot, 2026-07-17) which creates extensions, tables, hybrid_search_docs /
-# hybrid_search_memories, and all HNSW + BM25 indexes.
+# Fresh initialization runs deploy/skmem-pg/initdb/00-run-init.sh (card OPS1.3),
+# which applies, in order: schema.sql (live .158 snapshot, extensions + tables +
+# hybrid_search_docs/memories + all HNSW/BM25 indexes) THEN every forward
+# migration in deploy/skmem-pg/migrations.txt (currently 03-ops-namespace.sql:
+# the skbrain ops schema/graph/privacy-wall). A clean `docker compose up` yields
+# a fully-migrated instance; no manual apply needed for a fresh DB.
 #
 # NOTE: if a production skmem-pg already listens on 5432 on this host, override
 # the port: SKMEM_PG_PORT=15432 docker compose up -d
@@ -29,7 +32,11 @@ services:
       - "127.0.0.1:${SKMEM_PG_PORT:-5432}:5432"
     volumes:
       - skmem_pg_data:/var/lib/postgresql/data
-      - ./deploy/skmem-pg/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # First-boot init: the wrapper applies schema.sql + every forward
+      # migration (migrations.txt) in order. The whole deploy/skmem-pg dir is
+      # mounted read-only as the wrapper's source (SKMEM_INIT_SRC).
+      - ./deploy/skmem-pg/initdb/00-run-init.sh:/docker-entrypoint-initdb.d/00-run-init.sh:ro
+      - ./deploy/skmem-pg:/skmem-initdb-src:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d $${POSTGRES_DB}"]
       interval: 10s
