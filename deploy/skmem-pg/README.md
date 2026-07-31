@@ -12,6 +12,7 @@ git repo (DR gap, coord card a4b414c9).
 | `schema.sql` | `pg_dump --schema-only --no-owner --no-privileges` of the LIVE .158 `skmemory` DB, taken 2026-07-17 (post mxbai cutover, includes the 2026-07-06 ParadeDB query-shape fix). Contains `hybrid_search_docs`, `hybrid_search_memories`, all HNSW + BM25 index DDL. Loaded automatically on first `docker compose up`. |
 | `02-enable-bm25-age.sql` | Historical migration: first enable of pg_search/AGE + original hybrid functions. Kept for provenance; superseded by `schema.sql` for fresh installs. |
 | `03-cutover-mxbai.sql` | Historical migration: bge to mxbai embedding-column cutover (bge kept as `emb_bge_legal`). Superseded by `schema.sql` for fresh installs. |
+| `03-ops-namespace.sql` | **Additive migration (card SB0.3):** creates the `ops` schema + `ops_brain` AGE graph for the skbrain operations corpus. NOT auto-applied. See "Applying the ops namespace migration" below. |
 | `skmem_reconcile.py` | Daily-cron reconciler that rebuilds the `memories` derived cache from the synced flat JSON source of truth. Prune step is guardrailed against cold-boot wipes (see below). |
 
 ## Build and run
@@ -99,6 +100,93 @@ Cold-boot runbook order on a fresh/restored node:
    runs against a still-empty flat store, the in-script guardrail refuses the prune
    and alerts rather than wiping pg.
 5. Remove the sentinel before any deliberate wipe/re-restore so units re-gate.
+
+## Applying the ops namespace migration (card SB0.3)
+
+`03-ops-namespace.sql` is an ADDITIVE, IDEMPOTENT migration that adds the skbrain
+operations namespace to the EXISTING skmem-pg instance: an `ops` schema
+(`ops.wiki_nodes` / `ops.wiki_chunks` / `ops.links` + own HNSW + own BM25 +
+`ops.hybrid_search_ops`), a dedicated `ops_brain` AGE graph, and a REVOKE-from-PUBLIC
+privacy wall granting only the `skbrain_ops_ro` / `skbrain_ops_rw` roles. Nothing in
+`public` changes. It is applied BY THE OPERATOR (not CI, not the app), .158-first,
+after a dump. skmem-pg is LOCAL per node, so it runs once per node.
+
+**Preconditions:** the instance is on `skmem-pg:pg17-bm25-age` with
+`shared_preload_libraries=pg_search,age` (so `hnsw`, `bm25`, and `ag_catalog` exist).
+
+### 1. Dump first (rollback insurance)
+
+```sh
+# On .158, full instance dump BEFORE touching anything:
+docker exec skmem-pg pg_dump -U postgres -Fc skmemory \
+  > ~/skmem-backups/skmemory-pre-ops-$(date +%Y%m%d-%H%M).dump
+```
+
+### 2. Apply on .158 first, in a transaction
+
+```sh
+docker exec -i skmem-pg psql -U postgres -d skmemory -v ON_ERROR_STOP=1 \
+  < deploy/skmem-pg/03-ops-namespace.sql
+```
+
+The whole migration is one `BEGIN; ... COMMIT;` with `ON_ERROR_STOP`; any error
+rolls the entire thing back, leaving the DB untouched.
+
+### 3. Verify (.158)
+
+```sh
+docker exec skmem-pg psql -U postgres -d skmemory -c "
+  SELECT 'schema'   AS obj, count(*) FROM information_schema.schemata WHERE schema_name='ops'
+  UNION ALL SELECT 'tables',   count(*) FROM information_schema.tables WHERE table_schema='ops'
+  UNION ALL SELECT 'hnsw',     count(*) FROM pg_indexes WHERE schemaname='ops' AND indexname='ops_chunks_hnsw'
+  UNION ALL SELECT 'bm25',     count(*) FROM pg_indexes WHERE schemaname='ops' AND indexname='ops_chunks_bm25'
+  UNION ALL SELECT 'fn',       count(*) FROM pg_proc WHERE proname='hybrid_search_ops'
+  UNION ALL SELECT 'graph',    count(*) FROM ag_catalog.ag_graph WHERE name='ops_brain';"
+
+# Privacy wall: PUBLIC must have NO usage on ops (expect 'f').
+docker exec skmem-pg psql -U postgres -d skmemory -c \
+  "SELECT has_schema_privilege('public','ops','USAGE') AS public_can_use_ops;"
+```
+
+Expected: schema=1, tables=3, hnsw=1, bm25=1, fn=1, graph=1, `public_can_use_ops = f`.
+Bind the ops roles to real logins out-of-band, e.g.
+`GRANT skbrain_ops_rw TO skingest_projector;` / `GRANT skbrain_ops_ro TO skmemory_reader;`.
+
+### 4. Fleet out (only after .158 is green)
+
+skmem-pg is per-node local; repeat steps 1-3 on each node (`.41`, `.100`, ...) that
+serves skbrain. Re-running on an already-migrated node is a safe no-op (every
+statement is `IF NOT EXISTS` / `CREATE OR REPLACE` / catalog-guarded). Record the
+apply as an ITIL change (one per node per the epic's deploy discipline).
+
+### Rollback
+
+Additive, so rollback is a clean drop (do the dump-restore only if a public object
+was somehow disturbed, which this migration never touches):
+
+```sh
+docker exec skmem-pg psql -U postgres -d skmemory -v ON_ERROR_STOP=1 -c "
+  SELECT ag_catalog.drop_graph('ops_brain', true);   -- drops the ops_brain schema
+  DROP SCHEMA IF EXISTS ops CASCADE;                  -- drops tables/indexes/function
+  -- roles are cluster-global; drop only if no other DB uses them:
+  DROP ROLE IF EXISTS skbrain_ops_ro;
+  DROP ROLE IF EXISTS skbrain_ops_rw;"
+```
+
+`drop_graph(..., true)` cascades the graph's label tables and removes the
+`ops_brain` schema; `DROP SCHEMA ops CASCADE` removes the relational side. Nothing
+in `public` is affected either way. Full restore fallback:
+`docker exec -i skmem-pg pg_restore -U postgres -d skmemory --clean < <the pre-ops dump>`.
+
+### Testing
+
+`tests/test_ops_namespace_migration.py` is a STRUCTURAL (DB-independent) test that
+parses this SQL and asserts the objects, the ops-only scoping of `hybrid_search_ops`,
+the embedding dim, idempotence markers, and the REVOKE-from-PUBLIC wall. It runs in
+CI without a database. Behavioural (live-DB) validation is the operator "verify" step
+above, deliberately NOT automated, since this migration is never applied from CI.
+`psql` is not available in this repo's dev image, so the SQL was not executed here;
+apply-time `ON_ERROR_STOP` + the one-transaction wrapper are the execution safety net.
 
 ## Related
 
