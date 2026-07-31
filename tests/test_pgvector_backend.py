@@ -426,6 +426,124 @@ def test_single_url_default_unchanged(monkeypatch):
     assert be.embed_url == mod.DEFAULT_EMBED_URL
 
 
+# --- Embed-endpoint timeout hardening (GPU-outage resilience) -------------------
+#
+# The embed server sits on a GPU box whose driver/VRAM can flap ("Driver/library
+# version mismatch" wedges the process). The per-endpoint call was hardcoded to a
+# 60s timeout, so during an outage a save could hang 60s * N-endpoints -> minutes.
+# The timeout is now short and configurable (SKMEMORY_EMBED_TIMEOUT /
+# SKMEMORY_EMBED_CONNECT_TIMEOUT) so a wedged backend is abandoned fast and
+# failover proceeds. These tests pin the default, the env overrides, garbage-value
+# fallback, and that the configured timeout is actually applied to the HTTP call.
+
+
+def _fake_post_recording_timeout(behaviors):
+    """Like ``_fake_post`` but also records the ``timeout`` passed to each call.
+
+    Returns (post, timeouts) where ``timeouts`` is the list of timeout objects
+    handed to httpx.post, in call order — so a test can assert the wedged-backend
+    cap is actually applied instead of the old hardcoded 60s.
+    """
+    import httpx
+
+    timeouts = []
+
+    def post(url, json=None, timeout=None):  # noqa: A002 - mirror httpx signature
+        timeouts.append(timeout)
+        b = behaviors.get(url)
+        if b is None:
+            raise httpx.ConnectError(f"no route to {url}")
+        if isinstance(b, Exception):
+            raise b
+        return _FakeResp(b)
+
+    return post, timeouts
+
+
+def test_default_embed_timeout_is_short(monkeypatch):
+    """With nothing configured the per-endpoint timeout is a short bound (<= 30s),
+    not the old 60s that let a wedged backend hang for minutes across failover."""
+    monkeypatch.delenv("SKMEMORY_EMBED_TIMEOUT", raising=False)
+    monkeypatch.delenv("SKMEMORY_EMBED_CONNECT_TIMEOUT", raising=False)
+    mod = _reload_backend(monkeypatch, None)
+    assert 0 < mod.DEFAULT_EMBED_TIMEOUT <= 30
+    be = mod.PGVectorBackend(agent="lumina")
+    assert 0 < be.embed_timeout <= 30
+    # connect cap is no larger than the overall timeout and stays > 0
+    assert 0 < be.embed_connect_timeout <= be.embed_timeout
+
+
+def test_embed_timeout_from_env(monkeypatch):
+    """SKMEMORY_EMBED_TIMEOUT / SKMEMORY_EMBED_CONNECT_TIMEOUT drive the values."""
+    monkeypatch.setenv("SKMEMORY_EMBED_TIMEOUT", "8")
+    monkeypatch.setenv("SKMEMORY_EMBED_CONNECT_TIMEOUT", "2")
+    mod = _reload_backend(monkeypatch, None)
+    assert mod.DEFAULT_EMBED_TIMEOUT == 8.0
+    assert mod.DEFAULT_EMBED_CONNECT_TIMEOUT == 2.0
+    be = mod.PGVectorBackend(agent="lumina")
+    assert be.embed_timeout == 8.0
+    assert be.embed_connect_timeout == 2.0
+
+
+def test_garbage_timeout_env_falls_back_to_default(monkeypatch):
+    """A non-numeric or non-positive env value must NOT become 0 (httpx "fail
+    now") or crash import; it falls back to the safe default."""
+    for bad in ("", "  ", "abc", "0", "-5"):
+        monkeypatch.setenv("SKMEMORY_EMBED_TIMEOUT", bad)
+        mod = _reload_backend(monkeypatch, None)
+        assert mod.DEFAULT_EMBED_TIMEOUT == 15.0, f"{bad!r} should fall back"
+
+
+def test_explicit_timeout_arg_overrides(monkeypatch):
+    """The constructor arg wins over the env-derived default, and a bad value is
+    coerced to a safe positive timeout."""
+    mod = _reload_backend(monkeypatch, None)
+    be = mod.PGVectorBackend(agent="lumina", embed_timeout=3.0, embed_connect_timeout=1.0)
+    assert be.embed_timeout == 3.0
+    assert be.embed_connect_timeout == 1.0
+    # 0 / negative is rejected in favor of a safe positive value (never httpx "fail now")
+    be2 = mod.PGVectorBackend(agent="lumina", embed_timeout=0, embed_connect_timeout=-1)
+    assert be2.embed_timeout > 0
+    assert be2.embed_connect_timeout > 0
+
+
+def test_configured_timeout_is_applied_to_http_call(monkeypatch):
+    """The configured (short) timeout is actually passed to httpx.post, so a
+    wedged backend is dropped at that bound rather than the old hardcoded 60s."""
+    import httpx
+
+    mod = _reload_backend(monkeypatch, None)
+    be = mod.PGVectorBackend(
+        agent="lumina", embed_urls=[PRIMARY], embed_timeout=7.0, embed_connect_timeout=2.0
+    )
+    post, timeouts = _fake_post_recording_timeout({PRIMARY: _ok_body()})
+    monkeypatch.setattr("httpx.post", post)
+
+    be._embed("hello", required=True)
+
+    assert len(timeouts) == 1
+    t = timeouts[0]
+    assert isinstance(t, httpx.Timeout)
+    # httpx.Timeout exposes per-phase attrs; connect is the tight cap, read the overall
+    assert t.connect == 2.0
+    assert t.read == 7.0
+
+
+def test_wedged_primary_times_out_then_fails_over(monkeypatch):
+    """A wedged primary (raises ReadTimeout at its bound) is abandoned and _embed
+    fails over to the secondary — the whole point of the short timeout."""
+    import httpx
+
+    _mod, be, calls = _http_backend(
+        monkeypatch,
+        [PRIMARY, SECONDARY],
+        {PRIMARY: httpx.ReadTimeout("wedged GPU box"), SECONDARY: _ok_body()},
+    )
+    vec = be._embed("hello", required=True)
+    assert vec == [0.1] * 1024
+    assert calls == [PRIMARY, SECONDARY]
+
+
 # Restore a clean module state for any later test in the session.
 @pytest.fixture(autouse=True, scope="module")
 def _restore_module():

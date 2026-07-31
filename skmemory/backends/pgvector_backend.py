@@ -16,10 +16,13 @@ index.db), NOT a replicated system of record:
     the model is served once per host, not loaded in every skmemory process. Inject
     your own via `embed_fn`, or override SKMEMORY_EMBED_URL / SKMEMORY_EMBED_MODEL.
     The embed server runs on a GPU box whose VRAM can flap, so a comma-separated
-    SKMEMORY_EMBED_URLS lets a node fail over to a secondary endpoint. Whatever the
-    endpoint, the write path NEVER stores a NULL/empty/zero vector: if every
-    endpoint is down it raises EmbeddingUnavailable rather than silently poisoning
-    recall with an unsearchable row.
+    SKMEMORY_EMBED_URLS lets a node fail over to a secondary endpoint. Each endpoint
+    call is bounded by a short, configurable timeout (SKMEMORY_EMBED_TIMEOUT, with a
+    tighter SKMEMORY_EMBED_CONNECT_TIMEOUT) so a wedged backend is abandoned in
+    seconds and failover proceeds, instead of hanging a save for timeout * N-endpoints
+    during a GPU/driver outage. Whatever the endpoint, the write path NEVER stores a
+    NULL/empty/zero vector: if every endpoint is down it raises EmbeddingUnavailable
+    rather than silently poisoning recall with an unsearchable row.
 
 1024-dim vector space (mxbai-embed-large) -> drop-in with the existing schema.
 """
@@ -51,6 +54,40 @@ DEFAULT_DSN = os.environ.get(
 DEFAULT_EMBED_URL = os.environ.get("SKMEMORY_EMBED_URL", "http://localhost:11434/api/embed")
 DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")
 VECTOR_DIM = 1024
+
+
+def _parse_float_env(name: str, default: float) -> float:
+    """Read a positive float env var, falling back to ``default`` on missing/garbage.
+
+    A bad value (empty, non-numeric, <= 0) must never silently become 0 (which
+    httpx treats as "fail immediately") nor crash import; we log and use the
+    default so a typo in one node's env can't wedge memory writes fleet-wide.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        logger.warning("%s=%r is not a number; using default %s", name, raw, default)
+        return default
+    if val <= 0:
+        logger.warning("%s=%r must be > 0; using default %s", name, raw, default)
+        return default
+    return val
+
+
+# Per-endpoint embed timeout. The embed server sits on a GPU box whose driver/VRAM
+# can flap (NVML "Driver/library version mismatch" wedges the process), so a
+# hardcoded long timeout meant a save could hang timeout * N-endpoints -> minutes
+# during a GPU outage. A short, configurable timeout caps that: a wedged endpoint
+# is abandoned fast and failover moves to the next URL. The connect phase gets an
+# even shorter cap so an unroutable/half-open host fails almost immediately.
+# Overridable via SKMEMORY_EMBED_TIMEOUT / SKMEMORY_EMBED_CONNECT_TIMEOUT (seconds).
+DEFAULT_EMBED_TIMEOUT = _parse_float_env("SKMEMORY_EMBED_TIMEOUT", 15.0)
+DEFAULT_EMBED_CONNECT_TIMEOUT = _parse_float_env(
+    "SKMEMORY_EMBED_CONNECT_TIMEOUT", min(5.0, DEFAULT_EMBED_TIMEOUT)
+)
 
 
 def _parse_embed_urls(raw: str | None, primary: str) -> list[str]:
@@ -146,6 +183,8 @@ class PGVectorBackend(BaseBackend):
         vector_dim: int = VECTOR_DIM,
         agent: str | None = None,
         verify_embedding: bool = DEFAULT_EMBED_VERIFY,
+        embed_timeout: float = DEFAULT_EMBED_TIMEOUT,
+        embed_connect_timeout: float = DEFAULT_EMBED_CONNECT_TIMEOUT,
     ):
         self.dsn = dsn
         # Ordered embed endpoints for failover. Precedence:
@@ -164,6 +203,16 @@ class PGVectorBackend(BaseBackend):
         self.embed_url = self.embed_urls[0]
         self.embed_model = embed_model
         self.vector_dim = vector_dim
+        # Short, per-endpoint timeouts so a wedged embed backend (GPU outage) is
+        # abandoned quickly and failover proceeds, instead of hanging the whole
+        # memory op for timeout * N-endpoints. Connect is capped separately so an
+        # unroutable host fails even faster. Both stay > 0 (0 == httpx "fail now").
+        self.embed_timeout = embed_timeout if embed_timeout and embed_timeout > 0 else 15.0
+        self.embed_connect_timeout = (
+            embed_connect_timeout
+            if embed_connect_timeout and embed_connect_timeout > 0
+            else min(5.0, self.embed_timeout)
+        )
         # Pin + verify the embedding model identity (dimension, and model name when
         # the endpoint reports it) on every embed. Off via SKMEMORY_EMBED_VERIFY=0.
         self.verify_embedding = verify_embedding
@@ -269,12 +318,15 @@ class PGVectorBackend(BaseBackend):
         (over-context) shrinks the text and retries the same endpoint."""
         import httpx
 
+        # Bound each phase: read/write/pool at embed_timeout, connect even shorter,
+        # so a wedged or unroutable endpoint is dropped fast and failover proceeds.
+        timeout = httpx.Timeout(self.embed_timeout, connect=self.embed_connect_timeout)
         while text:
             try:
                 r = httpx.post(
                     url,
                     json={"model": self.embed_model, "input": text, "truncate": True},
-                    timeout=60.0,
+                    timeout=timeout,
                 )
                 r.raise_for_status()
                 data = r.json()
@@ -586,6 +638,8 @@ class PGVectorBackend(BaseBackend):
                 "memories": n,
                 "embed_url": self.embed_url,
                 "embed_urls": list(self.embed_urls),
+                "embed_timeout": self.embed_timeout,
+                "embed_connect_timeout": self.embed_connect_timeout,
                 "vector_dim": self.vector_dim,
             }
         except Exception as e:  # noqa: BLE001
