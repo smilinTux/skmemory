@@ -1,0 +1,25 @@
+# skmem-pg forward migrations (card OPS1.3, epic eae727d0)
+# =====================================================================
+# The ORDERED set of additive, idempotent migrations that apply ON TOP of
+# the schema.sql base snapshot. This is the single source of truth for BOTH
+# the compose first-boot init wrapper (initdb/00-run-init.sh) and the
+# `skmemory pg migrate` runner, so the two never drift.
+#
+# Format, one migration per line, in apply order:
+#   <migration.sql>[ | <verify.sql>]
+# Blank lines and lines starting with '#' are ignored. A second, pipe-
+# separated field names an optional verify script run after the migration.
+#
+# To add a future migration: drop NN-name.sql in this directory and add one
+# line here. It then auto-applies everywhere (fresh compose boot + live-node
+# `skmemory pg migrate`) in the order listed, idempotently.
+#
+# NOT listed here (deliberately): the historical, superseded migrations
+#   02-enable-bm25-age.sql   (first BM25/AGE enable + original hybrid fns)
+#   03-cutover-mxbai.sql     (bge -> mxbai embedding-column cutover)
+# Both are ALREADY baked into schema.sql (the live post-cutover snapshot) and
+# are provenance-only. 03-cutover-mxbai.sql is NOT idempotent (its ALTER TABLE
+# ... RENAME COLUMN would fail on a fresh schema.sql DB), so it must never
+# auto-run. Keep them in this directory for history; keep them out of this list.
+# =====================================================================
+03-ops-namespace.sql | verify-ops.sql

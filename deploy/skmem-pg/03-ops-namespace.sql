@@ -27,8 +27,11 @@
 -- Embedding dimension: vector(1024) -- mxbai-embed-large, matching the LIVE
 -- public.docs.embedding / public.memories.embedding columns (schema.sql).
 --
--- APPLY: operator only, .158-first, AFTER a pg_dump. See README.md
--- ("Applying the ops namespace migration (SB0.3)"). Do NOT auto-apply from CI.
+-- APPLY (card OPS1.3): auto-applied on a FRESH compose boot via migrations.txt
+-- + initdb/00-run-init.sh (no live data on first initdb). On a LIVE node it is
+-- operator-initiated, .158-first, AFTER a pg_dump, via `skmemory pg migrate`
+-- (pre-dump + apply + verify in one guarded command). See README.md
+-- ("The ops namespace migration"). Do NOT auto-apply from CI.
 -- =====================================================================
 
 \set ON_ERROR_STOP on

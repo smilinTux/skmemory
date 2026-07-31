@@ -3198,6 +3198,162 @@ def operator_act(action: str, unit: str | None) -> None:
     click.echo(json.dumps(result, indent=2))
 
 
+@cli.group("pg")
+def pg() -> None:
+    """skmem-pg schema migrations (card OPS1.3).
+
+    Apply the numbered, additive, idempotent forward migrations
+    (deploy/skmem-pg/migrations.txt) to an ALREADY-RUNNING skmem-pg instance,
+    and bind the ops LOGIN roles. A FRESH `docker compose up` auto-applies the
+    same migrations at first boot (initdb/00-run-init.sh); this group is for
+    existing live nodes and the skos provisioner (OPS1.2).
+
+    Examples:
+
+        skmemory pg migrate                 # apply all pending forward migrations
+
+        skmemory pg migrate 03-ops-namespace.sql --dry-run
+
+        skmemory pg roles                   # bind login roles (pw from skvault env)
+    """
+
+
+@pg.command("migrate")
+@click.argument("script", required=False)
+@click.option("--container", default=None, help="docker container running psql (default: skmem-pg; env SKMEM_PG_CONTAINER).")
+@click.option("--dsn", default=None, help="libpq DSN; use a local/remote psql instead of docker exec (env SKMEMORY_PG_DSN).")
+@click.option("--db", default=None, help="database name (default: skmemory; env SKMEM_PG_DB).")
+@click.option("--user", default=None, help="superuser role (default: postgres).")
+@click.option("--pre-dump/--no-pre-dump", default=True, help="Take a pg_dump -Fc snapshot before applying (default: on).")
+@click.option("--verify/--no-verify", default=True, help="Run the migration's verify script after applying (default: on).")
+@click.option("--dump-dir", default=None, help="Directory for pre-dump files (default: ~/skmem-backups).")
+@click.option("--dry-run", is_flag=True, help="Print the plan and exit; touch nothing.")
+def pg_migrate(
+    script: str | None,
+    container: str | None,
+    dsn: str | None,
+    db: str | None,
+    user: str | None,
+    pre_dump: bool,
+    verify: bool,
+    dump_dir: str | None,
+    dry_run: bool,
+) -> None:
+    """Apply skmem-pg forward migration(s) idempotently to a running instance.
+
+    With no SCRIPT: apply every forward migration in migrations.txt, in order.
+    With SCRIPT (a manifest name like 03-ops-namespace.sql, or a path): apply
+    just that one. Each migration is a single guarded transaction, so re-running
+    is a safe no-op. Live-node stance is unchanged: this is operator-initiated.
+    """
+    import os as _os
+
+    from .pg_migrate import (
+        Target,
+        build_migrate_plan,
+        load_manifest,
+        resolve_migration,
+        run_plan,
+    )
+
+    target = Target(
+        container=container or _os.environ.get("SKMEM_PG_CONTAINER", "skmem-pg"),
+        dsn=dsn or _os.environ.get("SKMEMORY_PG_DSN"),
+        db=db or _os.environ.get("SKMEM_PG_DB", "skmemory"),
+        user=user or "postgres",
+    )
+
+    migrations = [resolve_migration(script)] if script else load_manifest()
+
+    if not migrations:
+        click.echo("No forward migrations to apply (migrations.txt is empty).")
+        return
+
+    plan = build_migrate_plan(
+        migrations,
+        target,
+        pre_dump=pre_dump,
+        verify=verify,
+        dump_dir=Path(dump_dir) if dump_dir else None,
+    )
+
+    transport = f"dsn={target.dsn}" if target.uses_dsn else f"container={target.container}"
+    click.echo(
+        f"skmem-pg migrate plan ({transport}, db={target.db}): "
+        f"{len(migrations)} migration(s)"
+    )
+    click.echo(plan.describe())
+
+    if dry_run:
+        click.echo("\n[dry-run] nothing applied.")
+        return
+
+    try:
+        run_plan(plan, echo=lambda m: click.echo(m))
+    except Exception as exc:  # MigrationError or transport failure
+        raise click.ClickException(str(exc)) from None
+    click.echo("skmem-pg migrate: done.")
+
+
+@pg.command("roles")
+@click.option("--container", default=None, help="docker container running psql (default: skmem-pg; env SKMEM_PG_CONTAINER).")
+@click.option("--dsn", default=None, help="libpq DSN instead of docker exec (env SKMEMORY_PG_DSN).")
+@click.option("--db", default=None, help="database name (default: skmemory; env SKMEM_PG_DB).")
+@click.option("--user", default=None, help="superuser role (default: postgres).")
+@click.option("--skip-missing", is_flag=True, help="Skip a role whose password env var is unset (default: error).")
+@click.option("--dry-run", is_flag=True, help="Print the plan (password redacted) and exit; touch nothing.")
+def pg_roles(
+    container: str | None,
+    dsn: str | None,
+    db: str | None,
+    user: str | None,
+    skip_missing: bool,
+    dry_run: bool,
+) -> None:
+    """Bind LOGIN roles into the ops group roles (closes the G2 credential gap).
+
+    03-ops-namespace.sql creates only NOLOGIN group roles skbrain_ops_rw/ro, so
+    the projector cannot connect. This creates/ALTERs the login roles
+    skbrain_projector -> skbrain_ops_rw and skbrain_reader -> skbrain_ops_ro,
+    with passwords read from the environment (SKBRAIN_PG_PROJECTOR_PW /
+    SKBRAIN_PG_READER_PW), populated from skvault via
+    ~/.config/environment.d/skbrain.conf. Passwords are never hardcoded, logged,
+    or placed on the command line. Idempotent (pg_roles guard).
+    """
+    import os as _os
+
+    from .pg_migrate import Target, build_roles_plan, run_plan
+
+    target = Target(
+        container=container or _os.environ.get("SKMEM_PG_CONTAINER", "skmem-pg"),
+        dsn=dsn or _os.environ.get("SKMEMORY_PG_DSN"),
+        db=db or _os.environ.get("SKMEM_PG_DB", "skmemory"),
+        user=user or "postgres",
+    )
+
+    try:
+        plan = build_roles_plan(target, skip_missing=skip_missing)
+    except KeyError as exc:
+        raise click.ClickException(str(exc).strip('"')) from None
+
+    if not plan.steps:
+        click.echo("No login roles to bind (no passwords set / all skipped).")
+        return
+
+    click.echo(f"skmem-pg roles plan ({len(plan.steps)} role binding(s)):")
+    click.echo(plan.describe())
+
+    if dry_run:
+        click.echo("\n[dry-run] nothing applied (passwords redacted above).")
+        return
+
+    try:
+        run_plan(plan, echo=lambda m: click.echo(m))
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from None
+    click.echo("skmem-pg roles: done.")
+
+
 def main() -> None:
     """Entry point for the CLI."""
     _auto_register_once()
