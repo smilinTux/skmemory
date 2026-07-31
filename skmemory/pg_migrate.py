@@ -148,8 +148,17 @@ class Target:
         if self.uses_dsn:
             return ["psql", self.dsn or "", "-v", "ON_ERROR_STOP=1"]
         return [
-            "docker", "exec", "-i", self.container,
-            "psql", "-U", self.user, "-d", self.db, "-v", "ON_ERROR_STOP=1",
+            "docker",
+            "exec",
+            "-i",
+            self.container,
+            "psql",
+            "-U",
+            self.user,
+            "-d",
+            self.db,
+            "-v",
+            "ON_ERROR_STOP=1",
         ]
 
     def pg_dump_argv(self) -> list[str]:
@@ -246,16 +255,12 @@ def build_migrate_plan(
             argv = argv + ["-f", str(m.path)]
             plan.steps.append(Step(argv=argv, label=f"apply {m.name}"))
         else:
-            plan.steps.append(
-                Step(argv=argv, label=f"apply {m.name}", stdin_path=m.path)
-            )
+            plan.steps.append(Step(argv=argv, label=f"apply {m.name}", stdin_path=m.path))
         if verify and m.verify_path and m.verify_path.exists():
             vargv = target.psql_argv()
             if target.uses_dsn:
                 vargv = vargv + ["-f", str(m.verify_path)]
-                plan.steps.append(
-                    Step(argv=vargv, label=f"verify {m.verify}", fatal=False)
-                )
+                plan.steps.append(Step(argv=vargv, label=f"verify {m.verify}", fatal=False))
             else:
                 plan.steps.append(
                     Step(
@@ -377,7 +382,9 @@ def run_plan(plan: Plan, *, runner=subprocess.run, echo=print) -> list[dict]:
             "label": step.label,
             "returncode": rc,
             "stdout": "" if step.stdout_path is not None else stdout.decode("utf-8", "replace"),
-            "stderr": _redact(stderr.decode("utf-8", "replace")) if step.secret else stderr.decode("utf-8", "replace"),
+            "stderr": _redact(stderr.decode("utf-8", "replace"))
+            if step.secret
+            else stderr.decode("utf-8", "replace"),
         }
         results.append(result)
 

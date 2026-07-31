@@ -21,12 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-MIGRATION = (
-    Path(__file__).resolve().parent.parent
-    / "deploy"
-    / "skmem-pg"
-    / "03-ops-namespace.sql"
-)
+MIGRATION = Path(__file__).resolve().parent.parent / "deploy" / "skmem-pg" / "03-ops-namespace.sql"
 
 
 def _sql() -> str:
@@ -46,9 +41,9 @@ def test_creates_ops_schema_idempotently():
 def test_creates_three_core_tables():
     sql = _sql()
     for tbl in ("ops.wiki_nodes", "ops.wiki_chunks", "ops.links"):
-        assert re.search(
-            rf"CREATE TABLE IF NOT EXISTS {re.escape(tbl)}\b", sql, re.IGNORECASE
-        ), f"{tbl} not created (idempotently)"
+        assert re.search(rf"CREATE TABLE IF NOT EXISTS {re.escape(tbl)}\b", sql, re.IGNORECASE), (
+            f"{tbl} not created (idempotently)"
+        )
 
 
 def test_wiki_nodes_has_provenance_and_frontmatter_and_timestamps():
@@ -166,9 +161,9 @@ def test_revokes_ops_schema_from_public():
     assert re.search(r"REVOKE ALL ON SCHEMA ops FROM PUBLIC", sql, re.IGNORECASE), (
         "the ops schema must be REVOKEd from PUBLIC so public readers cannot see it"
     )
-    assert re.search(
-        r"REVOKE ALL ON SCHEMA ops_brain FROM PUBLIC", sql, re.IGNORECASE
-    ), "the ops_brain graph schema must be REVOKEd from PUBLIC too"
+    assert re.search(r"REVOKE ALL ON SCHEMA ops_brain FROM PUBLIC", sql, re.IGNORECASE), (
+        "the ops_brain graph schema must be REVOKEd from PUBLIC too"
+    )
 
 
 def test_grants_only_to_ops_roles():
@@ -186,17 +181,17 @@ def test_grants_only_to_ops_roles():
     assert re.search(
         r"GRANT SELECT ON ALL TABLES IN SCHEMA ops TO skbrain_ops_ro", sql, re.IGNORECASE
     )
-    assert not re.search(
-        r"GRANT[^;]*\bTO PUBLIC\b", sql, re.IGNORECASE
-    ), "nothing in ops may be granted to PUBLIC"
+    assert not re.search(r"GRANT[^;]*\bTO PUBLIC\b", sql, re.IGNORECASE), (
+        "nothing in ops may be granted to PUBLIC"
+    )
 
 
 def test_roles_created_idempotently():
     sql = _sql()
     for role in ("skbrain_ops_rw", "skbrain_ops_ro"):
-        assert re.search(
-            rf"pg_roles WHERE rolname = '{role}'", sql
-        ), f"role {role} must be created idempotently (pg_roles guard)"
+        assert re.search(rf"pg_roles WHERE rolname = '{role}'", sql), (
+            f"role {role} must be created idempotently (pg_roles guard)"
+        )
 
 
 # --------------------------------------------------------------------------- #

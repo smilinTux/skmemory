@@ -31,26 +31,25 @@ def _service() -> dict:
 def test_init_wrapper_mounted_into_initdb_dir():
     vols = _service()["volumes"]
     assert any(
-        v.endswith("/docker-entrypoint-initdb.d/00-run-init.sh:ro")
-        and "00-run-init.sh:" in v
+        v.endswith("/docker-entrypoint-initdb.d/00-run-init.sh:ro") and "00-run-init.sh:" in v
         for v in vols
     ), "the init wrapper must be mounted into /docker-entrypoint-initdb.d"
 
 
 def test_source_dir_mounted_readonly_for_wrapper():
     vols = _service()["volumes"]
-    assert any(
-        v.endswith(":/skmem-initdb-src:ro") for v in vols
-    ), "deploy/skmem-pg must be mounted read-only as the wrapper's source"
+    assert any(v.endswith(":/skmem-initdb-src:ro") for v in vols), (
+        "deploy/skmem-pg must be mounted read-only as the wrapper's source"
+    )
 
 
 def test_schema_not_double_mounted_as_raw_init_file():
     """schema.sql must be applied BY the wrapper, not also mounted directly as a
     numbered init file (which would double-apply or run out of order)."""
     vols = _service()["volumes"]
-    assert not any(
-        "schema.sql:/docker-entrypoint-initdb.d/" in v for v in vols
-    ), "schema.sql must not be mounted directly into initdb.d anymore"
+    assert not any("schema.sql:/docker-entrypoint-initdb.d/" in v for v in vols), (
+        "schema.sql must not be mounted directly into initdb.d anymore"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -73,7 +72,9 @@ def test_wrapper_applies_schema_before_migrations():
 
 def test_wrapper_reads_the_shared_manifest():
     txt = WRAPPER.read_text(encoding="utf-8")
-    assert "migrations.txt" in txt, "wrapper must drive off migrations.txt (single source of truth)"
+    assert "migrations.txt" in txt, (
+        "wrapper must drive off migrations.txt (single source of truth)"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -92,4 +93,6 @@ def test_manifest_lists_ops_and_excludes_historical():
     joined = "\n".join(active)
     assert "03-ops-namespace.sql" in joined
     assert "03-cutover-mxbai.sql" not in joined, "non-idempotent cutover must not auto-run"
-    assert "02-enable-bm25-age.sql" not in joined, "superseded historical migration must not auto-run"
+    assert "02-enable-bm25-age.sql" not in joined, (
+        "superseded historical migration must not auto-run"
+    )

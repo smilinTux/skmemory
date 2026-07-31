@@ -17,7 +17,6 @@ from click.testing import CliRunner
 from skmemory import operator_probe as op
 from skmemory.cli import cli
 
-
 # --- explain: shape matches the contract -------------------------------------
 
 
@@ -83,7 +82,10 @@ def test_observe_matches_adapter_object_names():
         from skcapstone.operator_seat import skmemory_adapter as adapter
     except Exception:
         pytest.skip("skcapstone adapter not importable in this environment")
-    probe = lambda: {"embed_serving": True, "reconcile_fresh": True}
+
+    def probe():
+        return {"embed_serving": True, "reconcile_fresh": True}
+
     assert op.observe(probe=probe) == adapter.skmemory_observe(probe=probe)
 
 

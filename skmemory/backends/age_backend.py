@@ -779,9 +779,7 @@ class AGEGraphBackend:
         merged: dict[str, dict] = {}
         for rel_type in ("RELATED_TO", "SUPERSEDES"):
             query = (
-                "MATCH (start:Memory {id: $id})-[e:"
-                + rel_type
-                + "]-(n:Memory) "
+                "MATCH (start:Memory {id: $id})-[e:" + rel_type + "]-(n:Memory) "
                 "WHERE n.id <> $id "
                 "AND (e.valid_from IS NULL OR e.valid_from <= $ts) "
                 "AND (e.valid_to IS NULL OR e.valid_to > $ts) "
@@ -797,7 +795,7 @@ class AGEGraphBackend:
                 if rid and rid not in merged:
                     row["distance"] = 1
                     merged[rid] = row
-        return sorted(merged.values(), key=lambda r: (r["title"] or ""))[:50]
+        return sorted(merged.values(), key=lambda r: r["title"] or "")[:50]
 
     def supersedes_chain(self, memory_id: str, as_of: str | None = None) -> list[dict]:
         """Walk the ``SUPERSEDES`` lineage valid as of ``as_of`` (card c915b47d).
