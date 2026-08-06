@@ -648,8 +648,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "memory_forget":
             memory_id = arguments["memory_id"]
-            deleted = store.forget(memory_id)
-            return _json_response({"memory_id": memory_id, "deleted": deleted})
+            # Full forget/redaction cascade across every store, returning a
+            # per-store verification report (flat, index.db, chroma, skmem-pg,
+            # graph). ``deleted`` stays top-level for backward compatibility.
+            report = store.forget_cascade(memory_id)
+            return _json_response(report.to_dict())
 
         elif name == "memory_promote":
             memory_id = arguments["memory_id"]

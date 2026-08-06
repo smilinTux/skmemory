@@ -33,6 +33,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from ..models import Memory, MemoryLayer
 from ..query_sanitizer import sanitize_query
@@ -170,8 +171,55 @@ def _model_names_match(expected: str, actual: str) -> bool:
     return short in long
 
 
+@dataclass
+class PgForgetPlan:
+    """The SQL a skmem-pg forget comprises, as ``(sql, params)`` statements.
+
+    Expressing the delete as a plan lets the forget cascade verify the skmem-pg
+    leg WITHOUT a live Postgres (a test asserts on ``statements``/``sql``), while
+    the live backend executes exactly these statements so there is a single SQL
+    source of truth. Every statement is agent-scoped.
+    """
+
+    statements: list[tuple[str, tuple]]
+
+    @property
+    def sql(self) -> list[str]:
+        """Just the SQL strings, in order."""
+        return [s for s, _ in self.statements]
+
+
 class PGVectorBackend(BaseBackend):
     """Postgres + pgvector storage with hybrid (vector + BM25) search."""
+
+    @staticmethod
+    def build_forget_plan(memory_id: str, agent: str) -> PgForgetPlan:
+        """Build the agent-scoped delete plan for a forget.
+
+        Two statements, mirroring :meth:`remove`: the memory's own row, then any
+        child/chunk rows whose ``memory_json.parent_id`` points at it (the
+        pgvector analogue of Chroma/Qdrant deleting chunk points by parent_id).
+
+        Args:
+            memory_id: The memory to forget.
+            agent: The agent partition to scope the deletes to.
+
+        Returns:
+            PgForgetPlan: Ordered ``(sql, params)`` statements.
+        """
+        return PgForgetPlan(
+            statements=[
+                ("DELETE FROM memories WHERE id=%s AND agent=%s", (memory_id, agent)),
+                (
+                    "DELETE FROM memories WHERE memory_json->>'parent_id'=%s AND agent=%s",
+                    (memory_id, agent),
+                ),
+            ]
+        )
+
+    def forget_plan(self, memory_id: str) -> PgForgetPlan:
+        """This backend's delete plan for ``memory_id``, scoped to ``self.agent``."""
+        return self.build_forget_plan(memory_id, self.agent)
 
     def __init__(
         self,
@@ -433,23 +481,15 @@ class PGVectorBackend(BaseBackend):
         immediately.
 
         Scoped to ``self.agent``. Returns True if the main row or any child
-        row was deleted.
+        row was deleted. Executes exactly :meth:`forget_plan`, so the live
+        delete and the plan the forget cascade reports never drift.
         """
         conn = self._connection()
+        removed = 0
         with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM memories WHERE id=%s AND agent=%s",
-                (memory_id, self.agent),
-            )
-            removed = cur.rowcount
-            # Cascade: any child/chunk memory whose memory_json.parent_id
-            # references this id (the pgvector analogue of Chroma/Qdrant
-            # deleting chunk points by parent_id).
-            cur.execute(
-                "DELETE FROM memories WHERE memory_json->>'parent_id'=%s AND agent=%s",
-                (memory_id, self.agent),
-            )
-            removed += cur.rowcount
+            for sql, params in self.forget_plan(memory_id).statements:
+                cur.execute(sql, params)
+                removed += cur.rowcount
         return removed > 0
 
     def list_memories(

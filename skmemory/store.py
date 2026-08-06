@@ -19,8 +19,8 @@ from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
 from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
-from .cascade import CascadeExecutor, CascadeStep
 from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
+from .forget import ForgetReport, StorePurge, resolve_agent
 from .models import (
     EmotionalSnapshot,
     Memory,
@@ -166,11 +166,6 @@ class MemoryStore:
                 / "write_log.jsonl"
             )
         self._wal = WriteAheadLog(wal_path)
-
-        # Executor for fanning a single op out across the derived backends
-        # (vector + graph). Centralises the best-effort partial-failure handling
-        # that store operations used to hand-roll at each call site.
-        self._cascade = CascadeExecutor(logger)
 
     def _enrich_metadata(
         self,
@@ -1031,19 +1026,99 @@ class MemoryStore:
             logger.warning("store.py: could not resolve tombstone dir: %s", e)
             return None
 
-    def forget(self, memory_id: str) -> bool:
-        """Delete a memory from all backends and record a durable tombstone.
+    @staticmethod
+    def _vector_store_key(vector: BaseBackend) -> str:
+        """Label a wired vector backend for the forget report.
 
-        The tombstone (see :mod:`skmemory.tombstones`) is what stops a later
-        reconcile from resurrecting the memory when a stale flat copy reappears
-        (Syncthing re-deliver, a second source path, or an ingest re-import).
+        ``PGVectorBackend`` is the skmem-pg store; a Chroma backend is
+        ``chroma``; the legacy Qdrant backend is ``skvector``; anything else
+        is a generic ``vector`` leg.
+        """
+        name = type(vector).__name__
+        if name == "PGVectorBackend":
+            return "skmem_pg"
+        if "Chroma" in name:
+            return "chroma"
+        if "Vector" in name:
+            return "skvector"
+        return "vector"
+
+    def _pg_plan_only_purge(self, memory_id: str) -> StorePurge:
+        """A plan-only skmem-pg leg: SQL is reported, nothing is executed.
+
+        Used when no live pgvector backend is wired. The delete PLAN is still
+        emitted (agent-scoped, verifiable without a DB) so the report names what
+        a reconcile/live node would run, but the cascade does not connect to
+        Postgres here (fail-safe when absent).
+        """
+        from .backends.pgvector_backend import PGVectorBackend
+
+        plan = PGVectorBackend.build_forget_plan(memory_id, resolve_agent())
+        return StorePurge(store="skmem_pg", attached=False, plan=plan.sql)
+
+    def _probe_primary(self, memory_id: str) -> tuple[int, int]:
+        """Return ``(flat_found, index_found)`` before a primary delete.
+
+        ``flat_found`` counts the flat JSON file (0/1). ``index_found`` counts
+        the index.db row (0/1), and is always 0 for a non-SQLite primary.
+        """
+        flat_found = 0
+        find = getattr(self.primary, "_find_file", None)
+        if callable(find):
+            flat_found = 1 if find(memory_id) is not None else 0
+
+        index_found = 0
+        if isinstance(self.primary, SQLiteBackend):
+            try:
+                row = (
+                    self.primary._get_conn()
+                    .execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,))
+                    .fetchone()
+                )
+                index_found = 1 if row is not None else 0
+            except Exception as e:  # index unavailable: report unknown as 0
+                logger.warning("store.py: index probe failed for %s: %s", memory_id, e)
+        return flat_found, index_found
+
+    def _index_still_has(self, memory_id: str) -> bool:
+        """True if the index.db row for ``memory_id`` still exists (post-delete)."""
+        if not isinstance(self.primary, SQLiteBackend):
+            return False
+        try:
+            row = (
+                self.primary._get_conn()
+                .execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,))
+                .fetchone()
+            )
+            return row is not None
+        except Exception:
+            return False
+
+    def forget_cascade(self, memory_id: str) -> ForgetReport:
+        """Delete a memory from EVERY store and return a verification report.
+
+        Cascades the removal across the flat JSON files (source of truth), the
+        index.db SQLite index, the derived vector store (ChromaDB), and the
+        derived skmem-pg Postgres cache, plus the AGE graph when wired. Records
+        a durable tombstone (see :mod:`skmemory.tombstones`) so a later
+        reconcile refuses to resurrect the memory from a stale flat copy.
+
+        Derived-store failures are recorded in the report, never raised, so one
+        dead backend cannot block the others. A primary (source-of-truth) delete
+        failure is fatal and re-raised, matching the legacy contract. The
+        skmem-pg leg is expressed as a delete PLAN and only executed when a live
+        pgvector backend is wired (otherwise plan-only, fail-safe).
 
         Args:
-            memory_id: The memory to remove.
+            memory_id: The memory to forget.
 
         Returns:
-            bool: True if deleted from primary backend.
+            ForgetReport: One :class:`~skmemory.forget.StorePurge` per store.
         """
+        report = ForgetReport(memory_id=memory_id)
+
+        # --- 1 + 2: primary (flat JSON + index.db) -------------------------
+        flat_found, index_found = self._probe_primary(memory_id)
         self._wal.log_pending("forget", memory_id, "", "")
         try:
             deleted = self.primary.delete(memory_id)
@@ -1053,55 +1128,102 @@ class MemoryStore:
             self._wal.log_failed("forget", memory_id, str(exc))
             raise
 
-        # Resurrection guard (card 7d3e9fcc): record that this id was
-        # deliberately forgotten so a future reconcile refuses to re-create it
-        # from a stale flat copy. Best effort and non-fatal: the delete above
-        # has already happened, so a marker that cannot be written must not turn
-        # a successful forget into a failure.
+        report.stores.append(
+            StorePurge(
+                store="flat",
+                attached=True,
+                found=flat_found,
+                removed=1 if (flat_found and deleted) else 0,
+            )
+        )
+        if isinstance(self.primary, SQLiteBackend):
+            index_removed = index_found - (1 if self._index_still_has(memory_id) else 0)
+            report.stores.append(
+                StorePurge(
+                    store="index_db",
+                    attached=True,
+                    found=index_found,
+                    removed=max(0, index_removed),
+                )
+            )
+
+        # Resurrection guard (card 7d3e9fcc): record the deliberate forget so a
+        # future reconcile refuses to re-create it from a stale flat copy. Best
+        # effort and non-fatal: the delete above already happened.
         mem_dir = self._tombstone_mem_dir()
         if mem_dir:
             write_tombstone(mem_dir, memory_id, reason="forget")
 
-        # Fan the removal out to the derived backends through the cascade
-        # executor (best-effort, per-backend reporting). Two steps:
-        #
-        #  * vector.remove(id) - checked for presence: a vector backend that
-        #    lacks remove() means a forget silently leaves its rows behind (they
-        #    linger until reconcile), so surface that loudly instead of
-        #    swallowing an AttributeError (Gap A: pgvector once shipped delete()
-        #    but no remove()).
-        #  * graph.remove_memory(id) - called directly; any failure (including a
-        #    missing method) is caught and warned, never fatal.
-        vname = type(self.vector).__name__ if self.vector else ""
-        self._cascade.run(
-            "forget",
-            [
-                CascadeStep(
-                    role="vector",
-                    backend=self.vector,
-                    method="remove",
-                    args=(memory_id,),
-                    check_presence=True,
-                    warn_missing=(
-                        f"vector backend {vname} has no remove(); memory "
-                        f"{memory_id} NOT removed from the vector store at "
-                        f"forget time (lingers until reconcile); add a "
-                        f"remove() to this backend"
-                    ),
-                    warn_fail=lambda e: f"vector backend {vname} remove({memory_id}) failed: {e}",
-                ),
-                CascadeStep(
-                    role="graph",
-                    backend=self.graph,
-                    method="remove_memory",
-                    args=(memory_id,),
-                    check_presence=False,
-                    warn_fail=lambda e: f"SKGraph remove failed: {e}",
-                ),
-            ],
-        )
+        # --- 3 / 4: derived vector store + skmem-pg ------------------------
+        if self.vector is not None:
+            key = self._vector_store_key(self.vector)
+            purge = StorePurge(store=key, attached=True)
+            if key == "skmem_pg":
+                # A live pgvector backend IS the skmem-pg store: execute the
+                # plan (via remove()) and report the SQL it ran.
+                from .backends.pgvector_backend import PGVectorBackend
 
-        return deleted
+                purge.plan = PGVectorBackend.build_forget_plan(
+                    memory_id, getattr(self.vector, "agent", resolve_agent())
+                ).sql
+            remover = getattr(self.vector, "remove", None)
+            if callable(remover):
+                try:
+                    removed = remover(memory_id)
+                    purge.found = purge.removed = 1 if removed else 0
+                except Exception as exc:  # best-effort: record, keep going
+                    purge.error = str(exc)
+                    logger.warning(
+                        "store.py: vector backend %s remove(%s) failed: %s",
+                        type(self.vector).__name__,
+                        memory_id,
+                        exc,
+                    )
+            else:
+                purge.error = f"{type(self.vector).__name__} has no remove()"
+                logger.warning(
+                    "store.py: vector backend %s has no remove(); memory %s NOT "
+                    "removed from the vector store at forget time (lingers until "
+                    "reconcile); add a remove() to this backend",
+                    type(self.vector).__name__,
+                    memory_id,
+                )
+            report.stores.append(purge)
+            # When the wired vector store is NOT skmem-pg, skmem-pg is still a
+            # distinct store: emit its plan (plan-only, fail-safe, not executed).
+            if key != "skmem_pg":
+                report.stores.append(self._pg_plan_only_purge(memory_id))
+        else:
+            report.stores.append(self._pg_plan_only_purge(memory_id))
+
+        # --- graph (AGE) ---------------------------------------------------
+        if self.graph is not None:
+            graph_purge = StorePurge(store="graph", attached=True)
+            try:
+                removed = self.graph.remove_memory(memory_id)
+                graph_purge.found = graph_purge.removed = 1 if removed else 0
+            except Exception as exc:  # best-effort: record, keep going
+                graph_purge.error = str(exc)
+                logger.warning("store.py: SKGraph remove failed: %s", exc)
+            report.stores.append(graph_purge)
+
+        return report
+
+    def forget(self, memory_id: str) -> bool:
+        """Delete a memory from all stores (thin bool shim over the cascade).
+
+        Backward-compatible wrapper around :meth:`forget_cascade`; returns
+        whether the source-of-truth (flat) store removed the memory. Callers
+        that need the full per-store verification report should call
+        :meth:`forget_cascade` directly.
+
+        Args:
+            memory_id: The memory to remove.
+
+        Returns:
+            bool: True if deleted from the flat (source-of-truth) store.
+        """
+        return self.forget_cascade(memory_id).deleted
 
     def list_memories(
         self,
