@@ -137,6 +137,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # setuptools-scm derives the version from the git tag, so a
+          # shallow checkout would yield a placeholder like 0.1.dev1 and
+          # break dependency resolution against pinned siblings.
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
