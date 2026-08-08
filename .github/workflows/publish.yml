@@ -32,6 +32,7 @@ jobs:
       contents: write
     outputs:
       tagged: ${{ steps.bump.outputs.tagged }}
+      version: ${{ steps.bump.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,6 +70,7 @@ jobs:
           git tag -a "$next" -m "release: $next from main"
           git push origin "$next"
           echo "tagged=true" >> "$GITHUB_OUTPUT"
+          echo "version=${next#v}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: [tag]
@@ -112,8 +114,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Assert the version to publish is a real release
+        # A dev/local version (.devN, +g<sha>, 0.0.0) is rejected by PyPI with a
+        # 400, and by then the tag has already been cut. Fail here instead.
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade setuptools_scm >/dev/null
+          v="$(python -m setuptools_scm 2>/dev/null || echo unknown)"
+          echo "version to publish: $v"
+          case "$v" in
+            *+*|*dev*|unknown|0.0.0*)
+              echo "::error::refusing to publish a non-release version: $v"
+              exit 1 ;;
+          esac
       - run: python -m pip install --upgrade build twine
       - run: python -m build
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ needs.tag.outputs.version }}
       - run: python -m twine check dist/*
       - uses: actions/upload-artifact@v4
         with:
