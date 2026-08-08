@@ -38,6 +38,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # setuptools-scm derives the version from the git tag, so a
+          # shallow checkout would yield a placeholder like 0.1.dev1 and
+          # break dependency resolution against pinned siblings.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -48,7 +54,7 @@ jobs:
       - name: Install package (core deps only)
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          pip install -e ".[dev]" || { pip install -e . && pip install pytest; }
 
       - name: Run eval regression gate vs committed baseline
         run: |
