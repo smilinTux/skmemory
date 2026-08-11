@@ -18,6 +18,7 @@ at the start of every session as the first context injection.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -31,27 +32,69 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("skmemory.soul")
 
 
+def _agent_dir(agent: str) -> Path:
+    """Return the platform-aware directory for an agent profile."""
+    if platform.system() == "Windows":
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            return Path(local) / "skcapstone" / "agents" / agent
+
+    skcap_home = Path(os.environ.get("SKCAPSTONE_HOME", os.path.expanduser("~/.skcapstone")))
+    return skcap_home / "agents" / agent
+
+
+def _resolve_active_soul_path(agent_dir: Path) -> Path | None:
+    """Resolve ``soul/active.json`` to an installed soul file if one exists."""
+    active_path = agent_dir / "soul" / "active.json"
+    if not active_path.exists():
+        return None
+
+    try:
+        data = json.loads(active_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("soul.py: failed reading active soul state %s: %s", active_path, exc)
+        return None
+
+    active_name = data.get("active_soul") or data.get("base_soul")
+    if not active_name:
+        return None
+
+    candidates = [
+        agent_dir / "soul" / "installed" / f"{active_name}.json",
+        agent_dir / "soul" / "installed" / f"{active_name}.yaml",
+        agent_dir / "soul" / "installed" / f"{active_name}.yml",
+        agent_dir / "soul" / f"{active_name}.json",
+        agent_dir / "soul" / f"{active_name}.yaml",
+        agent_dir / "soul" / f"{active_name}.yml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return None
+
+
 def _default_soul_path() -> str:
     """Platform-aware default path for the soul blueprint.
 
-    Checks agent-specific path first (e.g. ~/.skcapstone/agents/lumina/soul/base.json),
-    then falls back to shared root (~/.skcapstone/soul/base.json).
+    Checks the active agent's selected soul overlay first
+    (``soul/active.json`` -> ``soul/installed/<active>.json``), then the
+    agent-specific base blueprint, then the shared root blueprint.
     """
-    # Try agent-specific soul first
-    agent = os.environ.get("SKAGENT") or os.environ.get("SKMEMORY_AGENT") or os.environ.get("SKCAPSTONE_AGENT")
+    agent = (
+        os.environ.get("SKAGENT")
+        or os.environ.get("SKCAPSTONE_AGENT")
+        or os.environ.get("SKMEMORY_AGENT")
+    )
     if agent:
-        if platform.system() == "Windows":
-            local = os.environ.get("LOCALAPPDATA", "")
-            if local:
-                agent_soul = os.path.join(
-                    local, "skcapstone", "agents", agent, "soul", "base.json"
-                )
-                if os.path.exists(agent_soul):
-                    return agent_soul
-        else:
-            agent_soul = os.path.expanduser(f"~/.skcapstone/agents/{agent}/soul/base.json")
-            if os.path.exists(agent_soul):
-                return agent_soul
+        agent_dir = _agent_dir(agent)
+        active_soul = _resolve_active_soul_path(agent_dir)
+        if active_soul is not None:
+            return str(active_soul)
+
+        agent_soul = agent_dir / "soul" / "base.json"
+        if agent_soul.exists():
+            return str(agent_soul)
 
     # Fall back to shared root
     if platform.system() == "Windows":
@@ -322,10 +365,54 @@ def _load_soul_file(filepath: Path) -> SoulBlueprint | None:
             data = yaml.safe_load(raw)
         if data is None:
             return None
-        return SoulBlueprint(**data)
+        if not isinstance(data, dict):
+            return None
+        return SoulBlueprint(**_normalize_soul_data(data))
     except Exception as e:
         logger.warning("soul.py: %s", e)
         return None
+
+
+def _normalize_soul_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize SKCapstone soul overlays into the SKMemory blueprint shape."""
+    normalized = dict(data)
+
+    if not normalized.get("title"):
+        normalized["title"] = (
+            normalized.get("display_name")
+            or normalized.get("vibe")
+            or normalized.get("role")
+            or ""
+        )
+
+    if not normalized.get("personality"):
+        traits = (
+            normalized.get("personality_traits")
+            or normalized.get("core_traits")
+            or normalized.get("traits")
+        )
+        if traits:
+            normalized["personality"] = list(traits)
+        elif normalized.get("tone"):
+            normalized["personality"] = list(normalized["tone"])
+
+    if not normalized.get("values") and normalized.get("value_system"):
+        values = normalized["value_system"]
+        if isinstance(values, list):
+            normalized["values"] = values
+
+    if not normalized.get("boot_message"):
+        normalized["boot_message"] = (
+            normalized.get("system_prompt")
+            or normalized.get("philosophy")
+            or normalized.get("extends")
+            or ""
+        )
+
+    if not normalized.get("emotional_baseline") and normalized.get("emotional_topology"):
+        normalized["emotional_baseline"] = normalized["emotional_topology"]
+
+    return normalized
 
 
 def create_default_soul() -> SoulBlueprint:

@@ -46,6 +46,15 @@ MODEL_ALIASES = {
 }
 
 
+def _is_loadable_sentence_transformer_path(path: Path) -> bool:
+    """Return True when a local model directory has the files ST needs."""
+    return (
+        path.is_dir()
+        and (path / "config.json").is_file()
+        and (path / "modules.json").is_file()
+    )
+
+
 def _resolve_embedding_model_name(model_name: str) -> str:
     """Resolve aliases and sovereign local-path fallbacks."""
     import os
@@ -56,10 +65,10 @@ def _resolve_embedding_model_name(model_name: str) -> str:
         hammertime_root = os.environ.get("HAMMERTIME_ROOT")
         if hammertime_root:
             candidate = Path(hammertime_root) / "models" / "bge-legal-v1"
-            if candidate.exists():
+            if _is_loadable_sentence_transformer_path(candidate):
                 return str(candidate)
         fallback = Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/models/bge-legal-v1")
-        if fallback.exists():
+        if _is_loadable_sentence_transformer_path(fallback):
             return str(fallback)
         if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN"):
             return HAMMERTIME_HF_MODEL

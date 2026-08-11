@@ -1,9 +1,11 @@
 """Tests for the Soul Blueprint module."""
 
+import json
 from pathlib import Path
 
 import pytest
 
+from skmemory import soul as soul_module
 from skmemory.soul import (
     SoulBlueprint,
     create_default_soul,
@@ -193,3 +195,45 @@ class TestSoulPersistence:
         assert loaded is not None
         assert loaded.emotional_baseline["default_warmth"] == 9.5
         assert loaded.emotional_baseline["custom_field"] == "hello"
+
+    def test_default_path_prefers_active_installed_agent_soul(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Agent active.json should route default soul loading to the active overlay."""
+        agent_dir = tmp_path / "agents" / "jarvis"
+        installed = agent_dir / "soul" / "installed"
+        installed.mkdir(parents=True)
+        (agent_dir / "soul" / "active.json").write_text(
+            json.dumps({"active_soul": "jarvis-unhinged", "base_soul": "base"})
+        )
+        active_path = installed / "jarvis-unhinged.json"
+        active_path.write_text(json.dumps({"name": "jarvis-unhinged"}))
+        (agent_dir / "soul" / "base.json").write_text(json.dumps({"name": "base"}))
+
+        monkeypatch.setenv("SKCAPSTONE_HOME", str(tmp_path))
+        monkeypatch.setenv("SKAGENT", "jarvis")
+
+        assert soul_module._default_soul_path() == str(active_path)
+
+    def test_load_skcapstone_soul_overlay(self, tmp_path: Path) -> None:
+        """SKCapstone installed-soul overlays normalize into SKMemory blueprints."""
+        overlay = tmp_path / "jarvis-unhinged.json"
+        overlay.write_text(
+            json.dumps(
+                {
+                    "extends": "jarvis",
+                    "name": "jarvis-unhinged",
+                    "traits": ["direct", "technical"],
+                    "tone": ["bold"],
+                    "emotional_topology": {"trust": 0.97},
+                }
+            )
+        )
+
+        loaded = load_soul(path=str(overlay))
+
+        assert loaded is not None
+        assert loaded.name == "jarvis-unhinged"
+        assert loaded.personality == ["direct", "technical"]
+        assert loaded.boot_message == "jarvis"
+        assert loaded.emotional_baseline["trust"] == 0.97

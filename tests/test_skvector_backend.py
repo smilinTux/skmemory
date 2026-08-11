@@ -117,11 +117,26 @@ class TestInitialization:
         # Create a fake hammerTime model dir so the path-resolution logic can find it
         fake_model = tmp_path / "models" / "bge-legal-v1"
         fake_model.mkdir(parents=True)
+        (fake_model / "config.json").write_text("{}")
+        (fake_model / "modules.json").write_text("[]")
         monkeypatch.setenv("HAMMERTIME_ROOT", str(tmp_path))
         qb = SKVectorBackend()
         assert qb.requested_embedding_model == "bge-legal-v1"
         # Resolves to a local path containing the model directory
         assert "models" in qb.embedding_model_name and "bge-legal-v1" in qb.embedding_model_name
+
+    def test_default_model_skips_incomplete_local_path(self, tmp_path, monkeypatch):
+        """Incomplete local model dirs should not shadow the cached/HF fallback."""
+        fake_model = tmp_path / "models" / "bge-legal-v1"
+        fake_model.mkdir(parents=True)
+        (fake_model / "model.safetensors").write_text("")
+        monkeypatch.setenv("HAMMERTIME_ROOT", str(tmp_path))
+        monkeypatch.delenv("HF_TOKEN", raising=False)
+        monkeypatch.delenv("HUGGINGFACE_HUB_TOKEN", raising=False)
+
+        qb = SKVectorBackend()
+
+        assert qb.embedding_model_name == "BAAI/bge-large-en-v1.5"
 
 
 # ═══════════════════════════════════════════════════════════

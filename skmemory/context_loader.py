@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -39,6 +40,20 @@ from .recall_cache import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _qdrant_recall_search_params():
+    """Return bounded Qdrant search params for large shared recall collections."""
+    try:
+        from qdrant_client.models import SearchParams
+    except Exception:
+        return None
+    raw = os.environ.get("SKMEMORY_SKVECTOR_HNSW_EF", "8")
+    try:
+        hnsw_ef = int(raw)
+    except (TypeError, ValueError):
+        hnsw_ef = 8
+    return SearchParams(hnsw_ef=max(hnsw_ef, 1), exact=False)
 
 _HAMMERTIME_RECALL_ROOTS = (
     Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime"),
@@ -241,6 +256,8 @@ def _load_skvector_config(config_dir: Path) -> dict | None:
             "url": url,
             "api_key": skmem.get("skvector_key"),
             "collection": skmem.get("skvector_collection", "skmemory"),
+            "timeout": skmem.get("skvector_timeout"),
+            "dimensions": skmem.get("skvector_vector_dim"),
             "embedding": {
                 "provider": "sentence_transformers",
                 "model": skmem.get("skvector_embedding_model", "all-MiniLM-L6-v2"),
@@ -424,6 +441,8 @@ def _build_skvector_backend(skvector_cfg: dict) -> Any | None:
         embed_cfg = skvector_cfg.get("embedding", {})
         provider = embed_cfg.get("provider", "sentence_transformers")
         model = embed_cfg.get("model", "all-MiniLM-L6-v2")
+        vector_dim = skvector_cfg.get("dimensions") or skvector_cfg.get("vector_dim")
+        timeout = skvector_cfg.get("timeout") or skvector_cfg.get("request_timeout")
         embed_fn = None
 
         if provider == "ollama":
@@ -434,6 +453,9 @@ def _build_skvector_backend(skvector_cfg: dict) -> Any | None:
             url=url,
             api_key=api_key,
             collection=collection,
+            embedding_model=model,
+            vector_dim=vector_dim,
+            timeout=timeout,
             embed_fn=embed_fn,
         )
     except Exception as e:
@@ -909,6 +931,7 @@ class LazyMemoryLoader:
                                 collection_name=recall_col,
                                 query=embedding,
                                 limit=max_results * 4,
+                                search_params=_qdrant_recall_search_params(),
                             ).points
                             for sp in self._collapse_recall_points(scored_points)[:max_results]:
                                 mem = _recall_backend._memory_from_payload(sp.payload or {})

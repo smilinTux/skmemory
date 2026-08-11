@@ -31,12 +31,16 @@ COLLECTION_NAME = "skmemory"
 EMBEDDING_MODEL = "bge-legal-v1"
 VECTOR_DIM = 1024
 HAMMERTIME_HF_MODEL = "chefboyrave21/bge-legal-v1"
+HAMMERTIME_V2_HF_MODEL = "chefboyrave21/bge-legal-v2"
 PUBLIC_FALLBACK_MODEL = "BAAI/bge-large-en-v1.5"
+DEFAULT_QDRANT_TIMEOUT = 60.0
 
 MODEL_DIMENSIONS = {
     "all-MiniLM-L6-v2": 384,
     "bge-legal-v1": 1024,
     HAMMERTIME_HF_MODEL: 1024,
+    "bge-legal-v2": 1024,
+    HAMMERTIME_V2_HF_MODEL: 1024,
     "BAAI/bge-large-en-v1.5": 1024,
     "bge-large": 1024,
 }
@@ -73,15 +77,28 @@ def _legacy_payload_memory_id(payload: dict) -> str:
 
 def _candidate_local_model_paths(model_name: str) -> list[Path]:
     """Return plausible local model directories for sovereign embeddings."""
-    if model_name not in {"bge-legal-v1", HAMMERTIME_HF_MODEL}:
+    if model_name in {"bge-legal-v2", HAMMERTIME_V2_HF_MODEL}:
+        model_dir = "bge-legal-v2"
+    elif model_name in {"bge-legal-v1", HAMMERTIME_HF_MODEL}:
+        model_dir = "bge-legal-v1"
+    else:
         return []
 
     candidates: list[Path] = []
     hammertime_root = os.environ.get("HAMMERTIME_ROOT")
     if hammertime_root:
-        candidates.append(Path(hammertime_root) / "models" / "bge-legal-v1")
-    candidates.append(Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/models/bge-legal-v1"))
+        candidates.append(Path(hammertime_root) / "models" / model_dir)
+    candidates.append(Path("/mnt/cloud/onedrive/projects/DAVE AI/hammerTime/models") / model_dir)
     return candidates
+
+
+def _is_loadable_sentence_transformer_path(path: Path) -> bool:
+    """Return True when a local model directory has the files ST needs."""
+    return (
+        path.is_dir()
+        and (path / "config.json").is_file()
+        and (path / "modules.json").is_file()
+    )
 
 
 def _resolve_embedding_model_name(model_name: str) -> str:
@@ -89,8 +106,13 @@ def _resolve_embedding_model_name(model_name: str) -> str:
     normalized = MODEL_ALIASES.get(model_name, model_name)
 
     for candidate in _candidate_local_model_paths(normalized):
-        if candidate.exists():
+        if _is_loadable_sentence_transformer_path(candidate):
             return str(candidate)
+
+    if normalized in {"bge-legal-v2", HAMMERTIME_V2_HF_MODEL}:
+        if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN"):
+            return HAMMERTIME_V2_HF_MODEL
+        return PUBLIC_FALLBACK_MODEL
 
     if normalized in {"bge-legal-v1", HAMMERTIME_HF_MODEL}:
         if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN"):
@@ -118,6 +140,18 @@ def _extract_status_code(exc: Exception, unexpected_cls: type | None) -> int | N
         if str(candidate) in text:
             return candidate
     return None
+
+
+def _qdrant_timeout(value: float | int | str | None = None) -> float:
+    """Return the Qdrant client timeout in seconds."""
+    raw = value if value is not None else os.environ.get("SKMEMORY_SKVECTOR_TIMEOUT")
+    if raw in (None, ""):
+        return DEFAULT_QDRANT_TIMEOUT
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_QDRANT_TIMEOUT
+    return max(timeout, 1.0)
 
 
 class VectorStateTracker:
@@ -188,6 +222,7 @@ class SKVectorBackend(BaseBackend):
         collection: str = COLLECTION_NAME,
         embedding_model: str = EMBEDDING_MODEL,
         vector_dim: int | None = None,
+        timeout: float | int | str | None = None,
         embed_fn: Callable[[str], list[float]] | None = None,
         state_path: Path | None = None,
     ) -> None:
@@ -197,6 +232,7 @@ class SKVectorBackend(BaseBackend):
         self.requested_embedding_model = embedding_model
         self.embedding_model_name = _resolve_embedding_model_name(embedding_model)
         self.vector_dim = vector_dim or MODEL_DIMENSIONS.get(embedding_model, VECTOR_DIM)
+        self.timeout = _qdrant_timeout(timeout)
         self._client = None
         self._embedder = None
         self._embed_fn = embed_fn  # optional external embedding function (e.g. Ollama)
@@ -240,7 +276,7 @@ class SKVectorBackend(BaseBackend):
                 return False
 
         try:
-            self._client = QdrantClient(url=self.url, api_key=self.api_key)
+            self._client = QdrantClient(url=self.url, api_key=self.api_key, timeout=self.timeout)
 
             if self._embed_fn is None:
                 self._embedder = SentenceTransformer(self.embedding_model_name)
