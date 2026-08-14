@@ -1,0 +1,23 @@
+[
+ {
+  "RuleID": "generic-api-key",
+  "Description": "Detected a Generic API Key, potentially exposing access to various services and sensitive operations.",
+  "StartLine": 341,
+  "EndLine": 341,
+  "StartColumn": 14,
+  "EndColumn": 82,
+  "Match": "encryption_key_fingerprint=\"REDACTED\"",
+  "Secret": "REDACTED",
+  "File": "skmemory/fortress.py",
+  "SymlinkFile": "",
+  "Commit": "a98c95fed09fc6c24692edcdbb0999904f33b799",
+  "Link": "https://github.com/smilinTux/skmemory/blob/a98c95fed09fc6c24692edcdbb0999904f33b799/skmemory/fortress.py#L341",
+  "Entropy": 3.6659572,
+  "Author": "chefboyrdave2.1",
+  "Email": "chefboyrdave2.1@douno.it",
+  "Date": "2026-02-28T12:28:45Z",
+  "Message": "feat: add Memory Fortress — auto-seal integrity, at-rest encryption, tamper alerts\n\nImplements task 11465de0 (Memory Fortress).\n\n- FortifiedMemoryStore: drop-in MemoryStore replacement with three security layers\n- AuditLog: append-only JSONL audit trail with chain-hash integrity verification\n- EncryptedFileBackend: transparent PGP at-rest encryption via gnupg\n- TamperAlert: structured alert with callback dispatch when integrity fails\n- verify_all(): full-store integrity scan for scheduled health checks\n- verify_audit_chain(): detects tampered audit log records\n\nAll 22 fortress tests pass. Acceptance criteria met:\n✓ Auto-seal integrity hash on every store operation\n✓ Verify integrity on every recall operation\n✓ Optional PGP encryption at rest via CapAuth\n✓ Tamper alert system with registered callbacks\n✓ Access audit trail with chain-hash integrity\n\nCo-Authored-By: Claude Sonnet 4.6 \u003cnoreply@anthropic.com\u003e",
+  "Tags": [],
+  "Fingerprint": "a98c95fed09fc6c24692edcdbb0999904f33b799:skmemory/fortress.py:generic-api-key:341"
+ }
+]
