@@ -150,6 +150,15 @@ jobs:
 
   pypi-publish:
     needs: build
+    # Same always() guard the build job needs, one level further down.
+    # GitHub propagates a skip THROUGH a job: `tag` is skipped on the tag-push
+    # path, `build` survives it with always(), but a bare `needs: build` here
+    # still evaluates to skipped, because an ANCESTOR was skipped. The publish
+    # step could then never run on a tag push: the build is green, the run
+    # reports success, and NOTHING is uploaded. skharness lost v0.3.13 to this
+    # exact bug. Ported from skcoord PR #6.
+    if: >-
+      always() && !cancelled() && needs.build.result == 'success'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
