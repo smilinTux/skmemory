@@ -171,6 +171,18 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
 
   publish-npm:
+    needs: build
+    # Every other job in this graph is guarded; this one was not, so it ran on
+    # the push-to-main path too. There `GITHUB_REF` is `refs/heads/main`, the
+    # `${GITHUB_REF#refs/tags/v}` strip below matches nothing and leaves the ref
+    # intact, and `npm version refs/heads/main` fails with "Invalid version".
+    # That is why "Publish to PyPI" has been red on main while PyPI itself was
+    # publishing fine: a job that should never have run on a branch push.
+    # Same always() reasoning as pypi-publish above: a bare `needs: build` would
+    # inherit the skip of the `tag` ancestor on the tag-push path.
+    if: >-
+      always() && !cancelled() && needs.build.result == 'success' &&
+      startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
