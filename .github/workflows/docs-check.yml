@@ -6,4 +6,4 @@ jobs:
   docs:
     uses: smilinTux/sk-standards/.github/workflows/docs-check.yml@main
     with:
-      tiers: "1,2"
+      tiers: "1,2,3"
