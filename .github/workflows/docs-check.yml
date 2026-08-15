@@ -1,0 +1,9 @@
+name: docs-check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  docs:
+    uses: smilinTux/sk-standards/.github/workflows/docs-check.yml@main
+    with:
+      tiers: "1,2"

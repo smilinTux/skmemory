@@ -6,7 +6,36 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **SOP correction: the pg connection never came from `~/.config/skmemory/pg.env`.**
+  SOP §6 claimed it did. Nothing in `skmemory/` reads that file, and on the current
+  fleet it no longer carries a DSN at all (only `SKMEMORY_VECTOR_BACKEND`,
+  `SKMEMORY_EMBED_URL`, `SKMEMORY_EMBED_MODEL`). The code resolves the DSN from the
+  `SKMEMORY_PG_DSN` env var only (`backends/pgvector_backend.py:53`,
+  `backends/age_backend.py:73`); on fleet nodes that var is exported by
+  `~/.config/environment.d/skmemory.conf`, which is host state outside this repo.
+- **SOP correction: there is no version to bump.** §5 said to bump `version` in
+  `pyproject.toml`; `pyproject.toml` declares `dynamic = ["version"]` and
+  setuptools-scm derives it from the git tag. §9 quoted a stale `0.10.4`. Both now say
+  where the version comes from instead of quoting one.
+- **SOP correction: `npm-publish.yml` does not exist.** Both PyPI and npm are published
+  by the single `publish.yml`.
+- **SOP correction: the systemd units do not run what their unit files say.** A skos
+  `sk-cron-run.conf` drop-in clears and re-declares `ExecStart` for both
+  `skmemory-sync@` and `skmemory-fortress-verify@`. §5 now documents the effective
+  command and how to read it (`systemctl --user show ... -p ExecStart`).
+
 ### Added
+
+- **`docs-evidence` block + `docs-check` CI gate.** SOP.md now ends with an executable
+  evidence block (8 hermetic, repo-local checks pinning the console-script entry points,
+  the non-`src/` package layout, the `SKMEMORY_PG_DSN` / `localhost:5432` default, the
+  *absence* of any `pg.env` read, setuptools-scm versioning, the systemd base
+  `ExecStart` strings, `skmemory health`, and the mxbai-embed-large/1024-dim embed
+  default). `.github/workflows/docs-check.yml` runs tiers 1 and 2 on every push and PR.
+- SOP §2 gained a "Start here" entry-point table; §4 now names the exact CI commands
+  that form the green-bar gate.
 
 - **`deploy/ops/` production ops scripts (coord `ce559215`).** Vendored the two
   scripts that keep a skmemory node alive but previously lived only on `.158`
