@@ -109,6 +109,16 @@ rebuilds per-node via skingest from the git wiki. There is no remote primary/rep
 no failover for skmem-pg (the `.158 -> .41` streaming standby was abandoned; ParadeDB
 Community cannot serve `pg_search` reads in recovery, prb-6f069c5e).
 
+**Start here.** The five files to read before changing anything:
+
+| File | Why it is the entry point |
+|---|---|
+| `skmemory/cli.py` | The `skmemory` console script (`skmemory.cli:main`). Every subcommand in §7 is a click command here, including `health` (`def health`, cli.py:809) and `ritual` (cli.py:1684). |
+| `skmemory/mcp_server.py` | The `skmemory-mcp` console script (`skmemory.mcp_server:main`). The stdio MCP surface every agent runtime consumes. |
+| `skmemory/store.py` | `MemoryStore`, the facade every caller funnels through. The pre-write hook chain, layer promotion and backend fan-out all land here. |
+| `skmemory/config.py` + `skmemory/agents.py` | Agent resolution (`SKAGENT` → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT`) and the per-agent `config/skmemory.yaml` this SOP's §6 paths come from. |
+| `skmemory/backends/` | One module per persistence tier (`pgvector_backend.py`, `age_backend.py`, chroma, SQLite, vaulted). Where a DSN or embed default drifts, it drifts here. |
+
 **Endpoints / paths.**
 - Embed endpoint: Ollama-compatible, `mxbai-embed-large`, default
   `http://localhost:11434/api/embed` (mxbai on .100 for reconcile/embeds).
@@ -131,8 +141,15 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,all]"      # all = skvector, skgraph, telegram extras
 ```
 
+**Package layout:** the importable package is the top-level `skmemory/` directory.
+There is **no `src/` layout** in this repo; CI lints `skmemory/ tests/`
+(`.github/workflows/ci.yml`), and `[tool.setuptools.packages.find] include = ["skmemory*"]`
+in `pyproject.toml` is what selects it.
+
 Artifacts: Python wheel/sdist (`skmemory` on PyPI) + an npm wrapper
-(`@smilintux/skmemory`). CI builds both on tag (`publish.yml`, `npm-publish.yml`).
+(`@smilintux/skmemory`). Both are built and published by the single
+`.github/workflows/publish.yml` (jobs `build`, `pypi-publish`, `publish-npm`).
+There is no separate `npm-publish.yml`.
 
 ---
 
@@ -140,29 +157,70 @@ Artifacts: Python wheel/sdist (`skmemory` on PyPI) + an npm wrapper
 
 ```bash
 pytest                            # unit + backend tests (tests/)
-ruff check skmemory/
+ruff format --check skmemory/ tests/
+ruff check skmemory/ tests/
 skmemory health                   # end-to-end: flat ⇄ index ⇄ vector liveness
 ```
 
-**Green-bar gate (blocks release):** `pytest` passes, `ruff` clean, and
-`skmemory health` reports the backends it claims as live. Any LIVE/backend claim in
-README/CHANGELOG must be reproducible from `skmemory health` output.
+**Green-bar gate (blocks release).** The gate is what CI actually runs, and both
+workflows below fail the build on a red test (no `|| true` anywhere in the test path):
+
+| Workflow | Trigger | Command |
+|---|---|---|
+| `.github/workflows/ci.yml` (job `test`) | push to `main`, PR to `main`; py3.11 + py3.12 | `python -m pytest tests/ -v --tb=short --cov=skmemory --cov-report=xml --cov-report=term-missing` |
+| `.github/workflows/ci.yml` (job `lint`) | same | `ruff format --check skmemory/ tests/` then `ruff check skmemory/ tests/` |
+| `.github/workflows/pytest.yml` | push/PR touching the package | `python -m pytest tests/ --ignore=tests/integration -k "not test_sharing" -v --tb=short` |
+
+`pytest.yml` deliberately excludes `tests/integration` and the pgpy-sharing tests so it
+stays green without a live backend; `ci.yml` runs the full `tests/` tree. Locally, add
+`skmemory health`: any LIVE/backend claim in README/CHANGELOG must be reproducible from
+that output.
 
 ---
 
 ## 5. Release / Deploy
 
-Library release (PyPI + npm):
+Library release (PyPI + npm).
 
-1. Bump `version` in `pyproject.toml` **and** `package.json`.
-2. Add a dated `CHANGELOG.md` entry (Keep-a-Changelog + SemVer).
-3. Run the §4 gate.
-4. `git tag vX.Y.Z && git push origin vX.Y.Z` - CI publishes to PyPI (OIDC trusted
-   publishing) and npm.
-5. Verify the published version installs and `skmemory health` is green.
+**The git tag IS the version. Do not hand-edit a version number.** `pyproject.toml`
+declares `dynamic = ["version"]` and `[tool.setuptools_scm]` derives it from the newest
+tag matching `^v(\d+\.\d+\.\d+)$` (`tag_regex` is pinned precisely because these repos
+also carry non-SemVer tags like `swarm-20260717`, which setuptools-scm would otherwise
+pick and turn into a nonsense version). The `version` committed in `package.json` is
+**not** authoritative: the `publish-npm` job overwrites it from the tag with
+`npm version "${GITHUB_REF#refs/tags/v}" --no-git-tag-version` before publishing.
 
-Service deploy (per-agent sync): `skmemory-sync@<agent>.timer` (systemd, in
-`systemd/`) keeps SQLite ⇄ flat files ⇄ vector in lockstep.
+1. Add a dated `CHANGELOG.md` entry (Keep-a-Changelog + SemVer).
+2. Run the §4 gate.
+3. Merge to `main`. The `tag` job in `publish.yml` cuts the next patch tag
+   automatically when HEAD is not already tagged, ranking **all** `v*` tags by version
+   (`sort -V`), never `git describe`, so a release can never go backwards.
+4. To release a minor/major instead, push the tag yourself:
+   `git tag vX.Y.0 && git push origin vX.Y.0`.
+5. The tag push runs `build` -> `pypi-publish` (OIDC trusted publishing, no token) and
+   `publish-npm`. The full test suite is intentionally **not** a gate in `publish.yml`;
+   that gate lives in `ci.yml` on PRs.
+6. Verify the published version installs and `skmemory health` is green.
+
+Service deploy (per-agent maintenance timers, units in `systemd/`):
+
+| Unit | Timer | Base `ExecStart` in this repo | **Effective** `ExecStart` on a fleet node |
+|---|---|---|---|
+| `skmemory-sync@<agent>.service` | `OnBootSec=5min`, then `OnUnitActiveSec=6h` | `%h/.skenv/bin/skmemory sync --quiet --vector --graph` | `~/clawd/skos/scripts/sk-cron-run.sh skmemory-sync@ ~/.skenv/bin/skmemory sync --quiet --vector --graph` |
+| `skmemory-fortress-verify@<agent>.service` | `OnCalendar=*-*-* 03:00:00`, `RandomizedDelaySec=5min` | `%h/clawd/skcapstone-repos/skmemory/scripts/fortress-verify.sh` | `~/clawd/skos/scripts/sk-cron-run.sh skmemory-fortress-verify@ ~/clawd/skcapstone-repos/skmemory/scripts/fortress-verify.sh` |
+
+⚠️ **Both units have their `ExecStart` REWRITTEN on live nodes.** skos installs a
+`sk-cron-run.conf` drop-in (`~/.config/systemd/user/<unit>.d/sk-cron-run.conf`) that
+clears `ExecStart=` and re-declares it wrapped in `sk-cron-run.sh`, so a failure produces
+a run-ledger record, a GTD item and an sk-alert instead of silence. The bare `ExecStart=`
+in the drop-in is required: `ExecStart` is list-typed, so without it systemd would append
+and the job would run twice. **Never read the unit file to learn what runs.** Read the
+effective command:
+
+```bash
+systemctl --user show skmemory-sync@<agent>.service -p ExecStart
+systemctl --user cat  skmemory-sync@<agent>.service   # unit + every drop-in
+```
 
 ### Node operations (vendored ops scripts)
 
@@ -206,7 +264,34 @@ reconciler, not a server.
 
 - Agent resolution: `SKAGENT` (preferred) → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT`.
 - Vector backend defaults: ChromaDB local; pgvector when `skmem-pg` is reachable.
-- Config persisted via `config.py`; pg connection from `~/.config/skmemory/pg.env`.
+
+**Where state lives.**
+
+| What | Path | Notes |
+|---|---|---|
+| Per-agent home | `~/.skcapstone/agents/<agent>/` | `SKMEMORY_HOME` root; `agents.py` |
+| Flat-file store (**canonical**) | `<home>/memory/{short-term,mid-term,long-term}/` | JSON, Syncthing-synced |
+| SQLite index (derived) | `<home>/memory/index.db` | rebuildable; `skmemory reindex` |
+| ChromaDB (derived, Level 1 default) | `chroma_persist_dir` in the per-agent YAML | `config.py` |
+| Per-agent config | `~/.skcapstone/agents/<agent>/config/skmemory.yaml` | `config.py`, `agents.py` |
+
+**Postgres (skmem-pg) connection.** The code resolves the DSN from the **`SKMEMORY_PG_DSN`
+environment variable only**, falling back to the node-local default
+`postgresql://postgres:<pw>@localhost:5432/skmemory`
+(`skmemory/backends/pgvector_backend.py:53`, `skmemory/backends/age_backend.py:73`).
+**skmemory reads no `pg.env` file.** An earlier revision of this SOP said the connection
+came from `~/.config/skmemory/pg.env`; that was wrong in two ways. That file is not read
+by any code in this repo (grep `skmemory/` for `pg.env` and you get nothing), and on the
+current fleet it no longer carries a DSN at all: it holds only
+`SKMEMORY_VECTOR_BACKEND` / `SKMEMORY_EMBED_URL` / `SKMEMORY_EMBED_MODEL`.
+
+On fleet nodes `SKMEMORY_PG_DSN` is exported to every `systemd --user` service by
+`~/.config/environment.d/skmemory.conf`, which the systemd user manager imports at
+login. That file is **operator-managed host state, outside this repo**, and it is the
+single place to rotate the password (see the header comment in it, and KEDB
+`ke-leak-skmem-pg-pw`). For an interactive shell, export `SKMEMORY_PG_DSN` yourself or
+source that file; nothing in skmemory will do it for you.
+
 - **Secret handling:** never inline a live secret. The vaulted backend seals memory
   at rest to the agent's GPG key (`vault.py`); the passphrase is supplied via
   gpg-agent, never stored in the repo or config. See [SECURITY.md](./SECURITY.md).
@@ -276,8 +361,13 @@ Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage.
   (`HKDF(X25519 ‖ ML-KEM-768)`, FIPS 203) is **not** integrated today; the migration
   path is to seal via [sk_pgp](https://github.com/smilinTux/sk-pgp)/sk_pqc when the
   PGP→PQC root cutover lands. **No claim of post-quantum protection is made here.**
-- **VERSION_LIFECYCLE phase:** Active (v2). **SemVer:** see `pyproject.toml`
-  (`0.10.4` at time of writing) and [CHANGELOG.md](./CHANGELOG.md). The MOC generator,
+- **VERSION_LIFECYCLE phase:** Active (v2). **SemVer:** there is **no version number to
+  quote here, and none in `pyproject.toml`** (it declares `dynamic = ["version"]`). The
+  version is derived by setuptools-scm from the newest git tag matching
+  `^v(\d+\.\d+\.\d+)$`; ask the tree, not the docs:
+  `git describe --tags --match 'v[0-9]*'`, or `pip show skmemory` for what is installed.
+  The `version` field committed in `package.json` is stale by design and is overwritten
+  from the tag at npm-publish time. History is in [CHANGELOG.md](./CHANGELOG.md). The MOC generator,
   schema-validated writes, and fresh-context runner (2026-07-03) are **additive,
   backward-compatible** - defaults preserve prior store/backend semantics.
 - **Self-report / evidence:** `skmemory health` reports the live backends; the
@@ -285,3 +375,26 @@ Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage.
   ([`docs/FORTRESS_SOP.md`](./docs/FORTRESS_SOP.md)). Every backend/LIVE claim in the
   docs is reproducible from that output (honest-claims gate, see
   [SECURITY.md](./SECURITY.md)).
+
+---
+
+<!-- docs-evidence
+verified: 2026-08-15
+checks:
+  - name: three console-script entry points unchanged (skmemory, skmemory-mcp, skmemory-post-install)
+    run: grep -qxF 'skmemory = "skmemory.cli:main"' pyproject.toml && grep -qxF 'skmemory-mcp = "skmemory.mcp_server:main"' pyproject.toml && grep -qxF 'skmemory-post-install = "skmemory.post_install:main"' pyproject.toml
+  - name: package layout is top-level skmemory/, not src/, and CI lints that path
+    run: test -d skmemory && test ! -d src && grep -qxF '        run: ruff check skmemory/ tests/' .github/workflows/ci.yml
+  - name: pg DSN comes from SKMEMORY_PG_DSN with a node-local localhost:5432 default in both pg backends
+    run: grep -qE '^\s+"SKMEMORY_PG_DSN", "postgresql://[^"]+@localhost:5432/skmemory"$' skmemory/backends/pgvector_backend.py && grep -qE '^\s+"SKMEMORY_PG_DSN", "postgresql://[^"]+@localhost:5432/skmemory"$' skmemory/backends/age_backend.py
+  - name: no code path reads a pg.env file (SOP section 6 documents this absence)
+    run: ! grep -rqF 'pg.env' skmemory/
+  - name: version is setuptools-scm derived from the git tag, never hardcoded in pyproject.toml
+    run: grep -qxF 'dynamic = ["version"]' pyproject.toml && grep -qxF 'tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)$"' pyproject.toml && ! grep -qE '^version *=' pyproject.toml
+  - name: systemd base ExecStart matches the command documented in section 5
+    run: grep -qxF 'ExecStart=%h/.skenv/bin/skmemory sync --quiet --vector --graph' systemd/skmemory-sync@.service && grep -qxF 'ExecStart=%h/clawd/skcapstone-repos/skmemory/scripts/fortress-verify.sh' systemd/skmemory-fortress-verify@.service
+  - name: skmemory health self-report command still exists
+    run: grep -qE '^def health\(ctx' skmemory/cli.py
+  - name: mxbai-embed-large at 1024 dims is still the documented embed default
+    run: grep -qxF 'DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")' skmemory/backends/pgvector_backend.py && grep -qxF 'VECTOR_DIM = 1024' skmemory/backends/pgvector_backend.py
+-->
