@@ -69,7 +69,11 @@ def detect_environments() -> list[str]:
         envs.append("vscode")
 
     # OpenCode CLI
-    if (home / ".opencode").is_dir() or shutil.which("opencode"):
+    if (
+        (home / ".config" / "opencode" / "opencode.json").is_file()
+        or (home / ".opencode").is_dir()
+        or shutil.which("opencode")
+    ):
         envs.append("opencode")
 
     # Codex
@@ -254,6 +258,53 @@ def _upsert_mcp_entry(
     return "created"
 
 
+def _upsert_opencode_entry(
+    path: Path,
+    name: str,
+    command: str,
+    args: list,
+    env: dict | None = None,
+) -> str:
+    """Add or update an MCP server entry in an opencode config file.
+
+    Opencode reads MCP servers from the ``mcp`` key of its config file
+    (~/.config/opencode/opencode.json), NOT from the Claude Code style
+    "mcpServers" key used by other clients. An entry looks like:
+
+        {"type": "local", "command": ["cmd", ...args], "enabled": true, "env": {...}}
+
+    Existing opencode config keys (provider, autoupdate, mcp entries for other
+    servers) are preserved. The file is created if it does not exist.
+
+    Args:
+        path: Path to the opencode JSON config file.
+        name: Server name.
+        command: Command to run.
+        args: Command arguments.
+        env: Optional environment variables.
+
+    Returns:
+        "created", "updated", or "exists".
+    """
+    data = _read_json(path)
+
+    entry: dict = {"type": "local", "command": [command, *args], "enabled": True}
+    if env:
+        entry["env"] = env
+
+    servers = data.setdefault("mcp", {})
+    if name in servers:
+        if servers[name] == entry:
+            return "exists"
+        servers[name] = entry
+        _write_json(path, data)
+        return "updated"
+
+    servers[name] = entry
+    _write_json(path, data)
+    return "created"
+
+
 def register_mcp(
     name: str,
     command: str,
@@ -267,7 +318,7 @@ def register_mcp(
       - claude-code: ~/.claude/mcp.json
       - cursor: ~/.cursor/mcp.json
       - vscode: (skipped — requires workspace .vscode/)
-      - opencode: ~/.opencode/mcp.json
+      - opencode: ~/.config/opencode/opencode.json (mcp key; NOT ~/.opencode/mcp.json)
       - codex: not yet supported for MCP config writing here
       - mcporter: ~/clawd/config/mcporter.json or ~/.config/mcporter/mcporter.json
 
@@ -293,7 +344,7 @@ def register_mcp(
     env_to_path: dict[str, Path] = {
         "claude-code": home / ".claude" / "mcp.json",
         "cursor": home / ".cursor" / "mcp.json",
-        "opencode": home / ".opencode" / "mcp.json",
+        "opencode": home / ".config" / "opencode" / "opencode.json",
     }
 
     # OpenClaw: uses mcporter for MCP — no native mcpServers key in
@@ -314,7 +365,12 @@ def register_mcp(
         if path is None:
             continue
         try:
-            action = _upsert_mcp_entry(path, name, command, args, env)
+            if env_name == "opencode":
+                # Opencode uses a different config shape (mcp key, command as
+                # a list, type/enabled fields) than the other clients.
+                action = _upsert_opencode_entry(path, name, command, args, env)
+            else:
+                action = _upsert_mcp_entry(path, name, command, args, env)
             results[env_name] = action
         except Exception as exc:
             logger.warning("register.py: %s", exc)

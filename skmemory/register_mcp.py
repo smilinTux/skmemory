@@ -3,6 +3,7 @@
 MCP Server Registration for SKMemory/SKCapstone
 
 Auto-registers MCP servers with OpenCode, Claude Code, and OpenClaw.
+Opencode servers land in ~/.config/opencode/opencode.json (the mcp key).
 Usage:
     python -m skmemory.register_mcp
     python -m skmemory.register_mcp --env opencode
@@ -34,41 +35,46 @@ def get_agent_name() -> str:
 
 
 def register_opencode(agent: str, dry_run: bool = False) -> bool:
-    """Register SKMemory with OpenCode."""
-    config_dir = Path.home() / ".opencode"
-    config_file = config_dir / "mcp.json"
+    """Register SKMemory with OpenCode.
+
+    Opencode reads MCP servers from the ``mcp`` key of its global config
+    (~/.config/opencode/opencode.json). Entries use the shape
+    {"type": "local", "command": [...], "enabled": true, "env": {...}}.
+    The legacy ~/.opencode/mcp.json file is NOT read by opencode.
+    """
+    config_file = Path.home() / ".config" / "opencode" / "opencode.json"
 
     if dry_run:
-        print(f"[DRY-RUN] Would create: {config_file}")
+        print(f"[DRY-RUN] Would update: {config_file}")
         return True
 
+    config_dir = config_file.parent
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build MCP config
-    config = {
-        "mcpServers": {
-            "skmemory": {
-                "command": "python",
-                "args": ["-m", "skmemory.mcp_server"],
-                "env": {
-                    "SKAGENT": agent,
-                    "SKMEMORY_AGENT": agent,
-                    "SKMEMORY_HOME": str(Path.home() / ".skcapstone" / "agents" / agent),
-                },
-            },
-            "skcapstone": {
-                "command": "python",
-                "args": ["-m", "skcapstone.mcp_server"],
-                "env": {"SKAGENT": agent, "SKCAPSTONE_AGENT": agent},
-            },
+    # Preserve any existing opencode config (provider, autoupdate, other mcp entries)
+    config = {}
+    if config_file.exists():
+        try:
+            config = json.loads(config_file.read_text())
+        except (OSError, json.JSONDecodeError):
+            config = {}
+
+    mcp = config.setdefault("mcp", {})
+    mcp["skmemory"] = {
+        "type": "local",
+        "command": ["python", "-m", "skmemory.mcp_server"],
+        "enabled": True,
+        "env": {
+            "SKAGENT": agent,
+            "SKMEMORY_AGENT": agent,
+            "SKMEMORY_HOME": str(Path.home() / ".skcapstone" / "agents" / agent),
         },
-        "skills": [
-            {
-                "name": "skmemory",
-                "path": str(Path.home() / "clawd" / "skcapstone-repos" / "skmemory" / "SKILL.md"),
-            },
-            {"name": "skcapstone", "path": str(Path.home() / "clawd" / "skcapstone" / "SKILL.md")},
-        ],
+    }
+    mcp["skcapstone"] = {
+        "type": "local",
+        "command": ["python", "-m", "skcapstone.mcp_server"],
+        "enabled": True,
+        "env": {"SKAGENT": agent, "SKCAPSTONE_AGENT": agent},
     }
 
     with open(config_file, "w") as f:
