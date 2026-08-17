@@ -113,3 +113,66 @@ class TestOpenCodeMCPRegistration:
         register_mcp("skcapstone", "skcapstone-mcp", [], environments=["opencode"])
         config = _read_config(fake_home)
         assert set(config["mcp"].keys()) == {"skmemory", "skcapstone"}
+
+
+class TestCodexMCPRegistration:
+    def test_writes_config_toml(self, fake_home: Path) -> None:
+        """Entries land in ~/.codex/config.toml as [mcp_servers.<name>] tables."""
+        result = register_mcp(
+            "skmemory",
+            "skmemory-mcp",
+            [],
+            env={"SKAGENT": "lumina"},
+            environments=["codex"],
+        )
+        assert result["codex"] == "created"
+
+        config_path = fake_home / ".codex" / "config.toml"
+        assert config_path.exists()
+        text = config_path.read_text()
+        assert "[mcp_servers.skmemory]" in text
+        assert 'command = "skmemory-mcp"' in text
+        assert 'env = { "SKAGENT" = "lumina" }' in text
+
+    def test_preserves_existing_sections(self, fake_home: Path) -> None:
+        """Other config.toml content survives the upsert."""
+        config_path = fake_home / ".codex" / "config.toml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            'model = "gpt-5"\n'
+            "\n"
+            "[model_providers.ollama]\n"
+            'name = "Ollama"\n'
+            'base_url = "http://localhost:11434/v1"\n'
+        )
+
+        register_mcp("skmemory", "skmemory-mcp", [], environments=["codex"])
+
+        text = config_path.read_text()
+        assert 'model = "gpt-5"' in text
+        assert "[model_providers.ollama]" in text
+        assert "[mcp_servers.skmemory]" in text
+
+    def test_replace_existing_entry(self, fake_home: Path) -> None:
+        config_path = fake_home / ".codex" / "config.toml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text('[mcp_servers.skmemory]\ncommand = "old-cmd"\n')
+        result = register_mcp("skmemory", "skmemory-mcp", [], environments=["codex"])
+        assert result["codex"] == "updated"
+        assert 'command = "skmemory-mcp"' in config_path.read_text()
+
+    def test_idempotent_when_unchanged(self, fake_home: Path) -> None:
+        register_mcp("skmemory", "skmemory-mcp", [], environments=["codex"])
+        result = register_mcp("skmemory", "skmemory-mcp", [], environments=["codex"])
+        assert result["codex"] == "exists"
+
+    def test_command_joins_args(self, fake_home: Path) -> None:
+        register_mcp(
+            "skgit",
+            "node",
+            ["/path/to/forgejo-mcp/build/index.js"],
+            env={"GITEA_HOST": "https://skgit.skstack01.douno.it"},
+            environments=["codex"],
+        )
+        text = (fake_home / ".codex" / "config.toml").read_text()
+        assert 'args = ["/path/to/forgejo-mcp/build/index.js"]' in text

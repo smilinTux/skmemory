@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -42,7 +43,7 @@ def detect_environments() -> list[str]:
       - cursor: ~/.cursor/ directory
       - vscode: ~/.vscode/ or ~/.config/Code/ directory
       - opencode: ~/.opencode/ or opencode binary
-      - codex: ~/.codex/ directory
+      - codex: ~/.codex/ directory or codex binary
       - mcporter: mcporter.json in known locations
 
     Returns:
@@ -77,7 +78,7 @@ def detect_environments() -> list[str]:
         envs.append("opencode")
 
     # Codex
-    if (home / ".codex").is_dir():
+    if (home / ".codex").is_dir() or shutil.which("codex"):
         envs.append("codex")
 
     # mcporter
@@ -305,6 +306,76 @@ def _upsert_opencode_entry(
     return "created"
 
 
+def _toml_str(value: str) -> str:
+    """Quote a string as a TOML basic string literal."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def _upsert_codex_entry(
+    path: Path,
+    name: str,
+    command: str,
+    args: list,
+    env: dict | None = None,
+) -> str:
+    """Add or update an MCP server entry in a Codex config.toml.
+
+    Codex reads MCP servers from ``[mcp_servers.<name>]`` tables in
+    ~/.codex/config.toml (or ``$CODEX_HOME``). An entry looks like:
+
+        [mcp_servers.skmemory]
+        command = "skmemory-mcp"
+
+    The config is TOML text, not JSON, so this upserts by replacing the
+    existing ``[mcp_servers.<name>]`` block (from its header up to the next
+    top-level section or EOF) or appending a fresh block at the end. Any
+    other keys and sections are preserved byte-for-byte.
+
+    Args:
+        path: Path to the Codex config.toml file.
+        name: Server name.
+        command: Command to run.
+        args: Command arguments.
+        env: Optional environment variables.
+
+    Returns:
+        "created", "updated", or "exists".
+    """
+    block_lines = [f"[mcp_servers.{name}]", f"command = {_toml_str(command)}"]
+    if args:
+        block_lines.append("args = [" + ", ".join(_toml_str(a) for a in args) + "]")
+    if env:
+        pairs = ", ".join(f"{_toml_str(k)} = {_toml_str(v)}" for k, v in env.items())
+        block_lines.append(f"env = {{ {pairs} }}")
+    block = "\n".join(block_lines)
+
+    header = re.compile(rf"^\[mcp_servers\.{re.escape(name)}\]\s*\n", re.MULTILINE)
+    existing = path.read_text() if path.exists() else ""
+
+    if header.search(existing):
+        # Capture everything from the header up to the next top-level section.
+        span = header.search(existing).start()
+        tail = existing[span:]
+        next_section = re.search(r"^\[", tail, re.MULTILINE)
+        if next_section and next_section.start() != 0:
+            next_start = span + next_section.start()
+            updated = existing[:span] + block + "\n" + existing[next_start:]
+        else:
+            updated = existing[:span] + block + "\n"
+        if updated == existing:
+            return "exists"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(updated)
+        return "updated"
+
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(existing + block + "\n")
+    return "created"
+
+
 def register_mcp(
     name: str,
     command: str,
@@ -319,7 +390,7 @@ def register_mcp(
       - cursor: ~/.cursor/mcp.json
       - vscode: (skipped — requires workspace .vscode/)
       - opencode: ~/.config/opencode/opencode.json (mcp key; NOT ~/.opencode/mcp.json)
-      - codex: not yet supported for MCP config writing here
+      - codex: ~/.codex/config.toml ([mcp_servers.<name>] table)
       - mcporter: ~/clawd/config/mcporter.json or ~/.config/mcporter/mcporter.json
 
     Args:
@@ -335,7 +406,7 @@ def register_mcp(
     if environments is None:
         environments = detect_environments()
 
-    supported_envs = {"claude-code", "cursor", "opencode", "mcporter"}
+    supported_envs = {"claude-code", "cursor", "opencode", "codex", "mcporter"}
     environments = [env for env in environments if env in supported_envs]
 
     home = Path.home()
@@ -345,6 +416,7 @@ def register_mcp(
         "claude-code": home / ".claude" / "mcp.json",
         "cursor": home / ".cursor" / "mcp.json",
         "opencode": home / ".config" / "opencode" / "opencode.json",
+        "codex": home / ".codex" / "config.toml",
     }
 
     # OpenClaw: uses mcporter for MCP — no native mcpServers key in
@@ -369,6 +441,9 @@ def register_mcp(
                 # Opencode uses a different config shape (mcp key, command as
                 # a list, type/enabled fields) than the other clients.
                 action = _upsert_opencode_entry(path, name, command, args, env)
+            elif env_name == "codex":
+                # Codex config is TOML with [mcp_servers.<name>] tables.
+                action = _upsert_codex_entry(path, name, command, args, env)
             else:
                 action = _upsert_mcp_entry(path, name, command, args, env)
             results[env_name] = action
@@ -658,7 +733,9 @@ def register_package(
 
     if dry_run:
         mcp_envs = [
-            env for env in environments if env in {"claude-code", "cursor", "opencode", "mcporter"}
+            env
+            for env in environments
+            if env in {"claude-code", "cursor", "opencode", "codex", "mcporter"}
         ]
         result["skill"] = {
             "action": "dry-run",

@@ -2,13 +2,15 @@
 """
 MCP Server Registration for SKMemory/SKCapstone
 
-Auto-registers MCP servers with OpenCode, Claude Code, and OpenClaw.
-Opencode servers land in ~/.config/opencode/opencode.json (the mcp key).
+Auto-registers MCP servers with OpenCode, Claude Code, OpenClaw, and Codex.
+Opencode servers land in ~/.config/opencode/opencode.json (the mcp key);
+Codex servers land in ~/.codex/config.toml as [mcp_servers.<name>] tables.
 Usage:
     python -m skmemory.register_mcp
     python -m skmemory.register_mcp --env opencode
     python -m skmemory.register_mcp --env claude
     python -m skmemory.register_mcp --env openclaw
+    python -m skmemory.register_mcp --env codex
     python -m skmemory.register_mcp --agent teddy
 """
 
@@ -17,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -153,11 +156,76 @@ def register_openclaw(agent: str, dry_run: bool = False) -> bool:
     return True
 
 
+def _toml_upsert(config_text: str, table: str, body: list[str]) -> str:
+    """Insert or replace a ``[mcp_servers.<name>]`` TOML table in config_text.
+
+    Replaces the existing block in place and preserves every other byte of the
+    file (other sections, comments, ordering).
+    """
+    if not config_text.endswith("\n"):
+        config_text += "\n"
+    pattern = re.compile(
+        rf"(?ms)^\[{re.escape(table)}\]$.*?(?=^\[|\Z)",
+    )
+    new_block = f"[{table}]\n" + "\n".join(body) + "\n"
+    if pattern.search(config_text):
+        return pattern.sub(lambda _m: new_block, config_text, count=1)
+    return config_text + new_block
+
+
+def register_codex(agent: str, dry_run: bool = False) -> bool:
+    """Register SKMemory with Codex.
+
+    Codex reads MCP servers from ``~/.codex/config.toml`` as
+    ``[mcp_servers.<name>]`` tables. Existing config content is preserved.
+    """
+    config_file = Path.home() / ".codex" / "config.toml"
+
+    if dry_run:
+        print(f"[DRY-RUN] Would update: {config_file}")
+        return True
+
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+
+    config_text = config_file.read_text() if config_file.exists() else ""
+
+    def _body(cmd: str, env: dict) -> list[str]:
+        lines = [f'command = "{cmd}"']
+        if env:
+            pairs = ", ".join(f'"{k}" = "{v}"' for k, v in env.items())
+            lines.append(f"env = {{ {pairs} }}")
+        return lines
+
+    skmemory_env = {
+        "SKAGENT": agent,
+        "SKMEMORY_AGENT": agent,
+        "SKMEMORY_HOME": str(Path.home() / ".skcapstone" / "agents" / agent),
+    }
+    config_text = _toml_upsert(
+        config_text,
+        "mcp_servers.skmemory",
+        _body("python -m skmemory.mcp_server", skmemory_env),
+    )
+    config_text = _toml_upsert(
+        config_text,
+        "mcp_servers.skcapstone",
+        _body(
+            "python -m skcapstone.mcp_server",
+            {"SKAGENT": agent, "SKCAPSTONE_AGENT": agent},
+        ),
+    )
+
+    config_file.write_text(config_text)
+
+    print(f"✓ Registered with Codex: {config_file}")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Register SKMemory MCP servers with AI clients")
     parser.add_argument(
         "--env",
-        choices=["opencode", "claude", "openclaw", "all"],
+        choices=["opencode", "claude", "openclaw", "codex", "all"],
         default="all",
         help="Target environment (default: all)",
     )
@@ -185,6 +253,9 @@ def main():
 
     if args.env in ("openclaw", "all"):
         results.append(("OpenClaw", register_openclaw(agent, args.dry_run)))
+
+    if args.env in ("codex", "all"):
+        results.append(("Codex", register_codex(agent, args.dry_run)))
 
     print()
     print("=" * 50)
