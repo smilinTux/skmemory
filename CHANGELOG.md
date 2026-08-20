@@ -6,6 +6,24 @@
 
 ## [Unreleased]
 
+## [0.11.17] - 2026-08-20
+
+### Added
+
+- Added Pi coding-agent detection and MCP registration through
+  `~/.pi/agent/mcp.json`, using eager stdio lifecycle and absolute server commands
+  resolved from `~/.skenv/bin`.
+
+### Fixed
+
+- Codex and Pi MCP registration now resolve `skmemory-mcp` from the shared SK virtual
+  environment instead of depending on a harness's inherited `PATH`.
+
+### Verification
+
+- `pytest tests/test_register_opencode.py -q` (14 passed).
+- `ruff check skmemory/register.py tests/test_register_opencode.py`.
+
 ### Fixed
 
 - **SOP correction: the pg connection never came from `~/.config/skmemory/pg.env`.**

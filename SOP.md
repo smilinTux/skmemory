@@ -262,8 +262,18 @@ reconciler, not a server.
 
 ## 6. Configuration / Usage
 
-- Agent resolution: `SKAGENT` (preferred) → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT`.
+- Agent resolution: `SKAGENT` (preferred) → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT` →
+  an explicitly configured `SK_DEFAULT_AGENT` → the sole installed agent. Multiple
+  installed agents with no explicit selection are ambiguous and must fail rather than
+  choosing a named identity.
 - Vector backend defaults: ChromaDB local; pgvector when `skmem-pg` is reachable.
+
+**Coding-agent MCP registration.** The shared registrar detects Codex and Pi and writes
+absolute `~/.skenv/bin/skmemory-mcp` commands so stdio startup does not depend on the
+client's inherited `PATH`. Pi reads the eager server entry from
+`~/.pi/agent/mcp.json` through `pi-mcp-extension`. SKWhisper is intentionally not a
+second default MCP: it produces context in the background, which SKMemory and the SK
+context ritual consume.
 
 **Where state lives.**
 
@@ -379,7 +389,7 @@ Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage.
 ---
 
 <!-- docs-evidence
-verified: 2026-08-15
+verified: 2026-08-20
 checks:
   - name: three console-script entry points unchanged (skmemory, skmemory-mcp, skmemory-post-install)
     run: grep -qxF 'skmemory = "skmemory.cli:main"' pyproject.toml && grep -qxF 'skmemory-mcp = "skmemory.mcp_server:main"' pyproject.toml && grep -qxF 'skmemory-post-install = "skmemory.post_install:main"' pyproject.toml
@@ -397,4 +407,6 @@ checks:
     run: grep -qE '^def health\(ctx' skmemory/cli.py
   - name: mxbai-embed-large at 1024 dims is still the documented embed default
     run: grep -qxF 'DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")' skmemory/backends/pgvector_backend.py && grep -qxF 'VECTOR_DIM = 1024' skmemory/backends/pgvector_backend.py
+  - name: Codex and Pi MCP registration resolve commands from the shared skenv
+    run: grep -qF 'envs.append("pi")' skmemory/register.py && grep -qF 'return str(candidate) if candidate.is_file() else command' skmemory/register.py && grep -qF '"pi": home / ".pi" / "agent" / "mcp.json"' skmemory/register.py
 -->
