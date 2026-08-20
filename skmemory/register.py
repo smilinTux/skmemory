@@ -376,6 +376,19 @@ def _upsert_codex_entry(
     return "created"
 
 
+def _codex_command(command: str) -> str:
+    """Return a Codex-safe executable path for an SK virtualenv command.
+
+    Codex may launch MCP servers without an interactive shell, so its PATH
+    need not contain ``~/.skenv/bin``. Preserve explicit paths and resolve a
+    bare installed command through the standard SK suite virtualenv.
+    """
+    if Path(command).name != command:
+        return command
+    candidate = Path.home() / ".skenv" / "bin" / command
+    return str(candidate) if candidate.is_file() else command
+
+
 def register_mcp(
     name: str,
     command: str,
@@ -443,7 +456,7 @@ def register_mcp(
                 action = _upsert_opencode_entry(path, name, command, args, env)
             elif env_name == "codex":
                 # Codex config is TOML with [mcp_servers.<name>] tables.
-                action = _upsert_codex_entry(path, name, command, args, env)
+                action = _upsert_codex_entry(path, name, _codex_command(command), args, env)
             else:
                 action = _upsert_mcp_entry(path, name, command, args, env)
             results[env_name] = action

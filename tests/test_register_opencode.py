@@ -116,6 +116,17 @@ class TestOpenCodeMCPRegistration:
 
 
 class TestCodexMCPRegistration:
+    def test_uses_standard_skenv_command_when_installed(self, fake_home: Path) -> None:
+        """Codex config does not depend on an interactive-shell PATH."""
+        command = fake_home / ".skenv" / "bin" / "skmemory-mcp"
+        command.parent.mkdir(parents=True)
+        command.touch()
+
+        register_mcp("skmemory", "skmemory-mcp", [], environments=["codex"])
+
+        text = (fake_home / ".codex" / "config.toml").read_text()
+        assert f'command = "{command}"' in text
+
     def test_writes_config_toml(self, fake_home: Path) -> None:
         """Entries land in ~/.codex/config.toml as [mcp_servers.<name>] tables."""
         result = register_mcp(
