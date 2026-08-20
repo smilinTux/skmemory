@@ -187,3 +187,28 @@ class TestCodexMCPRegistration:
         )
         text = (fake_home / ".codex" / "config.toml").read_text()
         assert 'args = ["/path/to/forgejo-mcp/build/index.js"]' in text
+
+
+class TestPiMCPRegistration:
+    def test_writes_eager_stdio_server_with_skenv_command(self, fake_home: Path) -> None:
+        command = fake_home / ".skenv" / "bin" / "skmemory-mcp"
+        command.parent.mkdir(parents=True)
+        command.touch()
+
+        result = register_mcp(
+            "skmemory",
+            "skmemory-mcp",
+            [],
+            env={"SKAGENT": "lumina"},
+            environments=["pi"],
+        )
+
+        assert result["pi"] == "created"
+        config = json.loads((fake_home / ".pi" / "agent" / "mcp.json").read_text())
+        assert config["mcpServers"]["skmemory"] == {
+            "command": str(command),
+            "args": [],
+            "transport": "stdio",
+            "lifecycle": "eager",
+            "env": {"SKAGENT": "lumina"},
+        }

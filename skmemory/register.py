@@ -81,6 +81,10 @@ def detect_environments() -> list[str]:
     if (home / ".codex").is_dir() or shutil.which("codex"):
         envs.append("codex")
 
+    # Pi coding agent
+    if (home / ".pi" / "agent").is_dir() or shutil.which("pi"):
+        envs.append("pi")
+
     # mcporter
     mcporter_paths = [
         home / "clawd" / "config" / "mcporter.json",
@@ -306,6 +310,32 @@ def _upsert_opencode_entry(
     return "created"
 
 
+def _upsert_pi_entry(
+    path: Path,
+    name: str,
+    command: str,
+    args: list,
+    env: dict | None = None,
+) -> str:
+    """Add or update an eager stdio server in Pi's MCP extension config."""
+    data = _read_json(path)
+    servers = data.setdefault("mcpServers", {})
+    entry: dict = {
+        "command": _codex_command(command),
+        "args": args,
+        "transport": "stdio",
+        "lifecycle": "eager",
+    }
+    if env:
+        entry["env"] = env
+    if servers.get(name) == entry:
+        return "exists"
+    action = "updated" if name in servers else "created"
+    servers[name] = entry
+    _write_json(path, data)
+    return action
+
+
 def _toml_str(value: str) -> str:
     """Quote a string as a TOML basic string literal."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
@@ -419,7 +449,7 @@ def register_mcp(
     if environments is None:
         environments = detect_environments()
 
-    supported_envs = {"claude-code", "cursor", "opencode", "codex", "mcporter"}
+    supported_envs = {"claude-code", "cursor", "opencode", "codex", "pi", "mcporter"}
     environments = [env for env in environments if env in supported_envs]
 
     home = Path.home()
@@ -430,6 +460,7 @@ def register_mcp(
         "cursor": home / ".cursor" / "mcp.json",
         "opencode": home / ".config" / "opencode" / "opencode.json",
         "codex": home / ".codex" / "config.toml",
+        "pi": home / ".pi" / "agent" / "mcp.json",
     }
 
     # OpenClaw: uses mcporter for MCP — no native mcpServers key in
@@ -457,6 +488,8 @@ def register_mcp(
             elif env_name == "codex":
                 # Codex config is TOML with [mcp_servers.<name>] tables.
                 action = _upsert_codex_entry(path, name, _codex_command(command), args, env)
+            elif env_name == "pi":
+                action = _upsert_pi_entry(path, name, command, args, env)
             else:
                 action = _upsert_mcp_entry(path, name, command, args, env)
             results[env_name] = action
@@ -748,7 +781,7 @@ def register_package(
         mcp_envs = [
             env
             for env in environments
-            if env in {"claude-code", "cursor", "opencode", "codex", "mcporter"}
+            if env in {"claude-code", "cursor", "opencode", "codex", "pi", "mcporter"}
         ]
         result["skill"] = {
             "action": "dry-run",
