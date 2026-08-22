@@ -88,6 +88,18 @@ class TestMemory:
         with pytest.raises(ValidationError):
             Memory(title="   ", content="Something")
 
+    def test_empty_or_null_id_rejected(self) -> None:
+        """Explicit IDs must never resolve to a bare ``.json`` filename."""
+        for value in ("", "   ", None):
+            with pytest.raises(ValidationError):
+                Memory(id=value, title="Valid title", content="Something")
+
+    def test_promotion_rejects_bypassed_empty_source_id(self) -> None:
+        """The promotion boundary remains closed even if model validation was bypassed."""
+        malformed = Memory.model_construct(id="", title="Legacy", content="payload")
+        with pytest.raises(ValueError, match="cannot be empty"):
+            malformed.promote(MemoryLayer.MID)
+
     def test_content_hash_deterministic(self) -> None:
         """Same content produces same hash."""
         m1 = Memory(title="A", content="Hello world")

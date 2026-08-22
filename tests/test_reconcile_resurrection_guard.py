@@ -137,6 +137,29 @@ def _write_flat(mem_dir, layer, mem_id):
     return mem_id
 
 
+def test_reconcile_quarantines_empty_id_before_any_pg_write(monkeypatch, tmp_path):
+    fake = _FakePsql(pg_ids=[])
+    monkeypatch.setattr(reconcile_mod.subprocess, "run", fake.run)
+    mem = tmp_path / "memory"
+    tier = mem / "mid-term"
+    tier.mkdir(parents=True)
+    invalid = tier / ".json"
+    invalid.write_text(json.dumps({"memory_id": "", "content": "private payload"}))
+
+    stats = reconcile_mod.reconcile(
+        "__empty_id_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+    )
+
+    assert stats["flat"] == 0
+    assert stats["missing"] == 0
+    assert fake.insert_issued is False
+    assert not invalid.exists()
+    report_path = mem / "quarantine" / "invalid-memory-id" / "report.json"
+    report = json.loads(report_path.read_text())
+    assert report["entries"][0]["source"] == "mid-term/.json"
+    assert "private payload" not in report_path.read_text()
+
+
 def test_reconcile_does_not_resurrect_tombstoned_memory(monkeypatch, tmp_path):
     """The core guard: a forgotten memory whose stale flat copy reappears while
     pg no longer has it must NOT be backfilled."""

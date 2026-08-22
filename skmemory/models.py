@@ -15,6 +15,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from .invalid_records import require_memory_id
+
 
 class MemoryLayer(str, Enum):
     """Which persistence tier this memory belongs to.
@@ -170,6 +172,12 @@ class Memory(BaseModel):
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("id")
+    @classmethod
+    def id_must_not_be_empty(cls, v: str) -> str:
+        """Reject identifiers that would resolve to the unsafe ``.json`` path."""
+        return require_memory_id(v)
+
     @field_validator("title")
     @classmethod
     def title_must_not_be_empty(cls, v: str) -> str:
@@ -243,6 +251,7 @@ class Memory(BaseModel):
         Returns:
             Memory: A new Memory instance at the target layer.
         """
+        require_memory_id(self.id)
         data = self.model_dump()
         data["id"] = str(uuid.uuid4())
         data["layer"] = target

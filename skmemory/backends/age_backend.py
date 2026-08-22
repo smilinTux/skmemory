@@ -53,6 +53,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from ..invalid_records import payload_memory_id, quarantine_invalid_flat_file, require_memory_id
 from ..models import Memory
 
 logger = logging.getLogger(__name__)
@@ -413,6 +414,11 @@ class AGEGraphBackend:
             bool: True if the core Memory node was indexed successfully.
                 False on any connection/AGE failure (never raises).
         """
+        try:
+            require_memory_id(memory.id)
+        except ValueError as exc:
+            logger.warning("AGEGraphBackend: refusing invalid memory ID: %s", exc)
+            return False
         if self.graph is None:
             return False
 
@@ -1086,6 +1092,13 @@ class AGEGraphBackend:
             if not tier_dir.exists():
                 continue
             for json_file in tier_dir.glob("*.json"):
+                if not json_file.stem:
+                    quarantine_invalid_flat_file(
+                        base,
+                        json_file,
+                        reason="empty filename memory ID",
+                    )
+                    continue
                 snapshot[json_file.name] = json_file
 
         for name, original_path in snapshot.items():
@@ -1102,6 +1115,20 @@ class AGEGraphBackend:
                 continue
             try:
                 data = json.loads(payload)
+                try:
+                    payload_memory_id(data, Path(name).stem)
+                except ValueError as exc:
+                    current = next(
+                        (
+                            candidate
+                            for candidate in dict.fromkeys(candidates)
+                            if candidate.exists()
+                        ),
+                        None,
+                    )
+                    if current is not None:
+                        quarantine_invalid_flat_file(base, current, reason=str(exc))
+                    continue
                 memory = Memory.model_validate(data)
                 if self.index_memory(memory):
                     stats["indexed"] += 1

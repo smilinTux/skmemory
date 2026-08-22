@@ -314,6 +314,18 @@ moves a record between tiers during projection, the projector resolves the
 current tier and indexes it once. A record deleted after enumeration is no
 longer canonical source truth and is skipped without a false graph error.
 
+**Invalid memory IDs.** A memory ID must be a non-empty string. Model creation,
+promotion, primary storage, pgvector, AGE, and Falkor all reject empty or null
+IDs before issuing a write. Reconcile and AGE projection quarantine an existing
+active-tier `.json` file, or a payload carrying an explicit empty ID, under
+`memory/quarantine/invalid-memory-id/<sha256>.json`. The adjacent `report.json`
+is deterministic and records only the payload hash, original relative path,
+reason, and quarantine path; it never copies memory content into the report.
+Quarantine is recoverable evidence, not canonical memory. Inspect the hash and
+source path, repair through a normal validated import if the payload is worth
+retaining, and never rename the quarantined payload directly into an active
+tier.
+
 - **Secret handling:** never inline a live secret. The vaulted backend seals memory
   at rest to the agent's GPG key (`vault.py`); the passphrase is supplied via
   gpg-agent, never stored in the repo or config. See [SECURITY.md](./SECURITY.md).
