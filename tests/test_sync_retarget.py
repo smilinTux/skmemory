@@ -142,14 +142,20 @@ class TestSyncRetarget:
         assert result.exit_code == 0, result.output
         assert result.output.strip() == ""
 
-    def test_reconcile_failure_is_non_fatal(self, runner, agent_paths, fake_store):
-        """A pgvector reconcile error must not crash the timer run."""
+    def test_reconcile_failure_exits_nonzero(self, runner, agent_paths, fake_store):
+        """A pgvector reconcile failure fails the timer run closed (card 9157c2c5).
+
+        The pre-card behavior swallowed the error and exited 0, which let a
+        dead pg transport look like a clean sync. The failure is still
+        reported, but the command now exits nonzero so timers and operators
+        see it.
+        """
         with (
             patch("skmemory.reconcile.reconcile", side_effect=RuntimeError("embed failed")),
             patch("skmemory.config.load_config", return_value=None),
         ):
             result = runner.invoke(cli, ["sync", "--vector"], obj={"store": fake_store})
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         assert "pgvector reconcile failed" in result.output
 
 

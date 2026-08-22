@@ -61,6 +61,7 @@ import glob
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -81,6 +82,88 @@ def default_psql_cmd() -> list[str]:
     if os.environ.get("SKMEMORY_PG_DSN", "").strip():
         return [sys.executable, "-m", "skmemory.dsn_psql"]
     return list(DEFAULT_PSQL)
+
+
+class ReconcileTransportError(RuntimeError):
+    """The psql transport to skmem-pg is unavailable; reconcile fails closed.
+
+    Raised when the transport itself cannot carry SQL (docker socket
+    permission denied, missing docker/psql binary, unreachable DSN), as
+    opposed to a query the server rejected. The distinction matters because
+    a transport failure must never be misread as an empty result set.
+    """
+
+
+#: stderr fragments that mark a transport-level failure rather than a SQL
+#: error from a healthy server.
+_TRANSPORT_MARKERS = (
+    "permission denied",
+    "cannot connect to the docker daemon",
+    "no such container",
+    "connection refused",
+    "connection failed",
+    "could not connect",
+    "transport failed",
+    "no such file or directory",
+)
+
+
+def _transport_label(psql_cmd: list[str]) -> str:
+    """Human name for a psql transport; never carries credentials or a DSN."""
+    if "skmemory.dsn_psql" in psql_cmd:
+        return "dsn (SKMEMORY_PG_DSN via skmemory.dsn_psql)"
+    if "docker" in psql_cmd and "skmem-pg" in psql_cmd:
+        return "docker exec skmem-pg"
+    return os.path.basename(psql_cmd[0]) if psql_cmd else "unknown"
+
+
+def _scrub_stderr(text: str) -> str:
+    """Redact credential-shaped fragments from transport stderr."""
+    text = re.sub(r"(?i)password=\S+", "password=***", text)
+    return re.sub(r"://[^:/\s]+:[^@\s]+@", "://***:***@", text)
+
+
+def _stderr_tail(stderr: str) -> str:
+    """The scrubbed last stderr line, for compact failure messages."""
+    lines = _scrub_stderr(stderr.strip()).splitlines()
+    return lines[-1] if lines else ""
+
+
+def _is_transport_failure(stderr: str) -> bool:
+    """Whether stderr reads as a dead transport rather than a rejected query."""
+    low = stderr.lower()
+    return any(marker in low for marker in _TRANSPORT_MARKERS)
+
+
+def probe_transport(psql_cmd: list[str]) -> None:
+    """Fail closed unless the chosen psql transport answers a trivial query.
+
+    Runs ``select 1;`` through the transport before reconcile issues any
+    counting query or mutation. A docker-socket permission denial, a missing
+    binary, or an unreachable DSN raises here, naming the transport, instead
+    of surfacing downstream as a phantom empty result.
+
+    Args:
+        psql_cmd: The psql command vector (docker exec form or DSN shim).
+
+    Raises:
+        ReconcileTransportError: The transport cannot carry SQL.
+    """
+    label = _transport_label(psql_cmd)
+    try:
+        result = subprocess.run(
+            list(psql_cmd) + ["-tA", "-c", "select 1;"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise ReconcileTransportError(
+            f"skmem-pg transport unavailable ({label}): {_scrub_stderr(str(exc))}"
+        ) from exc
+    if result.returncode != 0:
+        raise ReconcileTransportError(
+            f"skmem-pg transport unavailable ({label}): {_stderr_tail(result.stderr or '')}"
+        )
 
 
 # --- prune guardrail defaults (cold-boot / empty-source safety) --------------
@@ -241,12 +324,20 @@ def reconcile(
         else force_prune
     )
 
+    label = _transport_label(PSQL)
+
     def run_psql(args, *, input_text=None):
-        result = subprocess.run(args, input=input_text, capture_output=True, text=True)
+        try:
+            result = subprocess.run(args, input=input_text, capture_output=True, text=True)
+        except OSError as exc:
+            raise ReconcileTransportError(
+                f"skmem-pg transport unavailable ({label}): {_scrub_stderr(str(exc))}"
+            ) from exc
         if result.returncode != 0:
-            detail = (result.stderr or "").strip().splitlines()
-            suffix = f": {detail[-1]}" if detail else ""
-            raise RuntimeError(f"skmem-pg SQL command failed{suffix}")
+            tail = _stderr_tail(result.stderr or "")
+            if _is_transport_failure(result.stderr or ""):
+                raise ReconcileTransportError(f"skmem-pg transport unavailable ({label}): {tail}")
+            raise RuntimeError(f"skmem-pg query failed ({label}): {tail}")
         return result
 
     def psql(sql, want=False):
@@ -320,6 +411,13 @@ def reconcile(
             f"{len(resurrection_blocked)} tombstoned memory(ies) with a stale flat "
             "copy present (forgotten memories stay gone)"
         )
+
+    # Transport probe (card 9157c2c5): a cheap select 1 through the chosen
+    # transport BEFORE the first counting query and long before any mutation.
+    # A dead transport (docker socket permission denied, missing binary, DSN
+    # unreachable) raises ReconcileTransportError here, so a failed query can
+    # never be misread as "0 rows" and start an unnecessary full backfill.
+    probe_transport(PSQL)
 
     pg_ids = set(psql(f"select id from memories where agent='{agent}';", True).split())
     missing = [i for i in flat if i not in pg_ids]
