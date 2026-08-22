@@ -35,6 +35,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from ..query_sanitizer import sanitize_query
 from .base import BaseBackend
@@ -411,6 +412,7 @@ class PGVectorBackend(BaseBackend):
 
     # --- BaseBackend ---------------------------------------------------------
     def save(self, memory: Memory) -> str:
+        require_memory_id(memory.id)
         # required=True: never store a NULL/empty/zero embedding (would poison
         # recall). If every endpoint is down this raises EmbeddingUnavailable.
         emb = self._embed(self._searchable(memory), required=True)

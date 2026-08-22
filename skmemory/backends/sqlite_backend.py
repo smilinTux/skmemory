@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..config import SKMEMORY_HOME
+from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
 
@@ -317,7 +318,8 @@ class SQLiteBackend(BaseBackend):
         Returns:
             Path: Full path to the JSON file.
         """
-        return self.base_path / memory.layer.value / f"{memory.id}.json"
+        memory_id = require_memory_id(memory.id)
+        return self.base_path / memory.layer.value / f"{memory_id}.json"
 
     def _find_file(self, memory_id: str) -> Path | None:
         """Locate a memory file using the index first, then fallback.

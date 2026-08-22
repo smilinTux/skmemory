@@ -8,6 +8,10 @@
 
 ### Fixed
 
+- Empty or null memory IDs now fail closed at model, promotion, flat, SQLite,
+  pgvector, AGE, and Falkor write boundaries. Reconcile and AGE projection move
+  existing invalid records into a content-addressed quarantine with a
+  deterministic, content-free evidence report instead of propagating `.json`.
 - AGE graph backfill now treats a flat file removed during Syncthing or
   promotion as superseded source state and retries tier moves by file name,
   preventing false reconciliation errors during live fleet writes.

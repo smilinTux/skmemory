@@ -46,6 +46,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 
 from .. import graph_queries as Q
+from ..invalid_records import require_memory_id
 from ..models import Memory
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,11 @@ class SKGraphBackend:
         Returns:
             bool: True if indexed successfully, False on failure.
         """
+        try:
+            require_memory_id(memory.id)
+        except ValueError as exc:
+            logger.warning("SKGraphBackend: refusing invalid memory ID: %s", exc)
+            return False
         if not self._ensure_initialized():
             return False
 

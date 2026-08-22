@@ -66,6 +66,7 @@ import sys
 
 import requests
 
+from skmemory.invalid_records import payload_memory_id, quarantine_invalid_flat_file
 from skmemory.tombstones import load_tombstones
 
 LAYERS = ["short-term", "mid-term", "long-term"]
@@ -281,8 +282,23 @@ def reconcile(
     # flat truth (stem is the canonical key)
     flat = {}
     for layer in LAYERS:
-        for fp in glob.glob(f"{mem}/{layer}/*.json"):
+        candidates = glob.glob(f"{mem}/{layer}/*.json")
+        dot_json = os.path.join(mem, layer, ".json")
+        if os.path.isfile(dot_json):
+            candidates.append(dot_json)
+        for fp in candidates:
             stem = os.path.splitext(os.path.basename(fp))[0]
+            try:
+                with open(fp, encoding="utf-8") as handle:
+                    payload = json.load(handle)
+                payload_memory_id(payload, stem)
+            except ValueError as exc:
+                quarantine_invalid_flat_file(mem, fp, reason=str(exc))
+                continue
+            except (OSError, json.JSONDecodeError):
+                # Existing malformed-file behavior is unchanged; the backfill
+                # loader skips unreadable payloads without inventing an ID.
+                pass
             if stem:
                 flat[stem] = fp
 
