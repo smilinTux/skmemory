@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Reconcile now uses the configured node-local `SKMEMORY_PG_DSN` through a
+  psycopg transport, without exposing the DSN in argv or requiring Docker socket
+  access. SQL failures now stop the run instead of appearing as an empty cache.
+
 ## [0.11.17] - 2026-08-20
 
 ### Added

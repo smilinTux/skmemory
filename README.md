@@ -117,6 +117,10 @@ skmemory pg roles --dry-run    # preview with the password redacted; touch nothi
 | `EMBED_URL` | Embedding backend endpoint | `http://<gpu-node>:11434/api/embed` (default `http://192.168.0.100:11434/api/embed`) |
 | `EMBED_MODEL` | Embedding model | `mxbai-embed-large` (**1024-dim**) |
 
+Install `skmemory[pg]` on a node that uses skmem-pg. The reconcile engine reads
+`SKMEMORY_PG_DSN` from the environment and connects through psycopg. It does not
+require Docker socket access and never places the DSN in process arguments or logs.
+
 **Embeddings:** `mxbai-embed-large` at 1024 dimensions everywhere (Ollama `:11434`,
 `ctx=512`), with a `mixedbread-ai/mxbai-embed-large-v1` network fallback. Every `vector(…)`
 column in `schema.sql` and the `ops` namespace is `vector(1024)`; the dimension must match

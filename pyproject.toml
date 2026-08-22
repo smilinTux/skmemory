@@ -47,6 +47,9 @@ skvector = [
 skgraph = [
     "falkordb>=1.0.0",
 ]
+pg = [
+    "psycopg[binary]>=3.1,<4.0",
+]
 telegram = [
     "telethon>=1.36",
 ]
@@ -68,6 +71,7 @@ all = [
     "qdrant-client>=1.7.0",
     "sentence-transformers>=2.2.0",
     "falkordb>=1.0.0",
+    "psycopg[binary]>=3.1,<4.0",
     "telethon>=1.36",
     "skcapstone>=0.6.8",
 ]
