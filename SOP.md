@@ -309,6 +309,11 @@ does not put the DSN in argv or logs, and requires no Docker socket access. SQL
 transport failures are fatal; reconcile must never reinterpret a connection
 failure as an empty Postgres cache.
 
+AGE projection snapshots flat records by file name. If Syncthing or promotion
+moves a record between tiers during projection, the projector resolves the
+current tier and indexes it once. A record deleted after enumeration is no
+longer canonical source truth and is skipped without a false graph error.
+
 - **Secret handling:** never inline a live secret. The vaulted backend seals memory
   at rest to the agent's GPG key (`vault.py`); the passphrase is supplied via
   gpg-agent, never stored in the repo or config. See [SECURITY.md](./SECURITY.md).
