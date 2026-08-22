@@ -1074,23 +1074,42 @@ class AGEGraphBackend:
             return stats
 
         base = Path(flat_files_dir)
-        for tier in ("short-term", "mid-term", "long-term"):
+        # Snapshot by file name before indexing. Syncthing and promotion can
+        # move or remove a flat file between directory enumeration and read.
+        # A vanished file is no longer source truth, so it is not a projection
+        # error. If it moved between tiers, resolve its current path and index
+        # the current record once.
+        tiers = ("short-term", "mid-term", "long-term")
+        snapshot: dict[str, Path] = {}
+        for tier in tiers:
             tier_dir = base / tier
             if not tier_dir.exists():
                 continue
             for json_file in tier_dir.glob("*.json"):
+                snapshot[json_file.name] = json_file
+
+        for name, original_path in snapshot.items():
+            candidates = [original_path]
+            candidates.extend(base / tier / name for tier in tiers)
+            payload = None
+            for candidate in dict.fromkeys(candidates):
                 try:
-                    data = json.loads(json_file.read_text(encoding="utf-8"))
-                    memory = Memory.model_validate(data)
-                    if self.index_memory(memory):
-                        stats["indexed"] += 1
-                    else:
-                        stats["errors"] += 1
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "AGEGraphBackend sync_all: failed on %s: %s", json_file.name, exc
-                    )
+                    payload = candidate.read_text(encoding="utf-8")
+                    break
+                except FileNotFoundError:
+                    continue
+            if payload is None:
+                continue
+            try:
+                data = json.loads(payload)
+                memory = Memory.model_validate(data)
+                if self.index_memory(memory):
+                    stats["indexed"] += 1
+                else:
                     stats["errors"] += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("AGEGraphBackend sync_all: failed on %s: %s", name, exc)
+                stats["errors"] += 1
 
         logger.info(
             "AGEGraphBackend sync_all for '%s': indexed=%d errors=%d",

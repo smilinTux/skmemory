@@ -22,6 +22,7 @@ import random
 import string
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -67,12 +68,16 @@ class TestLocalWritableDSN:
     """
 
     def test_default_dsn_is_localhost(self):
+        from urllib.parse import urlparse
+
         from skmemory.backends import age_backend
 
-        assert "localhost:5432" in age_backend.DEFAULT_DSN
+        parsed = urlparse(age_backend.DEFAULT_DSN)
+        assert parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        assert parsed.port == 5432
         # The default must never carry a remote host or the retired standby port.
-        assert "192.168." not in age_backend.DEFAULT_DSN
-        assert ":5433" not in age_backend.DEFAULT_DSN
+        assert not (parsed.hostname or "").startswith("192.168.")
+        assert parsed.port != 5433
 
     def test_resolved_dsn_is_local_not_standby(self):
         from urllib.parse import urlparse
@@ -1005,6 +1010,27 @@ class TestSyncAll:
     def test_sync_all_missing_dir_is_safe(self, backend, tmp_path):
         result = backend.sync_all(tmp_path / "does-not-exist", "test-agent")
         assert result == {"indexed": 0, "errors": 0}
+
+
+def test_sync_all_ignores_file_removed_after_enumeration(monkeypatch, tmp_path):
+    short_dir = tmp_path / "short-term"
+    short_dir.mkdir()
+    memory_path = short_dir / "removed-during-sync.json"
+    memory_path.write_text("{}")
+    real_glob = Path.glob
+
+    def disappearing_glob(path, pattern):
+        entries = list(real_glob(path, pattern))
+        for entry in entries:
+            entry.unlink()
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "glob", disappearing_glob)
+    backend = object.__new__(AGEGraphBackend)
+    backend.graph = "test_graph"
+    backend.index_memory = lambda memory: True
+
+    assert backend.sync_all(tmp_path, "test-agent") == {"indexed": 0, "errors": 0}
 
 
 # ═══════════════════════════════════════════════════════════

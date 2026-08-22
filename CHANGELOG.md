@@ -8,6 +8,11 @@
 
 ### Fixed
 
+- AGE graph backfill now treats a flat file removed during Syncthing or
+  promotion as superseded source state and retries tier moves by file name,
+  preventing false reconciliation errors during live fleet writes.
+- The local-DSN invariant now accepts both loopback spellings and compares only
+  parsed host/port fields, so failures cannot render a credential-bearing DSN.
 - Reconcile now uses the configured node-local `SKMEMORY_PG_DSN` through a
   psycopg transport, without exposing the DSN in argv or requiring Docker socket
   access. SQL failures now stop the run instead of appearing as an empty cache.
