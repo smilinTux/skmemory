@@ -938,6 +938,98 @@ def graph_related_claims(
     _emit_graph_results(results)
 
 
+@graph.command("reconcile")
+@click.option(
+    "--apply",
+    "do_apply",
+    is_flag=True,
+    help="Actually prune (default: dry-run parity report, no deletes).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Force the prune past the guardrail (or SKMEMORY_GRAPH_RECONCILE_FORCE=1).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+@click.pass_context
+def graph_reconcile(ctx: click.Context, do_apply: bool, force: bool, as_json: bool) -> None:
+    """Flat/graph parity report and guarded stale-node prune for the AGE graph.
+
+    Compares Memory node ids in the agent's AGE graph against the
+    authoritative flat files: reports graph-only (stale), flat-only
+    (missing), and matched counts. With ``--apply``, prunes stale Memory
+    nodes through the guarded, backup-first path (floor + fraction +
+    min-sample, same semantics as the pgvector reconcile) and cleans up
+    zero-edge Tag/Source/AI/Entity/Citation/Claim/Section nodes.
+
+    Examples:
+
+      skmemory graph reconcile
+
+      skmemory graph reconcile --json
+
+      skmemory graph reconcile --apply
+    """
+    import os
+
+    from .agents import get_agent_paths
+    from .backends.age_backend import AGEGraphBackend, GraphTransportError
+    from .graph_reconcile import reconcile_graph
+
+    paths = get_agent_paths()
+    agent = paths["base"].name
+    cfg = None
+    try:
+        from .config import load_config
+
+        cfg = load_config()
+    except Exception:  # config is optional; the backend has env defaults
+        logger.warning("cli.py: config load failed", exc_info=True)
+    pg_dsn = os.environ.get("SKMEMORY_PG_DSN") or (
+        cfg.pgvector_dsn if cfg and getattr(cfg, "pgvector_dsn", None) else None
+    )
+    backend = AGEGraphBackend(dsn=pg_dsn, agent=agent)
+    try:
+        stats = reconcile_graph(
+            backend,
+            paths["base"] / "memory",
+            dry_run=not do_apply,
+            force=True if force else None,
+        )
+    except GraphTransportError as exc:
+        click.echo(f"graph reconcile failed: {exc}", err=True)
+        raise SystemExit(1) from exc
+
+    if as_json:
+        click.echo(json.dumps(stats, indent=2, sort_keys=True, default=str))
+    else:
+        mode = "DRY-RUN" if stats["dry_run"] else "APPLY"
+        click.echo(
+            f"graph reconcile [{stats['agent']}] ({mode}): "
+            f"flat={stats['flat']} graph={stats['graph']} matched={stats['matched']} "
+            f"stale={stats['stale_candidates']} missing={stats['missing']}"
+        )
+        if not stats["guard_allowed"]:
+            click.echo(f"  PRUNE REFUSED: {stats['guard_reason']}", err=True)
+        elif stats["dry_run"]:
+            click.echo("  dry-run: no deletes issued (use --apply to prune)")
+            if stats["stale_ids"]:
+                click.echo(f"  stale ids: {', '.join(stats['stale_ids'])}")
+        else:
+            click.echo(
+                f"  pruned={stats['pruned']} edges_removed={stats['edges_removed']} "
+                f"aux_removed={sum(stats['aux_removed'].values())} "
+                f"backup={stats['backup_path']}"
+            )
+        orphans = stats.get("aux_orphans") or {}
+        if any(orphans.values()):
+            detail = ", ".join(f"{k}={v}" for k, v in orphans.items() if v)
+            click.echo(f"  zero-edge aux nodes: {detail}")
+
+    if do_apply and stats["prune_skipped"]:
+        raise SystemExit(1)
+
+
 @cli.command("novelty")
 @click.argument("query")
 @click.option("--limit", type=int, default=8, help="Maximum novelty candidates.")

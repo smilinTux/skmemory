@@ -83,6 +83,22 @@ _VALID_GRAPH_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # e.g. '{"id": ..., "label": "Memory", "properties": {...}}::vertex' or '"foo"'.
 _AGTYPE_SUFFIX_RE = re.compile(r"::(vertex|edge|path)\s*$")
 
+#: Non-Memory node labels that only exist to hang edges off Memory nodes.
+#: After a Memory prune they can be left with zero incident edges; the
+#: guarded reconcile cleans them up (card c25e2513). Cleanup refuses any
+#: label outside this set.
+AUX_NODE_LABELS = ("Tag", "Source", "AI", "Entity", "Citation", "Claim", "Section")
+
+
+class GraphTransportError(RuntimeError):
+    """The AGE graph connection cannot carry queries; callers fail closed.
+
+    Distinct from the backend's lenient degradation (empty results on
+    failure): reconcile and parity paths must never mistake a dead graph
+    for an empty one.
+    """
+
+
 # Lightweight entity extraction for memories without decomposition metadata,
 # mirroring SKGraphBackend._extract_and_index_entities.
 _ENTITY_PATTERN = re.compile(r"\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,3})\b")
@@ -188,6 +204,45 @@ class AGEGraphBackend:
         """DSN with any password redacted, for logging/health output."""
         return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", self.dsn)
 
+    def _cypher_strict(
+        self, query: str, params: dict | None = None, cols: str = "v agtype"
+    ) -> list[tuple]:
+        """Run a Cypher query, raising on any failure (fail-closed variant).
+
+        The lenient :meth:`_cypher` cannot distinguish "the graph answered
+        empty" from "the graph never answered". The guarded reconcile path
+        needs that distinction, so this variant raises instead.
+
+        Args:
+            query: Cypher query body (no surrounding ``$$``).
+            params: Query parameters, passed as a single agtype map.
+            cols: Column spec for the ``AS (...)`` clause.
+
+        Returns:
+            list[tuple]: Raw fetched rows (agtype text values).
+
+        Raises:
+            GraphTransportError: Graph disabled, connection unavailable, or
+                the query itself failed.
+        """
+        if self.graph is None:
+            raise GraphTransportError("AGE graph disabled: invalid graph name")
+        conn = self._conn()
+        if conn is None:
+            raise GraphTransportError(f"AGE connection unavailable ({self._safe_dsn()})")
+        try:
+            cur = conn.cursor()
+            sql = f"SELECT * FROM cypher('{self.graph}', $$ {query} $$, %s) AS ({cols});"
+            cur.execute(sql, (json.dumps(params or {}),))
+            return cur.fetchall()
+        except Exception as exc:  # noqa: BLE001
+            try:
+                if conn is not None and not conn.closed:
+                    conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise GraphTransportError(f"AGE cypher failed (graph={self.graph}): {exc}") from exc
+
     def _cypher(
         self, query: str, params: dict | None = None, cols: str = "v agtype"
     ) -> list[tuple]:
@@ -201,24 +256,157 @@ class AGEGraphBackend:
 
         Returns:
             list[tuple]: Raw fetched rows (agtype text values). Empty list
-            on any failure — this method never raises.
+            on any failure; this method never raises.
         """
+        try:
+            return self._cypher_strict(query, params, cols)
+        except GraphTransportError as exc:
+            logger.warning("AGEGraphBackend: cypher failed (graph=%s): %s", self.graph, exc)
+            return []
+
+    def probe_connection(self) -> None:
+        """Fail closed unless the graph connection answers a trivial query.
+
+        The guarded reconcile path runs this before any report or mutation,
+        so a dead graph can never be misread as "zero graph nodes" (which
+        would trigger a mass backfill) or "zero flat files" (a mass prune).
+
+        Raises:
+            GraphTransportError: Graph disabled, connection unavailable, or
+                the probe query failed.
+        """
+        if self.graph is None:
+            raise GraphTransportError("AGE graph disabled: invalid graph name")
         conn = self._conn()
         if conn is None:
-            return []
+            raise GraphTransportError(f"AGE connection unavailable ({self._safe_dsn()})")
         try:
             cur = conn.cursor()
-            sql = f"SELECT * FROM cypher('{self.graph}', $$ {query} $$, %s) AS ({cols});"
-            cur.execute(sql, (json.dumps(params or {}),))
-            return cur.fetchall()
+            cur.execute("SELECT 1;")
         except Exception as exc:  # noqa: BLE001
-            logger.warning("AGEGraphBackend: cypher failed (graph=%s): %s", self.graph, exc)
-            try:
-                if conn is not None and not conn.closed:
-                    conn.rollback()
-            except Exception:  # noqa: BLE001
-                pass
-            return []
+            raise GraphTransportError(f"AGE probe failed ({self._safe_dsn()}): {exc}") from exc
+
+    def graph_memory_ids(self) -> set[str]:
+        """Every Memory node id in the graph.
+
+        STRICT (raises :class:`GraphTransportError`): the parity report keys
+        safety decisions off this set, so a failed read must never look like
+        an empty graph.
+
+        Returns:
+            set[str]: All Memory node ids (empty set when the graph holds
+            none).
+        """
+        rows = self._cypher_strict("MATCH (m:Memory) RETURN m.id", cols="id agtype")
+        out: set[str] = set()
+        for (value,) in rows:
+            parsed = self._agtype(value)
+            if isinstance(parsed, str) and parsed:
+                out.add(parsed)
+        return out
+
+    def memory_node_strict(self, memory_id: str) -> dict | None:
+        """Graph-stored fields for one memory, or None when absent. STRICT.
+
+        Same payload shape as :meth:`get`, but transport failures raise
+        :class:`GraphTransportError` instead of reading as a missing node.
+        """
+        rows = self._cypher_strict(
+            "MATCH (m:Memory {id: $id}) RETURN m", {"id": memory_id}, cols="m agtype"
+        )
+        if not rows:
+            return None
+        return self._memory_dict(self._agtype(rows[0][0]))
+
+    def memory_edge_inventory(self, memory_id: str) -> list[dict]:
+        """Incident-edge inventory for one Memory node, for prune backups.
+
+        STRICT. Returns one dict per incident edge (either direction):
+        ``{"type", "other_label", "other_properties"}``.
+
+        Args:
+            memory_id: The Memory node id.
+
+        Returns:
+            list[dict]: Edge inventory rows (empty when the node has none
+            or does not exist).
+        """
+        rows = self._cypher_strict(
+            "MATCH (m:Memory {id: $id})-[r]-(o) "
+            "RETURN type(r) AS rel, label(o) AS other_label, o AS other",
+            {"id": memory_id},
+            cols="rel agtype, other_label agtype, other agtype",
+        )
+        out: list[dict] = []
+        for rel, other_label, other in rows:
+            out.append(
+                {
+                    "type": self._agtype(rel),
+                    "other_label": self._agtype(other_label),
+                    "other_properties": self._props(self._agtype(other)),
+                }
+            )
+        return out
+
+    def _aux_ids(self, label: str) -> set[int]:
+        """Internal AGE ids of every node carrying ``label``. STRICT."""
+        rows = self._cypher_strict(f"MATCH (n:{label}) RETURN id(n)", cols="vid agtype")
+        return {self._agtype(row[0]) for row in rows}
+
+    def _aux_used_ids(self, label: str) -> set[int]:
+        """Internal AGE ids of ``label`` nodes with at least one edge. STRICT."""
+        rows = self._cypher_strict(
+            f"MATCH (n:{label})-[r]-() RETURN DISTINCT id(n)", cols="vid agtype"
+        )
+        return {self._agtype(row[0]) for row in rows}
+
+    def _orphan_aux_ids(self, label: str) -> set[int]:
+        """Internal ids of ``label`` nodes left with zero incident edges.
+
+        Computed as ``all minus used`` in Python because AGE 1.x does not
+        reliably support pattern predicates (``WHERE NOT (n)--()``).
+        """
+        return self._aux_ids(label) - self._aux_used_ids(label)
+
+    def count_orphaned_aux_nodes(self, labels: tuple[str, ...]) -> dict[str, int]:
+        """Count zero-edge nodes per aux label without deleting. STRICT.
+
+        Args:
+            labels: Aux node labels (validated against AUX_NODE_LABELS).
+
+        Returns:
+            dict[str, int]: Orphan count per label, in label order.
+        """
+        return {label: len(self._orphan_aux_ids(label)) for label in labels}
+
+    def delete_orphaned_aux_nodes(self, labels: tuple[str, ...]) -> dict[str, int]:
+        """Delete aux nodes left with zero incident edges. STRICT.
+
+        Per label: compute orphan internal ids, then ``DELETE`` each by id
+        (same per-node pattern as :meth:`remove_memory`; no bulk ad-hoc
+        Cypher). Any failure raises :class:`GraphTransportError` mid-loop so
+        a partial cleanup is reported, never silently continued.
+
+        Args:
+            labels: Aux node labels (validated against AUX_NODE_LABELS).
+
+        Returns:
+            dict[str, int]: Deleted count per label.
+        """
+        out: dict[str, int] = {}
+        for label in labels:
+            if label not in AUX_NODE_LABELS:
+                raise ValueError(f"refusing aux cleanup for unknown label: {label!r}")
+            removed = 0
+            for vid in sorted(self._orphan_aux_ids(label)):
+                rows = self._cypher_strict(
+                    f"MATCH (n:{label}) WHERE id(n) = $vid DELETE n RETURN 1",
+                    {"vid": vid},
+                    cols="x agtype",
+                )
+                removed += len(rows)
+            out[label] = removed
+        return out
 
     def _agtype(self, value: Any) -> Any:
         """Parse an agtype text value into a Python value.
