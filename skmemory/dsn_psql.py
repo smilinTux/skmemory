@@ -34,6 +34,14 @@ def _print_rows(rows: list[tuple[object, ...]]) -> None:
         print("\t".join("" if value is None else str(value) for value in row))
 
 
+def _scrub(text: str) -> str:
+    """Redact credential-shaped fragments so a DSN password never reaches stderr."""
+    import re
+
+    text = re.sub(r"(?i)password=\S+", "password=***", text)
+    return re.sub(r"://[^:/\s]+:[^@\s]+@", "://***:***@", text)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Execute the reconcile engine's supported psql argument subset."""
     args = list(sys.argv[1:] if argv is None else argv)
@@ -59,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
                     _print_rows(cursor.fetchall())
         return 0
     except Exception as exc:
-        print(f"skmem-pg SQL transport failed: {exc}", file=sys.stderr)
+        print(f"skmem-pg SQL transport failed: {_scrub(str(exc))}", file=sys.stderr)
         return 1
 
 

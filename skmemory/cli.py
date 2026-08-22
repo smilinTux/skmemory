@@ -1240,8 +1240,11 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
                 recon_kwargs["embed_model"] = cfg.embed_model
             pg_stats = _reconcile.reconcile(agent, verbose=not quiet, **recon_kwargs)
         except Exception as e:
+            # Fail closed (card 9157c2c5): a reconcile that could not prove
+            # transport health must exit nonzero, never report a clean sync.
             logger.warning("cli.py: %s", e)
             click.echo(f"pgvector reconcile failed: {e}", err=True)
+            raise SystemExit(1) from e
 
     # Phase 4 (optional): AGE knowledge-graph backfill in skmem-pg.
     graph_stats = None
