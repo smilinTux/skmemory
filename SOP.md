@@ -302,6 +302,13 @@ single place to rotate the password (see the header comment in it, and KEDB
 `ke-leak-skmem-pg-pw`). For an interactive shell, export `SKMEMORY_PG_DSN` yourself or
 source that file; nothing in skmemory will do it for you.
 
+Install the `pg` extra on skmem-pg clients: `pip install "skmemory[pg]"`. The
+flat-to-Postgres reconcile engine selects a psycopg transport whenever
+`SKMEMORY_PG_DSN` is present. The transport inherits the protected environment,
+does not put the DSN in argv or logs, and requires no Docker socket access. SQL
+transport failures are fatal; reconcile must never reinterpret a connection
+failure as an empty Postgres cache.
+
 - **Secret handling:** never inline a live secret. The vaulted backend seals memory
   at rest to the agent's GPG key (`vault.py`); the passphrase is supplied via
   gpg-agent, never stored in the repo or config. See [SECURITY.md](./SECURITY.md).

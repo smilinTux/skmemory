@@ -9,10 +9,10 @@ from source. It is NOT streaming-replicated, NOT a central/shared system of
 record, and NOT a SPOF. The `memories` table is a DERIVED cache (same class as
 `index.db`): this reconcile rebuilds it, agent-scoped and idempotently, from the
 Syncthing-synced flat JSON. Embeddings are a deterministic function of flat
-content + mxbai on .100, so any node regenerates them locally. This module talks
-to the LOCAL container via `docker exec skmem-pg psql` (no host param), so it can
-only ever act on the box it runs on; it must be present and scheduled on every
-node, for every agent whose flat files that node serves.
+content + mxbai on .100, so any node regenerates them locally. This module uses
+the node-local ``SKMEMORY_PG_DSN`` when configured. The DSN is read from the
+environment and never placed in process arguments or logs. A legacy Docker
+transport remains available for nodes without a DSN and explicit test transports.
 
 Vendored from `~/skmem-build/skmem_reconcile.py` (the previously out-of-repo
 production engine) so the rebuild path is versioned and testable in-repo.
@@ -73,6 +73,14 @@ DEFAULT_EMBED_URL = os.environ.get("EMBED_URL", "http://192.168.0.100:11434/api/
 DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "mxbai-embed-large")
 # Node-LOCAL psql. No host param: acts only on the box it runs on.
 DEFAULT_PSQL = ["docker", "exec", "-i", "skmem-pg", "psql", "-U", "postgres", "-d", "skmemory"]
+
+
+def default_psql_cmd() -> list[str]:
+    """Select the protected DSN transport before the legacy Docker fallback."""
+    if os.environ.get("SKMEMORY_PG_DSN", "").strip():
+        return [sys.executable, "-m", "skmemory.dsn_psql"]
+    return list(DEFAULT_PSQL)
+
 
 # --- prune guardrail defaults (cold-boot / empty-source safety) --------------
 # Minimum flat-source count required before ANY destructive prune is allowed.
@@ -222,7 +230,7 @@ def reconcile(
     mem = mem_dir or _mem_dir(agent)
     embed_url = embed_url or DEFAULT_EMBED_URL
     embed_model = embed_model or DEFAULT_EMBED_MODEL
-    PSQL = list(psql_cmd) if psql_cmd else list(DEFAULT_PSQL)
+    PSQL = list(psql_cmd) if psql_cmd else default_psql_cmd()
     floor = DEFAULT_PRUNE_FLOOR if prune_floor is None else prune_floor
     max_frac = DEFAULT_MAX_PRUNE_FRACTION if max_prune_fraction is None else max_prune_fraction
     min_sample = DEFAULT_PRUNE_MIN_SAMPLE if prune_min_sample is None else prune_min_sample
@@ -232,12 +240,20 @@ def reconcile(
         else force_prune
     )
 
+    def run_psql(args, *, input_text=None):
+        result = subprocess.run(args, input=input_text, capture_output=True, text=True)
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip().splitlines()
+            suffix = f": {detail[-1]}" if detail else ""
+            raise RuntimeError(f"skmem-pg SQL command failed{suffix}")
+        return result
+
     def psql(sql, want=False):
         args = PSQL + (["-tAF\t", "-c", sql] if want else ["-c", sql])
-        return subprocess.run(args, capture_output=True, text=True).stdout
+        return run_psql(args).stdout
 
     def psql_stdin(sql):
-        return subprocess.run(PSQL + ["-f", "-"], input=sql, capture_output=True, text=True)
+        return run_psql(PSQL + ["-f", "-"], input_text=sql)
 
     def embed(texts):
         for _ in range(4):
@@ -346,11 +362,9 @@ def reconcile(
                         vlit(e),
                     ]
                 )
-            subprocess.run(
+            run_psql(
                 PSQL + ["-c", "COPY memories_bf FROM STDIN WITH (FORMAT csv);"],
-                input=buf.getvalue(),
-                capture_output=True,
-                text=True,
+                input_text=buf.getvalue(),
             )
             loaded += len(pairs)
         psql_stdin(
@@ -390,11 +404,9 @@ def reconcile(
         pruned = "0"
     else:
         psql("DROP TABLE IF EXISTS flat_ids; CREATE TABLE flat_ids (id text primary key);")
-        subprocess.run(
+        run_psql(
             PSQL + ["-c", "COPY flat_ids FROM STDIN;"],
-            input="\n".join(flat.keys()),
-            capture_output=True,
-            text=True,
+            input_text="\n".join(flat.keys()),
         )
         pruned = psql(
             f"WITH d AS (DELETE FROM memories m WHERE m.agent='{agent}' AND NOT EXISTS "
