@@ -532,9 +532,7 @@ class MemoryStore:
                     logger.warning("reweave: graph reindex (new) failed: %s", exc)
 
         if relinked:
-            logger.info(
-                "reweave: linked %d older memories back to %s", len(relinked), memory.id
-            )
+            logger.info("reweave: linked %d older memories back to %s", len(relinked), memory.id)
         return relinked
 
     def snapshot_bulk(self, items: list[dict], progress_cb=None) -> list[Memory]:

@@ -63,9 +63,7 @@ class TestReweaveExplicitLinks:
 class TestReweaveTopicalNeighbours:
     """Topical neighbours (shared words) are discovered and linked both ways."""
 
-    def test_topical_neighbour_backlinked_and_symmetric(
-        self, reweave_store: MemoryStore
-    ) -> None:
+    def test_topical_neighbour_backlinked_and_symmetric(self, reweave_store: MemoryStore) -> None:
         old = reweave_store.snapshot(
             title="Postgres pgvector tuning",
             content="notes about pgvector hnsw indexes",
@@ -96,9 +94,7 @@ class TestReweaveBounds:
         ]
         new = store.snapshot(title="Widget audit summary", content="widget audit rollup")
 
-        backlinked = [
-            o.id for o in (store.recall(o.id) for o in olds) if new.id in o.related_ids
-        ]
+        backlinked = [o.id for o in (store.recall(o.id) for o in olds) if new.id in o.related_ids]
         assert len(backlinked) == 2
 
     def test_top_k_zero_is_noop(self, tmp_path: Path) -> None:

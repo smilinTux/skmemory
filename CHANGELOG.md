@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in, bounded reweave backward pass on `MemoryStore.snapshot()`
+  (`reweave=True`, `reweave_top_k=5`, both off/default-5 unless passed).
+  When enabled, a new write re-links the top-K most-related OLDER memories
+  back to the new one (explicit `related_ids` first, then topical search
+  neighbours), keeping the association graph bidirectional instead of only
+  wiring the new memory's outgoing edges. Skips decomposition/split
+  fragments, only touches genuinely older memories, and is idempotent
+  across repeated writes. Off by default: zero behaviour change for
+  existing callers.
+
 ### Fixed
 
 - Empty or null memory IDs now fail closed at model, promotion, flat, SQLite,
