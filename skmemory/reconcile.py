@@ -287,7 +287,6 @@ def discover_agents(agents_base: str | None = None) -> list[str]:
     return out
 
 
-
 def _embeddings_from_response(payload) -> list | None:
     """Pull the embedding vectors out of an embedding-endpoint response.
 
@@ -321,6 +320,7 @@ def _embeddings_from_response(payload) -> list | None:
             rows.append((idx if isinstance(idx, int) else i, row["embedding"]))
         return [vec for _, vec in sorted(rows, key=lambda r: r[0])]
     return None
+
 
 def reconcile(
     agent: str | None = None,
