@@ -287,6 +287,41 @@ def discover_agents(agents_base: str | None = None) -> list[str]:
     return out
 
 
+def _embeddings_from_response(payload) -> list | None:
+    """Pull the embedding vectors out of an embedding-endpoint response.
+
+    Two wire shapes are in use across the fleet and both must work, because
+    ``embed_url`` points at whichever one a node happens to serve:
+
+    * Ollama native ``/api/embed``   -> ``{"embeddings": [[...], ...]}``
+    * OpenAI-compatible ``/v1/embeddings`` -> ``{"data": [{"embedding": [...],
+      "index": 0}, ...]}`` (llama.cpp, vLLM, Ollama's ``/v1`` shim)
+
+    Args:
+        payload: The decoded JSON body of the embedding response.
+
+    Returns:
+        The list of vectors in request order, or ``None`` if the payload is
+        not a recognised embedding response (which the caller treats as a
+        failed attempt and retries).
+    """
+    if not isinstance(payload, dict):
+        return None
+    embeddings = payload.get("embeddings")
+    if isinstance(embeddings, list):
+        return embeddings
+    data = payload.get("data")
+    if isinstance(data, list):
+        rows = []
+        for i, row in enumerate(data):
+            if not isinstance(row, dict) or not isinstance(row.get("embedding"), list):
+                return None
+            idx = row.get("index")
+            rows.append((idx if isinstance(idx, int) else i, row["embedding"]))
+        return [vec for _, vec in sorted(rows, key=lambda r: r[0])]
+    return None
+
+
 def reconcile(
     agent: str | None = None,
     *,
@@ -353,8 +388,9 @@ def reconcile(
                 j = requests.post(
                     embed_url, json={"model": embed_model, "input": texts}, timeout=180
                 ).json()
-                if "embeddings" in j and len(j["embeddings"]) == len(texts):
-                    return j["embeddings"]
+                vecs = _embeddings_from_response(j)
+                if vecs is not None and len(vecs) == len(texts):
+                    return vecs
             except Exception:
                 pass
             if len(texts) > 1:
