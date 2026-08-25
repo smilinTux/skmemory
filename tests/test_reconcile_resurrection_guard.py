@@ -147,7 +147,7 @@ def test_reconcile_quarantines_empty_id_before_any_pg_write(monkeypatch, tmp_pat
     invalid.write_text(json.dumps({"memory_id": "", "content": "private payload"}))
 
     stats = reconcile_mod.reconcile(
-        "__empty_id_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
     )
 
     assert stats["flat"] == 0
@@ -173,7 +173,7 @@ def test_reconcile_does_not_resurrect_tombstoned_memory(monkeypatch, tmp_path):
     write_tombstone(mem, forgotten)  # but it was deliberately forgotten
 
     stats = reconcile_mod.reconcile(
-        "__rez_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
     )
 
     assert stats["missing"] == 0, "a tombstoned memory must not count as missing"
@@ -194,7 +194,7 @@ def test_reconcile_still_backfills_a_normal_new_memory(monkeypatch, tmp_path):
     _write_flat(mem, "short-term", new_mem)  # no tombstone
 
     stats = reconcile_mod.reconcile(
-        "__rez_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
     )
 
     assert stats["missing"] == 1
@@ -218,7 +218,7 @@ def test_guard_is_selective_new_reconciles_tombstoned_blocked(monkeypatch, tmp_p
     write_tombstone(mem, forgotten)
 
     stats = reconcile_mod.reconcile(
-        "__rez_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
     )
 
     assert stats["missing"] == 1  # only the fresh one
@@ -244,7 +244,7 @@ def test_tombstoned_row_still_in_pg_is_pruned(monkeypatch, tmp_path):
     write_tombstone(mem, forgotten)
 
     stats = reconcile_mod.reconcile(
-        "__rez_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
     )
 
     # tombstoned id is excluded from the flat truth -> it is an orphan in pg
@@ -285,7 +285,7 @@ def test_forget_writes_tombstone_reconcile_honours(monkeypatch, tmp_path):
     _stub_embed(monkeypatch)
 
     stats = reconcile_mod.reconcile(
-        "__rez_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
     )
     assert stats["resurrection_blocked"] == 1
     assert stats["backfilled"] == 0

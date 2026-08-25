@@ -158,7 +158,7 @@ def test_reconcile_refuses_prune_when_flat_empty(monkeypatch, tmp_path):
     (mem / "short-term").mkdir(parents=True)
 
     stats = reconcile_mod.reconcile(
-        "__guard_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
     )
 
     assert stats["flat"] == 0
@@ -184,7 +184,7 @@ def test_reconcile_prunes_normal_delta(monkeypatch, tmp_path):
         _write_flat(mem, "mid-term", mid)
 
     stats = reconcile_mod.reconcile(
-        "__guard_test__", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
     )
 
     assert stats["flat"] == 20
@@ -204,7 +204,7 @@ def test_reconcile_force_overrides_empty_guard(monkeypatch, tmp_path):
     (mem / "short-term").mkdir(parents=True)
 
     stats = reconcile_mod.reconcile(
-        "__guard_test__",
+        "test-agent",
         mem_dir=str(mem),
         psql_cmd=["psql"],
         verbose=False,

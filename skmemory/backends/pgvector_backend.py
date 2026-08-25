@@ -265,14 +265,10 @@ class PGVectorBackend(BaseBackend):
         # Pin + verify the embedding model identity (dimension, and model name when
         # the endpoint reports it) on every embed. Off via SKMEMORY_EMBED_VERIFY=0.
         self.verify_embedding = verify_embedding
-        # Agent isolation: one pg shared across agents, scoped by this column.
-        self.agent = (
-            agent
-            or os.environ.get("SKMEMORY_AGENT")
-            or os.environ.get("SKAGENT")
-            or os.environ.get("SKCAPSTONE_AGENT")
-            or "lumina"
-        )
+        # Agent isolation: one pg shared across registered memory owners.
+        from ..agents import require_memory_profile
+
+        self.agent = require_memory_profile(agent).profile_id
         self._embed_fn = embed_fn
         self._conn = None
 

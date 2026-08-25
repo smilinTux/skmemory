@@ -18,23 +18,24 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from pathlib import Path
 
 
 def get_agent_name() -> str:
-    """Get agent name from environment or default."""
-    from .agents import get_active_agent
+    """Get the validated active memory owner."""
+    from .agents import require_memory_profile
 
-    return (
-        os.environ.get("SKAGENT")
-        or os.environ.get("SKMEMORY_AGENT")
-        or os.environ.get("SKCAPSTONE_AGENT")
-        or get_active_agent()
-        or ""
-    )
+    return require_memory_profile().profile_id
+
+
+def _memory_env(agent: str) -> dict[str, str]:
+    """Build an isolated service-safe SKMemory MCP environment."""
+    from .agents import require_memory_profile
+
+    profile = require_memory_profile(agent)
+    return {"SKMEMORY_AGENT": profile.profile_id}
 
 
 def register_opencode(agent: str, dry_run: bool = False) -> bool:
@@ -67,11 +68,7 @@ def register_opencode(agent: str, dry_run: bool = False) -> bool:
         "type": "local",
         "command": ["python", "-m", "skmemory.mcp_server"],
         "enabled": True,
-        "env": {
-            "SKAGENT": agent,
-            "SKMEMORY_AGENT": agent,
-            "SKMEMORY_HOME": str(Path.home() / ".skcapstone" / "agents" / agent),
-        },
+        "env": _memory_env(agent),
     }
     mcp["skcapstone"] = {
         "type": "local",
@@ -102,11 +99,7 @@ def register_claude(agent: str, dry_run: bool = False) -> bool:
             "skmemory": {
                 "command": "python",
                 "args": ["-m", "skmemory.mcp_server"],
-                "env": {
-                    "SKAGENT": agent,
-                    "SKMEMORY_AGENT": agent,
-                    "SKMEMORY_HOME": str(Path.home() / ".skcapstone" / "agents" / agent),
-                },
+                "env": _memory_env(agent),
             },
             "skcapstone": {
                 "command": "python",
@@ -196,11 +189,7 @@ def register_codex(agent: str, dry_run: bool = False) -> bool:
             lines.append(f"env = {{ {pairs} }}")
         return lines
 
-    skmemory_env = {
-        "SKAGENT": agent,
-        "SKMEMORY_AGENT": agent,
-        "SKMEMORY_HOME": str(Path.home() / ".skcapstone" / "agents" / agent),
-    }
+    skmemory_env = _memory_env(agent)
     config_text = _toml_upsert(
         config_text,
         "mcp_servers.skmemory",

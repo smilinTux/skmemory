@@ -185,8 +185,11 @@ DEFAULT_PRUNE_MIN_SAMPLE = int(os.environ.get("SKMEMORY_RECONCILE_PRUNE_MIN_SAMP
 DEFAULT_PRUNE_ALERT_ROWS = int(os.environ.get("SKMEMORY_RECONCILE_PRUNE_ALERT_ROWS", "50"))
 
 
-def default_agent() -> str:
-    return os.environ.get("SKAGENT", "lumina")
+def default_agent() -> str | None:
+    """Return the validated active memory profile without a broad default."""
+    from .agents import get_active_agent
+
+    return get_active_agent()
 
 
 def _agents_base_dir() -> str:
@@ -265,24 +268,19 @@ def _mem_dir(agent: str) -> str:
 
 
 def discover_agents(agents_base: str | None = None) -> list[str]:
-    """Discover every provisioned agent that has a memory dir.
+    """Discover valid registered human and service memory owners."""
+    from .profile_registry import resolve_memory_profile
 
-    Scans the agent base dir for subdirectories that contain a ``memory/``
-    directory, excluding ``*-template`` scaffolds. This is the "all agents"
-    source for :func:`reconcile_all`; the acceptance contract is "every agent
-    with a memory dir", so we key on the memory dir (not on the presence of a
-    ``config/skmemory.yaml``, which non-lumina MCP-only agents may lack).
-
-    Returns a sorted list of agent names (empty if the base dir is absent).
-    """
     base = agents_base or _agents_base_dir()
     if not os.path.isdir(base):
         return []
+    root = os.path.dirname(base)
     out = []
     for name in sorted(os.listdir(base)):
         if name.endswith("-template"):
             continue
-        if os.path.isdir(os.path.join(base, name, "memory")):
+        profile = resolve_memory_profile(root, name, agents_base=base)
+        if profile.healthy and os.path.isdir(os.path.join(base, name, "memory")):
             out.append(name)
     return out
 
@@ -345,7 +343,9 @@ def reconcile(
     counts. On a clean idempotent second run ``backfilled == 0`` and
     ``pruned == 0``.
     """
-    agent = agent or default_agent()
+    from .agents import require_memory_profile
+
+    agent = require_memory_profile(agent).profile_id
     mem = mem_dir or _mem_dir(agent)
     embed_url = embed_url or DEFAULT_EMBED_URL
     embed_model = embed_model or DEFAULT_EMBED_MODEL

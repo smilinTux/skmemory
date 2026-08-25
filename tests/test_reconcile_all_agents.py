@@ -14,21 +14,70 @@ exercised against a throwaway agent tree under ``tmp_path``.
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pytest
 
 from skmemory import reconcile as reconcile_mod
 
 
+def _hash(document, field):
+    payload = {key: value for key, value in document.items() if key != field}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def _make_agent_tree(base, names, *, with_memory=True, templates=()):
-    """Create a fake ~/.skcapstone/agents tree under `base`."""
+    """Create a fake registered agent tree under `base`."""
+    entries = []
     for name in names:
         d = base / name
         if with_memory:
             (d / "memory" / "short-term").mkdir(parents=True, exist_ok=True)
         else:
             d.mkdir(parents=True, exist_ok=True)
+        profile = {
+            "schema_version": "skcapstone.agent-profile.v1",
+            "schema_revision": "1",
+            "profile_id": name,
+            "profile_kind": "human",
+            "selectable": True,
+            "fallback_eligible": True,
+            "memory_principal_id": f"memory:{name}",
+            "default_tools": [],
+            "capability_policy_ref": "synthetic-test-policy.v1",
+            "profile_revision": "1",
+            "profile_hash": "",
+        }
+        profile["profile_hash"] = _hash(profile, "profile_hash")
+        (d / "profile.json").write_text(json.dumps(profile))
+        entries.append(
+            {
+                key: profile[key]
+                for key in (
+                    "profile_id",
+                    "profile_kind",
+                    "selectable",
+                    "fallback_eligible",
+                    "memory_principal_id",
+                    "schema_revision",
+                    "profile_revision",
+                    "profile_hash",
+                )
+            }
+        )
+    registry = {
+        "schema_version": "skcapstone.profile-registry.v1",
+        "schema_revision": "1",
+        "registry_revision": "synthetic-test-1",
+        "profiles": entries,
+        "registry_hash": "",
+    }
+    registry["registry_hash"] = _hash(registry, "registry_hash")
+    (base.parent / "config").mkdir(exist_ok=True)
+    (base.parent / "config/profile-registry.json").write_text(json.dumps(registry))
     for name in templates:
-        # templates carry a memory dir but must still be excluded
         (base / name / "memory").mkdir(parents=True, exist_ok=True)
     return base
 
@@ -49,9 +98,8 @@ def test_discover_agents_excludes_templates(tmp_path):
 
 
 def test_discover_agents_skips_dirs_without_memory(tmp_path):
-    base = tmp_path
-    (base / "lumina" / "memory").mkdir(parents=True)
-    (base / "not-an-agent").mkdir(parents=True)  # no memory dir
+    base = _make_agent_tree(tmp_path, ["lumina", "not-an-agent"])
+    (base / "not-an-agent" / "memory").rename(base / "not-an-agent-memory")
     assert reconcile_mod.discover_agents(str(base)) == ["lumina"]
 
 

@@ -446,6 +446,16 @@ def register_mcp(
     Returns:
         Dict mapping environment -> action taken.
     """
+    if name == "skmemory":
+        from .agents import require_memory_profile
+
+        requested = (env or {}).get("SKMEMORY_AGENT")
+        profile = require_memory_profile(requested)
+        env = dict(env or {})
+        env.pop("SKAGENT", None)
+        env.pop("SKCAPSTONE_AGENT", None)
+        env["SKMEMORY_AGENT"] = profile.profile_id
+
     if environments is None:
         environments = detect_environments()
 

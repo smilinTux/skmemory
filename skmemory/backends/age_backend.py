@@ -106,12 +106,9 @@ _ENTITY_SKIP_WORDS = {"The", "This", "That", "These", "Those", "When", "Where", 
 
 
 def _default_agent() -> str:
-    return (
-        os.environ.get("SKAGENT")
-        or os.environ.get("SKMEMORY_AGENT")
-        or os.environ.get("SKCAPSTONE_AGENT")
-        or "lumina"
-    )
+    from ..agents import require_memory_profile
+
+    return require_memory_profile().profile_id
 
 
 def _now_iso() -> str:
@@ -160,8 +157,10 @@ class AGEGraphBackend:
         agent: str | None = None,
         graph: str | None = None,
     ) -> None:
+        from ..agents import require_memory_profile
+
         self.dsn = dsn or DEFAULT_DSN
-        self.agent = agent or _default_agent()
+        self.agent = require_memory_profile(agent).profile_id if agent else _default_agent()
         requested_graph = graph or f"{self.agent}_knowledge"
         if _VALID_GRAPH_NAME.match(requested_graph):
             self.graph: str | None = requested_graph
