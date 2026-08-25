@@ -34,7 +34,7 @@ class TestOpenCodeMCPRegistration:
             "skmemory",
             "skmemory-mcp",
             [],
-            env={"SKAGENT": "lumina"},
+            env={"SKMEMORY_AGENT": "test-agent"},
             environments=["opencode"],
         )
         assert result["opencode"] == "created"
@@ -47,7 +47,7 @@ class TestOpenCodeMCPRegistration:
         assert entry["type"] == "local"
         assert entry["command"] == ["skmemory-mcp"]
         assert entry["enabled"] is True
-        assert entry["env"] == {"SKAGENT": "lumina"}
+        assert entry["env"] == {"SKMEMORY_AGENT": "test-agent"}
 
     def test_command_joins_args_into_list(self, fake_home: Path) -> None:
         register_mcp(
@@ -133,7 +133,7 @@ class TestCodexMCPRegistration:
             "skmemory",
             "skmemory-mcp",
             [],
-            env={"SKAGENT": "lumina"},
+            env={"SKMEMORY_AGENT": "test-agent"},
             environments=["codex"],
         )
         assert result["codex"] == "created"
@@ -143,7 +143,7 @@ class TestCodexMCPRegistration:
         text = config_path.read_text()
         assert "[mcp_servers.skmemory]" in text
         assert 'command = "skmemory-mcp"' in text
-        assert 'env = { "SKAGENT" = "lumina" }' in text
+        assert 'env = { "SKMEMORY_AGENT" = "test-agent" }' in text
 
     def test_preserves_existing_sections(self, fake_home: Path) -> None:
         """Other config.toml content survives the upsert."""
@@ -199,7 +199,7 @@ class TestPiMCPRegistration:
             "skmemory",
             "skmemory-mcp",
             [],
-            env={"SKAGENT": "lumina"},
+            env={"SKMEMORY_AGENT": "test-agent"},
             environments=["pi"],
         )
 
@@ -210,5 +210,5 @@ class TestPiMCPRegistration:
             "args": [],
             "transport": "stdio",
             "lifecycle": "eager",
-            "env": {"SKAGENT": "lumina"},
+            "env": {"SKMEMORY_AGENT": "test-agent"},
         }

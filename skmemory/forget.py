@@ -22,24 +22,17 @@ cannot mask the rest of the cascade.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 
 
 def resolve_agent() -> str:
-    """Resolve the active agent for scoping the skmem-pg delete plan.
+    """Resolve the validated memory owner for a destructive delete plan."""
+    from .agents import get_active_agent
 
-    Mirrors :class:`skmemory.backends.pgvector_backend.PGVectorBackend`'s own
-    precedence (``SKMEMORY_AGENT`` -> ``SKAGENT`` -> ``SKCAPSTONE_AGENT``,
-    default ``lumina``) so a plan built without a wired backend still targets
-    the same agent-scoped rows the live backend would.
-    """
-    return (
-        os.environ.get("SKMEMORY_AGENT")
-        or os.environ.get("SKAGENT")
-        or os.environ.get("SKCAPSTONE_AGENT")
-        or "lumina"
-    )
+    agent = get_active_agent()
+    if agent is None:
+        return "Unknown"
+    return agent
 
 
 @dataclass

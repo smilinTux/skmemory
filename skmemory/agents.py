@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
@@ -21,7 +22,7 @@ def _agents_base() -> Path:
     """Platform-aware base directory for all agents.
 
     Resolution order:
-    1. SKMEMORY_HOME env var — direct override (points at the agent base dir)
+    1. SKMEMORY_HOME env var, direct override (points at the agent base dir)
     2. SKCAPSTONE_HOME env var — skcapstone-wide override
     3. Windows LOCALAPPDATA convention
     4. Default: ~/.skcapstone/agents/
@@ -72,23 +73,25 @@ def get_default_template_agent() -> str | None:
 
 
 def list_agents() -> list[str]:
-    """Discover all non-template agents in ~/.skcapstone/agents/
-
-    Scans the agents directory and returns all agent names
-    except template directories.
-
-    Returns:
-        list[str]: Sorted list of agent names (e.g., ['lumina', 'john'])
-    """
+    """Discover registered human profiles eligible for default fallback."""
     if not AGENTS_BASE_DIR.exists():
         return []
 
+    from .profile_registry import resolve_memory_profile
+
+    root = AGENTS_BASE_DIR.parent
     agents = []
     for entry in AGENTS_BASE_DIR.iterdir():
         if entry.is_dir() and not is_template_agent(entry.name):
-            # Check if it has a valid config
+            profile = resolve_memory_profile(root, entry.name, agents_base=AGENTS_BASE_DIR)
             config_file = entry / "config" / "skmemory.yaml"
-            if config_file.exists():
+            if (
+                config_file.exists()
+                and profile.healthy
+                and profile.profile_kind == "human"
+                and profile.selectable
+                and profile.fallback_eligible
+            ):
                 agents.append(entry.name)
 
     return sorted(agents)
@@ -140,35 +143,51 @@ def is_template_agent(agent_name: str) -> bool:
     return agent_name.endswith("-template")
 
 
-def get_active_agent() -> str | None:
-    """Get the currently active agent from environment or default to first non-template.
+def get_active_agent(environment: Mapping[str, str] | None = None) -> str | None:
+    """Resolve an explicit profile or an eligible human fallback.
 
-    Checks in order:
-    1. SKAGENT environment variable (primary source of truth)
-    2. SKCAPSTONE_AGENT environment variable (authoritative agent selector)
-    3. SKMEMORY_AGENT environment variable (legacy/override)
-    4. First non-template agent in the directory
-
-    Returns:
-        str: Agent name, or None if no agents found
+    A valid service profile may own its explicit memory principal when named only
+    by ``SKMEMORY_AGENT``. Conflicting selectors, invalid profiles, and services
+    named by human selectors fail closed instead of borrowing another identity.
     """
-    # Check environment variables (SKAGENT > SKCAPSTONE_AGENT > SKMEMORY_AGENT)
-    env_agent = (
-        os.environ.get("SKAGENT")
-        or os.environ.get("SKCAPSTONE_AGENT")
-        or os.environ.get("SKMEMORY_AGENT")
-    )
-    if env_agent and not is_template_agent(env_agent):
-        agent_dir = get_agent_dir(env_agent)
-        if agent_dir.exists():
-            return env_agent
+    from .profile_registry import resolve_memory_profile
 
-    # Fall back to first non-template agent
+    source = os.environ if environment is None else environment
+    selected = {
+        variable: source.get(variable, "").strip()
+        for variable in ("SKAGENT", "SKCAPSTONE_AGENT", "SKMEMORY_AGENT")
+        if source.get(variable, "").strip()
+    }
+    if len(set(selected.values())) > 1:
+        return None
+    if selected:
+        profile_id = next(iter(selected.values()))
+        profile = resolve_memory_profile(
+            AGENTS_BASE_DIR.parent, profile_id, agents_base=AGENTS_BASE_DIR
+        )
+        if not profile.healthy:
+            return None
+        if profile.profile_kind == "service":
+            return profile_id if set(selected) == {"SKMEMORY_AGENT"} else None
+        return profile_id if profile.selectable else None
+
     agents = list_agents()
-    if agents:
-        return agents[0]
+    return agents[0] if agents else None
 
-    return None
+
+def require_memory_profile(
+    agent_name: str | None = None, environment: Mapping[str, str] | None = None
+):
+    """Return a validated explicit memory owner, or raise without fallback."""
+    from .profile_registry import resolve_memory_profile
+
+    selected = agent_name if agent_name is not None else get_active_agent(environment)
+    if not selected:
+        raise ValueError("No valid registered memory profile is available")
+    profile = resolve_memory_profile(AGENTS_BASE_DIR.parent, selected, agents_base=AGENTS_BASE_DIR)
+    if not profile.healthy:
+        raise ValueError(f"Unregistered or invalid memory profile: {selected}")
+    return profile
 
 
 def get_agent_paths(agent_name: str | None = None) -> dict[str, Path]:
@@ -182,12 +201,17 @@ def get_agent_paths(agent_name: str | None = None) -> dict[str, Path]:
     """
     if agent_name is None:
         agent_name = get_active_agent()
+    else:
+        from .profile_registry import resolve_memory_profile
+
+        profile = resolve_memory_profile(
+            AGENTS_BASE_DIR.parent, agent_name, agents_base=AGENTS_BASE_DIR
+        )
+        if not profile.healthy:
+            agent_name = None
 
     if agent_name is None:
-        raise ValueError(
-            "No agent configured. Create one by copying an agent template under "
-            "~/.skcapstone/agents/*-template"
-        )
+        raise ValueError("No valid registered memory profile is available")
 
     base = get_agent_dir(agent_name)
 

@@ -281,17 +281,16 @@ class TestGraphNameValidation:
     def test_default_agent_and_graph_derivation(self, monkeypatch):
         monkeypatch.delenv("SKAGENT", raising=False)
         monkeypatch.delenv("SKMEMORY_AGENT", raising=False)
-        monkeypatch.delenv("SKCAPSTONE_AGENT", raising=False)
+        monkeypatch.setenv("SKCAPSTONE_AGENT", "lumina")
         be = AGEGraphBackend(dsn=DSN)
         assert be.agent == "lumina"
         assert be.graph == "lumina_knowledge"
 
-    def test_skagent_env_takes_priority(self, monkeypatch):
+    def test_conflicting_selectors_fail_closed(self, monkeypatch):
         monkeypatch.setenv("SKAGENT", "opus")
-        monkeypatch.setenv("SKMEMORY_AGENT", "should-not-be-used")
-        be = AGEGraphBackend(dsn=DSN)
-        assert be.agent == "opus"
-        assert be.graph == "opus_knowledge"
+        monkeypatch.setenv("SKMEMORY_AGENT", "lumina")
+        with pytest.raises(ValueError, match="No valid registered"):
+            AGEGraphBackend(dsn=DSN)
 
     def test_safe_dsn_redacts_password(self):
         be = AGEGraphBackend(
