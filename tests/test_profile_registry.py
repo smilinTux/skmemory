@@ -177,6 +177,79 @@ def test_invalid_metadata_has_no_memory_or_fallback(agent_root: Path, case_name:
     assert agents.get_active_agent({}) is None
 
 
+def test_registry_conditions_are_typed_and_fail_closed(
+    agent_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    human = _case("healthy_human")
+
+    cases = {
+        "missing": _case("missing_registry"),
+        "stale": _case("registry_hash_mismatch"),
+        "corrupt": _case("corrupt_registry"),
+    }
+    for expected, case in cases.items():
+        root = agent_root / expected
+        _configure_profile(root, case)
+        assert resolve_memory_profile(root, case["profile_id"]).registry_state == expected
+
+    unavailable_root = agent_root / "unavailable"
+    _configure_profile(unavailable_root, human)
+    registry_path = unavailable_root / "config/profile-registry.json"
+    registry_path.unlink()
+    registry_path.mkdir()
+
+    conflicting_root = agent_root / "conflicting"
+    conflict = _case("healthy_human")
+    conflict["registry"]["profiles"].append(copy.deepcopy(conflict["registry"]["profiles"][0]))
+    conflict["registry"]["registry_hash"] = registry_content_hash(conflict["registry"])
+    _configure_profile(conflicting_root, conflict)
+
+    for root, expected in (
+        (unavailable_root, "unavailable"),
+        (conflicting_root, "conflicting"),
+    ):
+        monkeypatch.setattr(agents, "AGENTS_BASE_DIR", root / "agents")
+        profile = resolve_memory_profile(root, human["profile_id"])
+        assert profile.registry_state == expected
+        assert not profile.healthy
+        assert not profile.selectable
+        assert not profile.fallback_eligible
+        assert profile.default_tools == []
+        assert profile.memory_principal_id is None
+        assert agents.get_active_agent({}) is None
+
+    principal_conflicting_root = agent_root / "principal-conflicting"
+    principal_conflict = _case("healthy_human")
+    duplicate = copy.deepcopy(principal_conflict["registry"]["profiles"][0])
+    duplicate["profile_id"] = "synthetic-other"
+    principal_conflict["registry"]["profiles"].append(duplicate)
+    principal_conflict["registry"]["registry_hash"] = registry_content_hash(
+        principal_conflict["registry"]
+    )
+    _configure_profile(principal_conflicting_root, principal_conflict)
+    principal_result = resolve_memory_profile(
+        principal_conflicting_root, principal_conflict["profile_id"]
+    )
+    assert principal_result.registry_state == "conflicting"
+    assert principal_result.default_tools == []
+    assert principal_result.memory_principal_id is None
+
+
+def test_service_selectable_registry_conflict_is_typed(agent_root: Path) -> None:
+    case = _case("service_selectable_conflict")
+    _configure_profile(agent_root, case)
+
+    profile = resolve_memory_profile(agent_root, case["profile_id"])
+    assert profile.registry_state == "conflicting"
+    assert not profile.healthy
+    assert not profile.selectable
+    assert not profile.fallback_eligible
+    assert profile.default_tools == []
+    assert agents.get_active_agent({"SKMEMORY_AGENT": case["profile_id"]}) is None
+    assert agents.get_active_agent({}) is None
+
+
 def test_stale_bundled_fixture_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
