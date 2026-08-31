@@ -924,11 +924,15 @@ class SQLiteBackend(BaseBackend):
             backup_data: Full parsed backup JSON.
             entry_data: The individual memory entry that failed validation.
         """
-        import tempfile
         import hashlib
+        import tempfile
 
         try:
-            index = backup_data.get("memories", []).index(entry_data) if isinstance(backup_data.get("memories"), list) else 0
+            index = (
+                backup_data.get("memories", []).index(entry_data)
+                if isinstance(backup_data.get("memories"), list)
+                else 0
+            )
         except (ValueError, AttributeError):
             index = 0
 
