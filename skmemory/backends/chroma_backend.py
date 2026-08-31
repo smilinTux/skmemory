@@ -20,8 +20,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..models import Memory, MemoryLayer
 from ..invalid_records import require_memory_id
+from ..models import Memory, MemoryLayer
 from ..query_sanitizer import sanitize_query
 from .base import BaseBackend
 from .sqlite_backend import CONTENT_PREVIEW_LENGTH

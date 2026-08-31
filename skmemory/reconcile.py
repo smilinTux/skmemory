@@ -421,14 +421,12 @@ def reconcile(
             # record ID is null. Quarantine it with source evidence before it can
             # pollute flat parity or propagate into the derived pg index.
             if not stem or stem.startswith(".") or basename.startswith("."):
-                try:
+                with contextlib.suppress(OSError):
+                    # Unreadable file: existing behavior -- the backfill loader
+                    # skips unreadable payloads without inventing an ID.
                     quarantine_invalid_flat_file(
                         mem, fp, reason="empty filename memory ID (.json)"
                     )
-                except OSError:
-                    # Unreadable file: existing behavior -- the backfill loader
-                    # skips unreadable payloads without inventing an ID.
-                    pass
                 continue
             try:
                 with open(fp, encoding="utf-8") as handle:
