@@ -210,8 +210,11 @@ def test_import_backup_quarantines_empty_id_entries(tmp_path: Path) -> None:
         assert "This has a null ID" not in json.dumps(entry)
 
 
-def test_reconcile_quarantines_dot_json_filename(tmp_path: Path) -> None:
+def test_reconcile_quarantines_dot_json_filename(tmp_path: Path, monkeypatch) -> None:
     """reconcile must quarantine .json files (empty stem) before backfilling."""
+    import unittest.mock as mock
+
+    from skmemory import reconcile as reconcile_mod
     from skmemory.reconcile import reconcile
 
     short = tmp_path / "short-term"
@@ -232,8 +235,27 @@ def test_reconcile_quarantines_dot_json_filename(tmp_path: Path) -> None:
         )
     )
 
+    # Hermetic (no docker/psql transport, no registered profile on CI or any
+    # host): stub the transport probe, the psql runner, and the memory profile
+    # resolution so the test exercises the quarantine boundary only.
+    monkeypatch.setattr(reconcile_mod, "probe_transport", lambda cmd: None)
+    monkeypatch.setattr(
+        reconcile_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+    import skmemory.agents as agents_mod
+
+    monkeypatch.setattr(
+        agents_mod,
+        "require_memory_profile",
+        lambda name=None: type("P", (), {"profile_id": "test-agent"})(),
+    )
+    monkeypatch.setattr(reconcile_mod, "requests", mock.MagicMock())
+
     # Run reconcile (should quarantine the .json file)
-    reconcile(agent="test-agent", mem_dir=str(tmp_path))
+    stats = reconcile(agent="test-agent", mem_dir=str(tmp_path), verbose=False)
+    assert stats["flat"] == 0
 
     # The .json file should be removed
     assert not dot_json.exists()
