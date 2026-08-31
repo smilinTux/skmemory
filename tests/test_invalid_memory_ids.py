@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-
-import pytest
-
 from pathlib import Path
 
 import pytest
@@ -63,6 +60,7 @@ def test_age_sync_quarantines_dot_json_with_deterministic_report(tmp_path):
     backend = object.__new__(AGEGraphBackend)
     backend.graph = "test_graph"
     backend.index_memory = lambda memory: True
+    backend.probe_connection = lambda: None
 
     assert backend.sync_all(tmp_path, "jarvis") == {"indexed": 0, "errors": 0}
     assert not source.exists()
@@ -110,13 +108,13 @@ def test_promotion_with_null_promoted_id_is_blocked(tmp_path: Path) -> None:
     """Promotion must verify the promoted copy has a non-empty ID before persisting."""
     backend = FileBackend(base_path=str(tmp_path / "memory"))
     store = MemoryStore(primary=backend)
-    
+
     # Create a valid memory first
     original = store.snapshot(
         title="Test memory",
         content="Test content",
     )
-    
+
     # Mock the promote() method to return a memory with empty ID
     # This simulates a bug where promote() could create a bad copy
     import unittest.mock as mock
@@ -135,19 +133,17 @@ def test_promotion_with_null_promoted_id_is_blocked(tmp_path: Path) -> None:
             parent_id=original.id,
         )
 
-        with mock.patch.object(
-            Memory,  # type: ignore[attr-defined]
-            "promote",
-            return_value=bad_promoted,
+        with (
+            mock.patch.object(Memory, "promote", return_value=bad_promoted),  # type: ignore[attr-defined]
+            pytest.raises(ValueError, match="cannot be empty"),
         ):
-            with pytest.raises(ValueError, match="cannot be empty"):
-                store.promote(original.id, MemoryLayer.MID)
+            store.promote(original.id, MemoryLayer.MID)
 
 
 def test_import_backup_quarantines_empty_id_entries(tmp_path: Path) -> None:
     """import_backup must quarantine records with empty/null IDs before writing."""
     backend = SQLiteBackend(base_path=str(tmp_path / "memory"))
-    
+
     # Create a backup with one valid and one invalid entry
     backup_data = {
         "version": "0.11.0",
@@ -179,32 +175,32 @@ def test_import_backup_quarantines_empty_id_entries(tmp_path: Path) -> None:
             },
         ],
     }
-    
+
     backup_path = tmp_path / "backup.json"
     backup_path.write_text(json.dumps(backup_data), encoding="utf-8")
-    
+
     # Import should only restore the valid memory
     restored_count = backend.import_backup(str(backup_path))
     assert restored_count == 1
-    
+
     # Valid memory should be in the store
     valid_mem = backend.load("valid-memory-id")
     assert valid_mem is not None
     assert valid_mem.title == "Valid memory"
-    
+
     # Invalid entries should be quarantined
     quarantine = tmp_path / "memory" / "quarantine" / "invalid-memory-id"
     assert quarantine.exists()
-    
+
     report_path = quarantine / "report.json"
     assert report_path.exists()
-    
+
     report = json.loads(report_path.read_text())
     assert report["schema"] == "skmemory.invalid-records/v1"
-    
+
     # Should have 2 quarantined entries (empty ID and null ID)
     assert len(report["entries"]) == 2
-    
+
     for entry in report["entries"]:
         assert "empty/null ID in backup import" in entry["reason"]
         assert f"backup={backup_path.name}" in entry["reason"]
@@ -226,16 +222,18 @@ def test_reconcile_quarantines_dot_json_filename(tmp_path: Path) -> None:
     # Create a .json file (empty stem)
     dot_json = short / ".json"
     dot_json.write_text(
-        json.dumps({
-            "id": "",
-            "title": "Empty filename memory",
-            "content": "This should be quarantined",
-            "layer": "short-term",
-        })
+        json.dumps(
+            {
+                "id": "",
+                "title": "Empty filename memory",
+                "content": "This should be quarantined",
+                "layer": "short-term",
+            }
+        )
     )
 
     # Run reconcile (should quarantine the .json file)
-    result = reconcile(agent="test-agent", mem_dir=str(tmp_path))
+    reconcile(agent="test-agent", mem_dir=str(tmp_path))
 
     # The .json file should be removed
     assert not dot_json.exists()
