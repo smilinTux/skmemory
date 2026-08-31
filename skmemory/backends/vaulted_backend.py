@@ -27,6 +27,7 @@ import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from ..vault import VAULT_HEADER, MemoryVault
 from .sqlite_backend import DEFAULT_BASE_PATH, SQLiteBackend
@@ -78,6 +79,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
             str: The memory ID.
         """
         path = self._file_path(memory)
+        require_memory_id(memory.id)
         path.parent.mkdir(parents=True, exist_ok=True)
         json_bytes = json.dumps(memory.model_dump(), indent=2, default=str).encode("utf-8")
         path.write_bytes(self._vault.encrypt(json_bytes))

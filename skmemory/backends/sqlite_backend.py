@@ -33,7 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..config import SKMEMORY_HOME
-from ..invalid_records import require_memory_id
+from ..invalid_records import quarantine_invalid_flat_file, require_memory_id
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
 
@@ -907,6 +907,59 @@ class SQLiteBackend(BaseBackend):
 
         return output_path
 
+    def _quarantine_import_entry(
+        self,
+        backup_path: str,
+        backup_data: dict,
+        entry_data: dict,
+    ) -> None:
+        """Quarantine an invalid memory entry from a backup import.
+
+        Creates a temporary JSON file containing the invalid entry,
+        then uses quarantine_invalid_flat_file to move it to the quarantine
+        directory with a deterministic report.
+
+        Args:
+            backup_path: Path to the backup file being imported.
+            backup_data: Full parsed backup JSON.
+            entry_data: The individual memory entry that failed validation.
+        """
+        import hashlib
+        import tempfile
+
+        try:
+            index = (
+                backup_data.get("memories", []).index(entry_data)
+                if isinstance(backup_data.get("memories"), list)
+                else 0
+            )
+        except (ValueError, AttributeError):
+            index = 0
+
+        entry_hash = hashlib.sha256(
+            json.dumps(entry_data, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=f".invalid-entry-{index}-{entry_hash[:12]}.json",
+            dir=self.base_path,
+            delete=False,
+        ) as f:
+            json.dump(entry_data, f, indent=2, default=str)
+            temp_path = f.name
+
+        try:
+            quarantine_invalid_flat_file(
+                self.base_path,
+                temp_path,
+                reason=f"empty/null ID in backup import (backup={Path(backup_path).name}, index={index}, entry_sha256={entry_hash})",
+            )
+        finally:
+            # Clean up temp file if quarantine didn't move it
+            if Path(temp_path).exists():
+                Path(temp_path).unlink()
+
     def import_backup(self, backup_path: str) -> int:
         """Restore memories from a JSON backup file.
 
@@ -935,6 +988,13 @@ class SQLiteBackend(BaseBackend):
         count = 0
         for mem_data in data["memories"]:
             try:
+                # Fail closed (card ae3abb38): check ID before constructing Memory
+                # to avoid propagating empty/null IDs through Pydantic validation.
+                raw_id = mem_data.get("id")
+                if not isinstance(raw_id, str) or not raw_id.strip():
+                    self._quarantine_import_entry(backup_path, data, mem_data)
+                    continue
+
                 memory = Memory(**mem_data)
                 file_path = self._file_path(memory)
                 file_path.parent.mkdir(parents=True, exist_ok=True)

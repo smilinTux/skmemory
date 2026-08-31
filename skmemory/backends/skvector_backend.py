@@ -22,6 +22,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
 
@@ -484,6 +485,7 @@ class SKVectorBackend(BaseBackend):
         Returns:
             str: The memory ID.
         """
+        require_memory_id(memory.id)
         if not self._ensure_initialized():
             return memory.id
 

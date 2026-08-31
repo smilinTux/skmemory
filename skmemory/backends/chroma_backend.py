@@ -20,6 +20,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from ..query_sanitizer import sanitize_query
 from .base import BaseBackend
@@ -227,9 +228,7 @@ class SKChromaBackend(BaseBackend):
         }
 
     def save(self, memory: Memory) -> str:
-        if not self._ensure_initialized():
-            return memory.id
-
+        require_memory_id(memory.id)
         content_hash = memory.content_hash()
 
         # Dedup: skip if same content already indexed for this ID

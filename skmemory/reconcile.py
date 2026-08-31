@@ -414,12 +414,27 @@ def reconcile(
         if os.path.isfile(dot_json):
             candidates.append(dot_json)
         for fp in candidates:
-            stem = os.path.splitext(os.path.basename(fp))[0]
+            basename = os.path.basename(fp)
+            stem = os.path.splitext(basename)[0]
+            # Fail closed (card ae3abb38): a .json file's stem is empty or invalid
+            # (e.g., the filename is literally ".json" or starts with a dot), so its
+            # record ID is null. Quarantine it with source evidence before it can
+            # pollute flat parity or propagate into the derived pg index.
+            if not stem or stem.startswith(".") or basename.startswith("."):
+                with contextlib.suppress(OSError):
+                    # Unreadable file: existing behavior -- the backfill loader
+                    # skips unreadable payloads without inventing an ID.
+                    quarantine_invalid_flat_file(
+                        mem, fp, reason="empty filename memory ID (.json)"
+                    )
+                continue
             try:
                 with open(fp, encoding="utf-8") as handle:
                     payload = json.load(handle)
                 payload_memory_id(payload, stem)
             except ValueError as exc:
+                # Fail closed (card ae3abb38): null/empty internal ID detected at
+                # the sync-recovery boundary. Quarantine before backfilling.
                 quarantine_invalid_flat_file(mem, fp, reason=str(exc))
                 continue
             except (OSError, json.JSONDecodeError):

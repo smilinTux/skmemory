@@ -21,6 +21,7 @@ from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
 from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
 from .forget import ForgetReport, StorePurge, resolve_agent
+from .invalid_records import require_memory_id
 from .models import (
     EmotionalSnapshot,
     Memory,
@@ -1413,11 +1414,20 @@ class MemoryStore:
         Returns:
             Optional[Memory]: The promoted memory, or None if source not found.
         """
+        # Fail closed (card ae3abb38): a promotion with an empty/null source ID
+        # would write a promoted copy whose parent chain is already broken, and
+        # the promoted copy could carry a null ID of its own. Reject before
+        # any flat/SQLite/pgvector/graph write happens.
+        require_memory_id(memory_id)
+
         source = self.primary.load(memory_id)
         if source is None:
             return None
 
         promoted = source.promote(target, summary=summary)
+        # Fail closed (card ae3abb38): never write a promoted copy with a
+        # null/empty ID into any tier. Verify before persisting.
+        require_memory_id(promoted.id)
         self._run_pre_write_hooks(promoted)
         self._wal.log_pending("promote", promoted.id, promoted.title, target.value)
         try:
