@@ -30,6 +30,7 @@ import yaml
 
 from .agents import get_agent_paths
 from .backends.sqlite_backend import SQLiteBackend
+from .invalid_records import require_memory_id
 from .recall_cache import (
     build_cache_document,
     compute_source_fingerprint,
@@ -1702,6 +1703,19 @@ class LazyMemoryLoader:
 
     def _move_flat_file(self, memory_id: str, to_layer: str):
         """Move memory flat file to appropriate tier directory."""
+        # An empty/blank id would resolve to a file literally named ".json" and
+        # get shuffled between tiers forever. FileBackend._get_path already
+        # refuses such ids on save; the mover must refuse them too.
+        try:
+            memory_id = require_memory_id(memory_id)
+        except ValueError:
+            logger.warning(
+                "Refusing to move flat file for invalid memory id %r "
+                "(would target a bare '.json')",
+                memory_id,
+            )
+            return
+
         # Find current location
         for layer in ["short", "medium", "long"]:
             src = self.paths["memory_" + layer] / f"{memory_id}.json"

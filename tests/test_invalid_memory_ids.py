@@ -67,3 +67,34 @@ def test_age_sync_quarantines_dot_json_with_deterministic_report(tmp_path):
     assert report["entries"][0]["source"] == "short-term/.json"
     assert "payload" not in json.dumps(report)
     assert (tmp_path / report["entries"][0]["quarantine"]).is_file()
+
+
+@pytest.mark.parametrize("bad_id", ["", "   "])
+def test_promotion_mover_refuses_blank_id_and_leaves_bare_json_alone(tmp_path, bad_id):
+    """A blank id must not resolve to a file literally named ``.json``.
+
+    Regression: ``LazyMemoryLoader._move_flat_file`` interpolated the id
+    straight into ``f"{memory_id}.json"``, so a blank id targeted a bare
+    ``.json`` and the promoter shuffled that file between tiers on every
+    sweep. FileBackend already refused such ids on save; the mover did not.
+    """
+    from skmemory.context_loader import LazyMemoryLoader
+
+    mid = tmp_path / "mid-term"
+    long = tmp_path / "long-term"
+    for d in (tmp_path / "short-term", mid, long):
+        d.mkdir(parents=True)
+    stray = mid / ".json"
+    stray.write_text(json.dumps({"memory_id": "", "content": "legacy"}), encoding="utf-8")
+
+    loader = LazyMemoryLoader.__new__(LazyMemoryLoader)
+    loader.paths = {
+        "memory_short": tmp_path / "short-term",
+        "memory_medium": mid,
+        "memory_long": long,
+    }
+
+    loader._move_flat_file(bad_id, "long")
+
+    assert stray.exists(), "the bare .json must be left where it is"
+    assert not (long / ".json").exists(), "a blank id must never be promoted"
