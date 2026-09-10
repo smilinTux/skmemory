@@ -55,8 +55,10 @@ def schema_validator(memory: Memory) -> None:
         )
 
     try:
-        # Round-trip through the JSON representation the flat files store,
-        # re-running every field/enum validator on the current values.
+        # Round-trip through the JSON mode so schema validation sees the
+        # serialized view (timestamps, enums, defaults) the store backend
+        # would write, re-running every field/enum validator on the current
+        # values.
         Memory.model_validate(memory.model_dump(mode="json"))
     except ValidationError as exc:
         problems = "; ".join(
