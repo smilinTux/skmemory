@@ -245,3 +245,145 @@ def resolve_memory_profile(
         profile_revision=profile.profile_revision,
         profile_hash=profile.profile_hash,
     )
+
+
+def _write_json(path: Path, document: dict[str, Any]) -> None:
+    """Write one canonical JSON document, creating parents as needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    path.write_text(encoded + "\n", encoding="utf-8")
+
+
+def discover_profile_ids(agents_base: str | Path) -> list[str]:
+    """List configured, non-template agent directories eligible for registration.
+
+    Args:
+        agents_base: Directory holding one subdirectory per agent.
+
+    Returns:
+        Sorted profile identifiers that carry a ``config/skmemory.yaml``.
+    """
+    base = Path(agents_base).expanduser()
+    if not base.is_dir():
+        return []
+
+    discovered = [
+        entry.name
+        for entry in base.iterdir()
+        if entry.is_dir()
+        and not entry.name.endswith("-template")
+        and re.fullmatch(_ID_PATTERN, entry.name)
+        and (entry / "config" / "skmemory.yaml").is_file()
+    ]
+    return sorted(discovered)
+
+
+def build_profile_document(
+    profile_id: str,
+    *,
+    profile_kind: Literal["human", "service"] = "human",
+    profile_revision: str = SCHEMA_REVISION,
+    capability_policy_ref: str = "skcapstone-default-policy.v1",
+) -> dict[str, Any]:
+    """Build one self-consistent SKPM-PROF-01 agent profile document.
+
+    Args:
+        profile_id: Identifier matching the SKPM-PROF-01 pattern.
+        profile_kind: ``human`` for selectable owners, ``service`` for isolated ones.
+        profile_revision: Revision string recorded in the profile and registry.
+        capability_policy_ref: Capability policy the profile binds to.
+
+    Returns:
+        The profile document, including its computed ``profile_hash``.
+
+    Raises:
+        ValueError: If ``profile_id`` is outside the SKPM-PROF-01 pattern.
+    """
+    if not re.fullmatch(_ID_PATTERN, profile_id):
+        raise ValueError(f"invalid profile_id: {profile_id!r}")
+
+    human = profile_kind == "human"
+    document: dict[str, Any] = {
+        "schema_version": PROFILE_SCHEMA_VERSION,
+        "schema_revision": SCHEMA_REVISION,
+        "profile_id": profile_id,
+        "profile_kind": profile_kind,
+        "selectable": human,
+        "fallback_eligible": human,
+        "memory_principal_id": f"memory:{profile_id}",
+        "default_tools": [],
+        "capability_policy_ref": capability_policy_ref,
+        "profile_revision": profile_revision,
+        "profile_hash": "",
+    }
+    document["profile_hash"] = profile_content_hash(document)
+    AgentProfileV1.model_validate(document)
+    return document
+
+
+def sync_profile_registry(
+    root: str | Path,
+    profile_ids: list[str] | None = None,
+    *,
+    agents_base: str | Path | None = None,
+    service_ids: set[str] | None = None,
+) -> list[str]:
+    """Write agent profiles and the registry that binds them.
+
+    The SKPM-PROF-01 reader fails closed, so an unwritten or drifted registry
+    revokes memory ownership for every agent. This writer is the bootstrap and
+    repair path: it regenerates each ``agents/<id>/profile.json`` and the
+    ``config/profile-registry.json`` binding so they hash-match again.
+
+    Args:
+        root: SKCapstone root holding ``config/`` and ``agents/``.
+        profile_ids: Profiles to register; discovered from disk when omitted.
+        agents_base: Agent directory root, defaulting to ``root/agents``.
+        service_ids: Identifiers to register as isolated service profiles.
+
+    Returns:
+        The sorted profile identifiers written.
+
+    Raises:
+        ValueError: If any identifier is outside the SKPM-PROF-01 pattern.
+    """
+    base = Path(root).expanduser()
+    profiles_dir = Path(agents_base).expanduser() if agents_base else base / "agents"
+    services = service_ids or set()
+
+    identifiers = sorted(
+        profile_ids if profile_ids is not None else discover_profile_ids(profiles_dir)
+    )
+
+    bindings: list[dict[str, Any]] = []
+    for profile_id in identifiers:
+        kind: Literal["human", "service"] = "service" if profile_id in services else "human"
+        document = build_profile_document(profile_id, profile_kind=kind)
+        _write_json(profiles_dir / profile_id / PROFILE_FILENAME, document)
+        bindings.append(
+            {
+                key: document[key]
+                for key in (
+                    "profile_id",
+                    "profile_kind",
+                    "selectable",
+                    "fallback_eligible",
+                    "memory_principal_id",
+                    "schema_revision",
+                    "profile_revision",
+                    "profile_hash",
+                )
+            }
+        )
+
+    registry: dict[str, Any] = {
+        "schema_version": REGISTRY_SCHEMA_VERSION,
+        "schema_revision": SCHEMA_REVISION,
+        "registry_revision": SCHEMA_REVISION,
+        "profiles": bindings,
+        "registry_hash": "",
+    }
+    registry["registry_hash"] = registry_content_hash(registry)
+    ProfileRegistryV1.model_validate(registry)
+    _write_json(base / REGISTRY_PATH, registry)
+    return identifiers
