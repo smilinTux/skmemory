@@ -3486,3 +3486,70 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+@cli.group("profile")
+def profile_group() -> None:
+    """Inspect and repair the SKPM-PROF-01 memory profile registry."""
+
+
+@profile_group.command("status")
+def profile_status() -> None:
+    """Show how each agent directory resolves against the registry."""
+    from .agents import AGENTS_BASE_DIR
+    from .profile_registry import discover_profile_ids, resolve_memory_profile
+
+    root = AGENTS_BASE_DIR.parent
+    discovered = discover_profile_ids(AGENTS_BASE_DIR)
+    if not discovered:
+        click.echo(f"No configured agents found under {AGENTS_BASE_DIR}")
+        return
+
+    unhealthy = 0
+    for profile_id in discovered:
+        resolved = resolve_memory_profile(root, profile_id, agents_base=AGENTS_BASE_DIR)
+        if not resolved.healthy:
+            unhealthy += 1
+        mark = "ok " if resolved.healthy else "BAD"
+        click.echo(f"  [{mark}] {profile_id:<28} {resolved.state}")
+
+    click.echo(f"\n{len(discovered)} agent(s), {unhealthy} unhealthy")
+    if unhealthy:
+        click.echo("Repair with: skmemory profile sync")
+        raise SystemExit(1)
+
+
+@profile_group.command("sync")
+@click.option("--service", multiple=True, help="Register this agent as a service profile")
+@click.option("--dry-run", is_flag=True, help="Report what would change without writing")
+def profile_sync(service: tuple[str, ...], dry_run: bool) -> None:
+    """Write agent profiles and the registry binding that grants memory ownership."""
+    from .agents import AGENTS_BASE_DIR
+    from .profile_registry import (
+        discover_profile_ids,
+        resolve_memory_profile,
+        sync_profile_registry,
+    )
+
+    root = AGENTS_BASE_DIR.parent
+    discovered = discover_profile_ids(AGENTS_BASE_DIR)
+    if not discovered:
+        click.echo(f"No configured agents found under {AGENTS_BASE_DIR}", err=True)
+        raise SystemExit(1)
+
+    if dry_run:
+        for profile_id in discovered:
+            resolved = resolve_memory_profile(root, profile_id, agents_base=AGENTS_BASE_DIR)
+            state = "unchanged" if resolved.healthy else f"would write ({resolved.state})"
+            click.echo(f"  {profile_id:<28} {state}")
+        return
+
+    written = sync_profile_registry(
+        root, discovered, agents_base=AGENTS_BASE_DIR, service_ids=set(service)
+    )
+    for profile_id in written:
+        resolved = resolve_memory_profile(root, profile_id, agents_base=AGENTS_BASE_DIR)
+        click.echo(f"  [{'ok ' if resolved.healthy else 'BAD'}] {profile_id:<28} {resolved.state}")
+    click.echo(
+        f"\nRegistered {len(written)} profile(s) in {root / 'config/profile-registry.json'}"
+    )
