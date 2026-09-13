@@ -77,6 +77,20 @@ DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "mxbai-embed-large")
 DEFAULT_PSQL = ["docker", "exec", "-i", "skmem-pg", "psql", "-U", "postgres", "-d", "skmemory"]
 
 
+def _scratch_table_name(agent: str) -> str:
+    """Per-run name for the backfill scratch table.
+
+    skmemory-sync@lumina/@jarvis/@opus are timer units that fire in the same
+    second against the same skmem-pg database. A fixed `memories_bf` meant one
+    run's closing DROP pulled the table out from under another run's COPY
+    ("relation memories_bf does not exist"), failing two of every three
+    scheduled syncs. Scope the name to the agent AND the process.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "_", (agent or "").lower()).strip("_") or "agent"
+    return f"memories_bf_{slug}_{os.getpid()}"[:63]
+
+
+
 def default_psql_cmd() -> list[str]:
     """Select the protected DSN transport before the legacy Docker fallback."""
     if os.environ.get("SKMEMORY_PG_DSN", "").strip():
@@ -465,8 +479,9 @@ def reconcile(
     # 1. backfill missing (embed + upsert)
     loaded = 0
     if missing:
+        bf = _scratch_table_name(agent)
         psql(
-            "DROP TABLE IF EXISTS memories_bf; CREATE TABLE memories_bf (id text,layer text,"
+            f"DROP TABLE IF EXISTS {bf}; CREATE TABLE {bf} (id text,layer text,"
             "role text,title text,content text,summary text,tags text,source text,"
             "created_at text,updated_at text,memory_json text,agent text,embedding text);"
         )
@@ -513,7 +528,7 @@ def reconcile(
                     ]
                 )
             run_psql(
-                PSQL + ["-c", "COPY memories_bf FROM STDIN WITH (FORMAT csv);"],
+                PSQL + ["-c", f"COPY {bf} FROM STDIN WITH (FORMAT csv);"],
                 input_text=buf.getvalue(),
             )
             loaded += len(pairs)
@@ -522,9 +537,9 @@ def reconcile(
             "updated_at,memory_json,agent,embedding) SELECT id,layer,role,title,content,summary,"
             "tags::text[],source,created_at::timestamptz,"
             "COALESCE(NULLIF(updated_at,'')::timestamptz,created_at::timestamptz),"
-            "memory_json::jsonb,agent,embedding::vector FROM memories_bf ON CONFLICT (id) DO NOTHING;"
+            f"memory_json::jsonb,agent,embedding::vector FROM {bf} ON CONFLICT (id) DO NOTHING;"
         )
-        psql("DROP TABLE IF EXISTS memories_bf;")
+        psql(f"DROP TABLE IF EXISTS {bf};")
 
     # 2. prune orphans (pg rows for this agent with no flat file) -- GUARDED.
     # would_prune is computed in Python from the already-agent-scoped pg_ids and
