@@ -20,6 +20,7 @@ FIXTURE_PATH = Path(__file__).parent / "data/profile-conformance-v1.json"
 FIXTURE_HASH = "sha256:52f74fca0abbb0ad8fe54fc550b83827175eff1f14b5fa3aad0140ad9a8a56e1"
 _SHA256_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+RegistryState = Literal["missing", "stale", "corrupt", "unavailable", "conflicting"]
 
 
 class _StrictModel(BaseModel):
@@ -105,11 +106,13 @@ class ResolvedMemoryProfile(_StrictModel):
 
     profile_id: str
     state: str
+    registry_state: RegistryState | None = None
     healthy: bool
     profile_kind: Literal["human", "service"] | None = None
     selectable: bool = False
     fallback_eligible: bool = False
     memory_principal_id: str | None = None
+    default_tools: list[str] = Field(default_factory=list)
     profile_revision: str | None = None
     profile_hash: str | None = None
 
@@ -163,9 +166,35 @@ def _read_object(path: Path) -> dict[str, Any]:
     return value
 
 
-def _unknown(profile_id: str, state: str) -> ResolvedMemoryProfile:
+def _unknown(
+    profile_id: str, state: str, registry_state: RegistryState | None = None
+) -> ResolvedMemoryProfile:
     """Return a no-memory Unknown projection."""
-    return ResolvedMemoryProfile(profile_id=profile_id, state=state, healthy=False)
+    return ResolvedMemoryProfile(
+        profile_id=profile_id,
+        state=state,
+        registry_state=registry_state,
+        healthy=False,
+    )
+
+
+def _registry_has_conflict(document: dict[str, Any]) -> bool:
+    """Identify ambiguous bindings before generic schema validation."""
+    profiles = document.get("profiles")
+    if not isinstance(profiles, list):
+        return False
+    entries = [entry for entry in profiles if isinstance(entry, dict)]
+    identifiers = [entry.get("profile_id") for entry in entries]
+    principals = [entry.get("memory_principal_id") for entry in entries]
+    return bool(
+        len(identifiers) != len(set(identifiers))
+        or len(principals) != len(set(principals))
+        or any(
+            entry.get("profile_kind") == "service"
+            and (entry.get("selectable") is True or entry.get("fallback_eligible") is True)
+            for entry in entries
+        )
+    )
 
 
 def resolve_memory_profile(
@@ -182,21 +211,25 @@ def resolve_memory_profile(
     try:
         registry_raw = _read_object(base / REGISTRY_PATH)
     except FileNotFoundError:
-        return _unknown(profile_id, "missing_registry")
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-        return _unknown(profile_id, "corrupt_registry")
+        return _unknown(profile_id, "missing_registry", "missing")
+    except OSError:
+        return _unknown(profile_id, "corrupt_registry", "unavailable")
+    except (UnicodeError, json.JSONDecodeError, ValueError):
+        return _unknown(profile_id, "corrupt_registry", "corrupt")
 
     if (
         registry_raw.get("schema_version") != REGISTRY_SCHEMA_VERSION
         or registry_raw.get("schema_revision") != SCHEMA_REVISION
     ):
-        return _unknown(profile_id, "unknown_registry_version")
+        return _unknown(profile_id, "unknown_registry_version", "stale")
+    if _registry_has_conflict(registry_raw):
+        return _unknown(profile_id, "corrupt_registry", "conflicting")
     try:
         registry = ProfileRegistryV1.model_validate(registry_raw)
     except ValidationError:
-        return _unknown(profile_id, "corrupt_registry")
+        return _unknown(profile_id, "corrupt_registry", "corrupt")
     if registry.registry_hash != registry_content_hash(registry_raw):
-        return _unknown(profile_id, "registry_hash_mismatch")
+        return _unknown(profile_id, "registry_hash_mismatch", "stale")
 
     matches = [entry for entry in registry.profiles if entry.profile_id == profile_id]
     if not matches:
