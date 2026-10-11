@@ -32,6 +32,16 @@
 - Reconcile now uses the configured node-local `SKMEMORY_PG_DSN` through a
   psycopg transport, without exposing the DSN in argv or requiring Docker socket
   access. SQL failures now stop the run instead of appearing as an empty cache.
+- Reconcile backfill now scopes its scratch table to the agent slug and PID
+  (`memories_bf_<agent>_<pid>`) instead of a single shared `memories_bf` name,
+  so two overlapping backfill runs no longer race on the same table.
+- Added the SKPM-PROF-01 registry writer (`discover_profile_ids`,
+  `build_profile_document`, `sync_profile_registry`, and `skmemory profile
+  status` / `skmemory profile sync`). The fail-closed reader from SKPM-PROF-01
+  shipped with no writer or migration, so any host that predated it resolved
+  every profile as `missing_registry` and lost memory ownership; this
+  bootstraps and idempotently repairs `config/profile-registry.json` and each
+  `agents/<id>/profile.json`.
 
 ## [0.11.17] - 2026-08-20
 
