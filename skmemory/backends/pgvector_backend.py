@@ -767,6 +767,88 @@ class PGVectorBackend(BaseBackend):
             )
             return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
 
+    def search_lexical(
+        self, query: str, limit: int = 10, layer=None, tags=None, source=None
+    ) -> list[Memory]:
+        """PURE lexical search, no vector stage: ParadeDB BM25 if available.
+
+        ``search_text`` cannot serve as a lexical arm for fusion, because it is
+        vector-first and only reaches its text stages when the vector stage
+        returns zero rows. A fused search needs each arm's independent opinion,
+        so this exposes the lexical opinion on its own.
+
+        It uses the ``memories_bm25`` ParadeDB index, which this schema has
+        built and maintained all along while no query path used it: every text
+        stage in ``search_text`` is Postgres native full-text (``tsv`` +
+        ``ts_rank``), not BM25, despite that method's docstring calling it
+        BM25. Real BM25 with proper IDF is exactly what a rare-identifier query
+        needs: measured against a 128-document corpus, the query
+        "per node postgres rebuild remediation plan prb-6f069c5e" puts the
+        terse ``prb-6f069c5e`` record at BM25 rank 7, while the mxbai dense arm
+        does not surface it in the top 25 at all.
+
+        Falls back to ``ts_rank`` when ``pg_search`` is not installed. That is
+        a CAPABILITY choice made once per call from what the server offers, not
+        a result-dependent fallback: it never reruns because it disliked the
+        rows it got back.
+        """
+        clauses, params = ["agent=%s"], [self.agent]
+        if layer is not None:
+            clauses.append("layer=%s")
+            params.append(str(getattr(layer, "value", layer)))
+        if tags:
+            clauses.append("tags @> %s")
+            params.append(list(tags))
+        if source:
+            clauses.append("source=%s")
+            params.append(source)
+        where = " AND ".join(clauses)
+        conn = self._connection()
+
+        if self._has_bm25_index():
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT memory_json FROM memories WHERE {where} "
+                        f"AND id @@@ paradedb.boolean(should => ARRAY["
+                        f"  paradedb.match('content', %s), paradedb.match('title', %s)"
+                        f"]) ORDER BY paradedb.score(id) DESC LIMIT %s",
+                        params + [query, query, limit],
+                    )
+                    return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
+            except Exception as exc:
+                # Surface it: a BM25 arm that silently degrades to ts_rank is
+                # indistinguishable from one that worked, which is the defect
+                # class this whole change exists to remove.
+                logger.warning("ParadeDB BM25 lexical search failed, using ts_rank: %s", exc)
+                conn.rollback()
+
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT memory_json FROM memories WHERE {where} "
+                f"AND tsv @@ plainto_tsquery('english', %s) "
+                f"ORDER BY ts_rank(tsv, plainto_tsquery('english', %s)) DESC LIMIT %s",
+                params + [query, query, limit],
+            )
+            return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
+
+    def _has_bm25_index(self) -> bool:
+        """Whether the ParadeDB BM25 index exists. Cached per instance."""
+        if getattr(self, "_bm25_available", None) is None:
+            try:
+                conn = self._connection()
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='pg_search') "
+                        "AND EXISTS (SELECT 1 FROM pg_indexes "
+                        "WHERE tablename='memories' AND indexname='memories_bm25')"
+                    )
+                    self._bm25_available = bool(cur.fetchone()[0])
+            except Exception as exc:
+                logger.warning("could not probe for the BM25 index: %s", exc)
+                self._bm25_available = False
+        return self._bm25_available
+
     def search(self, query: str, limit: int = 10) -> list[Memory]:
         """Semantic vector search (cosine). Falls back to text search if no embedding."""
         qvec = self._embed(query)

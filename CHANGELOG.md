@@ -8,6 +8,74 @@
 
 ### Added
 
+- Rank-space reranking for the fused path (`skmemory/rerank.py`), applied to
+  the fused POOL before it is truncated to the caller's limit. R1 alone widened
+  recall on the real backend while DROPPING MRR (0.298 to 0.266), because
+  interleaving hands every arm's champion a head slot and some champions are
+  topical near-misses. `RareTermReranker` boosts candidates carrying the
+  query's identifier-shaped terms (a digit, or an implausibly long opaque
+  token) when those terms are rare enough to discriminate within the pool, and
+  ABSTAINS otherwise, returning the identity order so it is safe to apply
+  unconditionally. Measured on real skmem-pg with real mxbai: overall recall@5
+  0.375 to 0.625, MRR 0.298 to 0.347, nDCG@5 0.289 to 0.408, and the
+  rare-identifier class from 0.167 to 1.000, with no class regressing.
+  `SKMEMORY_SEARCH_RERANK` (on/off, default on) and
+  `SKMEMORY_SEARCH_RERANK_DIVISOR` control it; `NoopReranker` is the named off
+  switch and `ChainReranker` composes stages, so a real cross-encoder drops in
+  as another stage when a rerank endpoint exists.
+- The boost divides a RANK rather than scaling the fused score, which bounds it
+  by construction: a candidate already at rank 1 cannot be displaced however
+  hard another is boosted. That bound is load-bearing, not decoration. The
+  entity query `chiap08` is identifier-shaped and rare, but the document
+  containing it is the bridge rather than the answer, so an absolute reorder
+  would promote the wrong row and wreck that class. Pinned by
+  `test_rerank_cannot_displace_a_rank_one_candidate`. The divisor default of
+  5.0 was swept on both harnesses rather than chosen: offline the identifier
+  class maxes at any value >= 2.0 while MRR saturates at 5.0, and on the real
+  backend recall@5 is flat from 2.0 up while MRR climbs to 5.0 and stops.
+- `PGVectorBackend.search_lexical()`: a pure lexical search with no vector
+  stage, over the `memories_bm25` ParadeDB index. That index has been built and
+  maintained by this schema all along while no query path used it, because
+  every text stage in `search_text` is Postgres native full-text (`tsv` +
+  `ts_rank`) rather than BM25, despite that method's docstring calling it BM25.
+  `search_text` also cannot serve as a fusion arm at all, being vector-first:
+  it only reaches its text stages when the vector stage returns zero rows.
+- `scripts/fusion_real_backend_ab.py`: the real-backend A/B harness, since the
+  offline bench proves the fusion LOGIC but not that a win survives contact
+  with mxbai and ParadeDB. It refuses any database but a throwaway one, refuses
+  a non-local DSN (skmem-pg is per-node by design, prb-6f069c5e), refuses to
+  provision its agent inside the real `~/.skcapstone`, and deletes its rows
+  unless asked to keep them.
+
+- Multi-arm retrieval fusion (`skmemory/fusion.py`), wired into
+  `MemoryStore.search()` via the new `search_fused()`. Four arms (semantic,
+  lexical, graph one-hop entity expansion, and a temporal date predicate that
+  abstains unless the query names a real window) run independently, are capped
+  per arm, and merge by rank-depth interleaving with RRF as the within-depth
+  tiebreak. Replaces a fallback chain in which the lexical leg was reachable
+  only when the dense leg returned an empty list, so a confident-but-wrong
+  dense result meant BM25's exact identifier match was never consulted.
+  Measured overall recall@5 0.333 -> 0.875 and MRR 0.302 -> 0.662 with no
+  query class regressing. `SKMEMORY_SEARCH_FUSION` takes `on`/`off`/`auto`
+  (default `auto`: fuse only when a derived backend is attached, so a
+  primary-only store is unchanged); when fusion finds nothing, `search()`
+  still runs the legacy chain, so enabling it cannot lose a hit.
+- Every retrieval arm now reports a typed `ArmOutcome` of `ok` / `abstained` /
+  `unavailable` / `failed`, so a backend that was never attached, an arm with
+  nothing to say, and an arm that raised are distinguishable instead of all
+  collapsing into one falsy value and silently selecting another code path. A
+  failed arm degrades the ranking and logs, rather than killing the search.
+- `skmemory.fusion.parse_time_window()`: conservative date-window extraction
+  (named month with optional year, `YYYY-MM`, bare year, today/yesterday) that
+  returns `None` rather than guessing, matching month names on whole words so
+  the `may` inside `maybe` does not trigger a window.
+- `skmemory.eval.fusion_bench`: a discriminating offline A/B harness, 128
+  documents and 24 queries across four classes each built so at least one arm
+  cannot find the answer. The previous retrieval fixture was 10 documents with
+  deliberately distinctive per-item vocabulary, so every strategy scored 1.0
+  and the committed baseline was pinned at ceiling, unable to detect either an
+  improvement or a regression.
+
 - Opt-in, bounded reweave backward pass on `MemoryStore.snapshot()`
   (`reweave=True`, `reweave_top_k=5`, both off/default-5 unless passed).
   When enabled, a new write re-links the top-K most-related OLDER memories
@@ -19,6 +87,44 @@
   existing callers.
 
 ### Fixed
+
+- The fused path took its lexical arm from `self.primary`, which is SQLite in
+  every real deployment because skmem-pg attaches as the VECTOR backend. So a
+  node with ParadeDB BM25 available was served SQLite LIKE, and fusion
+  REGRESSED the rare-identifier class to 0.000 against the legacy path's 0.167
+  on the real backend. The arm now prefers the backend's dedicated lexical
+  engine when one is exposed, resolved once from what the backend offers rather
+  than re-queried because it disliked the rows it got back.
+- The fusion benchmark's eight temporal documents were byte-identical. That
+  reads as a clean "same subject, different month" design offline and is fatal
+  and silent against a real store, because `snapshot()` de-duplicates on a
+  content hash: 7 of 8 were dropped on ingest (128 ingested, 121 stored) and
+  the temporal class was scored against a corpus missing seven of its own
+  answers. An offline harness cannot catch this, because it never writes
+  through a store. Pinned by `test_no_two_documents_share_content`.
+- The regression gate now gates fusion metrics PER QUERY CLASS, not only in
+  aggregate. This is load-bearing: naive equal-weight RRF raises the overall
+  recall@5 number while destroying the paraphrase class (0.833 -> 0.000),
+  because a decoy placing mid-pack in two arms outscores the true answer
+  placing rank 1 in one arm. Gating only the aggregate would have let that
+  through CI. Verified by simulation: swapping the shipped strategy for plain
+  RRF turns the gate red on three metrics.
+- The fusion benchmark applies the audience privacy filter to the retrieval
+  candidate set before any arm runs, never to the fused top-k, since a
+  predicate after a limit cannot distinguish a filtered-empty from a
+  genuinely-empty (the same shape as the `synthesize_*` silent-empty bug).
+  Adding arms demonstrably widens private-row reach, so the benchmark re-proves
+  the leak count for every strategy rather than inheriting it from a previous
+  run. To be precise about the layer: `MemoryStore.search()` has never taken an
+  audience and still does not, so this is the benchmark modelling the pattern
+  the real filter (in `ritual.py`, downstream of search) should follow, not a
+  claim that the store filters. Fusion therefore cannot introduce a leak at
+  this layer, because there is no filter at this layer to weaken; it does hand
+  the downstream filter a wider candidate set, which is why the benchmark
+  measures that reach explicitly.
+- The graph arm skips rows the source of truth no longer holds instead of
+  emitting an id the caller cannot hydrate, since the graph is a derived
+  projection and can name a deleted memory.
 
 - `skmem_reconcile.py` was four independently-evolved copies (this repo's
   `scripts/skmem_reconcile.py`, `deploy/skmem-pg/skmem_reconcile.py`, the

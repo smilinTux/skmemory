@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
 from .agents import get_agent_paths
@@ -22,6 +23,13 @@ from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
 from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
 from .forget import ForgetReport, StorePurge, resolve_agent
+from .fusion import (
+    DEFAULT_ARM_CAP,
+    FusionResult,
+    fuse,
+    parse_time_window,
+    run_arm,
+)
 from .models import (
     EmotionalSnapshot,
     Memory,
@@ -30,6 +38,7 @@ from .models import (
     SeedMemory,
 )
 from .query_sanitizer import sanitize_query
+from .rerank import NoopReranker, RareTermReranker
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
 from .skseed_validation import annotate_truth_score, resolve_auto_validate
 from .tombstones import write_tombstone
@@ -863,6 +872,12 @@ class MemoryStore:
             list[Memory]: Matching memories ranked by relevance.
         """
         query = sanitize_query(query)
+
+        if self._fusion_enabled():
+            fused = self.search_fused(query, limit=limit, tags=tags, layer=layer, source=source)
+            if fused is not None:
+                return fused
+
         if self.vector:
             try:
                 results = self.vector.search_text(
@@ -874,6 +889,200 @@ class MemoryStore:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
         return self.primary.search_text(query, limit=limit)
+
+    def _fusion_enabled(self) -> bool:
+        """Whether multi-arm fusion should handle ``search()``.
+
+        ``SKMEMORY_SEARCH_FUSION`` takes ``on`` / ``off`` / ``auto`` (default
+        ``auto``: fuse whenever a second arm is actually available, since with
+        only the primary backend attached fusion and the legacy path are the
+        same single query).
+        """
+        mode = os.environ.get("SKMEMORY_SEARCH_FUSION", "auto").strip().casefold()
+        if mode in ("off", "0", "false", "no"):
+            return False
+        if mode in ("on", "1", "true", "yes"):
+            return True
+        return self.vector is not None or self.graph is not None
+
+    def _reranker(self):
+        """The reranker for the fused path.
+
+        ``SKMEMORY_SEARCH_RERANK`` takes ``on`` / ``off`` (default ``on``), and
+        ``SKMEMORY_SEARCH_RERANK_DIVISOR`` overrides the rank divisor.
+
+        On by default because reranking is what makes fusion safe to turn on at
+        all: R1 alone widened recall while dropping MRR on the real backend
+        (0.298 to 0.266), since interleaving hands every arm's champion a head
+        slot and some champions are topical near-misses. The reranker abstains
+        unless the query carries an identifier-shaped term, so on a query it has
+        no opinion about it returns the identity order and costs nothing.
+        """
+        mode = os.environ.get("SKMEMORY_SEARCH_RERANK", "on").strip().casefold()
+        if mode in ("off", "0", "false", "no"):
+            return NoopReranker()
+        raw = os.environ.get("SKMEMORY_SEARCH_RERANK_DIVISOR", "").strip()
+        try:
+            divisor = float(raw) if raw else None
+        except ValueError:
+            logger.warning("ignoring non-numeric SKMEMORY_SEARCH_RERANK_DIVISOR=%r", raw)
+            divisor = None
+        return RareTermReranker(**({"rank_divisor": divisor} if divisor else {}))
+
+    def search_fused(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        tags: list[str] | None = None,
+        layer: str | None = None,
+        source: str | None = None,
+        return_report: bool = False,
+    ) -> list[Memory] | tuple[list[Memory], FusionResult] | None:
+        """Search by fusing every retrieval arm this store actually has.
+
+        Four arms, run independently and merged by rank-depth interleaving
+        (see :mod:`skmemory.fusion` for the measurements behind that choice):
+
+        ``semantic``  dense cosine over the vector backend.
+        ``lexical``   the primary backend's text search (SQLite LIKE, or
+                      Postgres BM25 when skmem-pg is the primary).
+        ``graph``     one-hop entity expansion over the graph backend.
+        ``temporal``  a date-bounded listing, which only runs when the query
+                      actually names a time window.
+
+        Every filter (``layer``, ``tags``, ``source``) is pushed into each
+        arm's own query rather than applied to the merged output. That ordering
+        is postmortem 2026-10-16 §3.11's lesson: a predicate that runs after a
+        limit silently returns fewer rows than asked for, and the caller cannot
+        distinguish a filtered-empty from a genuinely-empty.
+
+        Returns ``None`` when no arm produced anything, so the caller can take
+        its legacy path with that fact visible rather than inferred. With
+        ``return_report=True`` returns ``(memories, FusionResult)`` so a caller
+        can see which arm produced which hit.
+        """
+        found: dict[str, Memory] = {}
+
+        def _collect(memories: Sequence[Memory]) -> list[str]:
+            ids = []
+            for mem in memories:
+                mem_id = getattr(mem, "id", None)
+                if not mem_id:
+                    continue
+                found.setdefault(str(mem_id), mem)
+                ids.append(str(mem_id))
+            return ids
+
+        # Over-fetch per arm so the merge has something to choose between: a
+        # top-`limit` slice from each arm leaves fusion nothing to reorder.
+        arm_limit = max(limit * 3, DEFAULT_ARM_CAP)
+
+        def _semantic() -> list[str]:
+            backend = self.vector
+            search_semantic = getattr(backend, "search_semantic", None)
+            if search_semantic is None:
+                return []
+            return _collect(search_semantic(query, limit=arm_limit))
+
+        def _lexical() -> list[str]:
+            # Prefer the strongest lexical engine the attached backends offer.
+            # skmem-pg is attached as the VECTOR backend with SQLite as the
+            # primary index, so taking the lexical arm from `self.primary`
+            # means a deployment with ParadeDB BM25 available was still being
+            # served SQLite LIKE. Measured on the real backend, that cost the
+            # whole rare-identifier query class: BM25 puts the answer at rank
+            # 7, LIKE does not surface it.
+            #
+            # This is a capability choice resolved once from what the backend
+            # exposes, not a result-dependent fallback: it does not re-query
+            # because it disliked the rows it got back.
+            search_lexical = getattr(self.vector, "search_lexical", None)
+            if search_lexical is not None:
+                return _collect(
+                    search_lexical(query, limit=arm_limit, layer=layer, tags=tags, source=source)
+                )
+            return _collect(self.primary.search_text(query, limit=arm_limit))
+
+        def _graph() -> list[str]:
+            backend = self.graph
+            search_by_entity = getattr(backend, "search_by_entity", None)
+            if search_by_entity is None:
+                return []
+            ids = []
+            for row in search_by_entity(query, limit=arm_limit) or []:
+                row_id = row.get("id") if isinstance(row, dict) else getattr(row, "id", None)
+                if not row_id:
+                    continue
+                row_id = str(row_id)
+                if row_id not in found:
+                    loaded = self.recall(row_id)
+                    if loaded is None:
+                        # The graph is a derived projection and can name a row
+                        # the source of truth no longer has. Skip it rather
+                        # than emit an id the caller cannot hydrate.
+                        continue
+                    found[row_id] = loaded
+                ids.append(row_id)
+            return ids
+
+        def _temporal() -> list[str]:
+            window = parse_time_window(query)
+            if window is None:
+                return []  # no date in the query: this arm has no opinion
+            after, before = window
+            return _collect(
+                self.primary.list_memories(
+                    layer=layer,
+                    tags=tags,
+                    limit=arm_limit,
+                    created_after=after,
+                    created_before=before,
+                    source=source,
+                )
+            )
+
+        arms = [
+            run_arm("semantic", _semantic if self.vector is not None else None),
+            run_arm("lexical", _lexical),
+            run_arm("graph", _graph if self.graph is not None else None),
+            run_arm("temporal", _temporal),
+        ]
+        # Fuse the WHOLE pool, then rerank, then truncate. Reranking a list
+        # already cut to `limit` could never promote the candidate it exists to
+        # promote: measured on the real backend, the correct answer for an
+        # identifier query sits at fused rank 8.
+        report = fuse(arms, limit=max(limit, DEFAULT_ARM_CAP))
+
+        if report.ids:
+            pool_texts = [
+                f"{getattr(found[i], 'title', '')} {getattr(found[i], 'content', '')}"
+                for i in report.ids
+                if i in found
+            ]
+            pool_ids = [i for i in report.ids if i in found]
+            outcome = self._reranker().rerank(query, pool_texts)
+            if outcome.applied:
+                logger.debug("search rerank: %s", outcome.detail)
+                report.ids = [pool_ids[i] for i in outcome.order]
+            else:
+                report.ids = pool_ids
+        report.ids = report.ids[:limit]
+
+        if report.failed_arms:
+            logger.warning(
+                "search fusion ran with %d arm(s) failed: %s",
+                len(report.failed_arms),
+                report.summary(),
+            )
+        else:
+            logger.debug("search fusion: %s", report.summary())
+
+        if not report.ids:
+            return (None, report) if return_report else None
+
+        ordered = [found[i] for i in report.ids if i in found]
+        return (ordered, report) if return_report else ordered
 
     def check_duplicate(
         self,
