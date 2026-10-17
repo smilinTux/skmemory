@@ -38,8 +38,8 @@ TIERS = ["short-term", "mid-term", "long-term"]
 
 # Per-tier age cutoffs before archiving
 TIER_AGE_DAYS = {
-    "short-term": 3,   # 72h TTL — anything older should be promoted or archived
-    "mid-term": 30,    # keep for a month
+    "short-term": 3,  # 72h TTL — anything older should be promoted or archived
+    "mid-term": 30,  # keep for a month
 }
 
 # Tags that protect memories from TTL-based archival.
@@ -47,11 +47,15 @@ TIER_AGE_DAYS = {
 # otherwise uses this hardcoded fallback.
 try:
     from skmemory.promotion import PromotionCriteria
+
     PROTECTED_TAGS = set(PromotionCriteria().protected_tags)
 except ImportError:
     PROTECTED_TAGS = {
-        "narrative", "journal-synthesis", "milestone",
-        "breakthrough", "cloud9:achieved",
+        "narrative",
+        "journal-synthesis",
+        "milestone",
+        "breakthrough",
+        "cloud9:achieved",
     }
 
 # Sources eligible for last-chance promotion before archiving
@@ -62,6 +66,7 @@ NOW = datetime.now(timezone.utc)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def load_memory(path: Path) -> dict | None:
     try:
@@ -107,6 +112,7 @@ def db_delete(mem_id: str, dry_run: bool):
 
 # ── Phase 1: Deduplication ────────────────────────────────────────────────────
 
+
 def deduplicate(dry_run: bool, verbose: bool) -> dict:
     """Find memories with identical titles, keep newest, archive the rest."""
     title_map: dict[str, list[tuple[datetime, Path, dict]]] = defaultdict(list)
@@ -122,7 +128,9 @@ def deduplicate(dry_run: bool, verbose: bool) -> dict:
             title = data.get("title", "").lower().strip()
             if not title:
                 continue
-            created = parse_dt(data.get("created_at", "")) or datetime.min.replace(tzinfo=timezone.utc)
+            created = parse_dt(data.get("created_at", "")) or datetime.min.replace(
+                tzinfo=timezone.utc
+            )
             title_map[title].append((created, f, data))
 
     archived = 0
@@ -144,6 +152,7 @@ def deduplicate(dry_run: bool, verbose: bool) -> dict:
 
 
 # ── Phase 2: Age-based archiving ──────────────────────────────────────────────
+
 
 def last_chance_promote(data: dict, src: Path, dry_run: bool, verbose: bool) -> bool:
     """Try to promote a memory before archiving it.
@@ -222,6 +231,7 @@ def archive_old(dry_run: bool, verbose: bool) -> dict:
 
 # ── Phase 3: Count remaining files ───────────────────────────────────────────
 
+
 def count_files() -> dict:
     counts = {}
     for tier in TIERS:
@@ -232,6 +242,7 @@ def count_files() -> dict:
 
 
 # ── Report ────────────────────────────────────────────────────────────────────
+
 
 def write_report(stats: dict, dry_run: bool):
     """Write cleanup summary to short-term memory."""
@@ -265,9 +276,12 @@ def write_report(stats: dict, dry_run: bool):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="SKCapstone memory cleanup: dedup + age-out")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be done without making changes")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Show what would be done without making changes"
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Print each file action")
     args = parser.parse_args()
 
@@ -277,27 +291,41 @@ def main():
 
     # Before stats
     before = count_files()
-    print(f"  Before: {before['total']} files "
-          f"(short-term: {before['short-term']}, mid-term: {before['mid-term']}, long-term: {before['long-term']})")
+    print(
+        f"  Before: {before['total']} files "
+        f"(short-term: {before['short-term']}, mid-term: {before['mid-term']}, long-term: {before['long-term']})"
+    )
 
     # Phase 1: Dedup
     print("  Phase 1: deduplication...")
     dedup_stats = deduplicate(args.dry_run, args.verbose)
-    print(f"    → {dedup_stats['duplicate_groups']} duplicate title groups, {dedup_stats['archived']} files archived")
+    print(
+        f"    → {dedup_stats['duplicate_groups']} duplicate title groups, {dedup_stats['archived']} files archived"
+    )
 
     # Phase 2: Age-out (with protected tags + last-chance promotion)
-    print(f"  Phase 2: archiving memories past tier TTL (short-term: {TIER_AGE_DAYS['short-term']}d, mid-term: {TIER_AGE_DAYS['mid-term']}d)...")
+    print(
+        f"  Phase 2: archiving memories past tier TTL (short-term: {TIER_AGE_DAYS['short-term']}d, mid-term: {TIER_AGE_DAYS['mid-term']}d)..."
+    )
     aged_stats = archive_old(args.dry_run, args.verbose)
-    print(f"    → {aged_stats['archived']} files archived, "
-          f"{aged_stats.get('protected_skipped', 0)} protected, "
-          f"{aged_stats.get('promoted', 0)} last-chance promoted")
+    print(
+        f"    → {aged_stats['archived']} files archived, "
+        f"{aged_stats.get('protected_skipped', 0)} protected, "
+        f"{aged_stats.get('promoted', 0)} last-chance promoted"
+    )
 
     # After stats
     after = count_files()
-    print(f"  After:  {after['total']} files "
-          f"(short-term: {after['short-term']}, mid-term: {after['mid-term']}, long-term: {after['long-term']})")
+    print(
+        f"  After:  {after['total']} files "
+        f"(short-term: {after['short-term']}, mid-term: {after['mid-term']}, long-term: {after['long-term']})"
+    )
 
-    target_status = "✓ under target" if after["total"] < TARGET_MAX_FILES else f"⚠ still over target ({TARGET_MAX_FILES})"
+    target_status = (
+        "✓ under target"
+        if after["total"] < TARGET_MAX_FILES
+        else f"⚠ still over target ({TARGET_MAX_FILES})"
+    )
     print(f"  Target <{TARGET_MAX_FILES}: {target_status}")
 
     stats = {"dedup": dedup_stats, "aged": aged_stats, "before": before, "after": after}
