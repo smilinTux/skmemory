@@ -30,6 +30,24 @@
   incident's window. `SKMEMORY_PG_ALLOW_REMOTE=1` silences the warning
   for a deliberate, audited exception and always wins over strict mode.
   See `docs/postmortems/2026-10-16-sqlite-only-orphans.md`.
+- `scripts/skcapstone-backup.sh` (the laptop's off-node snapshot of .158's
+  whole `~/.skcapstone` tree, including flat memory files) is brought
+  back into version control (this repo's copy had drifted stale relative
+  to the live, more advanced hardlink-snapshot version) and extended with
+  weekly/monthly GFS tiers on top of the existing 7-day daily tier,
+  mirroring `deploy/ops/skmem-pg-backup.sh`'s design. Card: skmemory
+  sqlite-only-orphans, 2026-10-16 -- 7 days of daily-only retention could
+  never have reached back to April, when that incident's corruption
+  actually started. See
+  `docs/postmortems/2026-10-16-sqlite-only-orphans.md`.
+- `deploy/ops/skmem-pg-backup.sh` now promotes daily dumps into weekly
+  (Sunday) and monthly (1st) tiers with their own independent retention
+  (default 8 weeks / 12 months), on top of the existing 14-day daily
+  tier. Card: skmemory sqlite-only-orphans, 2026-10-16 -- skmem-pg had no
+  long-term tier at all; recovery had to mine three accidental,
+  undocumented full dumps because 14 days of daily retention couldn't
+  reach back far enough. See
+  `docs/postmortems/2026-10-16-sqlite-only-orphans.md`.
 - New `skmemory/pytest_guard.py`: `FileBackend.save()`, `SQLiteBackend.save()`,
   `SQLiteBackend.import_backup()`, and `VaultedSQLiteBackend.save()` now
   refuse to write into the REAL, unmodified `~/.skcapstone/agents/` tree
