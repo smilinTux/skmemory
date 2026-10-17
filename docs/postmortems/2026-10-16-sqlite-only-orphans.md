@@ -179,6 +179,13 @@ replace a longer existing pg row with a shorter one, without an explicit overrid
 log loudly (not silently) on every refusal. Shipped: skmemory PR #36 (pg backend), PR #37
 (reconcile script, also brought under version control).
 
+**Correction, found during deployment of this fix (see §3.12):** `~/skmem-build/skmem_reconcile.py`
+on `.158` was NOT actually the file PR #37 fixed. It was (and had been since 2026-09-13) a
+symlink into a FOURTH copy of this script, in a different repo entirely, whose fix-carrying
+commit had only ever landed on a feature branch, never on that repo's own main. The stub
+guard did not reach the file cron actually executes until that was corrected directly during
+this investigation (see §3.12 for the full finding and §6 for what is now live where).
+
 ### 3.6 Per-node pg was designed but never actually deployed to the laptop (CONTRIBUTING, PARTIALLY FIXED, this work hardens it)
 
 `docs/skmem-pg-local-rebuild-remediation.md` (problem card `prb-6f069c5e`, status `done` in
@@ -344,6 +351,42 @@ the N most recent and filtering afterward; `synthesize_dreams` also filters by
 monkeypatchable module constants (generous ceilings against a pathological single day/week,
 not a recency window). Shipped: skmemory PR #41.
 
+### 3.12 The "one" reconcile script was actually four, and the live one was on an unmerged branch (ROOT CAUSE OF WHY §3.5's FIX DIDN'T REACH PRODUCTION, FIXED, this work)
+
+Found while deploying the §3.5 fix, not before: `~/skmem-build/skmem_reconcile.py` (the path
+every node's crontab actually invokes) is a symlink, and on `.158` it pointed at
+`~/clawd/scripts/skmem_reconcile.py`, a file in a completely different repo (Chef's personal
+`~/clawd` / `lumina` monorepo, not `skcapstone-repos/skmemory`). That file WAS already
+version-controlled, by a commit from 2026-09-13 ("put it under version control", authored by
+this same agent identity in an earlier session), over a month before this incident. But that
+commit landed only on a feature branch (`fix/retire-model-name-allowlist`), never on that
+repo's own `main` -- so the live symlink has been alive, this whole time, only because a
+shared checkout happened to be sitting on that branch. Had anyone followed the estate's own
+hygiene rule ("leave shared checkouts on main when you finish") and switched it back, the
+symlink's target would have vanished and the nightly cron job would have started failing with
+no file to run, silently, exactly the way the audit script's own silence went unnoticed for
+six months (§3.3).
+
+Counting every copy this investigation found: (1) that `~/clawd` repo's copy, the one
+actually live; (2) `skcapstone-repos/skmemory/scripts/skmem_reconcile.py`, added by this
+investigation's own PR #37 before this duplication was noticed; (3)
+`skcapstone-repos/skmemory/deploy/skmem-pg/skmem_reconcile.py`, an older, separately-evolved
+lineage with its own prune-guard safety net (card `6b8b3ced`) that the other two copies lack
+entirely; (4) `skcapstone-repos/skmemory/skmemory/reconcile.py`, a 754-line importable,
+unit-tested engine that neither cron copy calls. None of the four knew the others existed.
+PR #37's stub guard (§3.5) was real, tested, and merged, and never ran in production for a
+single day, because it was never the file `~/skmem-build/skmem_reconcile.py` pointed at on
+the host that matters.
+
+**Fix (this work):** fast-forwarded the 2026-09-13 commit onto `~/clawd`'s actual `main`
+(so the live file is no longer dependent on a shared checkout's current branch), applied the
+same stub guard to it, and updated the live file on `.158` directly. On the laptop, where
+`~/skmem-build/skmem_reconcile.py` was a plain copied file (not a symlink) with no guard at
+all, repointed it to `skcapstone-repos/skmemory/scripts/skmem_reconcile.py` (PR #37's
+already-tested copy), since the laptop has no `~/clawd` repo. This closes the immediate gap
+on both hosts but does **not** consolidate the four copies into one; that is recorded here as
+unresolved follow-up work, not executed in this pass.
+
 ## 4. Why backups were insufficient
 
 ### 4.1 skmem-pg nightly dumps actually keep 7 days, not 14
@@ -428,6 +471,10 @@ as each lands; see the tracking section at the end of this document for the fina
    params, applied in each backend's own query before `limit` truncates the result; all three
    synthesis methods use them instead of fetching the N most recent and filtering afterward.
    See §3.11.
+9. **The LIVE `skmem_reconcile.py` (not just skmemory's copy of it) gets the stub guard.**
+   Fast-forwarded the file's only version-controlling commit onto its own repo's main, applied
+   the §3.5 guard to it directly, repointed the laptop's plain (ungarded) copy to a symlink
+   into the already-fixed, already-tested skmemory copy. See §3.12.
 
 See the skmemory repo's `docs/postmortems/` history and the linked PRs for implementation
 detail; this document is the narrative record and is not updated after the fixes land except
@@ -435,18 +482,29 @@ to fill in the tracking table below.
 
 ## 6. Tracking
 
-| # | Fix | Repo | PR | Status |
-|---|---|---|---|---|
-| 1 | Stub/shrink guard (pg backend) | skmemory | [#36](https://github.com/smilinTux/skmemory/pull/36) | merged |
-| 1b | Stub/shrink guard (skmem_reconcile.py) + version control | skmemory | [#37](https://github.com/smilinTux/skmemory/pull/37) | merged |
-| 2 | Drift detection alert fix (skmemory-sync-audit.sh) | skmemory | [#38](https://github.com/smilinTux/skmemory/pull/38) | merged |
-| 2b | `skcapstone doctor` memory-drift + sync-timer checks | skcapstone | [#1246](https://github.com/smilinTux/skcapstone/pull/1246) | in progress |
-| 3 | Installer wires sync timer; doctor enforces | skcapstone | TBD | in progress |
-| 4 | Backup GFS retention (pg + flat + off-node) | scripts | TBD | in progress |
-| 5 | Per-node pg DSN guard | skmemory | TBD | in progress |
-| 6 | `skmem_reconcile.py` under version control | skmemory | [#37](https://github.com/smilinTux/skmemory/pull/37) | merged |
-| 7 | Pytest real-memory-write guard | skmemory | [#39](https://github.com/smilinTux/skmemory/pull/39) | in progress |
-| 8 | `synthesize_*` query by date range + source, not recency | skmemory | [#41](https://github.com/smilinTux/skmemory/pull/41) | in progress |
+| # | Fix | Repo | PR | Status | Installed |
+|---|---|---|---|---|---|
+| 1 | Stub/shrink guard (pg backend) | skmemory | [#36](https://github.com/smilinTux/skmemory/pull/36) | merged | both (editable checkout) |
+| 1b | Stub/shrink guard (skmem_reconcile.py) + version control | skmemory | [#37](https://github.com/smilinTux/skmemory/pull/37) | merged | both (see row 9) |
+| 2 | Drift detection alert fix (skmemory-sync-audit.sh) | skmemory | [#38](https://github.com/smilinTux/skmemory/pull/38) | merged | both (deployed + laptop cron added) |
+| 2b | `skcapstone doctor` memory-drift + sync-timer checks | skcapstone | [#1246](https://github.com/smilinTux/skcapstone/pull/1246) | merged | `.158` (laptop checkout on an unrelated feature branch, not pulled) |
+| 3 | Installer wires sync timer; doctor enforces | skcapstone | [#1247](https://github.com/smilinTux/skcapstone/pull/1247) | merged | `.158` only (same laptop caveat as 2b) |
+| 4 | Backup GFS retention (pg + flat + off-node) | skmemory | [#45](https://github.com/smilinTux/skmemory/pull/45) | merged | `.158` (deployed to live paths; laptop has no skmem-pg-backup cron to update yet) |
+| 5 | Per-node pg DSN guard | skmemory | [#44](https://github.com/smilinTux/skmemory/pull/44) | merged | both (editable checkout; DSNs already per-node correct) |
+| 6 | `skmem_reconcile.py` under version control | skmemory | [#37](https://github.com/smilinTux/skmemory/pull/37) | merged | both (see row 9) |
+| 7 | Pytest real-memory-write guard | skmemory | [#39](https://github.com/smilinTux/skmemory/pull/39) | merged | both (editable checkout) |
+| 8 | `synthesize_*` query by date range + source, not recency | skmemory | [#41](https://github.com/smilinTux/skmemory/pull/41) | merged | both (editable checkout) |
+| 9 | Live `skmem_reconcile.py` guard + branch fix | lumina (`~/clawd`) + skmemory | lumina branch pushed straight to its own main (no PR tooling for that host); skmemory via #37 | merged | both: `.158` file updated in place, laptop symlink repointed |
 
-This table is updated in a follow-up commit once every fix's PR is merged and installed on
-both `.158` and the laptop.
+Installed-on-both-hosts notes: `skmemory` and `skcapstone` are editable installs
+(`pip install -e`) pointed at each host's own clone of `~/clawd/skcapstone-repos/{skmemory,skcapstone}`,
+so merging to `main` plus a `git pull` on each host's clone is the actual "install" step; both
+clones were pulled to the commits above during this investigation. `.158`'s skcapstone clone
+is on `main`; the laptop's skcapstone clone was left untouched on an unrelated in-progress
+feature branch (`feat/profile-defaults-telemetry-agent-skills`) per the shared-checkout rule,
+so rows 2b/3 are not yet live on the laptop pending that branch's own resolution. Enabling the
+sync timer for existing agents with real memory content (`architect`, `ava`, `grok`,
+`lumina-template`, and on the laptop also `jarvis`/`opus`) as part of this deployment
+triggered a handful of real, one-time `skmemory sync` runs on non-`lumina` agents; these are
+the exact idempotent, non-destructive operation this fix exists to run regularly, and none
+touched `lumina`'s data (the agent under separate, concurrent recovery).
