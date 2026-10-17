@@ -27,6 +27,7 @@ from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
 from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
+from ..pytest_guard import assert_write_allowed
 from ..sealing import SealVerdict
 from .base import BaseBackend
 
@@ -117,8 +118,13 @@ class FileBackend(BaseBackend):
 
         Raises:
             OSError: If the write could not be durably completed.
+            PytestRealMemoryWriteRefused: If called during an active pytest
+                test and the target path is the REAL, unmodified agent
+                home with no isolation/override (card: skmemory
+                pytest-writes-to-real-fleet).
         """
         path = self._file_path(memory)
+        assert_write_allowed(path)
         atomic_write_text(path, json.dumps(memory.model_dump(), indent=2, default=str))
         # Stage-2 (opt-in, gated): write a detached PQC signature sidecar when a
         # real sk_pgp backend is configured + ready. Classical default => no-op,

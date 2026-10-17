@@ -29,6 +29,7 @@ from pathlib import Path
 
 from ..atomic_io import atomic_write_bytes
 from ..models import Memory, MemoryLayer
+from ..pytest_guard import assert_write_allowed
 from ..vault import VAULT_HEADER, MemoryVault
 from .sqlite_backend import DEFAULT_BASE_PATH, SQLiteBackend
 
@@ -84,6 +85,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
                 sqlite-only orphans, 2026-10-16).
         """
         path = self._file_path(memory)
+        assert_write_allowed(path)
         json_bytes = json.dumps(memory.model_dump(), indent=2, default=str).encode("utf-8")
         atomic_write_bytes(path, self._vault.encrypt(json_bytes))
         self._index_memory(memory, path)

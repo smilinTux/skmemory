@@ -20,6 +20,23 @@
 
 ### Fixed
 
+- New `skmemory/pytest_guard.py`: `FileBackend.save()`, `SQLiteBackend.save()`,
+  `SQLiteBackend.import_backup()`, and `VaultedSQLiteBackend.save()` now
+  refuse to write into the REAL, unmodified `~/.skcapstone/agents/` tree
+  while pytest is actively running a test, unless the test explicitly
+  isolated the agent home (`SKCAPSTONE_HOME`/`SKMEMORY_HOME` pointed
+  elsewhere, exactly what this repo's own `tests/conftest.py` already
+  does) or set `SKMEMORY_ALLOW_PYTEST_REAL_WRITES=1`. skmemory's own test
+  suite was always isolated; nothing stopped a DIFFERENT consuming repo's
+  test suite (an ambient `SKAGENT=lumina`, no `SKCAPSTONE_HOME` override)
+  from writing real pytest/CI fixtures into Lumina's actual memory store --
+  confirmed: roughly 536 of her real memories were canned test content
+  ("Memory item N", "e2e-test-peer", "Sovereign Squad") written this way.
+  This guard is a library-level backstop; proper fix is still an autouse
+  test-isolation fixture in each consuming repo (see this repo's own
+  `tests/conftest.py` for the pattern). Card: skmemory
+  pytest-writes-to-real-fleet. See
+  `docs/postmortems/2026-10-16-sqlite-only-orphans.md`.
 - `scripts/skmem_reconcile.py` (the flat->pg reconcile cron job) is now
   version-controlled in this repo instead of living unversioned at
   `~/skmem-build/` on every node, and refuses to backfill a flat file
