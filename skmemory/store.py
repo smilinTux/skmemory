@@ -12,6 +12,7 @@ import hashlib
 import logging
 import re
 from collections import Counter
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from .agents import get_agent_paths
@@ -1793,12 +1794,49 @@ class MemoryStore:
         """Write any SQLite-only memories out as flat JSON files.
 
         Useful before a destructive operation, or after an import that
-        wrote into SQLite without producing flat files. Returns
-        ``{"exported", "skipped", "errors", "orphan_ids"}``.
+        wrote into SQLite without producing flat files. For each orphan,
+        the configured vector/pg backend (``self.vector``, e.g. a
+        ``PGVectorBackend`` backing skmem-pg) is tried FIRST for its full
+        content before falling back to the lossy ~150-char SQLite preview
+        (card: skmemory sqlite-only-orphans recovery follow-up, 2026-10-16).
+        Returns ``{"exported", "skipped", "errors", "recovered_full",
+        "orphan_ids"}``.
         """
         if isinstance(self.primary, SQLiteBackend):
-            return self.primary.export_orphans_to_flat()
-        return {"exported": 0, "skipped": 0, "errors": 0, "orphan_ids": []}
+            return self.primary.export_orphans_to_flat(
+                full_content_lookup=self._pg_fallback_content_lookup()
+            )
+        return {"exported": 0, "skipped": 0, "errors": 0, "recovered_full": 0, "orphan_ids": []}
+
+    def _pg_fallback_content_lookup(self) -> Callable[[str], str | None] | None:
+        """Build the ``full_content_lookup`` for ``export_orphans_to_flat()``.
+
+        Backed by ``self.vector`` (whatever full-content-capable backend is
+        configured -- typically the pg backend behind skmem-pg, but the same
+        duck-typed ``load()`` works for any other backend wired in) when one
+        is present. Returns ``None`` when no such backend is configured, so
+        the orphan export degrades to the old lossy-preview-only behavior
+        exactly as before. A per-id failure (unreachable backend, etc.) is
+        caught here too and logged loudly rather than raised, so one bad
+        lookup never aborts the whole rescue.
+        """
+        vector = self.vector
+        if vector is None:
+            return None
+
+        def _lookup(memory_id: str) -> str | None:
+            try:
+                mem = vector.load(memory_id)
+            except Exception as e:
+                logger.warning(
+                    "store.py: full-content fallback lookup failed for orphan %s: %s",
+                    memory_id,
+                    e,
+                )
+                return None
+            return mem.content if mem is not None else None
+
+        return _lookup
 
     def health(self) -> dict:
         """Check health of all backends.

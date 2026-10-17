@@ -20,6 +20,18 @@
 
 ### Fixed
 
+- `export_orphans_to_flat()` now tries the configured vector/pg backend's
+  full content for a SQLite-only orphan FIRST, before falling back to the
+  lossy ~150-char SQLite `content_preview` stub. `MemoryStore` wires this
+  from `self.vector` (e.g. a `PGVectorBackend` backing skmem-pg) via
+  `load()`; a missing backend, a lookup failure, or a fallback value that
+  is itself just a previously-truncated stub (a prior reconcile run can
+  have already copied the same lossy preview into pg before a safety
+  pause) all degrade to the old preview-only behavior, now with a loud
+  per-id WARNING. Card: skmemory sqlite-only-orphans recovery follow-up,
+  2026-10-16 -- a laptop's 23,525 orphans were materialized as truncated
+  stubs even though .158's skmem-pg still held full content for several
+  hundred of them, because this method had no way to ask it.
 - Empty or null memory IDs now fail closed at model, promotion, flat, SQLite,
   pgvector, AGE, and Falkor write boundaries. Reconcile and AGE projection move
   existing invalid records into a content-addressed quarantine with a

@@ -29,6 +29,7 @@ import functools
 import json
 import logging
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -171,6 +172,13 @@ ORDER BY
 
 # Reason: 150 chars is enough for an agent to decide if it needs the full memory.
 CONTENT_PREVIEW_LENGTH = 150
+
+# Appended to a SQLite-only orphan's content_preview when export_orphans_to_flat()
+# has no way to recover the real content. Also used to detect a pg (or other
+# fallback-source) row that was itself already populated from this same lossy
+# stub by an earlier reconcile run -- that is not "full content" either, it is
+# the same loss laundered through another store, and must not be trusted.
+TRUNCATED_PREVIEW_SUFFIX = "\n\n[recovered from SQLite preview — full content lost]"
 
 
 class SQLiteBackend(BaseBackend):
@@ -966,20 +974,46 @@ class SQLiteBackend(BaseBackend):
 
         return count
 
-    def export_orphans_to_flat(self) -> dict:
+    def export_orphans_to_flat(
+        self, full_content_lookup: Callable[[str], str | None] | None = None
+    ) -> dict:
         """Write any SQLite-only memories out as flat JSON files.
 
         SQLite-only = present in the index but with no flat .json file at
         ``base_path/<layer>/<id>.json`` (or 12-char shortform). Reconstructs
-        each orphan from its SQLite row and writes a Memory JSON. Note:
-        SQLite stores ``content_preview`` (~150 chars), not full content —
-        recovered memories carry ``metadata.recovered_from_sqlite_preview =
-        True`` so consumers know the content was truncated at recovery time.
+        each orphan from its SQLite row and writes a Memory JSON. SQLite
+        only stores ``content_preview`` (~150 chars), not full content, so
+        by default a recovered memory is lossy and carries
+        ``metadata.recovered_from_sqlite_preview = True``.
+
+        Args:
+            full_content_lookup: Optional ``(memory_id) -> content | None``
+                tried FIRST for each orphan, before falling back to the
+                lossy preview (card: skmemory sqlite-only-orphans recovery
+                follow-up, 2026-10-16 -- 23,525 rows on a laptop were
+                materialized as truncated stubs even though .158's skmem-pg
+                still held the full content for some of them, because this
+                method had no way to ask it). Typically bound to the
+                configured vector/pg backend's ``load()``. Its result is
+                trusted as real full content only when it is non-empty, at
+                least as long as the SQLite preview, and does NOT itself end
+                in :data:`TRUNCATED_PREVIEW_SUFFIX` -- that last check
+                matters because a reconcile run that already executed before
+                a safety pause can have copied this SAME lossy stub into the
+                fallback source, and a prefix/length check alone would
+                wrongly call that "recovered". Any exception from the
+                lookup, a ``None`` result, or a rejected candidate all fall
+                back to the old lossy-preview behavior, and that fallback
+                path logs a WARNING per id naming the orphan and its source
+                -- a silent full-fleet loss must never be invisible again.
 
         Safe: non-destructive, idempotent.
 
         Returns:
-            dict: ``{"exported": N, "skipped": M, "errors": K, "orphan_ids": [...]}``.
+            dict: ``{"exported": N, "skipped": M, "errors": K,
+            "recovered_full": F, "orphan_ids": [...]}``, where ``F`` is how
+            many of the exported orphans got real full content from
+            ``full_content_lookup`` rather than the lossy preview.
         """
         from .file_backend import FileBackend
 
@@ -992,7 +1026,13 @@ class SQLiteBackend(BaseBackend):
         ).fetchall()
 
         fb = FileBackend(base_path=str(self.base_path))
-        stats = {"exported": 0, "skipped": 0, "errors": 0, "orphan_ids": []}
+        stats = {
+            "exported": 0,
+            "skipped": 0,
+            "errors": 0,
+            "recovered_full": 0,
+            "orphan_ids": [],
+        }
         # Memories moved to the archive tree are intentional cold storage —
         # never resurrect them into an active tier as a truncated preview stub.
         archived_stems = self._archived_stems()
@@ -1030,12 +1070,52 @@ class SQLiteBackend(BaseBackend):
                 stats["skipped"] += 1
                 continue
 
+            full_content = None
+            if full_content_lookup is not None:
+                try:
+                    candidate = full_content_lookup(memory_id)
+                except Exception as e:
+                    logger.warning(
+                        "sqlite_backend.py: full-content lookup raised for orphan "
+                        "%s (source=%s): %s -- falling back to truncated preview",
+                        memory_id,
+                        source or "unknown",
+                        e,
+                    )
+                    candidate = None
+                if (
+                    candidate
+                    and not candidate.endswith(TRUNCATED_PREVIEW_SUFFIX)
+                    and len(candidate) >= len(content_preview or "")
+                ):
+                    full_content = candidate
+
+            if full_content is not None:
+                content = full_content
+                metadata = {
+                    "recovered_from_pg_fallback": True,
+                    "importance": importance or 0.5,
+                }
+            else:
+                content = (content_preview or "") + TRUNCATED_PREVIEW_SUFFIX
+                metadata = {
+                    "recovered_from_sqlite_preview": True,
+                    "importance": importance or 0.5,
+                }
+                logger.warning(
+                    "sqlite_backend.py: no full-content fallback for orphan %s "
+                    "(source=%s) -- writing a TRUNCATED %d-char SQLite preview, "
+                    "original content is LOST",
+                    memory_id,
+                    source or "unknown",
+                    len(content_preview or ""),
+                )
+
             try:
                 mem = Memory(
                     id=memory_id,
                     title=title or "Recovered memory",
-                    content=(content_preview or "")
-                    + "\n\n[recovered from SQLite preview — full content lost]",
+                    content=content,
                     summary=summary or "",
                     layer=layer,
                     role=role or "general",
@@ -1051,14 +1131,13 @@ class SQLiteBackend(BaseBackend):
                     parent_id=parent_id or None,
                     created_at=created_at,
                     updated_at=updated_at,
-                    metadata={
-                        "recovered_from_sqlite_preview": True,
-                        "importance": importance or 0.5,
-                    },
+                    metadata=metadata,
                 )
                 fb.save(mem)
                 stats["exported"] += 1
                 stats["orphan_ids"].append(memory_id)
+                if full_content is not None:
+                    stats["recovered_full"] += 1
             except Exception as e:
                 logger.warning("sqlite_backend.py: %s", e)
                 stats["errors"] += 1
