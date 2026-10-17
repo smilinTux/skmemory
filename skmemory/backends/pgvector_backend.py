@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -43,6 +44,89 @@ from .base import BaseBackend
 from .sqlite_backend import CONTENT_PREVIEW_LENGTH
 
 logger = logging.getLogger(__name__)
+
+# Hosts that satisfy the per-node architecture: this node's own loopback.
+# An empty hostname (e.g. a malformed/unparsable DSN) is left alone here;
+# it will fail loudly on connect instead, which is a separate, existing
+# failure mode this guard does not need to duplicate.
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
+
+
+class RemotePgDsnRefused(RuntimeError):
+    """Raised when ``SKMEMORY_PG_REMOTE_STRICT`` is set and the configured
+    DSN targets a non-loopback host, violating the per-node pg
+    architecture (card: prb-6f069c5e / skmemory sqlite-only-orphans)."""
+
+
+def _dsn_host(dsn: str) -> str:
+    """Best-effort hostname extraction from a postgres DSN/URI.
+
+    Args:
+        dsn: A ``postgresql://user:pass@host:port/db`` style DSN.
+
+    Returns:
+        str: The lowercased hostname, or ``""`` if it could not be parsed.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(dsn)
+        return (parsed.hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _check_dsn_is_local(dsn: str) -> None:
+    """Warn loudly (or raise) when ``dsn`` targets a non-loopback host.
+
+    skmem-pg is per-node by design: each node runs its OWN writable
+    Postgres and every agent on it is meant to point at ``localhost``
+    (see this module's docstring). prb-6f069c5e's own remediation plan
+    found exactly the violation this guards against: every agent's
+    SYNCED ``skmemory.yaml`` had hardcoded
+    ``pgvector_dsn=192.168.0.158:5432``, making ``.158`` a single point of
+    failure the per-node architecture was supposed to retire, and the
+    laptop had no local pg at all for most of the 2026-10-16 incident's
+    window (card: skmemory sqlite-only-orphans). This does not re-verify
+    that incident; it is a standing guard against a synced config or env
+    file silently re-pointing a node at another node's pg again, with
+    nobody noticing until something breaks.
+
+    Args:
+        dsn: The DSN this backend is about to connect with.
+
+    Raises:
+        RemotePgDsnRefused: If ``SKMEMORY_PG_REMOTE_STRICT`` is truthy, the
+            host is non-loopback, and ``SKMEMORY_PG_ALLOW_REMOTE`` was not
+            also set (that explicit allow always wins over strict mode).
+    """
+    host = _dsn_host(dsn)
+    if host in _LOOPBACK_HOSTS:
+        return
+
+    allowed = os.environ.get("SKMEMORY_PG_ALLOW_REMOTE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if allowed:
+        return
+
+    message = (
+        f"skmem-pg is per-node by design (card: prb-6f069c5e); this DSN targets "
+        f"a NON-LOOPBACK host ({host!r}), meaning it points at another node's "
+        f"pg instead of this node's own. Point SKMEMORY_PG_DSN at localhost, or "
+        f"set SKMEMORY_PG_ALLOW_REMOTE=1 if this is a deliberate, audited "
+        f"exception."
+    )
+    strict = os.environ.get("SKMEMORY_PG_REMOTE_STRICT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if strict:
+        raise RemotePgDsnRefused(message)
+    logger.warning("pgvector_backend: %s", message)
 
 
 class StubOverwriteRefused(RuntimeError):
@@ -250,6 +334,7 @@ class PGVectorBackend(BaseBackend):
         embed_connect_timeout: float = DEFAULT_EMBED_CONNECT_TIMEOUT,
     ):
         self.dsn = dsn
+        _check_dsn_is_local(self.dsn)
         # Ordered embed endpoints for failover. Precedence:
         #   explicit embed_urls -> explicit single embed_url -> SKMEMORY_EMBED_URLS
         #   env (which itself defaults to the single SKMEMORY_EMBED_URL).

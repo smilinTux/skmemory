@@ -20,6 +20,16 @@
 
 ### Fixed
 
+- `PGVectorBackend` now warns loudly (and can be made to refuse, via
+  `SKMEMORY_PG_REMOTE_STRICT=1`) when its DSN targets a non-loopback host.
+  skmem-pg is per-node by design (card: prb-6f069c5e); that remediation's
+  own plan found every agent's synced `skmemory.yaml` had hardcoded
+  `pgvector_dsn=192.168.0.158:5432`, making `.158` a single point of
+  failure the per-node architecture was supposed to retire, and the
+  laptop had no local pg at all for most of the 2026-10-16 orphan
+  incident's window. `SKMEMORY_PG_ALLOW_REMOTE=1` silences the warning
+  for a deliberate, audited exception and always wins over strict mode.
+  See `docs/postmortems/2026-10-16-sqlite-only-orphans.md`.
 - New `skmemory/pytest_guard.py`: `FileBackend.save()`, `SQLiteBackend.save()`,
   `SQLiteBackend.import_backup()`, and `VaultedSQLiteBackend.save()` now
   refuse to write into the REAL, unmodified `~/.skcapstone/agents/` tree
