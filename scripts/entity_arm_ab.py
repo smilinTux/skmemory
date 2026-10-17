@@ -162,11 +162,21 @@ def main() -> None:
         sys.exit("no scorable entity queries found")
 
     arm_limit = max(args.k * 3, DEFAULT_ARM_CAP)
+    # Arm outcomes per configuration. A FAILED arm scores exactly like an
+    # absent one, so without this a broken arm reads as a weak arm. That
+    # happened: an earlier run of this harness imported skmemory from the
+    # installed checkout rather than the worktree, so the token lookup did
+    # not exist, run_arm caught the AttributeError, and the token row scored
+    # like plain fusion. It looked like a measurement and it was a bug.
+    import collections
+
+    arm_status: dict = collections.defaultdict(collections.Counter)
+    arm_failures: dict = {}
 
     def legacy(query: str) -> list[str]:
         return [m.id for m in vector.search_text(query, limit=args.k)]
 
-    def _fused(query: str, use_graph: bool) -> list[str]:
+    def _fused(query: str, use_graph: bool, token_graph: bool = False) -> list[str]:
         texts: dict[str, str] = {}
 
         def _sem() -> list[str]:
@@ -184,8 +194,9 @@ def main() -> None:
             return out
 
         def _graph() -> list[str]:
+            lookup = graph.search_by_entity_tokens if token_graph else graph.search_by_entity
             out = []
-            for row in graph.search_by_entity(query, limit=arm_limit) or []:
+            for row in lookup(query, limit=arm_limit) or []:
                 row_id = str(row.get("id") or "").strip('"')
                 if not row_id:
                     continue
@@ -205,6 +216,10 @@ def main() -> None:
         if use_graph:
             arms.append(run_arm("graph", _graph))
         report = fuse(arms, limit=arm_limit)
+        for arm in report.arms:
+            arm_status[arm.name][arm.status] += 1
+            if arm.status == "failed":
+                arm_failures[arm.name] = arm.detail
         pool = report.ids
         if not pool:
             return []
@@ -215,12 +230,18 @@ def main() -> None:
     configs = [
         ("legacy (pre-R1)", legacy),
         ("fused (R1+R2)", lambda q: _fused(q, use_graph=False)),
-        ("fused + graph arm", lambda q: _fused(q, use_graph=True)),
+        ("fused + graph (whole)", lambda q: _fused(q, use_graph=True)),
+        (
+            "fused + graph (tokens)",
+            lambda q: _fused(q, use_graph=True, token_graph=True),
+        ),
     ]
 
     results = {}
     for label, fn in configs:
         print(f"\nscoring {label} ...", flush=True)
+        arm_status.clear()
+        arm_failures.clear()
         precs, rare_hits, rare_rrs, empties = [], [], [], 0
         for name, relevant, count in queries:
             got = fn(name)
@@ -230,7 +251,16 @@ def main() -> None:
             if count <= RARE_MAX:
                 rare_hits.append(hit_at_k(got, relevant, args.k))
                 rare_rrs.append(reciprocal_rank(got, relevant))
+        if arm_status:
+            summary = "  ".join(
+                f"{name}={dict(counts)}" for name, counts in sorted(arm_status.items())
+            )
+            print(f"    arms: {summary}")
+        for name, detail in sorted(arm_failures.items()):
+            print(f"    ARM FAILED: {name}: {detail[:120]}")
         results[label] = {
+            "arm_status": {k: dict(v) for k, v in arm_status.items()},
+            "arm_failures": dict(arm_failures),
             "precision": mean(precs) if precs else 0.0,
             "rare_hit": mean(rare_hits) if rare_hits else None,
             "rare_mrr": mean(rare_rrs) if rare_rrs else None,
@@ -240,16 +270,25 @@ def main() -> None:
     print("\n" + "=" * 74)
     print(f"GRAPH ARM A/B  (agent={args.agent}, k={args.k}, {len(queries)} entity queries)")
     print("=" * 74)
-    print(f"{'config':<22}{'precision@5':>14}{'rare hit@5':>13}{'rare MRR':>11}{'empty':>8}")
-    print("-" * 74)
+    print(f"{'config':<24}{'precision@5':>14}{'rare hit@5':>13}{'rare MRR':>11}{'empty':>8}")
+    print("-" * 76)
     for label, _ in configs:
         r = results[label]
         rh = "n/a" if r["rare_hit"] is None else f"{r['rare_hit']:.3f}"
         rm = "n/a" if r["rare_mrr"] is None else f"{r['rare_mrr']:.3f}"
-        print(f"{label:<22}{r['precision']:>14.3f}{rh:>13}{rm:>11}{r['empty']:>8}")
+        print(f"{label:<24}{r['precision']:>14.3f}{rh:>13}{rm:>11}{r['empty']:>8}")
+
+    broken = {label: r["arm_failures"] for label, r in results.items() if r.get("arm_failures")}
+    if broken:
+        print("\nREFUSING a verdict: an arm FAILED in these configurations:")
+        for label, fails in broken.items():
+            print(f"  {label}: {fails}")
+        print("  Fix the arm and re-run. A failed arm scores like an absent one,")
+        print("  so any comparison above understates it rather than measuring it.")
+        sys.exit(2)
 
     base = results["fused (R1+R2)"]
-    withg = results["fused + graph arm"]
+    withg = results["fused + graph (tokens)"]
     print(f"\nrare subset size: {len(rare)} queries")
     print("\ndelta, graph arm vs fused without it:")
     print(f"  precision@5  {withg['precision'] - base['precision']:+.3f}")
