@@ -1,5 +1,5 @@
 """
-PGVector — semantic + hybrid memory search backend (Postgres + pgvector).
+PGVector: semantic + hybrid memory search backend (Postgres + pgvector).
 
 Sovereign, syncable alternative to the Qdrant skvector backend. The embedding
 store is a DERIVED, per-node rebuildable cache (same class as the SQLite
@@ -10,7 +10,7 @@ index.db), NOT a replicated system of record:
     flat content + the mxbai model, so any node can regenerate them locally.
   - Topology: each node runs its OWN writable skmem-pg on localhost. Agents point
     only at localhost (SKMEMORY_PG_DSN). No streaming/logical replication, no
-    remote primary, no failover — a node stays self-sufficient, and DR is covered
+    remote primary, no failover. A node stays self-sufficient, and DR is covered
     by rebuild-from-flat plus the Syncthing-synced pg dumps.
   - Embedding: HTTP endpoint (default the local Ollama mxbai-embed-large server) so
     the model is served once per host, not loaded in every skmemory process. Inject
@@ -29,6 +29,7 @@ index.db), NOT a replicated system of record:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -36,7 +37,7 @@ import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..invalid_records import require_memory_id
+from ..invalid_records import payload_memory_id, require_memory_id
 from ..models import Memory, MemoryLayer
 from ..query_sanitizer import sanitize_query
 from ..stub_markers import is_stub_payload
@@ -146,7 +147,7 @@ class StubOverwriteRefused(RuntimeError):
 # from the Syncthing-synced flat JSON via skmem_reconcile.py, `docs` from the
 # wiki via skingest. It is NOT streaming-replicated and is NOT a remote primary.
 # Default to the node-local writable port; `SKMEMORY_PG_DSN` overrides per node.
-# (Was :5433 — the retired standby port — which made an unconfigured node target
+# (Was :5433, the retired standby port, which made an unconfigured node target
 # a read-only replica where every save()/delete() raised.)
 DEFAULT_DSN = os.environ.get(
     "SKMEMORY_PG_DSN", "postgresql://postgres:skmemory@localhost:5432/skmemory"
@@ -368,6 +369,8 @@ class PGVectorBackend(BaseBackend):
         from ..agents import require_memory_profile
 
         self.agent = require_memory_profile(agent).profile_id
+        # Ids of rows this process could not parse, for the health report.
+        self._unparseable_seen: set[str] = set()
         self._embed_fn = embed_fn
         self._conn = None
 
@@ -637,7 +640,7 @@ class PGVectorBackend(BaseBackend):
         ``MemoryStore.forget()`` calls ``self.vector.remove(memory_id)``.
         Before this method existed, ``PGVectorBackend`` exposed only
         ``delete()``, so on the default (pgvector) deployment forget() raised
-        ``AttributeError`` — swallowed at ``store.py`` — and the pg row was
+        ``AttributeError`` (swallowed at ``store.py``) and the pg row was
         NOT deleted at forget time; it lingered until the daily reconcile
         prune (Gap A, card 23a722ca). Now a forget actually forgets
         immediately.
@@ -708,7 +711,7 @@ class PGVectorBackend(BaseBackend):
                 f"SELECT memory_json FROM memories{where} ORDER BY created_at DESC LIMIT %s",
                 params,
             )
-            return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
+            return self._rows_to_memories(cur.fetchall())
 
     def search_text(
         self, query: str, limit: int = 10, layer=None, tags=None, source=None
@@ -717,7 +720,7 @@ class PGVectorBackend(BaseBackend):
         layer/tags/source filters, falling back to BM25 full-text then ILIKE when
         the query can't be embedded or vector returns nothing.
 
-        Named search_text for the MemoryStore contract — store.search() calls this
+        Named search_text for the MemoryStore contract: store.search() calls this
         with the filter kwargs. (Previously this was BM25-only and rejected the
         kwargs, so every store search silently fell back to text. Now it uses the
         mxbai vectors as intended.)"""
@@ -734,7 +737,7 @@ class PGVectorBackend(BaseBackend):
         where = " AND ".join(clauses)
         conn = self._connection()
 
-        # 1) semantic vector (cosine) — the mxbai path
+        # 1) semantic vector (cosine), the mxbai path
         qvec = self._embed(query)
         if qvec:
             with conn.cursor() as cur:
@@ -745,7 +748,7 @@ class PGVectorBackend(BaseBackend):
                 )
                 rows = cur.fetchall()
             if rows:
-                return [Memory.model_validate_json(_as_json_str(r[0])) for r in rows]
+                return self._rows_to_memories(rows)
 
         # 2) BM25 full-text fallback (same filters)
         with conn.cursor() as cur:
@@ -757,7 +760,7 @@ class PGVectorBackend(BaseBackend):
             )
             rows = cur.fetchall()
         if rows:
-            return [Memory.model_validate_json(_as_json_str(r[0])) for r in rows]
+            return self._rows_to_memories(rows)
 
         # 3) case-insensitive substring fallback
         with conn.cursor() as cur:
@@ -765,7 +768,7 @@ class PGVectorBackend(BaseBackend):
                 f"SELECT memory_json FROM memories WHERE {where} AND content ILIKE %s LIMIT %s",
                 params + [f"%{query}%", limit],
             )
-            return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
+            return self._rows_to_memories(cur.fetchall())
 
     def search_lexical(
         self, query: str, limit: int = 10, layer=None, tags=None, source=None
@@ -815,7 +818,7 @@ class PGVectorBackend(BaseBackend):
                         f"]) ORDER BY paradedb.score(id) DESC LIMIT %s",
                         params + [query, query, limit],
                     )
-                    return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
+                    return self._rows_to_memories(cur.fetchall())
             except Exception as exc:
                 # Surface it: a BM25 arm that silently degrades to ts_rank is
                 # indistinguishable from one that worked, which is the defect
@@ -830,7 +833,7 @@ class PGVectorBackend(BaseBackend):
                 f"ORDER BY ts_rank(tsv, plainto_tsquery('english', %s)) DESC LIMIT %s",
                 params + [query, query, limit],
             )
-            return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
+            return self._rows_to_memories(cur.fetchall())
 
     def _has_bm25_index(self) -> bool:
         """Whether the ParadeDB BM25 index exists. Cached per instance."""
@@ -849,6 +852,64 @@ class PGVectorBackend(BaseBackend):
                 self._bm25_available = False
         return self._bm25_available
 
+    def _rows_to_memories(self, rows) -> list[Memory]:
+        """Parse ``memory_json`` rows into Memory objects, skipping the broken.
+
+        Every read path used to do ``[Memory.model_validate_json(...) for r in
+        rows]`` directly, which means ONE malformed row anywhere in a result set
+        raises ``ValidationError`` and the entire search fails. That is not
+        hypothetical: the live store holds rows whose ``memory_json`` has no
+        ``title`` (17 for lumina, 13 for jarvis, measured 2026-10-17), so any
+        query whose top-k happened to include one returned nothing at all and
+        took the caller down with it.
+
+        A single bad row must not deny service to the other twenty thousand. It
+        is skipped, counted, and logged with its id, and ``health_check()``
+        reports the authoritative count straight from SQL so the rows get
+        repaired instead of silently tolerated forever. Skipping quietly would
+        just trade a loud failure for a silent one, which is the defect class
+        ranked three times in docs/postmortems/2026-10-16-sqlite-only-orphans.md.
+        """
+        out: list[Memory] = []
+        for row in rows:
+            payload = _as_json_str(row[0])
+            try:
+                out.append(Memory.model_validate_json(payload))
+            except Exception as exc:
+                mem_id = "<unknown>"
+                with contextlib.suppress(Exception):
+                    mem_id = payload_memory_id(json.loads(payload), fallback="<unknown>")
+                self._unparseable_seen.add(mem_id)
+                logger.warning(
+                    "skipping unparseable memory row id=%s for agent=%s: %s",
+                    mem_id,
+                    self.agent,
+                    str(exc).splitlines()[0],
+                )
+        return out
+
+    def count_unparseable(self) -> int:
+        """How many stored rows would fail to parse, straight from SQL.
+
+        Authoritative, unlike a counter of what this process happened to read:
+        ``Memory`` requires ``title`` and ``content``, so a row missing either
+        can never be loaded. Computed by asking the database rather than by
+        trusting a tally, for the same reason health status is computed from
+        drift counts and not from whether a query raised.
+        """
+        try:
+            conn = self._connection()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM memories WHERE agent=%s AND NOT "
+                    "(memory_json ? 'title' AND memory_json ? 'content')",
+                    (self.agent,),
+                )
+                return int(cur.fetchone()[0])
+        except Exception as exc:
+            logger.warning("could not count unparseable rows: %s", exc)
+            return -1
+
     def search(self, query: str, limit: int = 10) -> list[Memory]:
         """Semantic vector search (cosine). Falls back to text search if no embedding."""
         qvec = self._embed(query)
@@ -861,7 +922,7 @@ class PGVectorBackend(BaseBackend):
                 "ORDER BY embedding <=> %s::vector LIMIT %s",
                 (self.agent, qvec, limit),
             )
-            return [Memory.model_validate_json(_as_json_str(r[0])) for r in cur.fetchall()]
+            return self._rows_to_memories(cur.fetchall())
 
     # convenience alias
     def search_semantic(self, query: str, limit: int = 10) -> list[Memory]:
@@ -870,14 +931,14 @@ class PGVectorBackend(BaseBackend):
     def find_similar(self, content: str, k: int = 5) -> list[dict]:
         """Find memories with content similar to *content* (advisory dedup check).
 
-        Mirrors ``SKChromaBackend.find_similar()`` — same signature and return
-        shape — so ``MemoryStore.check_duplicate()`` works identically
+        Mirrors ``SKChromaBackend.find_similar()`` (same signature and return
+        shape) so ``MemoryStore.check_duplicate()`` works identically
         regardless of which vector backend is wired in. Runs the same pgvector
         cosine-distance nearest-neighbor query as ``search()``/``search_text()``,
         scoped to ``self.agent``, but keeps the raw distance (converted to a
         similarity) instead of discarding it, so the caller can decide for
         itself whether a candidate is "close enough" to be a near-duplicate.
-        Read-only — never writes, merges, or mutates anything.
+        Read-only: never writes, merges, or mutates anything.
 
         Args:
             content: Text to check for near-duplicates (not yet stored).
@@ -887,7 +948,7 @@ class PGVectorBackend(BaseBackend):
             list[dict]: Each item is ``{"id", "content_preview", "similarity"}``,
                 sorted by similarity descending. Empty list if the query can't
                 be embedded, the connection/query fails, or there are no
-                candidates — this method never raises.
+                candidates. This method never raises.
         """
         try:
             qvec = self._embed(sanitize_query(content))
@@ -941,14 +1002,19 @@ class PGVectorBackend(BaseBackend):
                         "backend": "PGVectorBackend",
                         "agent": self.agent,
                         "dsn": self.dsn.split("@")[-1],
-                        "error": "pg is in recovery (read-only standby) — skmem-pg "
+                        "error": "pg is in recovery (read-only standby): skmem-pg "
                         "must be a local writable primary; promote it or fix "
                         "SKMEMORY_PG_DSN to the local node.",
                     }
                 cur.execute("SELECT count(*) FROM memories WHERE agent=%s", (self.agent,))
                 n = cur.fetchone()[0]
+            # Computed from the defect count, not from "the query did not raise".
+            unparseable = self.count_unparseable()
             return {
-                "ok": True,
+                "ok": unparseable == 0,
+                "status": "ok" if unparseable == 0 else "degraded",
+                "unparseable_rows": unparseable,
+                "unparseable_seen_this_process": sorted(self._unparseable_seen),
                 "backend": "PGVectorBackend",
                 "agent": self.agent,
                 "dsn": self.dsn.split("@")[-1],
