@@ -49,7 +49,11 @@ EMBED_URL = os.environ.get(
 EMBED_MODEL = os.environ.get("EMBED_MODEL", reconcile_mod.DEFAULT_EMBED_MODEL)
 PSQL_CMD = list(reconcile_mod.DEFAULT_PSQL)
 
-THROWAWAY_AGENT = f"__reconcile_test_{os.getpid()}__"
+# Must start with an alphanumeric to be a registerable profile id (see
+# skmemory.profile_registry._ID_PATTERN). The old "__reconcile_test_<pid>__"
+# spelling could never be registered, so require_memory_profile() always
+# raised "Unregistered or invalid memory profile" and this test could not run.
+THROWAWAY_AGENT = os.environ["SKMEMORY_TEST_RECONCILE_AGENT"]
 
 
 def _dsn_is_local_writable() -> bool:
