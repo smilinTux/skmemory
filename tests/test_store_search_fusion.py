@@ -263,3 +263,61 @@ def test_lexical_arm_falls_back_to_the_primary_when_no_engine_is_exposed(store):
     # The primary (SQLite) answered, so the arm is not 'unavailable'.
     assert lexical.status in ("ok", "abstained")
     assert lexical.status != "failed"
+
+
+# ---------------------------------------------------------------------------
+# graph arm engine selection
+# ---------------------------------------------------------------------------
+
+
+class _TokenGraph:
+    """A graph backend exposing BOTH entity lookups, to prove which is chosen."""
+
+    def __init__(self):
+        self.whole_calls = []
+        self.token_calls = []
+
+    def search_by_entity(self, query, limit=20):
+        self.whole_calls.append(query)
+        return []
+
+    def search_by_entity_tokens(self, query, limit=20):
+        self.token_calls.append(query)
+        return []
+
+
+class _WholeOnlyGraph:
+    def __init__(self):
+        self.whole_calls = []
+
+    def search_by_entity(self, query, limit=20):
+        self.whole_calls.append(query)
+        return []
+
+
+def test_graph_arm_prefers_token_lookup_when_offered(store):
+    """Whole-query matching fired on 0 of 10 realistic multi-word agent
+    queries against the real graph; per-token fired on 10 of 10. An arm that
+    is attached but never fires is an unmeasured feature."""
+    g = _TokenGraph()
+    store.graph = g
+    store.search_fused("skgateway routing decision", limit=5)
+    assert g.token_calls == ["skgateway routing decision"]
+    assert g.whole_calls == [], "the weaker whole-query lookup was used"
+
+
+def test_graph_arm_falls_back_to_whole_query_lookup(store):
+    """A backend without the token method must still get a graph arm."""
+    g = _WholeOnlyGraph()
+    store.graph = g
+    _, report = store.search_fused("skgateway routing decision", limit=5, return_report=True)
+    assert g.whole_calls == ["skgateway routing decision"]
+    graph_arm = [a for a in report.arms if a.name == "graph"][0]
+    assert graph_arm.status != "failed"
+
+
+def test_graph_arm_is_unavailable_when_no_graph_is_attached(store):
+    assert store.graph is None
+    _, report = store.search_fused("anything", limit=5, return_report=True)
+    graph_arm = [a for a in report.arms if a.name == "graph"][0]
+    assert graph_arm.status == "unavailable"

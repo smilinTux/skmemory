@@ -36,6 +36,19 @@ model, and a model-written query would make the benchmark non-deterministic and
 unauditable. The offline harness covers paraphrase; this one does not, and the
 report says so rather than implying full coverage.
 
+NOT deterministic, unlike the offline harness
+---------------------------------------------
+Two 50-sample runs of the same configuration disagreed by 0.020 on identifier
+hit@5 (0.680 against 0.660), and two 100-sample runs of the graph-arm cost
+bracketed zero (title hit@5 -0.010 one run, +0.000 the next). Three things move
+it: the dense arm calls a real mxbai endpoint over HTTP, the corpus is live and
+daemons keep writing to it, and ties break on whatever order the backend
+returned. So treat anything under roughly 0.02 at n=50 as noise, prefer the
+larger sample, and do not quote a single run as a precise figure. The
+deterministic, CI-gateable measurement is skmemory.eval.fusion_bench; this
+harness exists to check that those conclusions survive real data, which is a
+different and coarser question.
+
 STRICTLY READ-ONLY
 ------------------
 Only SELECT statements and the library's search paths. It never constructs a
