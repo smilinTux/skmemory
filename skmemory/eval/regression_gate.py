@@ -51,6 +51,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from skmemory.eval.fusion_bench import run_benchmark as run_fusion_benchmark
 from skmemory.eval.groundedness_scorer import (
     lexical_overlap_judge,
     score_groundedness,
@@ -64,6 +65,11 @@ BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"
 # Float tolerance: absorbs IEEE noise only. The harnesses are deterministic, so
 # any real metric decrease exceeds this and fails the gate.
 DEFAULT_EPSILON = 1e-9
+
+# The fusion strategy that ships in skmemory.fusion and therefore the one CI
+# defends. The other strategies in fusion_bench exist as comparison arms; they
+# are still leak-gated below, but their relevance scores are not a contract.
+GATED_FUSION_STRATEGY = "rrf_interleave"
 
 # =============================================================================
 # GROUNDEDNESS FIXTURE - a fixed (answer, citations) pair scored by the OFFLINE
@@ -115,6 +121,7 @@ def collect_metrics() -> dict:
     """
     recall = run_recall_benchmark()
     retrieval = run_retrieval_benchmark()
+    fusion = run_fusion_benchmark()
 
     metrics: dict[str, float] = {}
 
@@ -126,9 +133,26 @@ def collect_metrics() -> dict:
 
     metrics["groundedness.score"] = float(_groundedness_score())
 
+    # Fusion bench: gated PER QUERY CLASS, not only in aggregate. An overall
+    # number is exactly what hid plain RRF destroying the paraphrase class
+    # (semantic recall@5 0.833 -> 0.000) while the overall figure went UP, so
+    # gating the aggregate alone would let that regression through CI.
+    live = fusion["strategies"][GATED_FUSION_STRATEGY]
+    metrics[f"fusion_bench.{GATED_FUSION_STRATEGY}.recall@5"] = float(live["overall_recall@5"])
+    metrics[f"fusion_bench.{GATED_FUSION_STRATEGY}.mrr"] = float(live["overall_mrr"])
+    for class_name, class_metrics in live["by_class"].items():
+        metrics[f"fusion_bench.{GATED_FUSION_STRATEGY}.{class_name}.recall@5"] = float(
+            class_metrics["recall@5"]
+        )
+
+    # Every fusion strategy must keep the private leak count at 0, including
+    # ones not otherwise gated: adding a retrieval arm adds private-row reach,
+    # so this is re-proved rather than inherited.
+    fusion_leaks = sum(int(d["leak_count"]) for d in fusion["strategies"].values())
+
     return {
         "metrics": metrics,
-        "leak_count": int(retrieval["leak_count"]),
+        "leak_count": int(retrieval["leak_count"]) + fusion_leaks,
         "leak_count_unfiltered": int(retrieval["leak_count_unfiltered"]),
     }
 

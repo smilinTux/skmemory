@@ -3,6 +3,12 @@
   "leak_count": 0,
   "leak_count_unfiltered": 3,
   "metrics": {
+    "fusion_bench.rrf_interleave.entity.recall@5": 1.0,
+    "fusion_bench.rrf_interleave.lexical.recall@5": 0.6666666666666666,
+    "fusion_bench.rrf_interleave.mrr": 0.6620370370370371,
+    "fusion_bench.rrf_interleave.recall@5": 0.875,
+    "fusion_bench.rrf_interleave.semantic.recall@5": 0.8333333333333334,
+    "fusion_bench.rrf_interleave.temporal.recall@5": 1.0,
     "groundedness.score": 0.75,
     "recall_bench.ndcg@1": 1.0,
     "recall_bench.ndcg@3": 1.0,

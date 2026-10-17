@@ -8,6 +8,35 @@
 
 ### Added
 
+- Multi-arm retrieval fusion (`skmemory/fusion.py`), wired into
+  `MemoryStore.search()` via the new `search_fused()`. Four arms (semantic,
+  lexical, graph one-hop entity expansion, and a temporal date predicate that
+  abstains unless the query names a real window) run independently, are capped
+  per arm, and merge by rank-depth interleaving with RRF as the within-depth
+  tiebreak. Replaces a fallback chain in which the lexical leg was reachable
+  only when the dense leg returned an empty list, so a confident-but-wrong
+  dense result meant BM25's exact identifier match was never consulted.
+  Measured overall recall@5 0.333 -> 0.875 and MRR 0.302 -> 0.662 with no
+  query class regressing. `SKMEMORY_SEARCH_FUSION` takes `on`/`off`/`auto`
+  (default `auto`: fuse only when a derived backend is attached, so a
+  primary-only store is unchanged); when fusion finds nothing, `search()`
+  still runs the legacy chain, so enabling it cannot lose a hit.
+- Every retrieval arm now reports a typed `ArmOutcome` of `ok` / `abstained` /
+  `unavailable` / `failed`, so a backend that was never attached, an arm with
+  nothing to say, and an arm that raised are distinguishable instead of all
+  collapsing into one falsy value and silently selecting another code path. A
+  failed arm degrades the ranking and logs, rather than killing the search.
+- `skmemory.fusion.parse_time_window()`: conservative date-window extraction
+  (named month with optional year, `YYYY-MM`, bare year, today/yesterday) that
+  returns `None` rather than guessing, matching month names on whole words so
+  the `may` inside `maybe` does not trigger a window.
+- `skmemory.eval.fusion_bench`: a discriminating offline A/B harness, 128
+  documents and 24 queries across four classes each built so at least one arm
+  cannot find the answer. The previous retrieval fixture was 10 documents with
+  deliberately distinctive per-item vocabulary, so every strategy scored 1.0
+  and the committed baseline was pinned at ceiling, unable to detect either an
+  improvement or a regression.
+
 - Opt-in, bounded reweave backward pass on `MemoryStore.snapshot()`
   (`reweave=True`, `reweave_top_k=5`, both off/default-5 unless passed).
   When enabled, a new write re-links the top-K most-related OLDER memories
@@ -19,6 +48,23 @@
   existing callers.
 
 ### Fixed
+
+- The regression gate now gates fusion metrics PER QUERY CLASS, not only in
+  aggregate. This is load-bearing: naive equal-weight RRF raises the overall
+  recall@5 number while destroying the paraphrase class (0.833 -> 0.000),
+  because a decoy placing mid-pack in two arms outscores the true answer
+  placing rank 1 in one arm. Gating only the aggregate would have let that
+  through CI. Verified by simulation: swapping the shipped strategy for plain
+  RRF turns the gate red on three metrics.
+- The audience privacy filter is applied to the retrieval candidate set before
+  any arm runs, never to the fused top-k, since a predicate after a limit
+  cannot distinguish a filtered-empty from a genuinely-empty (the same shape as
+  the `synthesize_*` silent-empty bug). Adding arms demonstrably adds
+  private-row reach, so the leak count is re-proved for every strategy rather
+  than inherited from a previous run.
+- The graph arm skips rows the source of truth no longer holds instead of
+  emitting an id the caller cannot hydrate, since the graph is a derived
+  projection and can name a deleted memory.
 
 - `skmem_reconcile.py` was four independently-evolved copies (this repo's
   `scripts/skmem_reconcile.py`, `deploy/skmem-pg/skmem_reconcile.py`, the
