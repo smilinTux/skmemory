@@ -223,6 +223,9 @@ def test_happy_path_reconcile_still_works(monkeypatch, tmp_path):
                 return _CP(stdout="0\n")  # flat and pg agree: nothing pruned
             if low.startswith("select id from memories where agent"):
                 return _CP(stdout="\n".join(self.pg_ids) + "\n")
+            if low.startswith("select id from memories;"):
+                # single-agent fixture: no cross-agent sharing to simulate.
+                return _CP(stdout="\n".join(self.pg_ids) + "\n")
             if "embedding is null" in low:
                 return _CP(stdout="")
             if "count(*) filter" in low:

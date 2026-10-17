@@ -37,10 +37,38 @@ forget() therefore records a durable tombstone next to the flat memories (see
 tombstoned memory, even with a stale flat copy present, and treats a tombstoned
 row still in pg as an orphan to be pruned. Forgotten memories stay gone.
 
+Stub guard (card: skmemory sqlite-only-orphans, 2026-10-16): a flat file that is
+itself a rescued SQLite-preview stub (content truncated to ~150 chars,
+`metadata.recovered_from_sqlite_preview = True`, see `skmemory.stub_markers`)
+must never be backfilled into skmem-pg as if it were real content -- a
+reconcile run did exactly that to 373 ids during the 2026-10-16 recovery,
+before this guard existed anywhere in the write path. By default such ids are
+skipped (loudly) rather than inserted; `force_stubs=True` / `--force-stubs`
+overrides for an operator who has verified this is correct.
+
+Shared-id convergence fix: `memories_pkey` is a bare `id` primary key, not
+`(id, agent)`. When two agents' flat stores both hold a file for the same id
+(shared "Seed: emotion-*" records arrive in several agents' dirs via
+Syncthing), whichever agent reconciles first claims the row and every other
+agent's reconcile counted it "missing" forever -- re-embedding the same ids
+every night with the count never reaching zero, training the operator to
+ignore a nonzero `missing`. `missing` therefore means "absent from the table
+for ANY agent"; an id present under another agent is reported separately as
+`shared` and never retried.
+
+This module was consolidated (card: skmem_reconcile.py was four independently
+-evolved copies, see docs/postmortems/2026-10-16-sqlite-only-orphans.md section
+3.12) from this engine plus three standalone cron scripts
+(`~/skmem-build/skmem_reconcile.py`/`scripts/skmem_reconcile.py`/
+`deploy/skmem-pg/skmem_reconcile.py`), each of which is now a thin shim that
+execs this module.
+
 Usage:
-    python -m skmemory.reconcile [AGENT] [--force]   # default: $SKAGENT or lumina
+    python -m skmemory.reconcile [AGENT] [--force] [--dry-run] [--force-stubs]
+                                                   # default: $SKAGENT or lumina
     python -m skmemory.reconcile --all [--force]     # every provisioned agent
     python -m skmemory.reconcile --agents a,b,c      # explicit list
+    python -m skmemory.reconcile lumina --dry-run    # report only, no writes
 
 Env:
     EMBED_URL    (default http://192.168.0.100:11434/api/embed)
@@ -68,6 +96,7 @@ import sys
 import requests
 
 from skmemory.invalid_records import payload_memory_id, quarantine_invalid_flat_file
+from skmemory.stub_markers import is_stub_payload
 from skmemory.tombstones import load_tombstones
 
 LAYERS = ["short-term", "mid-term", "long-term"]
@@ -345,16 +374,30 @@ def reconcile(
     prune_floor: int | None = None,
     max_prune_fraction: float | None = None,
     prune_min_sample: int | None = None,
+    force_stubs: bool = False,
+    dry_run: bool = False,
 ) -> dict:
     """Reconcile one agent's flat JSON memories into the node-local skmem-pg.
 
+    Args:
+        force_stubs: backfill a flat file carrying the lossy
+            recovered_from_sqlite_preview stub marker anyway. Default False
+            (refuse, loudly) -- see the stub guard in the module docstring.
+        dry_run: compute and report every count (flat/pg/missing/shared/
+            stub_skipped/would-prune/would-embed) WITHOUT issuing any
+            mutating SQL and WITHOUT calling the embed endpoint. Safe to run
+            against production data.
+
     Returns a stats dict:
-        {agent, flat, pg, missing, backfilled, pruned, null_embedded,
-         embedded, total}
+        {agent, flat, pg, missing, shared, stub_skipped, backfilled, pruned,
+         null_embedded, embedded, total, dry_run}
     where ``flat`` is the count of flat memory files, ``pg`` the pre-run pg row
-    count for this agent, ``embedded``/``total`` the post-run embedded/row
-    counts. On a clean idempotent second run ``backfilled == 0`` and
-    ``pruned == 0``.
+    count for this agent, ``missing`` ids absent from the table for any agent,
+    ``shared`` ids already owned by a different agent (never retried, see the
+    shared-id fix in the module docstring), ``embedded``/``total`` the
+    post-run embedded/row counts. On a clean idempotent second run
+    ``backfilled == 0`` and ``pruned == 0``. When ``dry_run`` is True, every
+    count reflects what WOULD happen; nothing is written.
     """
     from .agents import require_memory_profile
 
@@ -469,21 +512,49 @@ def reconcile(
     probe_transport(PSQL)
 
     pg_ids = set(psql(f"select id from memories where agent='{agent}';", True).split())
-    missing = [i for i in flat if i not in pg_ids]
+
+    # Shared-id convergence fix: memories_pkey is a bare `id`, not (id, agent).
+    # An id owned by a DIFFERENT agent can never be claimed by this one, so it
+    # must not inflate `missing` (which would otherwise never reach zero and
+    # re-embed the same ids every run, see module docstring). `all_ids` is
+    # read once and reused for both classifications below.
+    all_ids = set(psql("select id from memories;", True).split())
+    shared_ids = [i for i in flat if i not in pg_ids and i in all_ids]
+    missing = [i for i in flat if i not in all_ids]
     log(
         f"[{agent}] flat={len(flat)} pg={len(pg_ids)} missing={len(missing)} "
-        f"tombstoned={len(tombstoned)} resurrection_blocked={len(resurrection_blocked)}"
+        f"shared={len(shared_ids)} tombstoned={len(tombstoned)} "
+        f"resurrection_blocked={len(resurrection_blocked)}"
     )
+    if shared_ids:
+        try:
+            literals = ",".join("'" + i.replace("'", "''") + "'" for i in shared_ids)
+            owners = psql(
+                f"select agent||':'||count(*) from memories where id in ({literals}) "
+                "group by agent;",
+                True,
+            ).split()
+            log(
+                f"[{agent}] shared ids already owned by -> {' '.join(owners)} "
+                "(single-column PK cannot represent per-agent ownership; not re-embedding)"
+            )
+        except Exception:
+            pass
 
-    # 1. backfill missing (embed + upsert)
+    # 1. backfill missing (embed + upsert). Stub-flagged flat files are
+    # refused unless force_stubs=True (see the stub guard in the module
+    # docstring). dry_run computes the same pairs/counts but issues no
+    # mutating SQL and never calls the embed endpoint.
     loaded = 0
+    stub_skipped_ids: list[str] = []
     if missing:
-        bf = _scratch_table_name(agent)
-        psql(
-            f"DROP TABLE IF EXISTS {bf}; CREATE TABLE {bf} (id text,layer text,"
-            "role text,title text,content text,summary text,tags text,source text,"
-            "created_at text,updated_at text,memory_json text,agent text,embedding text);"
-        )
+        if not dry_run:
+            bf = _scratch_table_name(agent)
+            psql(
+                f"DROP TABLE IF EXISTS {bf}; CREATE TABLE {bf} (id text,layer text,"
+                "role text,title text,content text,summary text,tags text,source text,"
+                "created_at text,updated_at text,memory_json text,agent text,embedding text);"
+            )
         B = 24
         for i in range(0, len(missing), B):
             pairs = []
@@ -492,10 +563,18 @@ def reconcile(
                     with open(flat[mid]) as fh:
                         o = json.load(fh)
                     if isinstance(o, dict) and (o.get("content") or o.get("title")):
+                        if not force_stubs and is_stub_payload(
+                            o.get("content"), o.get("metadata")
+                        ):
+                            stub_skipped_ids.append(mid)
+                            continue
                         pairs.append((mid, o))
                 except Exception:
                     pass
             if not pairs:
+                continue
+            if dry_run:
+                loaded += len(pairs)
                 continue
             embs = embed([(o.get("content") or o.get("title") or " ")[:1100] for _, o in pairs])
             buf = io.StringIO()
@@ -531,14 +610,26 @@ def reconcile(
                 input_text=buf.getvalue(),
             )
             loaded += len(pairs)
-        psql_stdin(
-            "INSERT INTO memories (id,layer,role,title,content,summary,tags,source,created_at,"
-            "updated_at,memory_json,agent,embedding) SELECT id,layer,role,title,content,summary,"
-            "tags::text[],source,created_at::timestamptz,"
-            "COALESCE(NULLIF(updated_at,'')::timestamptz,created_at::timestamptz),"
-            f"memory_json::jsonb,agent,embedding::vector FROM {bf} ON CONFLICT (id) DO NOTHING;"
+        if not dry_run:
+            psql_stdin(
+                "INSERT INTO memories (id,layer,role,title,content,summary,tags,source,"
+                "created_at,updated_at,memory_json,agent,embedding) SELECT id,layer,role,title,"
+                "content,summary,tags::text[],source,created_at::timestamptz,"
+                "COALESCE(NULLIF(updated_at,'')::timestamptz,created_at::timestamptz),"
+                f"memory_json::jsonb,agent,embedding::vector FROM {bf} ON CONFLICT (id) DO NOTHING;"
+            )
+            psql(f"DROP TABLE IF EXISTS {bf};")
+
+    if stub_skipped_ids:
+        preview = ",".join(stub_skipped_ids[:20])
+        if len(stub_skipped_ids) > 20:
+            preview += "..."
+        log(
+            f"[{agent}] STUB GUARD: refused {len(stub_skipped_ids)} stub-flagged flat "
+            "file(s) for pg backfill (recovered_from_sqlite_preview marker present) -- "
+            "not inserted. Pass force_stubs=True only after verifying this is genuinely "
+            f"the content to keep: {preview}"
         )
-        psql(f"DROP TABLE IF EXISTS {bf};")
 
     # 2. prune orphans (pg rows for this agent with no flat file) -- GUARDED.
     # would_prune is computed in Python from the already-agent-scoped pg_ids and
@@ -566,6 +657,9 @@ def reconcile(
             key=f"skmem-reconcile-prune-refused-{agent}",
         )
         pruned = "0"
+    elif dry_run:
+        log(f"[{agent}] DRY RUN: would prune ({reason})")
+        pruned = str(would_prune)
     else:
         psql("DROP TABLE IF EXISTS flat_ids; CREATE TABLE flat_ids (id text primary key);")
         run_psql(
@@ -589,7 +683,7 @@ def reconcile(
         except (TypeError, ValueError):
             pass
 
-    # 3. embed any null-vector rows
+    # 3. embed any null-vector rows (dry_run: report the count, update nothing)
     nulls = [
         r.split("\t", 1)
         for r in psql(
@@ -599,17 +693,18 @@ def reconcile(
         ).splitlines()
         if "\t" in r
     ]
-    for i in range(0, len(nulls), 12):
-        ch = nulls[i : i + 12]
-        es = embed([(c[1] or " ") for c in ch])
-        vals = ",".join(
-            "('{}','{}')".format(c[0].replace("'", "''"), vlit(e))
-            for c, e in zip(ch, es, strict=False)
-        )
-        psql_stdin(
-            f"UPDATE memories m SET embedding=v.e::vector FROM (VALUES {vals}) AS v(id,e) "
-            "WHERE m.id=v.id;"
-        )
+    if not dry_run:
+        for i in range(0, len(nulls), 12):
+            ch = nulls[i : i + 12]
+            es = embed([(c[1] or " ") for c in ch])
+            vals = ",".join(
+                "('{}','{}')".format(c[0].replace("'", "''"), vlit(e))
+                for c, e in zip(ch, es, strict=False)
+            )
+            psql_stdin(
+                f"UPDATE memories m SET embedding=v.e::vector FROM (VALUES {vals}) AS v(id,e) "
+                "WHERE m.id=v.id;"
+            )
 
     emb_stat = psql(
         "select count(*) filter (where embedding is not null)||'/'||count(*) from memories "
@@ -617,8 +712,8 @@ def reconcile(
         True,
     ).strip()
     log(
-        f"[{agent}] backfilled={loaded} pruned={pruned} "
-        f"null_embedded={len(nulls)} embedded={emb_stat}"
+        f"[{agent}] backfilled={loaded} stub_skipped={len(stub_skipped_ids)} pruned={pruned} "
+        f"null_embedded={len(nulls)} embedded={emb_stat} dry_run={dry_run}"
     )
 
     try:
@@ -636,6 +731,8 @@ def reconcile(
         "flat": len(flat),
         "pg": len(pg_ids),
         "missing": len(missing),
+        "shared": len(shared_ids),
+        "stub_skipped": len(stub_skipped_ids),
         "backfilled": loaded,
         "pruned": pruned_n,
         "prune_skipped": prune_skipped,
@@ -645,6 +742,7 @@ def reconcile(
         "null_embedded": len(nulls),
         "embedded": embedded,
         "total": total,
+        "dry_run": dry_run,
     }
 
 
@@ -736,18 +834,38 @@ def main(argv=None):
         action="store_true",
         help="force prune past the cold-boot/mid-sync guardrail",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report every count, issue no mutating SQL, call no embed endpoint",
+    )
+    parser.add_argument(
+        "--force-stubs",
+        action="store_true",
+        help="backfill stub-flagged (recovered_from_sqlite_preview) content anyway",
+    )
     args = parser.parse_args(argv)
 
     if args.all or args.agents:
         explicit = None
         if args.agents:
             explicit = [a.strip() for a in args.agents.split(",") if a.strip()]
-        summary = reconcile_all(explicit, force_prune=args.force)
+        summary = reconcile_all(
+            explicit,
+            force_prune=args.force,
+            dry_run=args.dry_run,
+            force_stubs=args.force_stubs,
+        )
         if not summary["ok"]:
             sys.exit(1)
         return summary
 
-    return reconcile(args.agent or default_agent(), force_prune=args.force)
+    return reconcile(
+        args.agent or default_agent(),
+        force_prune=args.force,
+        dry_run=args.dry_run,
+        force_stubs=args.force_stubs,
+    )
 
 
 if __name__ == "__main__":

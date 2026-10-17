@@ -17,12 +17,18 @@ script runs unchanged there.
 
 ## `skmem_reconcile.py`
 
-Lives at `deploy/skmem-pg/skmem_reconcile.py` (standalone cron copy) and as the
-in-package engine `skmemory/reconcile.py` (importable + unit-tested). The
-backfill / prune / re-embed-NULL decision logic is covered by
-`tests/test_reconcile_invariant.py` (rebuild-from-empty, prune-on-flat-delete,
-re-embed, idempotency), agent-scoped to a throwaway PID-keyed agent so it cannot
-touch real memories; it self-skips when the local pg / docker path / embed
+The canonical, importable + unit-tested engine is `skmemory/reconcile.py`.
+`deploy/skmem-pg/skmem_reconcile.py` and `scripts/skmem_reconcile.py` are thin
+shims that `os.execv` into it (card: this script was four independently
+-evolved copies before consolidation; see
+`docs/postmortems/2026-10-16-sqlite-only-orphans.md` section 3.12) -- prefer
+calling the module directly in any new cron line. The backfill / prune /
+re-embed-NULL decision logic, the stub/shrink guard, and the shared-id
+convergence fix are covered by `tests/test_reconcile_invariant.py`,
+`tests/test_reconcile_stub_and_shared_id_guard.py`, and
+`tests/test_reconcile_dry_run.py`, agent-scoped to a throwaway PID-keyed agent
+(or fully offline against a fake transport) so they cannot touch real
+memories; the live-DB test self-skips when the local pg / docker path / embed
 endpoint is unreachable.
 
 Env contract:
@@ -30,7 +36,9 @@ Env contract:
 | Var | Default | Meaning |
 | --- | --- | --- |
 | `SKAGENT` / argv[1] | `lumina` | agent whose flat files to reconcile (single-agent mode) |
-| `--all` / `--agents a,b,c` | - | in-package engine only: reconcile every provisioned agent, or an explicit list (see below) |
+| `--all` / `--agents a,b,c` | - | reconcile every provisioned agent, or an explicit list (see below) |
+| `--dry-run` | off | report every count (flat/pg/missing/shared/stub_skipped/would-prune/would-embed); issues zero mutating SQL and never calls the embed endpoint. Safe against production data. |
+| `--force-stubs` | off | backfill a flat file carrying the `recovered_from_sqlite_preview` stub marker anyway (default: refuse, loudly) |
 | `EMBED_URL` | `http://192.168.0.100:11434/api/embed` | mxbai embed endpoint |
 | `EMBED_MODEL` | `mxbai-embed-large` | embed model |
 
@@ -38,9 +46,10 @@ Talks to the node-LOCAL container via `docker exec skmem-pg psql` (no host
 param), so it can only ever act on the box it runs on. Run:
 
 ```sh
+~/.skenv/bin/python3 -m skmemory.reconcile [AGENT] [--dry-run] [--force-stubs]
+# the legacy paths are equivalent (thin shims into the same module):
 python deploy/skmem-pg/skmem_reconcile.py [AGENT]
-# or, from the installed package:
-python -m skmemory.reconcile [AGENT]
+python scripts/skmem_reconcile.py [AGENT]
 ```
 
 ### Multi-agent reconcile (all agents, one run)
@@ -142,7 +151,7 @@ crontab:
 
 ```cron
 15 3 * * *  SKAGENT=lumina /path/to/repo/deploy/ops/skmem-pg-backup.sh   >> ~/.skcapstone/agents/lumina/logs/skmem-pg-backup.log 2>&1
-30 3 * * *  SKAGENT=lumina python /path/to/repo/deploy/skmem-pg/skmem_reconcile.py lumina >> ~/.skcapstone/agents/lumina/logs/skmem-reconcile.log 2>&1
+30 3 * * *  ~/.skenv/bin/python3 -m skmemory.reconcile lumina >> ~/.skcapstone/agents/lumina/logs/skmem-reconcile.log 2>&1
 45 7 * * *  SKAGENT=lumina /path/to/repo/deploy/ops/skmem-health.sh      # stdout usually wrapped by Hermes into the synthesis prompt
 ```
 

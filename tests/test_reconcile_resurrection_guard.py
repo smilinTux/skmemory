@@ -110,6 +110,9 @@ class _FakePsql:
             return _CP(stdout=f"{self.delete_count}\n")
         if low.startswith("select id from memories where agent"):
             return _CP(stdout="\n".join(self.pg_ids) + ("\n" if self.pg_ids else ""))
+        if low.startswith("select id from memories;"):
+            # single-agent fixtures: no cross-agent sharing to simulate.
+            return _CP(stdout="\n".join(self.pg_ids) + ("\n" if self.pg_ids else ""))
         if "embedding is null" in low:
             return _CP(stdout="")
         if "count(*) filter" in low:

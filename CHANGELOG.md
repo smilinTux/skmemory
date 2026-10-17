@@ -20,6 +20,26 @@
 
 ### Fixed
 
+- `skmem_reconcile.py` was four independently-evolved copies (this repo's
+  `scripts/skmem_reconcile.py`, `deploy/skmem-pg/skmem_reconcile.py`, the
+  in-package `skmemory/reconcile.py` engine, and a fourth copy in Chef's
+  personal `~/clawd` repo that the live fleet cron actually ran), and the
+  one actually wired into `skmemory sync --vector` had neither the stub
+  guard nor the fix for a non-convergent "shared id" bug (two agents'
+  flat stores holding the same id, since `memories_pkey` is a bare `id`,
+  not `(id, agent)`) that the standalone scripts had independently grown.
+  Consolidated onto `skmemory/reconcile.py` as the one canonical engine:
+  it now carries the stub/shrink guard (`force_stubs=True` /
+  `--force-stubs` to override, refused loudly otherwise) and the
+  shared-id fix (reported separately as `shared`, never retried as
+  `missing`), plus a new `dry_run=True` / `--dry-run` mode that computes
+  every count with zero mutating SQL and no embed-endpoint calls, so an
+  operator can verify a host's reconcile against production data with no
+  risk. The three standalone scripts are now thin shims that `os.execv`
+  into `python -m skmemory.reconcile`, kept for one release so any
+  cron/systemd entry still calling them by path keeps working; new cron
+  lines should call the module directly. See
+  `docs/postmortems/2026-10-16-sqlite-only-orphans.md` section 3.12.
 - `PGVectorBackend` now warns loudly (and can be made to refuse, via
   `SKMEMORY_PG_REMOTE_STRICT=1`) when its DSN targets a non-loopback host.
   skmem-pg is per-node by design (card: prb-6f069c5e); that remediation's
