@@ -5,6 +5,7 @@ each via the configured mxbai endpoint.
 Resumable: skips memory ids that already have a non-null embedding in pg.
 Run:  SKAGENT=lumina python scripts/migrate-flat-to-pgvector.py
 """
+
 from __future__ import annotations
 
 import os
@@ -82,8 +83,11 @@ def main() -> int:
         if n % 200 == 0:
             rate = n / max(time.time() - t0, 1e-9)
             eta = (len(todo) - n) / max(rate, 1e-9)
-            print(f"  {n}/{len(todo)} ok={counters['ok']} fail={counters['fail']} "
-                  f"{rate:.1f}/s eta={eta/60:.1f}m", flush=True)
+            print(
+                f"  {n}/{len(todo)} ok={counters['ok']} fail={counters['fail']} "
+                f"{rate:.1f}/s eta={eta / 60:.1f}m",
+                flush=True,
+            )
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         list(ex.map(worker, todo))
@@ -92,7 +96,7 @@ def main() -> int:
     with conn.cursor() as cur:
         cur.execute("SELECT count(*), count(embedding) FROM memories WHERE agent=%s", (AGENT,))
         total, emb = cur.fetchone()
-    print(f"DONE ok={ok} fail={fail}  pg rows={total} embedded={emb}  ({time.time()-t0:.0f}s)")
+    print(f"DONE ok={ok} fail={fail}  pg rows={total} embedded={emb}  ({time.time() - t0:.0f}s)")
     return 0
 
 

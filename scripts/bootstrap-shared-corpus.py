@@ -186,7 +186,9 @@ def _load_agent_config(agent: str):
 def _register_shared_corpus(args: argparse.Namespace, source_root: Path) -> Path:
     cfg_path, cfg = _load_agent_config(args.agent)
     if cfg is None:
-        raise SystemExit(f"No skmemory config found for agent {args.agent}; cannot register shared corpus.")
+        raise SystemExit(
+            f"No skmemory config found for agent {args.agent}; cannot register shared corpus."
+        )
     graph_name = args.graph_name or args.vector_collection
     existing = [item for item in cfg.shared_corpora if item.name != args.corpus_name]
     existing.append(
@@ -239,7 +241,9 @@ def main() -> None:
     processed = indexed = skipped = 0
     start = time.time()
 
-    for path in _iter_source_files(source_root, allowed_extensions, include_hidden=args.include_hidden):
+    for path in _iter_source_files(
+        source_root, allowed_extensions, include_hidden=args.include_hidden
+    ):
         relative_path = path.relative_to(source_root)
         source_ref = relative_path.as_posix()
         try:

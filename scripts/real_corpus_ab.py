@@ -36,6 +36,19 @@ model, and a model-written query would make the benchmark non-deterministic and
 unauditable. The offline harness covers paraphrase; this one does not, and the
 report says so rather than implying full coverage.
 
+NOT deterministic, unlike the offline harness
+---------------------------------------------
+Two 50-sample runs of the same configuration disagreed by 0.020 on identifier
+hit@5 (0.680 against 0.660), and two 100-sample runs of the graph-arm cost
+bracketed zero (title hit@5 -0.010 one run, +0.000 the next). Three things move
+it: the dense arm calls a real mxbai endpoint over HTTP, the corpus is live and
+daemons keep writing to it, and ties break on whatever order the backend
+returned. So treat anything under roughly 0.02 at n=50 as noise, prefer the
+larger sample, and do not quote a single run as a precise figure. The
+deterministic, CI-gateable measurement is skmemory.eval.fusion_bench; this
+harness exists to check that those conclusions survive real data, which is a
+different and coarser question.
+
 STRICTLY READ-ONLY
 ------------------
 Only SELECT statements and the library's search paths. It never constructs a
@@ -138,6 +151,12 @@ def main() -> None:
     ap.add_argument("--samples", type=int, default=60, help="memories sampled per class")
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--seed", type=int, default=1729)
+    ap.add_argument(
+        "--with-graph",
+        action="store_true",
+        help="also score a configuration with the one-hop graph arm attached, to "
+        "check whether a fourth arm dilutes the head on these classes",
+    )
     args = ap.parse_args()
 
     dsn = os.environ.get("SKMEMORY_PG_DSN", "")
@@ -152,6 +171,15 @@ def main() -> None:
     from skmemory.backends.pgvector_backend import PGVectorBackend
     from skmemory.fusion import DEFAULT_ARM_CAP, fuse, run_arm
     from skmemory.rerank import NoopReranker, RareTermReranker
+
+    graph = None
+    if args.with_graph:
+        from skmemory.backends.age_backend import AGEGraphBackend
+
+        graph = AGEGraphBackend(dsn=dsn, agent=args.agent)
+        if graph.graph is None:
+            sys.exit(f"no graph available for agent {args.agent!r}")
+        print(f"graph: {graph.graph}")
 
     rng = random.Random(args.seed)
 
@@ -180,7 +208,7 @@ def main() -> None:
         reaches its lexical stages when the vector stage returns zero rows."""
         return [m.id for m in vector.search_text(query, limit=args.k)]
 
-    def fused(query: str, reranker) -> list[str]:
+    def fused(query: str, reranker, use_graph: bool = False) -> list[str]:
         arm_limit = max(args.k * 3, DEFAULT_ARM_CAP)
         texts: dict[str, str] = {}
 
@@ -198,7 +226,26 @@ def main() -> None:
                 out.append(m.id)
             return out
 
+        def _graph() -> list[str]:
+            out = []
+            for row in graph.search_by_entity(query, limit=arm_limit) or []:
+                row_id = str(row.get("id") or "").strip('"')
+                if not row_id:
+                    continue
+                # A derived projection can name a row the source of truth no
+                # longer holds, so an unhydratable id is skipped rather than
+                # handed to the caller.
+                if row_id not in texts:
+                    mem = vector.load(row_id)
+                    if mem is None:
+                        continue
+                    texts[row_id] = f"{mem.title or ''} {mem.content or ''}"
+                out.append(row_id)
+            return out
+
         arms = [run_arm("semantic", _sem), run_arm("lexical", _lex)]
+        if use_graph and graph is not None:
+            arms.append(run_arm("graph", _graph))
         report = fuse(arms, limit=arm_limit)
         pool = report.ids
         if not pool:
@@ -212,6 +259,14 @@ def main() -> None:
         ("fused (R1 only)", lambda q: fused(q, NoopReranker())),
         ("fused+rerank (R2)", lambda q: fused(q, RareTermReranker())),
     ]
+    if args.with_graph:
+        # The point of this row is the REGRESSION check: these two classes are
+        # not entity queries, so the graph arm has nothing to contribute to
+        # them and can only dilute the head. Its benefit is measured in
+        # scripts/entity_arm_ab.py; its cost is measured here.
+        configs.append(
+            ("fused+rerank+graph", lambda q: fused(q, RareTermReranker(), use_graph=True))
+        )
 
     results: dict[str, dict[str, dict]] = {}
     for label, fn in configs:
@@ -247,15 +302,34 @@ def main() -> None:
         print(f"  {label:<20} {empties}")
 
     base = results["legacy (pre-R1)"]
-    best = results["fused+rerank (R2)"]
-    print("\ndelta, fused+rerank vs legacy:")
+    best = results[configs[-1][0]]
+    print(f"\ndelta, {configs[-1][0]} vs legacy:")
     for c in classes:
         d_hit = best[c][f"hit@{args.k}"] - base[c][f"hit@{args.k}"]
         d_mrr = best[c]["mrr"] - base[c]["mrr"]
         print(f"  {c:11} hit@{args.k} {d_hit:+.3f}   MRR {d_mrr:+.3f}")
 
     regressed = [c for c in classes if best[c][f"hit@{args.k}"] < base[c][f"hit@{args.k}"] - 1e-9]
-    print(f"\nregressed classes: {regressed or 'none'}")
+    print(f"\nregressed classes vs legacy: {regressed or 'none'}")
+
+    # The comparison that decides whether to keep a fourth arm is NOT against
+    # legacy, which the graph arm beats easily. It is against fusion WITHOUT
+    # the graph arm, because on these two classes the graph arm has nothing to
+    # contribute and can only dilute the head. Printing only the vs-legacy
+    # verdict would hide the one number worth knowing.
+    if args.with_graph and "fused+rerank+graph" in results:
+        no_graph = results["fused+rerank (R2)"]
+        with_graph = results["fused+rerank+graph"]
+        print("\ndelta, graph arm vs the SAME pipeline without it (the real cost):")
+        worse = []
+        for c in classes:
+            d_hit = with_graph[c][f"hit@{args.k}"] - no_graph[c][f"hit@{args.k}"]
+            d_mrr = with_graph[c]["mrr"] - no_graph[c]["mrr"]
+            print(f"  {c:11} hit@{args.k} {d_hit:+.3f}   MRR {d_mrr:+.3f}")
+            if d_hit < -1e-9 or d_mrr < -1e-9:
+                worse.append(c)
+        print(f"  classes the graph arm makes WORSE: {worse or 'none'}")
+        print("  Weigh against the entity gain in scripts/entity_arm_ab.py.")
     print("\nNOTE: no paraphrase class here. A faithful paraphrase of a real memory")
     print("needs a model, which would make this non-deterministic and unauditable.")
     print("Paraphrase is covered offline in skmemory.eval.fusion_bench.")

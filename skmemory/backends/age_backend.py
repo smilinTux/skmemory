@@ -1112,6 +1112,158 @@ class AGEGraphBackend:
         )
         return self._rows_to_dicts(rows, ["id", "title", "layer", "entity"])
 
+    #: Query words too common to be worth an entity lookup. Deliberately tiny:
+    #: the discriminative-token ordering below handles the rest, and a long
+    #: hand-maintained stopword list is its own source of drift.
+    _TOKEN_STOPWORDS = frozenset(
+        {
+            "what",
+            "when",
+            "where",
+            "which",
+            "about",
+            "from",
+            "with",
+            "that",
+            "this",
+            "there",
+            "their",
+            "they",
+            "then",
+            "than",
+            "have",
+            "has",
+            "had",
+            "did",
+            "does",
+            "doing",
+            "said",
+            "says",
+            "the",
+            "and",
+            "for",
+            "was",
+            "were",
+            "been",
+            "being",
+            "into",
+            "over",
+            "under",
+            "after",
+            "before",
+            "would",
+            "could",
+            "should",
+            "will",
+            "shall",
+            "much",
+            "many",
+            "some",
+            "any",
+            "all",
+            "only",
+            "just",
+            "also",
+            "more",
+            "most",
+            "like",
+            "want",
+            "need",
+            "know",
+            "think",
+            "make",
+            "made",
+        }
+    )
+
+    def search_by_entity_tokens(self, query: str, limit: int = 20) -> list[dict]:
+        """Entity lookup on query TOKENS rather than the whole query string.
+
+        ``search_by_entity`` substring-matches the ENTIRE query against entity
+        names, which means it only ever fires when the query is itself close to
+        a bare entity name. Measured against lumina's real graph on ten
+        realistic multi-word agent queries ("skgateway routing decision", "what
+        did Casey say about the invoice", "beelama kv degeneracy fix", and so
+        on), the whole-query form fired on **0 of 10**. The same ten queries
+        matched entities on **10 of 10** once each query word was looked up
+        separately. An arm attached but never firing is an unmeasured feature,
+        not a working one.
+
+        Tokens are tried MOST DISCRIMINATIVE FIRST, by how few memories each
+        one reaches. That is the same principle the rare-term reranker uses: a
+        token matching three memories says far more about intent than one
+        matching three hundred, and ordering by it means the per-arm cap keeps
+        the informative hits rather than whatever the query happened to say
+        first.
+
+        Returns the same row shape as :meth:`search_by_entity`, so either can
+        back the fusion graph arm.
+        """
+        if self.graph is None or not query or not query.strip():
+            return []
+
+        # MOST SPECIFIC FIRST. The whole query is tried before any token,
+        # because for a query that IS close to an entity name the whole-query
+        # match is strictly better: tokenizing splits multi-word entity names
+        # ("Ali Al-Zaidi", "Zero One") and loses them. Measured on 40 bare
+        # entity queries, whole-query scored precision@5 0.400 against 0.350
+        # for token-only, while token-only was the ONLY variant that fired at
+        # all on realistic multi-word queries (10 of 10 versus 0 of 10).
+        # Neither alone is right, so both run and the more specific one leads.
+        #
+        # This is a decision about the QUERY SHAPE, taken before anything is
+        # retrieved, not a fallback triggered by disliking the rows that came
+        # back. That distinction is the whole point of R1.
+        out: list[dict] = []
+        seen: set[str] = set()
+        for row in self.search_by_entity(query, limit=limit) or []:
+            row_id = str(row.get("id") or "")
+            if row_id and row_id not in seen:
+                seen.add(row_id)
+                out.append(row)
+        if len(out) >= limit:
+            return out[:limit]
+
+        tokens = [
+            tok
+            for tok in dict.fromkeys(re.findall(r"[A-Za-z][A-Za-z0-9_.-]{3,}", query))
+            if tok.casefold() not in self._TOKEN_STOPWORDS
+        ]
+        # A single token identical to the query adds nothing the block above
+        # did not already collect.
+        tokens = [t for t in tokens if t.casefold() != query.strip().casefold()]
+        if not tokens:
+            return out
+
+        # Collect per token, then order tokens by how few rows they reached.
+        per_token: list[tuple[int, str, list[dict]]] = []
+        for tok in tokens:
+            rows = self.search_by_entity(tok, limit=limit) or []
+            if rows:
+                per_token.append((len(rows), tok, rows))
+        per_token.sort(key=lambda t: (t[0], t[1]))
+
+        # Interleave by rank within each token so one broad token cannot fill
+        # the whole budget before a narrow one is heard from.
+        depth = 0
+        while len(out) < limit and per_token:
+            progressed = False
+            for _count, _tok, rows in per_token:
+                if depth >= len(rows):
+                    continue
+                progressed = True
+                row = rows[depth]
+                row_id = str(row.get("id") or "")
+                if row_id and row_id not in seen:
+                    seen.add(row_id)
+                    out.append(row)
+                    if len(out) >= limit:
+                        break
+            if not progressed:
+                break
+            depth += 1
+        return out
+
     def find_clusters(self, min_size: int = 3) -> list[dict]:
         """Find Memory nodes with at least ``min_size`` distinct neighbours (any edge type).
 

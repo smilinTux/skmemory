@@ -49,12 +49,14 @@ def find_missing_entries(verbose: bool) -> list[dict]:
         layer = row["layer"]
         json_path = MEMORY_HOME / layer / f"{mem_id}.json"
         if not json_path.exists():
-            missing.append({
-                "id": mem_id,
-                "layer": layer,
-                "title": row["title"],
-                "expected_path": json_path,
-            })
+            missing.append(
+                {
+                    "id": mem_id,
+                    "layer": layer,
+                    "title": row["title"],
+                    "expected_path": json_path,
+                }
+            )
             if verbose:
                 print(f"  [MISSING] {layer}/{mem_id}.json — {row['title'][:60]}")
 

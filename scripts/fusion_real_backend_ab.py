@@ -181,7 +181,9 @@ def score(store, mapping, ks=(1, 5, 10)) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dsn", default=None, help=f"defaults to SKMEMORY_PG_DSN with db swapped to {DEFAULT_DB}")
+    ap.add_argument(
+        "--dsn", default=None, help=f"defaults to SKMEMORY_PG_DSN with db swapped to {DEFAULT_DB}"
+    )
     ap.add_argument("--keep", action="store_true", help="leave the ingested rows in place")
     args = ap.parse_args()
 
@@ -232,7 +234,8 @@ def main() -> None:
 
     old, new = results["legacy"], results["fused"]
     regressed = [
-        c for c in classes
+        c
+        for c in classes
         if new["by_class"][c]["recall@5"] < old["by_class"][c]["recall@5"] - 1e-9
     ]
     print(f"overall recall@5: {old['overall_recall@5']:.3f} -> {new['overall_recall@5']:.3f}")

@@ -1006,7 +1006,17 @@ class MemoryStore:
 
         def _graph() -> list[str]:
             backend = self.graph
-            search_by_entity = getattr(backend, "search_by_entity", None)
+            # Prefer token-level entity lookup when the backend offers it.
+            # Whole-query substring matching only fires when the query is
+            # itself close to a bare entity name: measured against lumina's
+            # real graph, it fired on 0 of 10 realistic multi-word agent
+            # queries, while per-token lookup fired on 10 of 10. An arm that is
+            # attached but never fires is an unmeasured feature, not a working
+            # one. Resolved once from what the backend exposes, not re-queried
+            # because the first attempt returned little.
+            search_by_entity = getattr(backend, "search_by_entity_tokens", None) or getattr(
+                backend, "search_by_entity", None
+            )
             if search_by_entity is None:
                 return []
             ids = []

@@ -78,7 +78,9 @@ def promote_dream(src_path: Path, data: dict, dry_run: bool, verbose: bool) -> b
         "layer": "mid-term",
         "parent_id": mem_id,
         "summary": summary,
-        "tags": list(set(data.get("tags", []) + ["dream", "bulk-promoted", "rescued", "auto-promoted"])),
+        "tags": list(
+            set(data.get("tags", []) + ["dream", "bulk-promoted", "rescued", "auto-promoted"])
+        ),
         "updated_at": NOW.isoformat(),
         "metadata": {
             **data.get("metadata", {}),
