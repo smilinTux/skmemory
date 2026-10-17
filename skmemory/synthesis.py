@@ -25,6 +25,19 @@ from .store import MemoryStore
 
 logger = logging.getLogger("skmemory.synthesis")
 
+# Result caps for the date-bounded list_memories() calls below. These bound
+# the RESULT of an already date-scoped query (a safety ceiling against a
+# pathological single day/week), not a "fetch the N most recent, then
+# filter" window -- that older pattern silently returned nothing for any
+# date range outside the most-recent `limit` once a store grew past it
+# (card: skmemory synthesis-silent-empty-on-historical-dates, 2026-10-17;
+# measured 0 -> 433 memories for the same historical date once fixed).
+# Named so tests can exercise the date-range-before-limit ordering at a
+# tiny scale instead of needing thousands of fixture rows.
+_DAILY_QUERY_LIMIT = 5000
+_WEEKLY_QUERY_LIMIT = 20000
+_DREAMS_QUERY_LIMIT = 20000
+
 
 def _first_n_sentences(text: str, n: int = 2) -> str:
     """Extract the first N sentences from text, capped at 200 chars."""
@@ -111,8 +124,20 @@ class JournalSynthesizer:
 
         start, end = _date_range(date)
 
-        # Gather memories from this date
-        all_memories = self.store.list_memories(limit=500)
+        # Gather memories from this date. Query by date range (not "the N
+        # most recent, then filter") -- a store with more than `limit`
+        # memories total would otherwise silently return nothing for any
+        # date whose memories fall outside the most-recent window (card:
+        # skmemory synthesis-silent-empty-on-historical-dates, 2026-10-17,
+        # measured 0 -> 433 memories for the same historical date once
+        # fixed). The client-side filter stays as a defense-in-depth check
+        # for any backend whose date-range support is a post-fetch filter
+        # rather than a native predicate (see base.py).
+        all_memories = self.store.list_memories(
+            limit=_DAILY_QUERY_LIMIT,
+            created_after=start.isoformat(),
+            created_before=end.isoformat(),
+        )
         day_memories = [m for m in all_memories if start <= _parse_created(m) < end]
 
         # Gather journal entries for this date
@@ -187,8 +212,15 @@ class JournalSynthesizer:
             m for m in all_mid if start <= _parse_created(m) < end and "narrative" in m.tags
         ]
 
-        # Also gather all memories from the week for theme extraction
-        all_memories = self.store.list_memories(limit=1000)
+        # Also gather all memories from the week for theme extraction.
+        # Query by date range, not "the N most recent" -- same silent-empty
+        # failure mode as synthesize_daily (card: skmemory
+        # synthesis-silent-empty-on-historical-dates, 2026-10-17).
+        all_memories = self.store.list_memories(
+            limit=_WEEKLY_QUERY_LIMIT,
+            created_after=start.isoformat(),
+            created_before=end.isoformat(),
+        )
         week_memories = [m for m in all_memories if start <= _parse_created(m) < end]
 
         themes = self.extract_themes(week_memories)
@@ -249,8 +281,20 @@ class JournalSynthesizer:
 
         cutoff = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-        # Gather dream memories
-        all_memories = self.store.list_memories(limit=1000)
+        # Gather dream memories. Query by date range AND source, not "the
+        # N most recent of any source" -- same silent-empty failure mode as
+        # synthesize_daily (card: skmemory
+        # synthesis-silent-empty-on-historical-dates, 2026-10-17). Filtering
+        # by source="dreaming-engine" in the query itself (not just
+        # client-side, below) matters because dreams are a small fraction
+        # of a large store: an unscoped "N most recent of everything" fetch
+        # could fill its whole limit with non-dream memories before ever
+        # reaching an old dream.
+        all_memories = self.store.list_memories(
+            limit=_DREAMS_QUERY_LIMIT,
+            created_after=cutoff.isoformat(),
+            source="dreaming-engine",
+        )
         dream_memories = [
             m
             for m in all_memories

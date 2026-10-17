@@ -574,6 +574,9 @@ class SQLiteBackend(BaseBackend):
         layer: MemoryLayer | None = None,
         tags: list[str] | None = None,
         limit: int = 50,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        source: str | None = None,
     ) -> list[Memory]:
         """List memories using the index for filtering, loading full objects.
 
@@ -581,6 +584,17 @@ class SQLiteBackend(BaseBackend):
             layer: Filter by memory layer (None = all layers).
             tags: Filter by tags (AND logic).
             limit: Maximum results.
+            source: Filter by the memory's ``source`` field, applied in
+                SQL before ``limit`` truncates the result.
+            created_after: ISO 8601 timestamp lower bound (inclusive),
+                applied in SQL before ``limit`` truncates the result. Pass
+                this (with ``created_before``) instead of fetching the N
+                most recent and filtering by date client-side -- that
+                pattern silently returns nothing for a historical date
+                range once the store holds more than ``limit`` memories
+                (card: skmemory synthesis-silent-empty-on-historical-dates,
+                2026-10-17).
+            created_before: ISO 8601 timestamp upper bound (exclusive).
 
         Returns:
             list[Memory]: Matching memories sorted newest first.
@@ -597,6 +611,18 @@ class SQLiteBackend(BaseBackend):
             for tag in tags:
                 conditions.append("tags LIKE ?")
                 params.append(f"%{tag}%")
+
+        if source:
+            conditions.append("source = ?")
+            params.append(source)
+
+        if created_after:
+            conditions.append("created_at >= ?")
+            params.append(created_after)
+
+        if created_before:
+            conditions.append("created_at < ?")
+            params.append(created_before)
 
         where = " AND ".join(conditions) if conditions else "1=1"
         params.append(limit)

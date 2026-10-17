@@ -207,6 +207,9 @@ class FileBackend(BaseBackend):
         layer: MemoryLayer | None = None,
         tags: list[str] | None = None,
         limit: int = 50,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        source: str | None = None,
     ) -> list[Memory]:
         """List memories from disk with optional filtering.
 
@@ -214,6 +217,17 @@ class FileBackend(BaseBackend):
             layer: Filter by memory layer (None = all layers).
             tags: Filter by tags (AND logic).
             limit: Maximum results.
+            source: Filter by the memory's ``source`` field, applied
+                before ``limit`` truncates the result.
+            created_after: ISO 8601 timestamp lower bound (inclusive),
+                applied BEFORE ``limit`` truncates the result. Pass this
+                (with ``created_before``) instead of fetching the N most
+                recent and filtering by date client-side -- that pattern
+                silently returns nothing for a historical date range once
+                the store holds more than ``limit`` memories (card:
+                skmemory synthesis-silent-empty-on-historical-dates,
+                2026-10-17).
+            created_before: ISO 8601 timestamp upper bound (exclusive).
 
         Returns:
             list[Memory]: Matching memories sorted newest first.
@@ -230,6 +244,12 @@ class FileBackend(BaseBackend):
                     data = json.loads(json_file.read_text(encoding="utf-8"))
                     mem = Memory(**data)
                     if tags and not all(t in mem.tags for t in tags):
+                        continue
+                    if source and mem.source != source:
+                        continue
+                    if created_after and mem.created_at < created_after:
+                        continue
+                    if created_before and mem.created_at >= created_before:
                         continue
                     results.append(mem)
                 except (json.JSONDecodeError, Exception):

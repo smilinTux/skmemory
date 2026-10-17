@@ -644,6 +644,9 @@ class SKVectorBackend(BaseBackend):
         layer: MemoryLayer | None = None,
         tags: list[str] | None = None,
         limit: int = 50,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        source: str | None = None,
     ) -> list[Memory]:
         """List memories from Qdrant with filtering.
 
@@ -651,6 +654,14 @@ class SKVectorBackend(BaseBackend):
             layer: Filter by layer.
             tags: Filter by tags.
             limit: Max results.
+            created_after: ISO 8601 lower bound. This backend is
+                deprecated and not configured as a live store; this is
+                applied as a post-fetch filter for interface compatibility
+                with :class:`~skmemory.backends.base.BaseBackend`, not a
+                native Qdrant query predicate, so a caller scoping to a
+                historical date range may still miss results older than
+                ``limit`` if this backend is ever reactivated.
+            created_before: ISO 8601 upper bound (exclusive).
 
         Returns:
             list[Memory]: Matching memories.
@@ -687,6 +698,12 @@ class SKVectorBackend(BaseBackend):
                 logger.warning("skvector_backend.py: %s", e)
                 continue
 
+        if source:
+            memories = [m for m in memories if m.source == source]
+        if created_after:
+            memories = [m for m in memories if m.created_at >= created_after]
+        if created_before:
+            memories = [m for m in memories if m.created_at < created_before]
         memories.sort(key=lambda m: m.created_at, reverse=True)
         return memories
 

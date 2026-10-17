@@ -574,7 +574,31 @@ class PGVectorBackend(BaseBackend):
         layer: MemoryLayer | None = None,
         tags: list[str] | None = None,
         limit: int = 50,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        source: str | None = None,
     ) -> list[Memory]:
+        """List memories, optionally bounded to a date range.
+
+        Args:
+            layer: Filter by memory layer.
+            tags: Filter by tags (all must be present).
+            limit: Maximum results.
+            source: Filter by the memory's ``source`` field, applied in
+                SQL before ``limit`` truncates the result.
+            created_after: ISO 8601 timestamp lower bound (inclusive),
+                applied in SQL before ``limit`` truncates the result. Pass
+                this (with ``created_before``) instead of fetching the N
+                most recent and filtering by date client-side -- that
+                pattern silently returns nothing for a historical date
+                range once the store holds more than ``limit`` memories
+                (card: skmemory synthesis-silent-empty-on-historical-dates,
+                2026-10-17).
+            created_before: ISO 8601 timestamp upper bound (exclusive).
+
+        Returns:
+            list[Memory]: Matching memories, newest first.
+        """
         clauses, params = ["agent=%s"], [self.agent]
         if layer is not None:
             clauses.append("layer=%s")
@@ -582,6 +606,15 @@ class PGVectorBackend(BaseBackend):
         if tags:
             clauses.append("tags @> %s")
             params.append(list(tags))
+        if source:
+            clauses.append("source=%s")
+            params.append(source)
+        if created_after:
+            clauses.append("created_at >= %s")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at < %s")
+            params.append(created_before)
         where = " WHERE " + " AND ".join(clauses)
         params.append(limit)
         conn = self._connection()

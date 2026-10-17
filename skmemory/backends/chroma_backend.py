@@ -311,7 +311,23 @@ class SKChromaBackend(BaseBackend):
         layer: MemoryLayer | None = None,
         tags: list[str] | None = None,
         limit: int = 50,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        source: str | None = None,
     ) -> list[Memory]:
+        """List memories, optionally date-bounded and/or source-filtered.
+
+        This backend is deprecated and not configured as a live store
+        (card: architecture consolidation onto skmem-pg); ``created_after``/
+        ``created_before`` are accepted for interface compatibility with
+        :class:`~skmemory.backends.base.BaseBackend` and applied as a
+        post-fetch filter rather than a native Chroma query predicate, so a
+        caller scoping to a historical date range may still miss results
+        older than ``limit`` if this backend is ever reactivated. Do not
+        rely on this path for date-range correctness; use
+        :class:`~skmemory.backends.sqlite_backend.SQLiteBackend` or
+        :class:`~skmemory.backends.pgvector_backend.PGVectorBackend`.
+        """
         if not self._ensure_initialized():
             return []
 
@@ -345,6 +361,12 @@ class SKChromaBackend(BaseBackend):
                         logger.warning("ChromaDB: skipping malformed memory document: %s", e)
                         continue
 
+            if source:
+                memories = [m for m in memories if m.source == source]
+            if created_after:
+                memories = [m for m in memories if m.created_at >= created_after]
+            if created_before:
+                memories = [m for m in memories if m.created_at < created_before]
             memories.sort(key=lambda m: m.created_at, reverse=True)
             return memories
         except Exception as e:

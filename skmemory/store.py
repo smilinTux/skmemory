@@ -1382,6 +1382,9 @@ class MemoryStore:
         layer: MemoryLayer | None = None,
         tags: list[str] | None = None,
         limit: int = 50,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        source: str | None = None,
     ) -> list[Memory]:
         """List memories with optional filtering.
 
@@ -1389,11 +1392,30 @@ class MemoryStore:
             layer: Filter by layer.
             tags: Filter by tags (AND logic).
             limit: Max results.
+            source: Filter by the memory's ``source`` field, applied by
+                the backend's own query before ``limit`` truncates the
+                result.
+            created_after: ISO 8601 timestamp lower bound (inclusive),
+                applied by the backend's own query BEFORE ``limit``
+                truncates the result. Pass this (with ``created_before``)
+                when scoping to a historical date range -- fetching the N
+                most recent and filtering by date afterward silently
+                returns nothing once the store holds more than ``limit``
+                memories (card: skmemory
+                synthesis-silent-empty-on-historical-dates, 2026-10-17).
+            created_before: ISO 8601 timestamp upper bound (exclusive).
 
         Returns:
             list[Memory]: Matching memories sorted newest first.
         """
-        return self.primary.list_memories(layer=layer, tags=tags, limit=limit)
+        return self.primary.list_memories(
+            layer=layer,
+            tags=tags,
+            limit=limit,
+            created_after=created_after,
+            created_before=created_before,
+            source=source,
+        )
 
     def promote(
         self,
