@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -57,48 +58,112 @@ def _content_hash(document: dict, field: str) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-_profiles = []
-for _profile_id in (_TEST_AGENT_NAME, "lumina", "jarvis", "opus"):
-    _profile = {
+#: Profile ids registered in the synthetic registry. Live tests append to this
+#: through :func:`register_test_profile`, so the SKPM-PROF-01 reader (which
+#: fails closed) can resolve the throwaway agents they mint.
+_REGISTERED_PROFILE_IDS: list[str] = []
+_profiles: list[dict] = []
+
+#: Mirrors ``skmemory.profile_registry._ID_PATTERN``. A profile id MUST start
+#: with an alphanumeric, so a name like ``__dedup_test_123__`` can never be
+#: registered and therefore can never resolve, no matter what else is done.
+_PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def _build_profile(profile_id: str) -> dict:
+    """Write ``agents/<id>/profile.json`` and return its registry entry."""
+    profile = {
         "schema_version": "skcapstone.agent-profile.v1",
         "schema_revision": "1",
-        "profile_id": _profile_id,
+        "profile_id": profile_id,
         "profile_kind": "human",
         "selectable": True,
         "fallback_eligible": True,
-        "memory_principal_id": f"memory:{_profile_id}",
+        "memory_principal_id": f"memory:{profile_id}",
         "default_tools": [],
         "capability_policy_ref": "synthetic-test-policy.v1",
         "profile_revision": "1",
         "profile_hash": "",
     }
-    _profile["profile_hash"] = _content_hash(_profile, "profile_hash")
-    _profile_dir = Path(_tmp_skcapstone) / "agents" / _profile_id
-    _profile_dir.mkdir(parents=True, exist_ok=True)
-    (_profile_dir / "profile.json").write_text(json.dumps(_profile))
-    _profiles.append(
-        {
-            key: _profile[key]
-            for key in (
-                "profile_id",
-                "profile_kind",
-                "selectable",
-                "fallback_eligible",
-                "memory_principal_id",
-                "schema_revision",
-                "profile_revision",
-                "profile_hash",
-            )
-        }
-    )
+    profile["profile_hash"] = _content_hash(profile, "profile_hash")
+    profile_dir = Path(_tmp_skcapstone) / "agents" / profile_id
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "profile.json").write_text(json.dumps(profile))
+    return {
+        key: profile[key]
+        for key in (
+            "profile_id",
+            "profile_kind",
+            "selectable",
+            "fallback_eligible",
+            "memory_principal_id",
+            "schema_revision",
+            "profile_revision",
+            "profile_hash",
+        )
+    }
 
-_registry = {
-    "schema_version": "skcapstone.profile-registry.v1",
-    "schema_revision": "1",
-    "registry_revision": "synthetic-test-1",
-    "profiles": _profiles,
-    "registry_hash": "",
+
+def _write_registry() -> None:
+    """Rewrite the synthetic registry from the current profile list."""
+    registry = {
+        "schema_version": "skcapstone.profile-registry.v1",
+        "schema_revision": "1",
+        "registry_revision": "synthetic-test-1",
+        "profiles": _profiles,
+        "registry_hash": "",
+    }
+    registry["registry_hash"] = _content_hash(registry, "registry_hash")
+    config_dir = Path(_tmp_skcapstone) / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "profile-registry.json").write_text(json.dumps(registry))
+
+
+def register_test_profile(profile_id: str) -> str:
+    """Register *profile_id* in the synthetic registry and return it.
+
+    Needed by any test that mints its own agent name and then opens a real
+    backend: ``require_memory_profile()`` fails closed, so an unregistered
+    agent raises ``Unregistered or invalid memory profile`` rather than
+    falling back. That guard is correct and is not to be routed around; the
+    test simply has to declare the throwaway agent it invented.
+
+    Raises:
+        ValueError: if *profile_id* cannot be a profile id at all. A name
+            wrapped in leading underscores (the old ``__dedup_test_<pid>__``
+            convention) can never be registered, so it can never resolve.
+    """
+    if not _PROFILE_ID_RE.match(profile_id):
+        raise ValueError(
+            f"{profile_id!r} cannot be a profile id: it must start with an "
+            f"alphanumeric and contain only [A-Za-z0-9_.-]. A leading "
+            f"underscore makes the id unregisterable and therefore "
+            f"unresolvable."
+        )
+    if profile_id not in _REGISTERED_PROFILE_IDS:
+        _REGISTERED_PROFILE_IDS.append(profile_id)
+        _profiles.append(_build_profile(profile_id))
+        _write_registry()
+    return profile_id
+
+
+for _profile_id in (_TEST_AGENT_NAME, "lumina", "jarvis", "opus"):
+    register_test_profile(_profile_id)
+
+# ── throwaway agents for the LIVE (skmem-pg) tests ───────────────────────────
+# These tests mint a per-process agent name and then open a real backend, so the
+# name has to be a registered profile or require_memory_profile() fails closed.
+# They are registered HERE, and handed over by environment variable, because
+# tests/ is not an importable package: a test file cannot `from conftest import`
+# anything. conftest runs in the same process, so os.getpid() agrees with the
+# value the test reads back.
+LIVE_TEST_AGENTS = {
+    "SKMEMORY_TEST_RECONCILE_AGENT": f"reconcile-test-{os.getpid()}",
+    "SKMEMORY_TEST_DEDUP_AGENT": f"dedup-test-{os.getpid()}",
 }
-_registry["registry_hash"] = _content_hash(_registry, "registry_hash")
-(Path(_tmp_skcapstone) / "config").mkdir()
-(Path(_tmp_skcapstone) / "config" / "profile-registry.json").write_text(json.dumps(_registry))
+for _env_key, _agent_name in LIVE_TEST_AGENTS.items():
+    os.environ[_env_key] = register_test_profile(_agent_name)
+    (Path(_tmp_skcapstone) / "agents" / _agent_name / "config").mkdir(parents=True, exist_ok=True)
+    (Path(_tmp_skcapstone) / "agents" / _agent_name / "config" / "skmemory.yaml").write_text(
+        f"# Auto-generated by tests/conftest.py\nname: {_agent_name}\n"
+    )

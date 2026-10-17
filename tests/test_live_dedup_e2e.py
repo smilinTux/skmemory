@@ -100,9 +100,55 @@ def test_pg_dsn_is_local_writable_not_standby():
     )
 
 
+#: Every row this module writes carries this source, so a sweep can find rows
+#: orphaned by a crashed run even when the agent name is unknown.
+TEST_SOURCE = "live-dedup-test"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _sweep_orphaned_test_rows():
+    """Delete every row this module could have written, before AND after.
+
+    The per-test teardown only runs when the test gets past its own setup. When
+    it does not, rows already seeded by an earlier fixture stay in the LIVE
+    memories table forever: observed in practice as six
+    ``__dedup_test_<pid>__`` rows sitting in the production store after a run
+    that errored during setup.
+
+    That is the failure class postmortem 2026-10-16 §3.9 names (roughly 536 of
+    Lumina's real memories turned out to be pytest fixtures a suite had written
+    into the live store). A teardown that only runs on the happy path is not a
+    teardown, so this sweeps by SOURCE MARKER rather than by agent name, which
+    also reclaims orphans left by previous crashed runs.
+    """
+
+    def _sweep():
+        try:
+            import psycopg
+
+            with psycopg.connect(PG_DSN) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM memories WHERE source = %s", (TEST_SOURCE,))
+                    removed = cur.rowcount
+                conn.commit()
+            if removed:
+                print(f"[live-dedup] swept {removed} orphaned row(s) with source={TEST_SOURCE}")
+        except Exception as exc:  # a sweep must never be the reason a run fails
+            print(f"[live-dedup] sweep skipped: {exc}")
+
+    _sweep()
+    yield
+    _sweep()
+
+
 @pytest.fixture
 def throwaway_agent() -> str:
-    return f"__dedup_test_{os.getpid()}__"
+    # Must start with an alphanumeric to be a registerable profile id (see
+    # skmemory.profile_registry._ID_PATTERN), and must actually be registered,
+    # because require_memory_profile() fails closed. The old
+    # "__dedup_test_<pid>__" spelling could never be registered, so opening a
+    # real PGVectorBackend raised "Unregistered or invalid memory profile".
+    return os.environ["SKMEMORY_TEST_DEDUP_AGENT"]
 
 
 @pytest.fixture
