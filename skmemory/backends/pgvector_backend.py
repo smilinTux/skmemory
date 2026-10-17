@@ -39,6 +39,7 @@ from dataclasses import dataclass
 
 from ..invalid_records import payload_memory_id, require_memory_id
 from ..models import Memory, MemoryLayer
+from ..pytest_guard import assert_pg_write_allowed
 from ..query_sanitizer import sanitize_query
 from ..stub_markers import is_stub_payload
 from .base import BaseBackend
@@ -536,6 +537,26 @@ class PGVectorBackend(BaseBackend):
         # model mismatch must raise without ever touching the connection.
         emb = self._embed(self._searchable(memory), required=True)
 
+        # Guard the WRITE, and only when this call would actually DIAL OUT.
+        #
+        # Isolating SKCAPSTONE_HOME does not isolate the DATABASE: a suite can
+        # have every flat write safely in a temp dir while SKMEMORY_PG_DSN still
+        # points at the real skmem-pg. That hole put 157 fixture rows into the
+        # production store under agent 'test-agent' (measured 2026-10-17), the
+        # same class as postmortem §3.9 one layer down.
+        #
+        # Conditioned on `_conn` being unset because that is precisely the case
+        # that opens a real socket, which is what the observed leak required.
+        # It keeps the guard off two things it has no business touching: unit
+        # tests that inject a fake connection (they never dial out, so they
+        # cannot leak), and reads (this is a write guard, not an access policy).
+        #
+        # Known narrow gap, stated rather than hidden: a process that already
+        # holds an open real connection from an earlier read would skip this
+        # check on a later write. Closing that needs a connection-level policy,
+        # which is a bigger change than the leak justifies.
+        if self._conn is None or getattr(self._conn, "closed", False):
+            assert_pg_write_allowed(self.dsn, agent=self.agent)
         conn = self._connection()
 
         # Stub/shrink guard (card: skmemory sqlite-only-orphans, 2026-10-16).

@@ -105,6 +105,32 @@ def test_pg_dsn_is_local_writable_not_standby():
 TEST_SOURCE = "live-dedup-test"
 
 
+@pytest.fixture(autouse=True)
+def _allow_live_store_writes(monkeypatch):
+    """These tests deliberately write to the LIVE skmem-pg, so they opt in.
+
+    Function-scoped because ``monkeypatch`` is: a module-scoped fixture cannot
+    request it, and setting os.environ by hand would leak the override into
+    every later test in the session, which is exactly the kind of ambient
+    permission this guard exists to prevent.
+
+    ``PGVectorBackend.save()`` refuses a pytest-time write into a production
+    database, because isolating ``SKCAPSTONE_HOME`` isolates flat files and
+    does nothing about ``SKMEMORY_PG_DSN``. That hole put 157 fixture rows into
+    the production store under agent ``test-agent`` (measured 2026-10-17), the
+    same class as postmortem §3.9.
+
+    The guard is correct and is not being weakened: the opt-in is explicit,
+    scoped to this module, and visible in the diff, which is the entire point
+    of having an escape hatch rather than a silent exception. Pointing
+    ``SKMEMORY_PG_DSN`` at a throwaway database is still the better pattern
+    (see ``skmemory/eval/queue_bench.py``) and is what a new live test should
+    do; this module predates the guard and cleans up after itself by source
+    marker instead.
+    """
+    monkeypatch.setenv("SKMEMORY_ALLOW_PYTEST_REAL_WRITES", "1")
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _sweep_orphaned_test_rows():
     """Delete every row this module could have written, before AND after.
