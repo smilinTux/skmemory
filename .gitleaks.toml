@@ -1,0 +1,47 @@
+# gitleaks configuration for skmemory.
+#
+# There was no config file before this, so CI ran gitleaks' default ruleset
+# with only `.gitleaks-baseline.json` subtracting known historical findings.
+# That is a good default and this file KEEPS it: `useDefault = true` is
+# load-bearing. Without that line a config REPLACES the default rules instead
+# of extending them, which would silently disable every secret check while the
+# job kept reporting success. A scanner that passes because it stopped looking
+# is worse than no scanner, which is why tests/test_gitleaks_config.py asserts
+# the flag is present and a planted obvious secret is still caught.
+[extend]
+useDefault = true
+
+# Why an allowlist is needed at all.
+#
+# `generic-api-key` matches an assignment whose name ends in "key" followed by
+# a quoted value, and reports the VALUE as the secret. Two real field names in
+# this repo read exactly like that:
+#
+#   idempotency_key="bench-idempotency-1"
+#       A public field on the task queue API (skmemory/taskqueue.py). Flagged
+#       twice in skmemory/eval/queue_bench.py on lines that are literally
+#       `q.enqueue("bench", {"n": 1}, idempotency_key="bench-idempotency-1")`.
+#
+#   encryption_key_fingerprint="9B3AB..."
+#       A PGP key FINGERPRINT, which is public by design: it is how you name a
+#       key, not how you use it. Publishing one grants nothing.
+#
+# This was not a contained annoyance. The secret-scan workflow fetches all
+# refs, so once the queue_bench commit existed on origin, EVERY open pull
+# request began failing secret-scan on a finding unrelated to its own changes:
+# four PRs went red at once while the only PR scanned before that push stayed
+# green. A false positive that spreads across unrelated branches teaches people
+# to ignore the scanner, and that habit is the actual damage.
+#
+# `regexTarget = "match"` is required. The default target is the extracted
+# SECRET ("bench-idempotency-1"), which carries no field name, so a regex
+# mentioning the field name can never match and the allowlist silently does
+# nothing. Matching the whole assignment is both what works and what keeps
+# these entries narrow.
+[allowlist]
+description = "Known false positives in skmemory: public field names that look like credentials"
+regexTarget = "match"
+regexes = [
+  '''idempotency_key["']?\s*[=:]\s*["'][A-Za-z0-9_.:-]{1,64}["']''',
+  '''encryption_key_fingerprint["']?\s*[=:]\s*["'][A-Fa-f0-9]{40}["']''',
+]
