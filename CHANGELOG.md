@@ -20,6 +20,19 @@
 
 ### Fixed
 
+- `scripts/skmem_reconcile.py` (the flat->pg reconcile cron job) is now
+  version-controlled in this repo instead of living unversioned at
+  `~/skmem-build/` on every node, and refuses to backfill a flat file
+  carrying the `recovered_from_sqlite_preview` stub marker into skmem-pg
+  unless run with `--force-stubs` (logging loudly either way). This is the
+  exact path that laundered 373 rescued SQLite-preview stubs into skmem-pg
+  during the 2026-10-16 recovery. `PGVectorBackend.save()` gets the same
+  guard plus a general length check: it now refuses to replace existing pg
+  content with anything shorter, stub or not, without `force=True`. New
+  `skmemory/stub_markers.py` is the single source of truth both write paths
+  (and `export_orphans_to_flat()`) use to detect a stub. Card: skmemory
+  sqlite-only-orphans, 2026-10-16. See
+  `docs/postmortems/2026-10-16-sqlite-only-orphans.md`.
 - `export_orphans_to_flat()` now tries the configured vector/pg backend's
   full content for a SQLite-only orphan FIRST, before falling back to the
   lossy ~150-char SQLite `content_preview` stub. `MemoryStore` wires this
