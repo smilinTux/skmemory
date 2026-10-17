@@ -259,3 +259,30 @@ def test_main_exits_nonzero_when_any_agent_fails(monkeypatch):
     with pytest.raises(SystemExit) as ei:
         reconcile_mod.main(["--all"])
     assert ei.value.code == 1
+
+
+def test_main_forwards_dry_run_and_force_stubs_single_agent(monkeypatch):
+    """Drop-in cron replacement: `python -m skmemory.reconcile AGENT --dry-run
+    --force-stubs` must reach reconcile() with both kwargs set."""
+    calls = []
+    monkeypatch.setattr(
+        reconcile_mod,
+        "reconcile",
+        lambda agent=None, **k: calls.append((agent, k.get("dry_run"), k.get("force_stubs"))),
+    )
+    reconcile_mod.main(["architect", "--dry-run", "--force-stubs"])
+    assert calls == [("architect", True, True)]
+
+
+def test_main_forwards_dry_run_and_force_stubs_all_agents(monkeypatch):
+    called = {}
+    monkeypatch.setattr(
+        reconcile_mod,
+        "reconcile_all",
+        lambda agents=None, **k: (
+            called.update(k) or {"ok": True, "succeeded": 0, "failed": 0, "agents": []}
+        ),
+    )
+    reconcile_mod.main(["--all", "--dry-run", "--force-stubs"])
+    assert called["dry_run"] is True
+    assert called["force_stubs"] is True

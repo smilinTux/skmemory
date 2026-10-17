@@ -3,7 +3,9 @@
 # This replaces the retired Qdrant (SKVector) + FalkorDB (SKGraph) stack.
 # Production runs this image LOCAL per node on localhost:5432 (no replication,
 # no SPOF; flat JSON files remain the source of truth, `memories` is a derived
-# cache rebuilt by deploy/skmem-pg/skmem_reconcile.py).
+# cache rebuilt by skmemory/reconcile.py, invoked via
+# `python -m skmemory.reconcile`; deploy/skmem-pg/skmem_reconcile.py and
+# scripts/skmem_reconcile.py are thin shims into that module).
 #
 # Build + run:
 #   export SKMEM_PG_PASSWORD=change-me
