@@ -23,6 +23,21 @@
 #   SKMEM_PG_DB         database name                            (default: skmemory)
 #   SKMEM_BACKUP_RETAIN number of daily dumps to keep            (default: 14)
 #
+#   GFS tiers (card: skmemory sqlite-only-orphans, 2026-10-16 -- there was no
+#   long-term tier at all for skmem-pg; recovery during that incident had to
+#   mine three accidental, undocumented full dumps because 14 days of daily
+#   retention couldn't reach back far enough). Promotion happens on top of,
+#   not instead of, the daily tier above: every run still writes+prunes the
+#   daily dump, and on the right day ALSO copies it into a weekly/monthly
+#   tier with its own independent retention.
+#   SKMEM_BACKUP_WEEKLY_RETAIN  number of weekly dumps to keep    (default: 8)
+#   SKMEM_BACKUP_MONTHLY_RETAIN number of monthly dumps to keep   (default: 12)
+#   SKMEM_BACKUP_DOW_OVERRIDE  override day-of-week (1=Mon..7=Sun), for tests
+#   SKMEM_BACKUP_DOM_OVERRIDE  override day-of-month (01..31), for tests
+#   SKMEM_BACKUP_TS_OVERRIDE   override the dump's timestamp component, for
+#                              tests (so repeated runs in the same wall-clock
+#                              second produce distinct, orderable filenames)
+#
 #   Off-box DR (the point of this script):
 #   SKMEM_BACKUP_OFFBOX  space- and/or comma-separated list of off-box targets.
 #                        Each target is either:
@@ -48,6 +63,10 @@ CONTAINER="${SKMEM_PG_CONTAINER:-skmem-pg}"
 PGUSER="${SKMEM_PG_USER:-postgres}"
 PGDB="${SKMEM_PG_DB:-skmemory}"
 RETAIN="${SKMEM_BACKUP_RETAIN:-14}"
+WEEKLY_RETAIN="${SKMEM_BACKUP_WEEKLY_RETAIN:-8}"
+MONTHLY_RETAIN="${SKMEM_BACKUP_MONTHLY_RETAIN:-12}"
+DOW="${SKMEM_BACKUP_DOW_OVERRIDE:-$(date -u +%u)}"
+DOM="${SKMEM_BACKUP_DOM_OVERRIDE:-$(date -u +%d)}"
 OFFBOX_RAW="${SKMEM_BACKUP_OFFBOX:-}"
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
@@ -55,7 +74,7 @@ warn() { echo "$(date -u +%FT%TZ) WARNING: $*" >&2; }
 die() { echo "$(date -u +%FT%TZ) ERROR: $*" >&2; exit 1; }
 
 mkdir -p "$DST"
-TS=$(date -u +%Y%m%d-%H%M%S)
+TS="${SKMEM_BACKUP_TS_OVERRIDE:-$(date -u +%Y%m%d-%H%M%S)}"
 BASENAME="${CONTAINER}-${PGDB}-${TS}.dump"
 OUT="$DST/$BASENAME"
 
@@ -70,6 +89,24 @@ log "dumped $(du -h "$OUT" | cut -f1) -> $OUT"
 
 # retain the newest $RETAIN daily dumps locally; drop the rest
 ls -1t "$DST/${CONTAINER}-${PGDB}"-*.dump 2>/dev/null | tail -n +$((RETAIN + 1)) | xargs -r rm -f
+
+# --- 1b. GFS promotion: weekly (Sundays) and monthly (1st) tiers ---
+# Independent directories, independent retention, from the daily tier above.
+# This is what lets a future recovery reach back months, not just 14 days.
+promote_tier() {
+  local tier_dir="$1" retain="$2"
+  mkdir -p "$tier_dir"
+  cp -f "$OUT" "$tier_dir/$BASENAME"
+  ls -1t "$tier_dir/${CONTAINER}-${PGDB}"-*.dump 2>/dev/null | tail -n +$((retain + 1)) | xargs -r rm -f
+  log "promoted to $tier_dir (retain $retain)"
+}
+
+if [ "$DOW" = "7" ]; then
+  promote_tier "$DST/weekly" "$WEEKLY_RETAIN"
+fi
+if [ "$DOM" = "01" ]; then
+  promote_tier "$DST/monthly" "$MONTHLY_RETAIN"
+fi
 
 # --- 2. Off-box shipping (the DR requirement) ---
 # A dump on the same disk it protects is not a backup. Ship it elsewhere.
