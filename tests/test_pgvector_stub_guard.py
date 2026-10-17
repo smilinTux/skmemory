@@ -145,9 +145,11 @@ def test_refusal_logs_loudly(monkeypatch, caplog):
     import logging
 
     mod, be, _cur = _backend(monkeypatch, existing_len=900)
-    with caplog.at_level(logging.WARNING, logger="skmemory.backends.pgvector_backend"):
-        with pytest.raises(mod.StubOverwriteRefused):
-            be.save(_stub_memory())
+    with (
+        caplog.at_level(logging.WARNING, logger="skmemory.backends.pgvector_backend"),
+        pytest.raises(mod.StubOverwriteRefused),
+    ):
+        be.save(_stub_memory())
     assert any("REFUS" in r.message.upper() for r in caplog.records)
 
 

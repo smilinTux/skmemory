@@ -56,6 +56,7 @@ class StubOverwriteRefused(RuntimeError):
     ``docs/postmortems/2026-10-16-sqlite-only-orphans.md``.
     """
 
+
 # skmem-pg is a LOCAL, per-node writable Postgres. The embedding store is a
 # derived, rebuildable cache (same class as index.db): `memories` are rebuilt
 # from the Syncthing-synced flat JSON via skmem_reconcile.py, `docs` from the

@@ -174,6 +174,7 @@ ORDER BY
 # Reason: 150 chars is enough for an agent to decide if it needs the full memory.
 CONTENT_PREVIEW_LENGTH = 150
 
+
 class SQLiteBackend(BaseBackend):
     """SQLite-indexed file storage for fast queries with full JSON on demand.
 
