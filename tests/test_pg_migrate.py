@@ -119,7 +119,7 @@ def test_plan_order_predump_apply_verify():
 
 def test_plan_no_predump_no_verify():
     plan = build_migrate_plan(load_manifest(), Target(), pre_dump=False, verify=False)
-    assert [s.label for s in plan.steps] == ["apply 03-ops-namespace.sql"]
+    assert [s.label for s in plan.steps] == [f"apply {m.name}" for m in load_manifest()]
 
 
 def test_plan_single_predump_for_multiple_migrations():
