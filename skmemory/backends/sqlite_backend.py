@@ -32,6 +32,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
 from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
@@ -488,21 +489,33 @@ class SQLiteBackend(BaseBackend):
     def save(self, memory: Memory) -> str:
         """Persist a memory as JSON and update the index.
 
-        The flat JSON file is written first (it is the source of truth). If
-        the index update fails, the save still succeeds — the memory is on
-        disk and will be picked up by the next ``reindex()``.
+        The flat JSON file is written DURABLY first (atomic write + fsync via
+        :func:`skmemory.atomic_io.atomic_write_text`) -- it is the source of
+        truth. If that write fails or isn't durable, it raises and this
+        method never reaches the index call below, so a memory can never end
+        up indexed with no backing flat file (card: sqlite-only orphans,
+        2026-10-16 -- a plain ``write_text`` only lands in the OS page cache,
+        and an unclean shutdown can lose it while the SQLite commit for the
+        same memory survives).
+
+        If the flat write succeeds but the *index* update fails, the save
+        still succeeds -- the memory is durably on disk and will be picked
+        up by the next ``reindex()``.
 
         Args:
             memory: The Memory to store.
 
         Returns:
             str: The memory ID.
+
+        Raises:
+            OSError: If the flat file could not be durably written. The
+                memory is NOT indexed in this case.
         """
         path = self._file_path(memory)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        atomic_write_text(
+            path,
             json.dumps(memory.model_dump(), indent=2, default=str),
-            encoding="utf-8",
         )
         self._index_memory(memory, path)  # non-fatal: degrades gracefully
         return memory.id
@@ -937,10 +950,13 @@ class SQLiteBackend(BaseBackend):
             try:
                 memory = Memory(**mem_data)
                 file_path = self._file_path(memory)
-                file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(
+                # Durable flat write BEFORE indexing (card: sqlite-only
+                # orphans, 2026-10-16). A raise here is caught below and the
+                # memory is skipped entirely -- never indexed without its
+                # flat file.
+                atomic_write_text(
+                    file_path,
                     json.dumps(memory.model_dump(), indent=2, default=str),
-                    encoding="utf-8",
                 )
                 self._index_memory(memory, file_path)
                 count += 1
@@ -1133,6 +1149,27 @@ class SQLiteBackend(BaseBackend):
         for f in archive_root.rglob("*.json"):
             stems.add(f.stem)
         return stems
+
+    def flat_id_set(self) -> set[str]:
+        """IDs (filename stems) of every flat JSON file across active tiers.
+
+        Used as the ground truth set when checking a DERIVED store (e.g.
+        skmem-pg) for pg-only rows: anything in that store's id set but not
+        in this one is a row with no backing flat file, same shape as a
+        sqlite_only orphan. Does not include the archive tree (intentional
+        cold storage, not an active-tier id).
+
+        Returns:
+            set[str]: Flat-file id stems.
+        """
+        flat_ids: set[str] = set()
+        for layer in MemoryLayer:
+            tier = self.base_path / layer.value
+            if not tier.exists():
+                continue
+            for f in tier.glob("*.json"):
+                flat_ids.add(f.stem)
+        return flat_ids
 
     def drift_check(self) -> dict:
         """Compare SQLite row count vs. flat-file count per layer.

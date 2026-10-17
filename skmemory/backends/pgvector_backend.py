@@ -683,6 +683,33 @@ class PGVectorBackend(BaseBackend):
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "backend": "PGVectorBackend", "error": str(e)}
 
+    def drift_check(self, flat_ids: set[str]) -> dict:
+        """Compare this agent's pg row ids against the flat-file ground truth.
+
+        skmem-pg's ``memories`` table is a DERIVED, rebuildable cache (same
+        role as index.db): a row with no backing flat file (``pg_only``) is
+        the same failure shape as a sqlite-only orphan, just in the other
+        derived store. Best-effort: callers (``MemoryStore.health()``)
+        should catch and treat a raised exception as "undetectable", not as
+        zero.
+
+        Args:
+            flat_ids: The full set of flat-file id stems (ground truth),
+                e.g. from :meth:`SQLiteBackend.flat_id_set`.
+
+        Returns:
+            dict: ``{"pg_total": N, "pg_only": M}``.
+
+        Raises:
+            Exception: If the database is unreachable or the query fails.
+        """
+        conn = self._connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM memories WHERE agent=%s", (self.agent,))
+            pg_ids = {row[0] for row in cur.fetchall()}
+        pg_only = sum(1 for pid in pg_ids if pid not in flat_ids)
+        return {"pg_total": len(pg_ids), "pg_only": pg_only}
+
 
 def _as_json_str(value) -> str:
     """psycopg returns JSONB as dict; Memory.model_validate_json needs a str."""
