@@ -37,6 +37,7 @@ from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
 from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
+from ..stub_markers import STUB_METADATA_KEY, TRUNCATED_PREVIEW_SUFFIX
 from .base import BaseBackend
 
 logger = logging.getLogger("skmemory.sqlite_backend")
@@ -172,14 +173,6 @@ ORDER BY
 
 # Reason: 150 chars is enough for an agent to decide if it needs the full memory.
 CONTENT_PREVIEW_LENGTH = 150
-
-# Appended to a SQLite-only orphan's content_preview when export_orphans_to_flat()
-# has no way to recover the real content. Also used to detect a pg (or other
-# fallback-source) row that was itself already populated from this same lossy
-# stub by an earlier reconcile run -- that is not "full content" either, it is
-# the same loss laundered through another store, and must not be trusted.
-TRUNCATED_PREVIEW_SUFFIX = "\n\n[recovered from SQLite preview — full content lost]"
-
 
 class SQLiteBackend(BaseBackend):
     """SQLite-indexed file storage for fast queries with full JSON on demand.
@@ -1099,7 +1092,7 @@ class SQLiteBackend(BaseBackend):
             else:
                 content = (content_preview or "") + TRUNCATED_PREVIEW_SUFFIX
                 metadata = {
-                    "recovered_from_sqlite_preview": True,
+                    STUB_METADATA_KEY: True,
                     "importance": importance or 0.5,
                 }
                 logger.warning(
