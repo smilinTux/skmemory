@@ -109,3 +109,66 @@ def assert_write_allowed(path: Path | str) -> None:
         "the skmemory repo for the pattern), or set "
         f"{_ALLOW_ENV}=1 if this is a deliberate, audited exception."
     )
+
+
+#: Database names treated as production. A pytest-time write into one of these
+#: is refused unless explicitly opted in.
+PRODUCTION_DB_NAMES = frozenset({"skmemory", "skai_kb"})
+
+
+def _db_name(dsn: str) -> str:
+    """The database name from a libpq URI, or "" when it cannot be read."""
+    if not dsn:
+        return ""
+    tail = dsn.rpartition("/")[2]
+    return tail.split("?")[0].strip()
+
+
+def assert_pg_write_allowed(dsn: str, *, agent: str = "") -> None:
+    """Raise if writing to a PRODUCTION database during an active pytest test.
+
+    The flat-file guard above is path-based, so it cannot see a Postgres write
+    at all. That left a hole wide enough to drive through, and something did:
+    ``tests/conftest.py`` points ``SKCAPSTONE_HOME`` at a temp directory, which
+    isolates every flat write and makes ``_is_isolated_elsewhere()`` return
+    True, while ``SKMEMORY_PG_DSN`` keeps pointing at the real skmem-pg. So the
+    suite was isolated for files and completely unisolated for the database.
+
+    Measured 2026-10-17: the production ``skmemory`` database held 157 rows
+    under agent ``test-agent`` with source ``openclaw``, titles like "Test
+    moment" and "Penguin Kingdom launch", accumulated by ordinary test runs.
+    That is the same class as postmortem §3.9 (roughly 536 of Lumina's real
+    memories turned out to be pytest fixtures), one layer down.
+
+    Isolating the home is not isolating the store. A test that genuinely needs
+    a live database sets ``SKMEMORY_ALLOW_PYTEST_REAL_WRITES=1`` so the
+    intention is explicit and auditable, or points ``SKMEMORY_PG_DSN`` at a
+    throwaway database, which is always preferred.
+
+    No-ops entirely outside pytest, so this can never change production
+    behaviour.
+
+    Args:
+        dsn: The Postgres DSN about to be written through.
+        agent: Agent name, for the error message only.
+
+    Raises:
+        PytestRealMemoryWriteRefused: On a pytest-time write to a production
+            database with no explicit opt-in.
+    """
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        return  # not inside a running pytest test: production path, no-op
+
+    if os.environ.get(_ALLOW_ENV, "").strip().lower() in _TRUE_VALUES:
+        return  # explicit, audited opt-in
+
+    name = _db_name(dsn)
+    if name not in PRODUCTION_DB_NAMES:
+        return  # a throwaway database: exactly what a test should use
+
+    raise PytestRealMemoryWriteRefused(
+        f"refusing a pytest-time write into the production database {name!r} "
+        f"(agent={agent!r}). Isolating SKCAPSTONE_HOME does not isolate the "
+        f"database. Point SKMEMORY_PG_DSN at a throwaway database, or set "
+        f"{_ALLOW_ENV}=1 if this test genuinely needs the live store."
+    )
