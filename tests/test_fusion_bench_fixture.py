@@ -184,3 +184,57 @@ def test_plain_rrf_regression_is_still_reproducible():
         "plain RRF no longer loses the semantic class; re-derive why "
         "rank_interleave exists before trusting this harness"
     )
+
+
+def test_no_two_documents_share_content():
+    """Distinct content per document, because the real store de-dupes on a
+    content hash.
+
+    The temporal documents were originally byte-identical. Offline that reads
+    as a clean "same subject, different month" design; against a real
+    ``MemoryStore`` it is fatal and invisible, because ``snapshot()`` hashes
+    content and drops the duplicates. The real-backend run ingested 128
+    documents and stored 121, so the temporal class was being scored against a
+    corpus that no longer contained seven of its own answers.
+
+    An offline-only harness cannot catch this: it never writes through a store.
+    """
+    corpus = fb.build_corpus()
+    seen: dict[str, str] = {}
+    for doc in corpus:
+        body = doc["content"]
+        assert body not in seen, (
+            f"{doc['id']} has identical content to {seen[body]}; a content-hash "
+            f"de-dupe will silently drop one of them on ingest"
+        )
+        seen[body] = doc["id"]
+
+
+def test_temporal_documents_still_hide_their_month_after_being_made_unique():
+    """Making the temporal documents distinct must not leak the month into the
+    text, or the fix for one bug would quietly disable the class."""
+    by_id = {d["id"]: d for d in fb.build_corpus()}
+    temporal_words = (
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+        "month",
+        "quarter",
+        "week",
+        "year",
+        "yesterday",
+        "today",
+    )
+    for doc_id, _created in fb._TEMPORAL_MONTHS:
+        text = f"{by_id[doc_id]['title']} {by_id[doc_id]['content']}".casefold()
+        for word in temporal_words:
+            assert word not in text, f"{doc_id} leaks the temporal word {word!r}"

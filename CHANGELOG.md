@@ -56,12 +56,19 @@
   placing rank 1 in one arm. Gating only the aggregate would have let that
   through CI. Verified by simulation: swapping the shipped strategy for plain
   RRF turns the gate red on three metrics.
-- The audience privacy filter is applied to the retrieval candidate set before
-  any arm runs, never to the fused top-k, since a predicate after a limit
-  cannot distinguish a filtered-empty from a genuinely-empty (the same shape as
-  the `synthesize_*` silent-empty bug). Adding arms demonstrably adds
-  private-row reach, so the leak count is re-proved for every strategy rather
-  than inherited from a previous run.
+- The fusion benchmark applies the audience privacy filter to the retrieval
+  candidate set before any arm runs, never to the fused top-k, since a
+  predicate after a limit cannot distinguish a filtered-empty from a
+  genuinely-empty (the same shape as the `synthesize_*` silent-empty bug).
+  Adding arms demonstrably widens private-row reach, so the benchmark re-proves
+  the leak count for every strategy rather than inheriting it from a previous
+  run. To be precise about the layer: `MemoryStore.search()` has never taken an
+  audience and still does not, so this is the benchmark modelling the pattern
+  the real filter (in `ritual.py`, downstream of search) should follow, not a
+  claim that the store filters. Fusion therefore cannot introduce a leak at
+  this layer, because there is no filter at this layer to weaken; it does hand
+  the downstream filter a wider candidate set, which is why the benchmark
+  measures that reach explicitly.
 - The graph arm skips rows the source of truth no longer holds instead of
   emitting an id the caller cannot hydrate, since the graph is a derived
   projection and can name a deleted memory.

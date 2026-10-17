@@ -849,8 +849,23 @@ def build_corpus() -> list[dict]:
         add(*d)
     for d in _SEMANTIC_ANSWERS:
         add(*d)
-    for doc_id, created in _TEMPORAL_MONTHS:
-        add(doc_id, "Routing decision", _TEMPORAL_SUBJECT, ["skgateway"], created)
+    for n, (doc_id, created) in enumerate(_TEMPORAL_MONTHS, start=1):
+        # Each temporal document needs DISTINCT content. They were originally
+        # byte-identical, which reads fine offline but is invisibly fatal
+        # against a real store: MemoryStore.snapshot() de-duplicates on a
+        # content hash, so 7 of these 8 were silently dropped on ingest and the
+        # temporal class scored against a corpus that did not contain its own
+        # answers. Caught only by the real-backend run (128 ingested, 121
+        # stored). The suffix is a bare record number, deliberately carrying no
+        # month and no temporal word, so the month still lives only in the
+        # timestamp and the class still isolates the date predicate.
+        add(
+            doc_id,
+            "Routing decision",
+            f"{_TEMPORAL_SUBJECT} Minute entry {n * 7}.",
+            ["skgateway"],
+            created,
+        )
     for bridge_id, bridge_text, queried, ent, ans_id, ans_text in _ENTITY_TRIPLES:
         add(bridge_id, "Topology", bridge_text, [queried, ent], "2026-07-01T10:00:00Z")
         add(ans_id, "Finding", ans_text, [ent], "2026-07-02T10:00:00Z")

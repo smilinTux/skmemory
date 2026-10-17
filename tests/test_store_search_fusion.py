@@ -201,3 +201,65 @@ def test_fusion_preserves_the_requested_limit(store):
     store.vector = _FakeVector([])
     results = store.search_fused("postgres", limit=1)
     assert results is None or len(results) <= 1
+
+
+# ---------------------------------------------------------------------------
+# lexical arm engine selection
+# ---------------------------------------------------------------------------
+
+
+class _LexicalVector:
+    """A vector backend that also exposes a dedicated lexical engine."""
+
+    def __init__(self):
+        self.lexical_calls = []
+
+    def search_semantic(self, query, limit=10):
+        return []
+
+    def search_lexical(self, query, limit=10, layer=None, tags=None, source=None):
+        self.lexical_calls.append(
+            {"query": query, "limit": limit, "layer": layer, "tags": tags, "source": source}
+        )
+        return [_Mem("bm25-hit")]
+
+    def search_text(self, query, limit=10, layer=None, tags=None, source=None):
+        raise AssertionError("search_text must not be used as the lexical arm")
+
+
+def test_lexical_arm_prefers_the_backends_dedicated_engine(store):
+    """skmem-pg is attached as the VECTOR backend with SQLite as the primary
+    index, so taking the lexical arm from the primary served SQLite LIKE to a
+    deployment that has ParadeDB BM25 available. Measured on the real backend,
+    that cost the entire rare-identifier query class."""
+    vec = _LexicalVector()
+    store.vector = vec
+    results = store.search_fused("prb-6f069c5e", limit=5)
+    assert vec.lexical_calls, "the dedicated lexical engine was not used"
+    assert [m.id for m in results] == ["bm25-hit"]
+
+
+def test_lexical_arm_pushes_filters_into_the_dedicated_engine(store):
+    """Filters must reach the arm's own query, not post-filter its output."""
+    vec = _LexicalVector()
+    store.vector = vec
+    store.search_fused("anything", limit=5, layer="mid-term", tags=["x"], source="s")
+    call = vec.lexical_calls[0]
+    assert call["layer"] == "mid-term"
+    assert call["tags"] == ["x"]
+    assert call["source"] == "s"
+
+
+def test_lexical_arm_falls_back_to_the_primary_when_no_engine_is_exposed(store):
+    """A backend without search_lexical must still get a lexical arm."""
+
+    class _PlainVector:
+        def search_semantic(self, query, limit=10):
+            return []
+
+    store.vector = _PlainVector()
+    _, report = store.search_fused("postgres", limit=5, return_report=True)
+    lexical = [a for a in report.arms if a.name == "lexical"][0]
+    # The primary (SQLite) answered, so the arm is not 'unavailable'.
+    assert lexical.status in ("ok", "abstained")
+    assert lexical.status != "failed"

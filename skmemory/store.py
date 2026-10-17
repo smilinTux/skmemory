@@ -961,6 +961,22 @@ class MemoryStore:
             return _collect(search_semantic(query, limit=arm_limit))
 
         def _lexical() -> list[str]:
+            # Prefer the strongest lexical engine the attached backends offer.
+            # skmem-pg is attached as the VECTOR backend with SQLite as the
+            # primary index, so taking the lexical arm from `self.primary`
+            # means a deployment with ParadeDB BM25 available was still being
+            # served SQLite LIKE. Measured on the real backend, that cost the
+            # whole rare-identifier query class: BM25 puts the answer at rank
+            # 7, LIKE does not surface it.
+            #
+            # This is a capability choice resolved once from what the backend
+            # exposes, not a result-dependent fallback: it does not re-query
+            # because it disliked the rows it got back.
+            search_lexical = getattr(self.vector, "search_lexical", None)
+            if search_lexical is not None:
+                return _collect(
+                    search_lexical(query, limit=arm_limit, layer=layer, tags=tags, source=source)
+                )
             return _collect(self.primary.search_text(query, limit=arm_limit))
 
         def _graph() -> list[str]:
