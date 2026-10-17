@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# skmemory-sync-audit.sh — periodic health check of every agent's
+# skmemory-sync-audit.sh: periodic health check of every agent's
 # skmemory-sync@<agent>.timer coverage and drift.
 #
 # Version control note: this script lived unversioned at
