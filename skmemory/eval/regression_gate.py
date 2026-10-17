@@ -66,10 +66,11 @@ BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"
 # any real metric decrease exceeds this and fails the gate.
 DEFAULT_EPSILON = 1e-9
 
-# The fusion strategy that ships in skmemory.fusion and therefore the one CI
-# defends. The other strategies in fusion_bench exist as comparison arms; they
+# The strategy that ships in skmemory.fusion + skmemory.rerank, and therefore
+# the one CI defends: rank-depth interleaving followed by the rare-term
+# reranker. The other strategies in fusion_bench exist as comparison arms; they
 # are still leak-gated below, but their relevance scores are not a contract.
-GATED_FUSION_STRATEGY = "rrf_interleave"
+GATED_FUSION_STRATEGY = "interleave_rerank"
 
 # =============================================================================
 # GROUNDEDNESS FIXTURE - a fixed (answer, citations) pair scored by the OFFLINE

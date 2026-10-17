@@ -8,6 +8,45 @@
 
 ### Added
 
+- Rank-space reranking for the fused path (`skmemory/rerank.py`), applied to
+  the fused POOL before it is truncated to the caller's limit. R1 alone widened
+  recall on the real backend while DROPPING MRR (0.298 to 0.266), because
+  interleaving hands every arm's champion a head slot and some champions are
+  topical near-misses. `RareTermReranker` boosts candidates carrying the
+  query's identifier-shaped terms (a digit, or an implausibly long opaque
+  token) when those terms are rare enough to discriminate within the pool, and
+  ABSTAINS otherwise, returning the identity order so it is safe to apply
+  unconditionally. Measured on real skmem-pg with real mxbai: overall recall@5
+  0.375 to 0.625, MRR 0.298 to 0.347, nDCG@5 0.289 to 0.408, and the
+  rare-identifier class from 0.167 to 1.000, with no class regressing.
+  `SKMEMORY_SEARCH_RERANK` (on/off, default on) and
+  `SKMEMORY_SEARCH_RERANK_DIVISOR` control it; `NoopReranker` is the named off
+  switch and `ChainReranker` composes stages, so a real cross-encoder drops in
+  as another stage when a rerank endpoint exists.
+- The boost divides a RANK rather than scaling the fused score, which bounds it
+  by construction: a candidate already at rank 1 cannot be displaced however
+  hard another is boosted. That bound is load-bearing, not decoration. The
+  entity query `chiap08` is identifier-shaped and rare, but the document
+  containing it is the bridge rather than the answer, so an absolute reorder
+  would promote the wrong row and wreck that class. Pinned by
+  `test_rerank_cannot_displace_a_rank_one_candidate`. The divisor default of
+  5.0 was swept on both harnesses rather than chosen: offline the identifier
+  class maxes at any value >= 2.0 while MRR saturates at 5.0, and on the real
+  backend recall@5 is flat from 2.0 up while MRR climbs to 5.0 and stops.
+- `PGVectorBackend.search_lexical()`: a pure lexical search with no vector
+  stage, over the `memories_bm25` ParadeDB index. That index has been built and
+  maintained by this schema all along while no query path used it, because
+  every text stage in `search_text` is Postgres native full-text (`tsv` +
+  `ts_rank`) rather than BM25, despite that method's docstring calling it BM25.
+  `search_text` also cannot serve as a fusion arm at all, being vector-first:
+  it only reaches its text stages when the vector stage returns zero rows.
+- `scripts/fusion_real_backend_ab.py`: the real-backend A/B harness, since the
+  offline bench proves the fusion LOGIC but not that a win survives contact
+  with mxbai and ParadeDB. It refuses any database but a throwaway one, refuses
+  a non-local DSN (skmem-pg is per-node by design, prb-6f069c5e), refuses to
+  provision its agent inside the real `~/.skcapstone`, and deletes its rows
+  unless asked to keep them.
+
 - Multi-arm retrieval fusion (`skmemory/fusion.py`), wired into
   `MemoryStore.search()` via the new `search_fused()`. Four arms (semantic,
   lexical, graph one-hop entity expansion, and a temporal date predicate that
@@ -49,6 +88,20 @@
 
 ### Fixed
 
+- The fused path took its lexical arm from `self.primary`, which is SQLite in
+  every real deployment because skmem-pg attaches as the VECTOR backend. So a
+  node with ParadeDB BM25 available was served SQLite LIKE, and fusion
+  REGRESSED the rare-identifier class to 0.000 against the legacy path's 0.167
+  on the real backend. The arm now prefers the backend's dedicated lexical
+  engine when one is exposed, resolved once from what the backend offers rather
+  than re-queried because it disliked the rows it got back.
+- The fusion benchmark's eight temporal documents were byte-identical. That
+  reads as a clean "same subject, different month" design offline and is fatal
+  and silent against a real store, because `snapshot()` de-duplicates on a
+  content hash: 7 of 8 were dropped on ingest (128 ingested, 121 stored) and
+  the temporal class was scored against a corpus missing seven of its own
+  answers. An offline harness cannot catch this, because it never writes
+  through a store. Pinned by `test_no_two_documents_share_content`.
 - The regression gate now gates fusion metrics PER QUERY CLASS, not only in
   aggregate. This is load-bearing: naive equal-weight RRF raises the overall
   recall@5 number while destroying the paraphrase class (0.833 -> 0.000),

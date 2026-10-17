@@ -534,6 +534,30 @@ def strat_interleave_tightcap(query: str, docs: Sequence[dict], k: int) -> list[
     return [doc_id for doc_id, _, _ in rank_interleave(arm_results)[:k]]
 
 
+def strat_interleave_rerank(
+    query: str, docs: Sequence[dict], k: int, rank_divisor: float | None = None
+) -> list[str]:
+    """R2: rank-depth interleaving, then the rare-term reranker (R1 + R2).
+
+    The reranker sees the fused POOL, not the final top-k, because a candidate
+    that fusion ranked 8th is exactly the one it exists to promote. Reranking a
+    list already truncated to 5 could never reach it.
+    """
+    from skmemory.rerank import DEFAULT_RANK_DIVISOR, RareTermReranker
+
+    arm_results = {name: fn(query, docs, ARM_CAP) for name, fn in ARMS.items()}
+    pool = [doc_id for doc_id, _, _ in rank_interleave(arm_results)]
+    if not pool:
+        return []
+    by_id = {d["id"]: d for d in docs}
+    texts = [by_id[i]["_text"] for i in pool]
+    reranker = RareTermReranker(
+        rank_divisor=DEFAULT_RANK_DIVISOR if rank_divisor is None else rank_divisor
+    )
+    outcome = reranker.rerank(query, texts)
+    return [pool[i] for i in outcome.order][:k]
+
+
 STRATEGIES: dict[str, Callable[[str, Sequence[dict], int], list[str]]] = {
     "vector_only": strat_vector_only,
     "bm25_only": strat_bm25_only,
@@ -543,6 +567,7 @@ STRATEGIES: dict[str, Callable[[str, Sequence[dict], int], list[str]]] = {
     "rrf_tightcap": strat_rrf_tightcap,
     "rrf_interleave": strat_rrf_interleave,
     "interleave_tight": strat_interleave_tightcap,
+    "interleave_rerank": strat_interleave_rerank,
 }
 
 

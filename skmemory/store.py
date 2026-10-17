@@ -38,6 +38,7 @@ from .models import (
     SeedMemory,
 )
 from .query_sanitizer import sanitize_query
+from .rerank import NoopReranker, RareTermReranker
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
 from .skseed_validation import annotate_truth_score, resolve_auto_validate
 from .tombstones import write_tombstone
@@ -904,6 +905,30 @@ class MemoryStore:
             return True
         return self.vector is not None or self.graph is not None
 
+    def _reranker(self):
+        """The reranker for the fused path.
+
+        ``SKMEMORY_SEARCH_RERANK`` takes ``on`` / ``off`` (default ``on``), and
+        ``SKMEMORY_SEARCH_RERANK_DIVISOR`` overrides the rank divisor.
+
+        On by default because reranking is what makes fusion safe to turn on at
+        all: R1 alone widened recall while dropping MRR on the real backend
+        (0.298 to 0.266), since interleaving hands every arm's champion a head
+        slot and some champions are topical near-misses. The reranker abstains
+        unless the query carries an identifier-shaped term, so on a query it has
+        no opinion about it returns the identity order and costs nothing.
+        """
+        mode = os.environ.get("SKMEMORY_SEARCH_RERANK", "on").strip().casefold()
+        if mode in ("off", "0", "false", "no"):
+            return NoopReranker()
+        raw = os.environ.get("SKMEMORY_SEARCH_RERANK_DIVISOR", "").strip()
+        try:
+            divisor = float(raw) if raw else None
+        except ValueError:
+            logger.warning("ignoring non-numeric SKMEMORY_SEARCH_RERANK_DIVISOR=%r", raw)
+            divisor = None
+        return RareTermReranker(**({"rank_divisor": divisor} if divisor else {}))
+
     def search_fused(
         self,
         query: str,
@@ -1023,7 +1048,26 @@ class MemoryStore:
             run_arm("graph", _graph if self.graph is not None else None),
             run_arm("temporal", _temporal),
         ]
-        report = fuse(arms, limit=limit)
+        # Fuse the WHOLE pool, then rerank, then truncate. Reranking a list
+        # already cut to `limit` could never promote the candidate it exists to
+        # promote: measured on the real backend, the correct answer for an
+        # identifier query sits at fused rank 8.
+        report = fuse(arms, limit=max(limit, DEFAULT_ARM_CAP))
+
+        if report.ids:
+            pool_texts = [
+                f"{getattr(found[i], 'title', '')} {getattr(found[i], 'content', '')}"
+                for i in report.ids
+                if i in found
+            ]
+            pool_ids = [i for i in report.ids if i in found]
+            outcome = self._reranker().rerank(query, pool_texts)
+            if outcome.applied:
+                logger.debug("search rerank: %s", outcome.detail)
+                report.ids = [pool_ids[i] for i in outcome.order]
+            else:
+                report.ids = pool_ids
+        report.ids = report.ids[:limit]
 
         if report.failed_arms:
             logger.warning(
