@@ -91,6 +91,12 @@ main() {
         -e "ssh -o BatchMode=yes -o ConnectTimeout=20" \
         "$src" "$remote:$rdir/$today/" 2>&1 | tail -5 >>"$log"
     local result=${PIPESTATUS[0]}
+    # rsync 24 = "some files vanished during transfer": normal on a live,
+    # rotating tree (backup tiers prune while we copy). Not a failure.
+    if [ "$result" -eq 24 ]; then
+        log "rsync: some source files vanished during transfer (exit 24), treated as success"
+        result=0
+    fi
 
     if [ "$result" -ne 0 ]; then
         log "Backup FAILED (rsync exit $result)"
