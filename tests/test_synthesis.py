@@ -273,3 +273,122 @@ class TestEmotionalArc:
         memories = synthesizer.store.list_memories(limit=100)
         arc = synthesizer._emotional_arc(memories)
         assert arc["cloud9_count"] >= 1
+
+
+# ── Historical dates beyond the recency window ──────────────────────────────
+#
+# Card: skmemory synthesis-silent-empty-on-historical-dates, 2026-10-17.
+# synthesize_daily/weekly/dreams used to fetch the N MOST RECENT memories and
+# filter by date CLIENT-SIDE. In a large store, a historical date whose
+# memories fall outside that most-recent window silently synthesized an
+# empty narrative -- not an error, just indistinguishable from "nothing
+# happened." These tests monkeypatch the module's query-limit constants down
+# to a small number so the exact failure mode reproduces (and the fix is
+# proven) without needing thousands of fixture memories.
+
+
+def _old_mem(store: MemoryStore, title: str, created_at: str, **kwargs) -> Memory:
+    mem = Memory(title=title, content=f"content for {title}", created_at=created_at, **kwargs)
+    store.primary.save(mem)
+    return mem
+
+
+class TestSynthesizeHistoricalDatesBeyondRecencyWindow:
+    def test_daily_finds_a_historical_date_past_a_small_recency_window(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import skmemory.synthesis as synthesis_mod
+        from skmemory.backends.file_backend import FileBackend
+
+        be = FileBackend(base_path=str(tmp_path / "memories"))
+        store = MemoryStore(primary=be)
+
+        # 2 memories on a historical date...
+        _old_mem(store, "old-a", "2026-01-05T09:00:00+00:00")
+        _old_mem(store, "old-b", "2026-01-05T10:00:00+00:00")
+        # ...and more RECENT memories than the (patched, tiny) query limit,
+        # which is exactly what "fetch N most recent" means in a large store.
+        for i in range(5):
+            _old_mem(store, f"recent-{i}", f"2026-10-17T0{i}:00:00+00:00")
+
+        monkeypatch.setattr(synthesis_mod, "_DAILY_QUERY_LIMIT", 3)
+        synth = synthesis_mod.JournalSynthesizer(store=store)
+        result = synth.synthesize_daily("2026-01-05")
+
+        assert "No memories recorded" not in result.content
+        assert result.metadata["memory_count"] == 2
+
+    def test_weekly_finds_a_historical_week_past_a_small_recency_window(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import skmemory.synthesis as synthesis_mod
+        from skmemory.backends.file_backend import FileBackend
+
+        be = FileBackend(base_path=str(tmp_path / "memories"))
+        store = MemoryStore(primary=be)
+
+        # ISO week 2026-W02 is 2026-01-05 through 2026-01-11.
+        _old_mem(store, "old-a", "2026-01-06T09:00:00+00:00")
+        _old_mem(store, "old-b", "2026-01-07T09:00:00+00:00")
+        for i in range(5):
+            _old_mem(store, f"recent-{i}", f"2026-10-17T0{i}:00:00+00:00")
+
+        monkeypatch.setattr(synthesis_mod, "_WEEKLY_QUERY_LIMIT", 3)
+        synth = synthesis_mod.JournalSynthesizer(store=store)
+        result = synth.synthesize_weekly("2026-W02")
+
+        assert result.metadata["total_memories"] == 2
+
+    def test_dreams_finds_old_dreams_drowned_out_by_other_sources(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dreams are a small fraction of a large, mixed-source store. The
+        old bug ("N most recent of ANY source, then filter to dreams
+        client-side") could fill its whole limit with non-dream memories
+        before ever reaching an old dream -- even a RECENT one, let alone
+        a historical one. Querying by source AND date in the backend
+        itself must find every dream regardless of how much non-dream
+        volume surrounds it.
+        """
+        import skmemory.synthesis as synthesis_mod
+        from skmemory.backends.file_backend import FileBackend
+
+        be = FileBackend(base_path=str(tmp_path / "memories"))
+        store = MemoryStore(primary=be)
+
+        _old_mem(
+            store,
+            "old-dream",
+            "2026-01-05T09:00:00+00:00",
+            source="dreaming-engine",
+            tags=["dream"],
+        )
+        for i in range(2):
+            _old_mem(
+                store,
+                f"recent-dream-{i}",
+                f"2026-10-17T0{i}:00:00+00:00",
+                source="dreaming-engine",
+                tags=["dream"],
+            )
+        # A lot of non-dream recent memories -- an unscoped "N most recent"
+        # fetch would be entirely dominated by these.
+        for i in range(50):
+            _old_mem(
+                store,
+                f"non-dream-{i}",
+                f"2026-10-17T{(10 + i) % 24:02d}:00:00+00:00",
+                source="manual",
+            )
+
+        monkeypatch.setattr(synthesis_mod, "_DREAMS_QUERY_LIMIT", 10)
+        synth = synthesis_mod.JournalSynthesizer(store=store)
+        results = synth.synthesize_dreams(since="2026-01-01")
+
+        # synthesize_dreams groups raw dream memories into narrative
+        # clusters, so assert on the total dream_count across every
+        # returned cluster: it must cover all 3 dreams (1 historical + 2
+        # recent), none dropped because of the 50 non-dream memories
+        # surrounding them.
+        total_dreams_covered = sum(m.metadata["dream_count"] for m in results)
+        assert total_dreams_covered == 3
