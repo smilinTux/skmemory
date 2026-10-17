@@ -33,6 +33,19 @@
   (and `export_orphans_to_flat()`) use to detect a stub. Card: skmemory
   sqlite-only-orphans, 2026-10-16. See
   `docs/postmortems/2026-10-16-sqlite-only-orphans.md`.
+- `scripts/skmemory-sync-audit.sh` (brought under version control; previously
+  lived unversioned at `~/.skcapstone/scripts/` on `.158` only) no longer
+  treats "zero active sync timers" as "nothing to audit." From 2026-04-26
+  through 2026-10-11 it logged exactly that, silently, every single week,
+  because the `skmemory-sync@<agent>.timer` units had never actually been
+  enabled anywhere -- the one piece of automated drift monitoring that
+  existed had nothing to monitor and said nothing about it. It now
+  discovers every agent with a memory home on the host (not just agents
+  with an active timer), alerts at `crit` via `sk-alert` when any of them
+  has no enabled timer, and alerts at `warn`/`info` for drift or log
+  errors on the rest -- replacing the old raw Telegram-API curl call with
+  the estate's one alerting primitive. Card: skmemory sqlite-only-orphans,
+  2026-10-16. See `docs/postmortems/2026-10-16-sqlite-only-orphans.md`.
 - `export_orphans_to_flat()` now tries the configured vector/pg backend's
   full content for a SQLite-only orphan FIRST, before falling back to the
   lossy ~150-char SQLite `content_preview` stub. `MemoryStore` wires this
