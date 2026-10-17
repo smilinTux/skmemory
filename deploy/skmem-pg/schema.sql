@@ -49,7 +49,12 @@ CREATE SCHEMA opus_knowledge;
 -- Name: pg_search; Type: EXTENSION; Schema: -; Owner: -
 --
 
-CREATE EXTENSION IF NOT EXISTS pg_search WITH SCHEMA paradedb;
+-- WITH SCHEMA paradedb removed (card: fresh-bootstrap fix): the paradedb
+-- schema-creation statement above was already stripped (CREATE EXTENSION
+-- auto-creates its own default schema), so an explicit WITH SCHEMA clause
+-- against a nonexistent schema aborted initdb with "schema paradedb does
+-- not exist". Matches the proven-working historical 02-enable-bm25-age.sql.
+CREATE EXTENSION IF NOT EXISTS pg_search;
 
 
 --
@@ -70,7 +75,10 @@ CREATE SCHEMA personal_history;
 -- Name: age; Type: EXTENSION; Schema: -; Owner: -
 --
 
-CREATE EXTENSION IF NOT EXISTS age WITH SCHEMA ag_catalog;
+-- WITH SCHEMA ag_catalog removed for the same reason as pg_search above:
+-- the ag_catalog CREATE SCHEMA statement was already stripped from this
+-- dump, so the explicit clause aborted initdb on a fresh database.
+CREATE EXTENSION IF NOT EXISTS age;
 
 
 --
