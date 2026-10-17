@@ -33,10 +33,14 @@ The rescue made things worse before it made them better:
    2026-08-06, 2026-08-20) because the normal nightly backup only reaches back 7 days (see §4.1:
    the retention is actually half of what every comment in the repo claims).
 
-As of this writing, data recovery (a separate, concurrent effort) has restored real content
-for roughly 21,700 of the 23,898 affected ids; the remainder have no surviving copy anywhere
-that has been found. This document does not modify or re-verify that count; see the recovery
-agent's own record for current status.
+**Final recovery tally** (data recovery is a separate, concurrent effort; recorded here for
+the narrative record only, not re-verified by this document): of 24,360 flagged/truncated
+items, 22,742 had their full text restored, 903 digests were superseded by 32 regenerated
+syntheses (see §3.11: the digests themselves had been silently incomplete), 571 items were
+identified as pytest/CI test fixtures and tagged as such rather than "recovered" (see §3.9),
+and approximately 180 are genuinely unrecoverable because their only source (a flat file, a
+pg row, and the raw session or transcript they were extracted from) no longer exists anywhere
+that has been found.
 
 ## 2. Timeline
 
@@ -305,6 +309,41 @@ already durable per the SQLite durability model this repo now uses, see §3.1) a
 documented, intentional secondary source for session reconstruction rather than an
 accidental one discovered mid-recovery.
 
+### 3.11 `synthesize_daily`/`synthesize_weekly`/`synthesize_dreams` silently returned empty for historical dates (CONTRIBUTING, SEPARATE FAILURE CLASS, FIXED, this work)
+
+Coordinator finding, confirmed and fixed during this investigation's follow-up:
+`skmemory/synthesis.py` built its daily, weekly, and dream-cluster narratives by fetching the
+`limit=500` (daily) or `limit=1000` (weekly, dreams) MOST RECENT memories via
+`list_memories()`, then filtering that already-truncated list to the requested date range
+(and, for dreams, to `source == "dreaming-engine"`) in Python. In a store with more memories
+than that limit, which Lumina's had been for most of this incident's window, any date whose
+matching memories fell outside the most-recent 500/1000 silently produced zero results: not
+an exception, not a log line, a daily narrative that reads "No memories recorded" and is
+indistinguishable from a day with no activity. Verified: the same historical date went from 0
+to 433 memories once queried correctly. For `synthesize_dreams` specifically the risk was
+worse than the date math alone suggests, because dreams are a small fraction of a large
+mixed-source store: an unscoped "N most recent of anything" fetch could fill its entire limit
+with non-dream memories before ever reaching a dream, recent or historical.
+
+This is a distinct failure class from §3.1 to §3.10: it does not touch the flat/SQLite/pg
+durability chain at all, and it predates this incident's window (the anti-pattern is in the
+original `synthesize_*` implementations, not something the orphan recovery introduced). It
+is recorded here because it was found WHILE investigating this incident, it is the same
+[[measurement-indistinguishable-from-success]] shape as §3.2 and §3.3 (a wrong answer that
+looks identical to a correct one), and the 903 superseded digests in the final recovery tally
+(§1) exist precisely because historical daily/weekly syntheses generated under this bug had
+to be regenerated once the query was fixed.
+
+**Fix (this work):** `list_memories()` across every backend (`SQLiteBackend`, `FileBackend`,
+`PGVectorBackend` with real SQL predicates; the deprecated, non-live ChromaDB/SKVector
+backends with an interface-compatible post-fetch filter) and `MemoryStore` now accept
+`created_after`/`created_before` (ISO 8601 bounds, applied in the query BEFORE `limit`
+truncates) and `source`. All three `synthesize_*` methods now pass these instead of pulling
+the N most recent and filtering afterward; `synthesize_dreams` also filters by
+`source="dreaming-engine"` in the query itself. The three result-size caps are now named,
+monkeypatchable module constants (generous ceilings against a pathological single day/week,
+not a recency window). Shipped: skmemory PR #41.
+
 ## 4. Why backups were insufficient
 
 ### 4.1 skmem-pg nightly dumps actually keep 7 days, not 14
@@ -384,6 +423,11 @@ as each lands; see the tracking section at the end of this document for the fina
    `skmemory/pytest_guard.py`, wired into every flat-file write path, refuses to write under
    the real `~/.skcapstone/agents/` tree while pytest is actively running a test, unless the
    test isolated or explicitly opted in. See §3.9.
+8. **`synthesize_daily`/`synthesize_weekly`/`synthesize_dreams` query by date range and
+   source, not recency.** `list_memories()` gains `created_after`/`created_before`/`source`
+   params, applied in each backend's own query before `limit` truncates the result; all three
+   synthesis methods use them instead of fetching the N most recent and filtering afterward.
+   See §3.11.
 
 See the skmemory repo's `docs/postmortems/` history and the linked PRs for implementation
 detail; this document is the narrative record and is not updated after the fixes land except
@@ -396,12 +440,13 @@ to fill in the tracking table below.
 | 1 | Stub/shrink guard (pg backend) | skmemory | [#36](https://github.com/smilinTux/skmemory/pull/36) | merged |
 | 1b | Stub/shrink guard (skmem_reconcile.py) + version control | skmemory | [#37](https://github.com/smilinTux/skmemory/pull/37) | merged |
 | 2 | Drift detection alert fix (skmemory-sync-audit.sh) | skmemory | [#38](https://github.com/smilinTux/skmemory/pull/38) | merged |
-| 2b | `skcapstone doctor` memory-drift check + sk-alert wiring | skcapstone | TBD | in progress |
+| 2b | `skcapstone doctor` memory-drift + sync-timer checks | skcapstone | [#1246](https://github.com/smilinTux/skcapstone/pull/1246) | in progress |
 | 3 | Installer wires sync timer; doctor enforces | skcapstone | TBD | in progress |
 | 4 | Backup GFS retention (pg + flat + off-node) | scripts | TBD | in progress |
 | 5 | Per-node pg DSN guard | skmemory | TBD | in progress |
 | 6 | `skmem_reconcile.py` under version control | skmemory | [#37](https://github.com/smilinTux/skmemory/pull/37) | merged |
 | 7 | Pytest real-memory-write guard | skmemory | [#39](https://github.com/smilinTux/skmemory/pull/39) | in progress |
+| 8 | `synthesize_*` query by date range + source, not recency | skmemory | [#41](https://github.com/smilinTux/skmemory/pull/41) | in progress |
 
 This table is updated in a follow-up commit once every fix's PR is merged and installed on
 both `.158` and the laptop.
