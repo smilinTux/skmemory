@@ -37,6 +37,7 @@ from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
 from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
+from ..pytest_guard import assert_write_allowed
 from ..stub_markers import STUB_METADATA_KEY, TRUNCATED_PREVIEW_SUFFIX
 from .base import BaseBackend
 
@@ -515,6 +516,7 @@ class SQLiteBackend(BaseBackend):
                 memory is NOT indexed in this case.
         """
         path = self._file_path(memory)
+        assert_write_allowed(path)
         atomic_write_text(
             path,
             json.dumps(memory.model_dump(), indent=2, default=str),
@@ -952,6 +954,7 @@ class SQLiteBackend(BaseBackend):
             try:
                 memory = Memory(**mem_data)
                 file_path = self._file_path(memory)
+                assert_write_allowed(file_path)
                 # Durable flat write BEFORE indexing (card: sqlite-only
                 # orphans, 2026-10-16). A raise here is caught below and the
                 # memory is skipped entirely -- never indexed without its
