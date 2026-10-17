@@ -1803,22 +1803,75 @@ class MemoryStore:
     def health(self) -> dict:
         """Check health of all backends.
 
+        Surfaces flat-vs-index drift as an explicit top-level ``status``
+        (card: sqlite-only orphans, 2026-10-16 -- 23,525 orphaned index rows
+        sat undetected for months because nothing turned drift into a
+        non-green signal):
+
+          * ``"ok"``       -- no known drift.
+          * ``"degraded"`` -- ``sqlite_only`` and/or ``flat_only`` > 0 on the
+            primary backend's local index.
+          * ``"red"``      -- ``pg_only`` > 0 on a wired skmem-pg backend
+            (a row with no backing flat file in the PRODUCTION derived
+            store, the more severe sibling of the same failure shape).
+
+        ``sqlite_only``/``flat_only``/``pg_only`` are always present in the
+        returned dict (``None`` when not applicable/detectable, e.g. no
+        SQLite index or no pgvector backend wired) so a caller never has to
+        dig into nested backend-specific shapes to check for drift.
+
         Returns:
             dict: Combined health status.
         """
         status = {"primary": self.primary.health_check()}
+
+        sqlite_only: int | None = None
+        flat_only: int | None = None
+        primary_sync = (
+            status["primary"].get("sync") if isinstance(status["primary"], dict) else None
+        )
+        if isinstance(primary_sync, dict):
+            sqlite_only = primary_sync.get("sqlite_only")
+            flat_only = primary_sync.get("flat_only")
+
         if self.vector:
             try:
                 status["vector"] = self.vector.health_check()
             except Exception as e:
                 logger.warning("store.py: %s", e)
                 status["vector"] = {"ok": False, "error": str(e)}
+
+        pg_only: int | None = None
+        flat_id_set = getattr(self.primary, "flat_id_set", None)
+        pg_drift_check = getattr(self.vector, "drift_check", None) if self.vector else None
+        if callable(flat_id_set) and callable(pg_drift_check):
+            try:
+                pg_drift = pg_drift_check(flat_id_set())
+                pg_only = pg_drift.get("pg_only")
+                status["pg"] = pg_drift
+            except Exception as e:
+                # Best-effort: an unreachable skmem-pg must not make the
+                # whole health check fail, but it also must not be
+                # misreported as "pg_only: 0" -- leave it None (undetectable).
+                logger.warning("store.py: pg drift check failed: %s", e)
+
         if self.graph:
             try:
                 status["graph"] = self.graph.health_check()
             except Exception as e:
                 logger.warning("store.py: %s", e)
                 status["graph"] = {"ok": False, "error": str(e)}
+
+        overall = "ok"
+        if (sqlite_only or 0) > 0 or (flat_only or 0) > 0:
+            overall = "degraded"
+        if (pg_only or 0) > 0:
+            overall = "red"
+
+        status["status"] = overall
+        status["sqlite_only"] = sqlite_only
+        status["flat_only"] = flat_only
+        status["pg_only"] = pg_only
         return status
 
 

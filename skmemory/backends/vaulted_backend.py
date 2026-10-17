@@ -27,6 +27,7 @@ import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from ..atomic_io import atomic_write_bytes
 from ..models import Memory, MemoryLayer
 from ..vault import VAULT_HEADER, MemoryVault
 from .sqlite_backend import DEFAULT_BASE_PATH, SQLiteBackend
@@ -76,11 +77,15 @@ class VaultedSQLiteBackend(SQLiteBackend):
 
         Returns:
             str: The memory ID.
+
+        Raises:
+            OSError: If the encrypted flat write could not be durably
+                completed. The memory is NOT indexed in this case (card:
+                sqlite-only orphans, 2026-10-16).
         """
         path = self._file_path(memory)
-        path.parent.mkdir(parents=True, exist_ok=True)
         json_bytes = json.dumps(memory.model_dump(), indent=2, default=str).encode("utf-8")
-        path.write_bytes(self._vault.encrypt(json_bytes))
+        atomic_write_bytes(path, self._vault.encrypt(json_bytes))
         self._index_memory(memory, path)
         return memory.id
 

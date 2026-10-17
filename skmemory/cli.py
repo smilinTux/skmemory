@@ -1305,6 +1305,23 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
     # Phase 1: rescue SQLite-only orphans to flat files
     orphan_stats = store.export_orphans_to_flat()
 
+    # This is the safety net, and it must be LOUD (card: sqlite-only
+    # orphans, 2026-10-16 -- 23,525 rows sat silent on a laptop for months
+    # because this rescue only ever printed a suppressible info line).
+    # Unconditional: never gated on --quiet, which exists only to silence the
+    # normal "nothing changed" echo below.
+    if orphan_stats["exported"] > 0:
+        logger.warning(
+            "skmemory sync[%s]: materialized %d SQLite-only memory(ies) that had "
+            "no backing flat file (errors=%d). This is a RECOVERY, not a clean "
+            "sync: recovered content is the truncated SQLite preview only, full "
+            "content is lost for these ids. Investigate the write path that "
+            "indexed them without a durable flat write.",
+            agent,
+            orphan_stats["exported"],
+            orphan_stats["errors"],
+        )
+
     # Phase 2: pick up flat-only files (safe — orphans already exported)
     indexed = store.reindex(force=False)
 

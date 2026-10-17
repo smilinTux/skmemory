@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import sealing as _sealing
+from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
 from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
@@ -103,18 +104,22 @@ class FileBackend(BaseBackend):
     def save(self, memory: Memory) -> str:
         """Persist a memory as a JSON file.
 
+        Uses a durable atomic write (temp file + fsync + rename, see
+        :mod:`skmemory.atomic_io`) so a crash or power loss can never leave a
+        partial file, and so this is safe to call as the first half of the
+        flat-first invariant any index-backed caller relies on.
+
         Args:
             memory: The Memory to store.
 
         Returns:
             str: The memory ID.
+
+        Raises:
+            OSError: If the write could not be durably completed.
         """
         path = self._file_path(memory)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(memory.model_dump(), indent=2, default=str),
-            encoding="utf-8",
-        )
+        atomic_write_text(path, json.dumps(memory.model_dump(), indent=2, default=str))
         # Stage-2 (opt-in, gated): write a detached PQC signature sidecar when a
         # real sk_pgp backend is configured + ready. Classical default => no-op,
         # so the on-disk result above is byte-for-byte today's behaviour.
@@ -263,6 +268,24 @@ class FileBackend(BaseBackend):
         scored.sort(key=lambda t: (t[0], t[1].created_at), reverse=True)
         results = [m for _, m in scored]
         return results[:limit]
+
+    def flat_id_set(self) -> set[str]:
+        """IDs (filename stems) of every flat JSON file across active tiers.
+
+        Mirrors :meth:`SQLiteBackend.flat_id_set`, for use as the ground
+        truth set when a FileBackend (no SQLite index) is primary.
+
+        Returns:
+            set[str]: Flat-file id stems.
+        """
+        ids: set[str] = set()
+        for layer in MemoryLayer:
+            layer_dir = self.base_path / layer.value
+            if not layer_dir.exists():
+                continue
+            for f in layer_dir.glob("*.json"):
+                ids.add(f.stem)
+        return ids
 
     def health_check(self) -> dict:
         """Check filesystem backend health.
