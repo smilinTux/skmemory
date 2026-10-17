@@ -88,6 +88,13 @@ class _FakeCursor:
         self.executed.append((sql, params))
         self.rowcount = self._rowcounts.pop(0) if self._rowcounts else 0
 
+    def fetchone(self):
+        # None = "no existing row" for the save() stub/shrink guard's
+        # pre-write SELECT -- these tests exercise delete/remove/embedding
+        # behavior, not the guard, so a fresh-insert default keeps them
+        # unaffected (see tests/test_pgvector_stub_guard.py for the guard).
+        return None
+
 
 class _FakeConn:
     def __init__(self, cursor):

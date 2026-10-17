@@ -38,10 +38,24 @@ from dataclasses import dataclass
 from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from ..query_sanitizer import sanitize_query
+from ..stub_markers import is_stub_payload
 from .base import BaseBackend
 from .sqlite_backend import CONTENT_PREVIEW_LENGTH
 
 logger = logging.getLogger(__name__)
+
+
+class StubOverwriteRefused(RuntimeError):
+    """Raised when a save() would plant stub-recovered content into skmem-pg,
+    or would replace a longer existing row with a shorter one, without an
+    explicit ``force=True`` override.
+
+    Root cause (card: skmemory sqlite-only-orphans, 2026-10-16): a flat->pg
+    reconcile run laundered 373 rescued SQLite-preview stubs directly into
+    skmem-pg because nothing checked for this before. See
+    ``docs/postmortems/2026-10-16-sqlite-only-orphans.md``.
+    """
+
 
 # skmem-pg is a LOCAL, per-node writable Postgres. The embedding store is a
 # derived, rebuildable cache (same class as index.db): `memories` are rebuilt
@@ -407,12 +421,77 @@ class PGVectorBackend(BaseBackend):
         return f"{memory.title}\n{memory.content}\n{memory.summary or ''}".strip()
 
     # --- BaseBackend ---------------------------------------------------------
-    def save(self, memory: Memory) -> str:
+    def save(self, memory: Memory, *, force: bool = False) -> str:
+        """Persist a memory to skmem-pg.
+
+        Args:
+            memory: The Memory to store.
+            force: Bypass the stub/shrink guard below. Only ever pass this
+                when a human (or an explicitly audited recovery script) has
+                verified the incoming content is genuinely better than what
+                is already stored.
+
+        Returns:
+            str: The memory ID.
+
+        Raises:
+            StubOverwriteRefused: If ``force`` is False and the incoming
+                content either carries the recovered-SQLite-preview stub
+                marker, or is shorter than the content already stored for
+                this id -- either way, writing it would make skmem-pg worse,
+                not better.
+        """
         require_memory_id(memory.id)
         # required=True: never store a NULL/empty/zero embedding (would poison
         # recall). If every endpoint is down this raises EmbeddingUnavailable.
+        # This must run BEFORE the guard/connection below (card 41ec2201): a
+        # model mismatch must raise without ever touching the connection.
         emb = self._embed(self._searchable(memory), required=True)
+
         conn = self._connection()
+
+        # Stub/shrink guard (card: skmemory sqlite-only-orphans, 2026-10-16).
+        # Never silently let a lossy rescue stub, or any write shorter than
+        # what's already here, replace content that may still be real.
+        if not force:
+            incoming_is_stub = is_stub_payload(memory.content, memory.metadata)
+            incoming_len = len(memory.content or "")
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT length(content) FROM memories WHERE id=%s AND agent=%s",
+                    (memory.id, self.agent),
+                )
+                row = cur.fetchone()
+            existing_len = row[0] if row else None
+
+            if incoming_is_stub:
+                logger.warning(
+                    "pgvector_backend: REFUSING write for id=%s agent=%s -- content "
+                    "carries the recovered_from_sqlite_preview stub marker (existing "
+                    "pg row: %s). Pass force=True only after verifying this is "
+                    "genuinely the content to keep.",
+                    memory.id,
+                    self.agent,
+                    "no row" if existing_len is None else f"{existing_len} chars",
+                )
+                raise StubOverwriteRefused(
+                    f"refusing stub-content write for id={memory.id} agent={self.agent}"
+                )
+            if existing_len is not None and incoming_len < existing_len:
+                logger.warning(
+                    "pgvector_backend: REFUSING shrinking write for id=%s agent=%s -- "
+                    "existing %d chars, incoming %d chars. Pass force=True only after "
+                    "verifying the shorter content is correct.",
+                    memory.id,
+                    self.agent,
+                    existing_len,
+                    incoming_len,
+                )
+                raise StubOverwriteRefused(
+                    f"refusing shrinking write for id={memory.id} agent={self.agent} "
+                    f"({existing_len} -> {incoming_len} chars)"
+                )
+
         with conn.cursor() as cur:
             cur.execute(
                 """
