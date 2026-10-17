@@ -8,6 +8,78 @@
 
 ### Added
 
+- **Evidence-grounded observations** (`skmemory/observations.py`, R3). A
+  consolidated belief that carries its own proof: a statement plus evidence
+  items of `{memory_id, quote, timestamp}`, from which `proof_count` and a
+  `trend` (`new`, `stable`, `strengthening`, `weakening`, `stale`) are derived.
+  The trend is pure arithmetic over the evidence timestamp distribution, no
+  LLM. Quotes are verified against the cited memory rather than trusted,
+  because a belief with a fabricated citation is worse than no belief. Merging
+  is idempotent, so replaying evidence cannot inflate a proof count. Measured:
+  5/5 trend fixtures correct, the fabricated quote caught with no false flag,
+  proof count stable at 2 across repeated merges.
+- **Standing answers with watermark staleness** (`skmemory/standing.py`, R4). A
+  question registered once plus its stored answer, refreshed in the background,
+  so an agent can boot off settled knowledge. Reading one is a plain read: no
+  retrieval, no LLM, no network (counted: one refresh cost 1 retrieval call, 25
+  subsequent reads cost 0). Staleness keys on `last_memory_seen_at`, the memory
+  watermark, NOT on wall-clock `last_refreshed_at`. The bench implements the
+  wrong design as a comparison arm and measures the divergence: 2 of 4
+  scenarios differ, and wall-clock is wrong in both directions, reporting
+  "fresh" for a stale answer and "stale" for a fresh one. A failed refresh
+  leaves the watermark untouched, so a failure cannot hide later memories.
+  Refresh runs through the existing injected `fresh_context.FreshContextRunner`
+  seam, so no LLM client is baked in.
+- **Cheap typed-decision triage** (`skmemory/triage.py`, R5). Routes a
+  candidate memory to `restates` / `new` / `changes` / `chatter`, where only
+  `changes` needs an expensive LLM rewrite. The deterministic offline tier is
+  the default and needs no network; the LLM tier is opt-in through skgateway
+  (`sk-default`, never a hardcoded vendor model) and falls back while SAYING so.
+  A verdict only stands when independent signals agree, and disagreement
+  escalates to `changes` as the safe default, following Hindsight's finding that
+  per-answer confidence thresholds need retuning per model. Measured on 32
+  labelled fixtures: 3.1% escalate on disagreement and 75% settle without the
+  expensive tier. The clean confusion matrix means the fixtures are separable,
+  not that the classifier is perfect; real-corpus validation is still owed.
+- **Optional LLM fact extraction** (`skmemory/fact_extraction.py`, R6).
+  Default OFF; the regex `extractor.py` stays the default and the fallback.
+  Produces 5W facts (`what`/`when`/`where`/`who`/`why`) plus `fact_type`
+  (`world` vs `experience`), entities, optional occurrence timestamps, and
+  causal links whose `target_index` is schema-constrained to be strictly less
+  than the referencing fact's own position, so a hallucinated or forward
+  reference is rejected at parse time instead of stored. Lenient parsing with
+  strict validation, and lone UTF-16 surrogates are stripped from every
+  model-authored string including entity names, since those strings get
+  embedded and indexed. Verified against one real `sk-default` call plus
+  recorded fixtures; the harness itself makes no network calls.
+- **Durable Postgres task queue** (`skmemory/taskqueue.py` plus migration
+  `deploy/skmem-pg/04-task-queue.sql`, R7). Claims with `SELECT ... FOR UPDATE
+  SKIP LOCKED` in batches, leases so a dead worker's task becomes reclaimable,
+  orphan recovery, retry with backoff into a terminal dead state with the
+  reason recorded, and an idempotency key. Measured against a throwaway
+  database: 500 tasks, 8 concurrent claimers, 500 unique claims, 0 duplicates,
+  0 lost. Replaces the workaround already visible in git history, where a
+  reconcile backfill had to scope its scratch table by agent and PID because
+  two overlapping runs raced on one shared table name. Reconcile and promotion
+  are deliberately not rewritten yet.
+- **Flat-file repair** (`skmemory/repair.py`). Finds and repairs live flat
+  files that `Memory` cannot load. Measured on lumina: 17 of 45,340 files
+  (0.04%) have no `title`, so those memories are neither corrupt nor missing,
+  just unreadable through every normal path. A repair derives the title from
+  content the file already has and changes nothing else, so it can never assert
+  something the memory does not say. Dry run is the default, writes are durable
+  via `atomic_io`, and the pass is idempotent. It reports each file's `source`
+  (12 came from `telegram-bridge`, the rest from cron watchers) because the
+  producers live in other repos and the data repair alone would let the files
+  come back.
+- **Real-corpus retrieval A/B** (`scripts/real_corpus_ab.py`). Read-only
+  known-item retrieval against a live agent corpus, where the memory's own id
+  is the label so there is nothing to annotate or fudge. First measurement of
+  R1+R2 on real data rather than a fixture, on lumina's 20,299 memories at k=5:
+  identifier hit@5 0.200 to 0.660 (3.3x), title hit@5 0.300 to 0.580 (1.9x),
+  MRR roughly tripled, no class regressed, zero empty result sets. It refuses a
+  non-local DSN and never constructs a write path.
+
 - Rank-space reranking for the fused path (`skmemory/rerank.py`), applied to
   the fused POOL before it is truncated to the caller's limit. R1 alone widened
   recall on the real backend while DROPPING MRR (0.298 to 0.266), because
@@ -87,6 +159,32 @@
   existing callers.
 
 ### Fixed
+
+- **One malformed row no longer kills an entire search.** Every read path in
+  `PGVectorBackend` parsed rows with an unguarded comprehension, and `Memory`
+  requires `title` and `content`, so a single row missing either raised
+  `ValidationError` and took the whole result set with it. Measured on the live
+  store: 17 of lumina's 20,299 rows and 13 of jarvis's 856 have no `title`.
+  Rows are now skipped, recorded and logged with their id, and `health_check()`
+  reports `unparseable_rows` counted straight from SQL with `status: degraded`,
+  rather than the `ok: True` it used to return.
+- **Isolating the agent home was not isolating the database.**
+  `tests/conftest.py` points `SKCAPSTONE_HOME` at a temp directory, which makes
+  every flat write safe, while `SKMEMORY_PG_DSN` kept pointing at the real
+  skmem-pg. 157 rows of pytest fixtures were found in the production database
+  under agent `test-agent` and removed. New
+  `pytest_guard.assert_pg_write_allowed()` refuses a pytest-time write to a
+  known production database unless explicitly opted in, fires only when the
+  write would actually dial out (so injected fake connections and reads are
+  untouched), and is inert outside pytest. Verified by clearing the table,
+  running the full suite, and confirming zero rows reappeared.
+- **A secret-scan false positive was failing every open PR.** `generic-api-key`
+  matched `idempotency_key="bench-idempotency-1"`, a public field name on the
+  task queue API, and because the workflow fetches all refs, four unrelated PRs
+  went red on another branch's content. Added `.gitleaks.toml` with a narrow
+  allowlist, with `[extend] useDefault = true` and `regexTarget = "match"` both
+  pinned by tests, since a config without the first silently disables every
+  rule and one without the second silently matches nothing.
 
 - The fused path took its lexical arm from `self.primary`, which is SQLite in
   every real deployment because skmem-pg attaches as the VECTOR backend. So a
