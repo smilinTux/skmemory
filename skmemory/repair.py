@@ -56,6 +56,12 @@ REQUIRED_FIELDS = ("title", "content")
 #: enough not to duplicate the content field.
 MAX_DERIVED_TITLE = 80
 
+#: Legacy key some producers used for the memory id. ``Memory`` reads ``id``,
+#: so a file carrying only this one gets a FRESHLY MINTED id every time it is
+#: loaded. See :func:`normalise_legacy_id` for why that matters more than the
+#: missing title does.
+LEGACY_ID_KEY = "memory_id"
+
 
 @dataclass(frozen=True)
 class UnloadableFile:
@@ -67,6 +73,9 @@ class UnloadableFile:
     memory_id: str = ""
     repairable: bool = False
     reason: str = ""
+    #: True when the file carries only the legacy ``memory_id`` key, so the
+    #: model would mint a new id for it on every load.
+    legacy_id_only: bool = False
 
 
 @dataclass
@@ -122,6 +131,33 @@ def derive_title(content: str, *, max_length: int = MAX_DERIVED_TITLE) -> str:
     return cut.rstrip(" .,;:-")
 
 
+def normalise_legacy_id(obj: dict) -> bool:
+    """Copy a legacy ``memory_id`` into the canonical ``id``. True if changed.
+
+    This matters more than the missing title, and it is the subtler bug of the
+    two. ``Memory`` reads ``id``; a file carrying only ``memory_id`` therefore
+    gets a BRAND NEW uuid minted every time it is loaded, so the memory has no
+    stable identity through the model at all. Saving such a file to the derived
+    Postgres cache INSERTS A DUPLICATE rather than updating the row it came
+    from, because the row it came from is keyed on the original id.
+
+    Found the hard way: refreshing 17 repaired files into skmem-pg took lumina
+    from 20,299 rows to 20,316 and left all 17 original rows untouched. The
+    duplicates were identified by content and source and removed, and the count
+    is back to 20,299.
+
+    The id is already in the file, under the wrong key, so copying it across is
+    content-preserving: nothing is invented and nothing is dropped. The legacy
+    key is deliberately LEFT IN PLACE, since some other reader may still want
+    it and removing a field is not this function's business.
+    """
+    legacy = obj.get(LEGACY_ID_KEY)
+    if obj.get("id") or not isinstance(legacy, str) or not legacy.strip():
+        return False
+    obj["id"] = legacy.strip()
+    return True
+
+
 def _tier_dirs(memory_dir: Path) -> list[Path]:
     return [memory_dir / tier for tier in LIVE_TIERS if (memory_dir / tier).is_dir()]
 
@@ -172,7 +208,8 @@ def scan_unloadable(memory_dir: Path | str) -> RepairReport:
                     path=path,
                     missing=missing,
                     source=str(obj.get("source") or ""),
-                    memory_id=str(obj.get("id") or obj.get("memory_id") or ""),
+                    memory_id=str(obj.get("id") or obj.get(LEGACY_ID_KEY) or ""),
+                    legacy_id_only=not obj.get("id") and bool(obj.get(LEGACY_ID_KEY)),
                     repairable=derivable,
                     reason=""
                     if derivable
@@ -205,6 +242,9 @@ def repair_missing_titles(memory_dir: Path | str, *, dry_run: bool = True) -> Re
                 report.skipped.append((item.path, "content yielded no usable title"))
                 continue
             obj["title"] = title
+            # Same pass, because a file repaired WITHOUT this still cannot
+            # round-trip to its own row in the derived cache.
+            normalise_legacy_id(obj)
             if dry_run:
                 report.repaired.append(item.path)
                 continue

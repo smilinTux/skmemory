@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from skmemory.repair import (
     MAX_DERIVED_TITLE,
     derive_title,
+    normalise_legacy_id,
     repair_missing_titles,
     scan_unloadable,
 )
@@ -202,3 +205,73 @@ def test_summary_states_whether_it_was_applied(tmp_path):
     _write(tmp_path, "mid-term", "legacy", LEGACY_NO_TITLE)
     assert "DRY RUN" in repair_missing_titles(tmp_path).summary()
     assert "APPLIED" in repair_missing_titles(tmp_path, dry_run=False).summary()
+
+
+# ---------------------------------------------------------------------------
+# legacy memory_id normalisation
+# ---------------------------------------------------------------------------
+
+
+def test_normalise_legacy_id_copies_memory_id_into_id():
+    obj = {"memory_id": "50df5eabce3b", "content": "x", "title": "t"}
+    assert normalise_legacy_id(obj) is True
+    assert obj["id"] == "50df5eabce3b"
+
+
+def test_normalise_legacy_id_leaves_the_legacy_key_in_place():
+    """Removing a field another reader may want is not this function's job."""
+    obj = {"memory_id": "abc123", "content": "x"}
+    normalise_legacy_id(obj)
+    assert obj["memory_id"] == "abc123"
+
+
+def test_normalise_legacy_id_does_not_overwrite_a_real_id():
+    obj = {"id": "canonical", "memory_id": "legacy", "content": "x"}
+    assert normalise_legacy_id(obj) is False
+    assert obj["id"] == "canonical"
+
+
+@pytest.mark.parametrize("legacy", [None, "", "   ", 123, []])
+def test_normalise_legacy_id_ignores_an_unusable_legacy_value(legacy):
+    obj = {"content": "x"}
+    if legacy is not None:
+        obj["memory_id"] = legacy
+    assert normalise_legacy_id(obj) is False
+    assert "id" not in obj
+
+
+def test_repair_normalises_the_id_so_the_memory_keeps_its_identity(tmp_path):
+    """The subtler half of the repair, and the one that caused real damage.
+
+    ``Memory`` reads ``id``. A file carrying only ``memory_id`` gets a brand new
+    uuid minted on every load, so saving it to the derived Postgres cache
+    INSERTS A DUPLICATE instead of updating the row it came from. Measured:
+    refreshing 17 such files took lumina from 20,299 rows to 20,316 with all 17
+    originals untouched.
+    """
+    from skmemory.models import Memory
+
+    p = _write(tmp_path, "mid-term", "legacy", LEGACY_NO_TITLE)
+    repair_missing_titles(tmp_path, dry_run=False)
+
+    after = json.loads(p.read_text(encoding="utf-8"))
+    assert after["id"] == LEGACY_NO_TITLE["memory_id"]
+
+    # The decisive assertion: loading it twice yields the SAME id, so a save
+    # updates its own row instead of creating a new one.
+    first = Memory.model_validate_json(p.read_text(encoding="utf-8"))
+    second = Memory.model_validate_json(p.read_text(encoding="utf-8"))
+    assert first.id == second.id == LEGACY_NO_TITLE["memory_id"]
+
+
+def test_the_repaired_id_matches_the_filename(tmp_path):
+    """The flat store names files by id, so the canonical id was always there,
+    just under the wrong key and in the filename."""
+    p = _write(tmp_path, "mid-term", LEGACY_NO_TITLE["memory_id"], LEGACY_NO_TITLE)
+    repair_missing_titles(tmp_path, dry_run=False)
+    assert json.loads(p.read_text(encoding="utf-8"))["id"] == p.stem
+
+
+def test_scan_flags_a_legacy_id_only_file(tmp_path):
+    _write(tmp_path, "mid-term", "legacy", LEGACY_NO_TITLE)
+    assert scan_unloadable(tmp_path).unloadable[0].legacy_id_only is True
