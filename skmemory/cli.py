@@ -41,6 +41,28 @@ logger = logging.getLogger("skmemory.cli")
 _active_selector = None  # Module-level reference for routing commands
 
 
+def _echo_import_skips(store) -> None:
+    """Say out loud when a restore dropped records.
+
+    `import_backup` returns only the SUCCESS count, so "Restored 850 memories"
+    was printed for a 1000-record backup with no hint that 150 were skipped.
+    A partial restore that looks like a complete one is the whole problem.
+    """
+    report = getattr(getattr(store, "primary", None), "last_import_report", None)
+    if not isinstance(report, dict):
+        return
+    skipped = report.get("skipped") or 0
+    if not skipped:
+        return
+    click.echo(
+        f"WARNING: skipped {skipped} of {report.get('attempted')} record(s) "
+        "(unparseable or refused); this restore is PARTIAL",
+        err=True,
+    )
+    for line in (report.get("skipped_detail") or [])[:5]:
+        click.echo(f"  skipped: {line}", err=True)
+
+
 def _env_pins_embed_endpoint() -> bool:
     """True when the per-node env already names the embed endpoint(s).
 
@@ -1417,6 +1439,25 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
             logger.warning("cli.py: %s", e)
             click.echo(f"AGE graph sync failed: {e}", err=True)
 
+    # A reconcile that fixed a memory must retire the failure record it left
+    # behind, or health's `unindexed` only ever climbs. See
+    # MemoryStore.reconcile_sync_failures().
+    failure_report = None
+    if vector or graph:
+        try:
+            report = store.reconcile_sync_failures()
+            # Only trust a real dict of real ints. A store that returns
+            # something else (a stand-in, an older implementation) must not be
+            # able to make --quiet speak or print a repr into a cron log.
+            if isinstance(report, dict):
+                failure_report = {
+                    key: value
+                    for key, value in report.items()
+                    if isinstance(value, int) and not isinstance(value, bool)
+                }
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cli.py: sync-failure reconcile skipped: %s", e)
+
     changed = (
         orphan_stats["exported"] > 0
         or (
@@ -1433,6 +1474,7 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
             )
         )
         or (graph_stats and graph_stats.get("indexed", 0) > 0)
+        or (failure_report or {}).get("cleared", 0) > 0
     )
     if quiet and not changed:
         return
@@ -1448,6 +1490,11 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
             f"pg_refreshed={pg_stats.get('refreshed')} "
             f"pg_embedded={pg_stats.get('embedded')}/{pg_stats.get('total')}"
             if pg_stats
+            else ""
+        )
+        + (
+            f" unindexed_cleared={failure_report.get('cleared')}/{failure_report.get('checked')}"
+            if failure_report and failure_report.get("checked")
             else ""
         )
         + (
@@ -1498,6 +1545,7 @@ def import_backup(ctx: click.Context, backup_file: str, reindex: bool) -> None:
     try:
         count = store.import_backup(backup_file)
         click.echo(f"Restored {count} memories from: {backup_file}")
+        _echo_import_skips(store)
         if reindex:
             idx = store.reindex()
             if idx >= 0:
@@ -1580,6 +1628,7 @@ def backup_cmd(
         try:
             count = store.import_backup(restore_file)
             click.echo(f"Restored {count} memories from: {restore_file}")
+            _echo_import_skips(store)
             if reindex:
                 idx = store.reindex()
                 if idx >= 0:
