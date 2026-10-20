@@ -50,6 +50,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -88,6 +89,37 @@ _AGTYPE_SUFFIX_RE = re.compile(r"::(vertex|edge|path)\s*$")
 #: guarded reconcile cleans them up (card c25e2513). Cleanup refuses any
 #: label outside this set.
 AUX_NODE_LABELS = ("Tag", "Source", "AI", "Entity", "Citation", "Claim", "Section")
+
+
+def _search_timeout_ms() -> int:
+    """Server-side statement timeout for graph SEARCH queries, milliseconds.
+
+    The entity arm measured 10.72s of an 11.38s fused search on a real corpus
+    (14,203 Entity nodes, 259,010 MENTIONS edges), because the entity lookup is
+    a case-insensitive REGEX over a property AGE cannot index. Semantic was
+    0.26s and BM25 0.27s in the same run, so one arm was 94% of the latency and
+    made interactive search unusable.
+
+    A deadline is the right answer rather than an index guess: pg_trgm is not
+    installed and AGE's agtype blocks a plain functional index, so there is no
+    index fix to reach for. The fusion layer already treats an arm that returns
+    nothing as having abstained, so a capped arm degrades the result quality it
+    contributes instead of blocking the query.
+
+    0 or negative disables the cap. Only SEARCH paths pass it; mutation and
+    the guarded reconcile reads deliberately run uncapped, because a truncated
+    read there could be mistaken for "the graph is nearly empty" and drive a
+    mass prune.
+    """
+    raw = (os.environ.get("SKMEMORY_GRAPH_SEARCH_TIMEOUT_MS") or "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning(
+                "AGEGraphBackend: bad SKMEMORY_GRAPH_SEARCH_TIMEOUT_MS=%r, using default", raw
+            )
+    return 2500
 
 
 class GraphTransportError(RuntimeError):
@@ -204,7 +236,11 @@ class AGEGraphBackend:
         return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", self.dsn)
 
     def _cypher_strict(
-        self, query: str, params: dict | None = None, cols: str = "v agtype"
+        self,
+        query: str,
+        params: dict | None = None,
+        cols: str = "v agtype",
+        timeout_ms: int | None = None,
     ) -> list[tuple]:
         """Run a Cypher query, raising on any failure (fail-closed variant).
 
@@ -231,6 +267,14 @@ class AGEGraphBackend:
             raise GraphTransportError(f"AGE connection unavailable ({self._safe_dsn()})")
         try:
             cur = conn.cursor()
+            # SET LOCAL so the cap dies with this transaction and cannot leak
+            # onto a later mutation sharing the same connection. Only callers
+            # that pass timeout_ms get capped; everything else runs uncapped.
+            if timeout_ms and timeout_ms > 0:
+                # SET takes no bind parameters ("syntax error at or near $1"),
+                # so the value is interpolated. int() is the whole sanitiser
+                # and it is sufficient: a non-integer cannot survive it.
+                cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
             sql = f"SELECT * FROM cypher('{self.graph}', $$ {query} $$, %s) AS ({cols});"
             cur.execute(sql, (json.dumps(params or {}),))
             return cur.fetchall()
@@ -243,7 +287,11 @@ class AGEGraphBackend:
             raise GraphTransportError(f"AGE cypher failed (graph={self.graph}): {exc}") from exc
 
     def _cypher(
-        self, query: str, params: dict | None = None, cols: str = "v agtype"
+        self,
+        query: str,
+        params: dict | None = None,
+        cols: str = "v agtype",
+        timeout_ms: int | None = None,
     ) -> list[tuple]:
         """Run a Cypher query against the target graph.
 
@@ -258,7 +306,7 @@ class AGEGraphBackend:
             on any failure; this method never raises.
         """
         try:
-            return self._cypher_strict(query, params, cols)
+            return self._cypher_strict(query, params, cols, timeout_ms=timeout_ms)
         except GraphTransportError as exc:
             logger.warning("AGEGraphBackend: cypher failed (graph=%s): %s", self.graph, exc)
             return []
@@ -1109,6 +1157,9 @@ class AGEGraphBackend:
             cyq,
             {"pattern": pattern, "limit": int(limit)},
             cols="id agtype, title agtype, layer agtype, entity agtype",
+            # Capped: this is the regex-over-every-Entity query that was 94%
+            # of fused search latency. An abstaining arm beats a hung query.
+            timeout_ms=_search_timeout_ms(),
         )
         return self._rows_to_dicts(rows, ["id", "title", "layer", "entity"])
 
@@ -1214,6 +1265,17 @@ class AGEGraphBackend:
         # This is a decision about the QUERY SHAPE, taken before anything is
         # retrieved, not a fallback triggered by disliking the rows that came
         # back. That distinction is the whole point of R1.
+        # ONE budget for the whole fan-out, not per sub-query. Each
+        # search_by_entity below is individually capped, but this method issues
+        # one per token, so N tokens could still total N times the cap. The
+        # whole-query lookup always runs (it is the most specific and the one
+        # worth paying for); token lookups stop once the budget is spent.
+        budget_s = max(_search_timeout_ms(), 0) / 1000.0
+        started = time.monotonic()
+
+        def budget_left() -> bool:
+            return budget_s <= 0 or (time.monotonic() - started) < budget_s
+
         out: list[dict] = []
         seen: set[str] = set()
         for row in self.search_by_entity(query, limit=limit) or []:
@@ -1238,6 +1300,14 @@ class AGEGraphBackend:
         # Collect per token, then order tokens by how few rows they reached.
         per_token: list[tuple[int, str, list[dict]]] = []
         for tok in tokens:
+            if not budget_left():
+                logger.debug(
+                    "AGEGraphBackend: entity-token budget spent after %.2fs, "
+                    "skipping %d remaining token(s)",
+                    time.monotonic() - started,
+                    len(tokens) - tokens.index(tok),
+                )
+                break
             rows = self.search_by_entity(tok, limit=limit) or []
             if rows:
                 per_token.append((len(rows), tok, rows))
