@@ -1445,7 +1445,16 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
     failure_report = None
     if vector or graph:
         try:
-            failure_report = store.reconcile_sync_failures()
+            report = store.reconcile_sync_failures()
+            # Only trust a real dict of real ints. A store that returns
+            # something else (a stand-in, an older implementation) must not be
+            # able to make --quiet speak or print a repr into a cron log.
+            if isinstance(report, dict):
+                failure_report = {
+                    key: value
+                    for key, value in report.items()
+                    if isinstance(value, int) and not isinstance(value, bool)
+                }
         except Exception as e:  # noqa: BLE001
             logger.warning("cli.py: sync-failure reconcile skipped: %s", e)
 
@@ -1465,7 +1474,7 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
             )
         )
         or (graph_stats and graph_stats.get("indexed", 0) > 0)
-        or bool(failure_report and failure_report.get("cleared"))
+        or (failure_report or {}).get("cleared", 0) > 0
     )
     if quiet and not changed:
         return
