@@ -1046,6 +1046,17 @@ def graph_reconcile(ctx: click.Context, do_apply: bool, force: bool, as_json: bo
         cfg.pgvector_dsn if cfg and getattr(cfg, "pgvector_dsn", None) else None
     )
     backend = AGEGraphBackend(dsn=pg_dsn, agent=agent)
+    # Provision the agent's graph if nobody ever did. Idempotent, and only on
+    # the apply path: a dry run must not create anything. Before this, adding
+    # an agent meant knowing to run ag_catalog.create_graph by hand, and three
+    # agents on one node silently had no graph at all.
+    if do_apply:
+        try:
+            if backend.ensure_graph():
+                click.echo(f"created AGE graph for {agent}")
+        except GraphTransportError as exc:
+            click.echo(f"could not provision AGE graph: {exc}", err=True)
+            raise SystemExit(1) from exc
     try:
         stats = reconcile_graph(
             backend,
@@ -1434,6 +1445,11 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
                 cfg.pgvector_dsn if cfg and getattr(cfg, "pgvector_dsn", None) else None
             )
             age = AGEGraphBackend(dsn=pg_dsn, agent=agent)
+            # Provision first. `sync --graph` is what the per-agent timers run,
+            # so this is the path that makes a NEW agent work without anyone
+            # remembering to create its graph by hand. Idempotent.
+            if age.ensure_graph():
+                click.echo(f"created AGE graph for {agent}")
             graph_stats = age.sync_all(paths["base"] / "memory", agent)
         except Exception as e:
             logger.warning("cli.py: %s", e)
