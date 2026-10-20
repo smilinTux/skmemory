@@ -203,10 +203,41 @@ def _scrub_stderr(text: str) -> str:
     return re.sub(r"://[^:/\s]+:[^@\s]+@", "://***:***@", text)
 
 
+#: psql prefixes the line that actually says what went wrong.
+_PG_DIAGNOSTIC_PREFIXES = ("ERROR:", "FATAL:", "PANIC:", "DETAIL:", "HINT:")
+
+
 def _stderr_tail(stderr: str) -> str:
-    """The scrubbed last stderr line, for compact failure messages."""
-    lines = _scrub_stderr(stderr.strip()).splitlines()
-    return lines[-1] if lines else ""
+    """The scrubbed, most INFORMATIVE stderr line, for compact messages.
+
+    This used to return the last line, which for the most common failure is
+    worse than useless. psql reports a syntax error as three lines:
+
+        ERROR:  syntax error at or near "foo"
+        LINE 1: select foo
+                       ^
+
+    so the last line is the caret, and the diagnostic that names the problem
+    was thrown away. Twice on 2026-10-20 a reconcile failure surfaced to the
+    log as the single character "^" with no other information anywhere, which
+    is indistinguishable from a tool that failed for no reason.
+
+    Prefers the first line carrying a Postgres diagnostic prefix. Failing
+    that, the last line with actual content, skipping caret-pointer and
+    LINE-echo noise. Failing that, the last line, so this can never return
+    less than it used to.
+    """
+    lines = [ln.strip() for ln in _scrub_stderr(stderr.strip()).splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    for line in lines:
+        if line.startswith(_PG_DIAGNOSTIC_PREFIXES):
+            return line
+    for line in reversed(lines):
+        if set(line) <= {"^", " "} or line.startswith("LINE "):
+            continue
+        return line
+    return lines[-1]
 
 
 def _is_transport_failure(stderr: str) -> bool:
