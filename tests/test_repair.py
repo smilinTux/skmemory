@@ -17,6 +17,7 @@ from skmemory.repair import (
     normalise_legacy_id,
     repair_missing_titles,
     scan_unloadable,
+    strip_legacy_ids,
 )
 
 GOOD = {
@@ -151,7 +152,14 @@ def test_repair_defaults_to_a_dry_run_and_changes_nothing(tmp_path):
     assert p.read_text(encoding="utf-8") == before, "a dry run wrote to disk"
 
 
-def test_repair_applies_only_the_title_and_preserves_every_other_field(tmp_path):
+def test_repair_adds_the_title_moves_the_id_and_preserves_everything_else(tmp_path):
+    """Two keys change and no others.
+
+    `title` is added and `memory_id` is MOVED to `id`. The move is the
+    deliberate part: a file left holding both keys is re-stripped by the legacy
+    writer on the next promotion sweep, so preserving it byte-for-byte was the
+    bug, not the contract.
+    """
     p = _write(tmp_path, "mid-term", "legacy", LEGACY_NO_TITLE)
 
     report = repair_missing_titles(tmp_path, dry_run=False)
@@ -159,7 +167,11 @@ def test_repair_applies_only_the_title_and_preserves_every_other_field(tmp_path)
     assert report.dry_run is False
     after = json.loads(p.read_text(encoding="utf-8"))
     assert after["title"] == "Daily infra security scan (cron) on 2026-09-14: 11 MED findings."
+    assert after["id"] == LEGACY_NO_TITLE["memory_id"]
+    assert "memory_id" not in after
     for key, value in LEGACY_NO_TITLE.items():
+        if key == "memory_id":
+            continue
         assert after[key] == value, f"{key} was altered by the repair"
 
 
@@ -218,11 +230,108 @@ def test_normalise_legacy_id_copies_memory_id_into_id():
     assert obj["id"] == "50df5eabce3b"
 
 
-def test_normalise_legacy_id_leaves_the_legacy_key_in_place():
-    """Removing a field another reader may want is not this function's job."""
+def test_normalise_legacy_id_removes_the_redundant_legacy_key():
+    """The reversal of an earlier decision, and the whole point of this fix.
+
+    Leaving the legacy key in place looked harmless and was not. A file holding
+    BOTH `id` and `memory_id` slips past skcapstone's unified-record guard
+    (which skips only when `id` is present AND `memory_id` is absent), gets
+    loaded into a legacy model that has no `title` field, and is written back
+    with the title stripped. Observed on a file repaired three days earlier,
+    rewritten title-less on the hour, every hour.
+    """
     obj = {"memory_id": "abc123", "content": "x"}
-    normalise_legacy_id(obj)
-    assert obj["memory_id"] == "abc123"
+    assert normalise_legacy_id(obj) is True
+    assert obj["id"] == "abc123"
+    assert "memory_id" not in obj
+
+
+def test_normalise_legacy_id_drops_a_redundant_key_beside_an_equal_id():
+    """Files repaired by an earlier run carry both keys and still need fixing."""
+    obj = {"id": "abc123", "memory_id": "abc123", "title": "t", "content": "x"}
+    assert normalise_legacy_id(obj) is True
+    assert obj["id"] == "abc123"
+    assert "memory_id" not in obj
+
+
+def test_normalise_legacy_id_keeps_both_when_the_ids_conflict():
+    """Two DIFFERENT identifiers is a conflict, not redundancy."""
+    obj = {"id": "canonical", "memory_id": "something-else", "content": "x"}
+    assert normalise_legacy_id(obj) is False
+    assert obj["id"] == "canonical"
+    assert obj["memory_id"] == "something-else"
+
+
+def test_repaired_file_has_no_legacy_key_left(tmp_path):
+    """The regression guard: a repaired file must be invisible to the legacy writer."""
+    _write(tmp_path, "mid-term", "50df5eabce3b", LEGACY_NO_TITLE)
+    repair_missing_titles(tmp_path, dry_run=False)
+    obj = json.loads((tmp_path / "mid-term" / "50df5eabce3b.json").read_text())
+    assert obj["title"]
+    assert obj["id"] == "50df5eabce3b"
+    assert "memory_id" not in obj
+
+
+def test_strip_legacy_ids_cleans_a_file_that_already_looks_healthy(tmp_path):
+    """The files that most need this sweep are the ones that validate fine.
+
+    `repair_missing_titles` only visits files `Memory` cannot load, so a file
+    repaired by an earlier run is never revisited and keeps its legacy key.
+    """
+    payload = dict(GOOD)
+    payload["memory_id"] = payload["id"]
+    _write(tmp_path, "short-term", "aaaa", payload)
+
+    assert scan_unloadable(tmp_path).unloadable == []  # looks healthy
+
+    report = strip_legacy_ids(tmp_path, dry_run=False)
+    assert len(report.repaired) == 1
+    obj = json.loads((tmp_path / "short-term" / "aaaa.json").read_text())
+    assert "memory_id" not in obj
+    assert obj["id"] == "aaaa"
+    assert obj["title"] == "already fine"
+
+
+def test_strip_legacy_ids_defaults_to_a_dry_run(tmp_path):
+    payload = dict(GOOD)
+    payload["memory_id"] = payload["id"]
+    path = _write(tmp_path, "short-term", "aaaa", payload)
+    before = path.read_text()
+
+    report = strip_legacy_ids(tmp_path)
+    assert report.dry_run is True
+    assert len(report.repaired) == 1
+    assert path.read_text() == before
+
+
+def test_strip_legacy_ids_refuses_a_conflicting_pair(tmp_path):
+    payload = dict(GOOD)
+    payload["memory_id"] = "a-different-id"
+    path = _write(tmp_path, "short-term", "aaaa", payload)
+    before = path.read_text()
+
+    report = strip_legacy_ids(tmp_path, dry_run=False)
+    assert report.repaired == []
+    assert len(report.skipped) == 1
+    assert "conflicting ids" in report.skipped[0][1]
+    assert path.read_text() == before
+
+
+def test_strip_legacy_ids_leaves_a_file_without_the_key_alone(tmp_path):
+    path = _write(tmp_path, "short-term", "aaaa", GOOD)
+    before = path.read_text()
+    report = strip_legacy_ids(tmp_path, dry_run=False)
+    assert report.repaired == []
+    assert path.read_text() == before
+
+
+def test_strip_legacy_ids_is_idempotent(tmp_path):
+    payload = dict(GOOD)
+    payload["memory_id"] = payload["id"]
+    _write(tmp_path, "short-term", "aaaa", payload)
+    strip_legacy_ids(tmp_path, dry_run=False)
+    second = strip_legacy_ids(tmp_path, dry_run=False)
+    assert second.repaired == []
 
 
 def test_normalise_legacy_id_does_not_overwrite_a_real_id():
