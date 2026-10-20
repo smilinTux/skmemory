@@ -133,16 +133,17 @@ class TestProbeToggle:
 class _FakeVector:
     """Only what MemoryStore.health() asks of a vector backend."""
 
-    def __init__(self, embed_ok):
+    def __init__(self, embed_ok, ok=None):
         self._embed_ok = embed_ok
+        self._ok = (embed_ok is not False) if ok is None else ok
 
     def health_check(self) -> dict:
-        return {"ok": self._embed_ok is not False, "embed_ok": self._embed_ok}
+        return {"ok": self._ok, "embed_ok": self._embed_ok}
 
 
-def _store(tmp_path, embed_ok):
+def _store(tmp_path, embed_ok, ok=None):
     backend = SQLiteBackend(base_path=str(tmp_path / "memories"))
-    store = MemoryStore(primary=backend, vector=_FakeVector(embed_ok))
+    store = MemoryStore(primary=backend, vector=_FakeVector(embed_ok, ok))
     store.snapshot(title="hi", content="hello world, all good here")
     return store
 
@@ -175,3 +176,27 @@ class TestStoreStatusReflectsTheEmbedder:
         status = store.health()
         assert "embed_ok" in status
         assert status["embed_ok"] is None
+
+
+class TestStoreStatusReflectsTheVectorBackend:
+    """A wired backend reporting ok:false used to leave the store green."""
+
+    def test_a_failed_vector_backend_degrades_the_store(self, tmp_path):
+        """Observed on two agents whose derived store answered 'Not initialized'."""
+        status = _store(tmp_path, None, ok=False).health()
+        assert status["vector_ok"] is False
+        assert status["status"] == "degraded"
+
+    def test_a_healthy_vector_backend_leaves_the_store_ok(self, tmp_path):
+        status = _store(tmp_path, True, ok=True).health()
+        assert status["vector_ok"] is True
+        assert status["status"] == "ok"
+
+    def test_vector_ok_is_none_without_a_vector_backend(self, tmp_path):
+        backend = SQLiteBackend(base_path=str(tmp_path / "memories"))
+        store = MemoryStore(primary=backend)
+        store.snapshot(title="hi", content="hello world, all good here")
+
+        status = store.health()
+        assert status["vector_ok"] is None
+        assert status["status"] == "ok"
