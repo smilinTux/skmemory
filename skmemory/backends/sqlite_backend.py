@@ -1313,10 +1313,21 @@ class SQLiteBackend(BaseBackend):
                     sqlite_orphans += 1
 
         flat_ids: set[str] = set()
+        # A tier directory that is MISSING is reported, not skipped. Skipping it
+        # meant a whole layer could vanish (never synced onto a fresh node, a
+        # stalled Syncthing folder, a bad mount, an exclusion rule) and drift
+        # stayed `in_sync: True` with every count at zero, because a tier with
+        # no index rows and no files looks exactly like a tier that is simply
+        # empty. Confirmed 2026-10-20: deleting `long-term/` outright produced
+        # `in_sync: True`. An empty tier is normal; an ABSENT one is not.
+        missing_tiers: list[str] = []
         for layer in MemoryLayer:
             tier = self.base_path / layer.value
             if not tier.exists():
+                missing_tiers.append(layer.value)
+                by_layer[layer.value]["present"] = False
                 continue
+            by_layer[layer.value]["present"] = True
             for f in tier.glob("*.json"):
                 flat_ids.add(f.stem)
                 by_layer[layer.value]["flat"] += 1
@@ -1328,12 +1339,13 @@ class SQLiteBackend(BaseBackend):
         )
 
         return {
-            "in_sync": sqlite_orphans == 0 and flat_only == 0,
+            "in_sync": sqlite_orphans == 0 and flat_only == 0 and not missing_tiers,
             "sqlite_total": len(sqlite_ids),
             "flat_total": len(flat_ids),
             "sqlite_only": sqlite_orphans,
             "flat_only": flat_only,
             "archived": archived,
+            "missing_tiers": missing_tiers,
             "by_layer": by_layer,
         }
 
@@ -1393,7 +1405,20 @@ class SQLiteBackend(BaseBackend):
                     "in_sync": drift["in_sync"],
                     "sqlite_only": drift["sqlite_only"],
                     "flat_only": drift["flat_only"],
-                    "hint": (None if drift["in_sync"] else "Run `skmemory sync` to reconcile."),
+                    # Forwarded, not recomputed. drift_check() already found
+                    # these; omitting them here is what let the signal die on
+                    # the way up to MemoryStore.health().
+                    "missing_tiers": drift.get("missing_tiers", []),
+                    "hint": (
+                        None
+                        if drift["in_sync"]
+                        else (
+                            f"Missing tier directories: {', '.join(drift['missing_tiers'])}. "
+                            "A tier that never synced is not an empty tier."
+                            if drift.get("missing_tiers")
+                            else "Run `skmemory sync` to reconcile."
+                        )
+                    ),
                 },
             }
         except Exception as e:
