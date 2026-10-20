@@ -214,13 +214,30 @@ def store(pg_backend, tmp_path):
     )
 
 
-def _live_memories_count() -> int:
+def _live_memories_count(agent: str | None = None) -> int:
+    """Row count, scoped to ONE agent when given.
+
+    This used to be an unscoped `SELECT count(*) FROM memories`, and the test
+    below asserted the GLOBAL count moved by exactly the number of rows it
+    seeded. On a machine where sync timers fire, agents write memories and
+    maintenance runs, that asserts something the test does not control.
+
+    Observed 2026-10-20: a concurrent cleanup deleting lumina rows made it
+    fail with `assert 47858 == (47863 + 3)`, a drop of 5 rows the test had
+    nothing to do with. The assertion was measuring the whole database to
+    check three of its own writes.
+
+    The fixture already hands out a throwaway agent, so scope to it.
+    """
     import psycopg
 
     conn = psycopg.connect(PG_DSN, autocommit=True)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT count(*) FROM memories")
+            if agent:
+                cur.execute("SELECT count(*) FROM memories WHERE agent = %s", (agent,))
+            else:
+                cur.execute("SELECT count(*) FROM memories")
             return cur.fetchone()[0]
     finally:
         conn.close()
@@ -230,7 +247,7 @@ class TestLiveDedupEndToEnd:
     def test_paraphrase_is_caught_and_unrelated_is_not(
         self, store, pg_backend, throwaway_agent
     ) -> None:
-        before_count = _live_memories_count()
+        before_count = _live_memories_count(throwaway_agent)
         print(f"\n[live-dedup] memories count BEFORE test writes: {before_count}")
 
         # 1) Seed a few distinct real memories via the real store + real
@@ -308,7 +325,7 @@ class TestLiveDedupEndToEnd:
             "unrelated content as a near-duplicate of a seeded memory"
         )
 
-        after_count = _live_memories_count()
+        after_count = _live_memories_count(throwaway_agent)
         print(f"[live-dedup] memories count AFTER test writes (pre-teardown): {after_count}")
         assert after_count == before_count + len(seeded), (
             "expected exactly the seeded rows to have been added for the throwaway agent"
