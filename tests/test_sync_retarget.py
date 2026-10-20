@@ -93,8 +93,18 @@ class TestSyncRetarget:
         age_inst.sync_all.assert_called_once()
         assert "graph_indexed=3" in result.output
 
-    def test_vector_passes_unified_config_embed_settings(self, runner, agent_paths, fake_store):
-        """embed_url/embed_model from unified config are forwarded to reconcile."""
+    def test_vector_passes_unified_config_embed_settings(
+        self, runner, agent_paths, fake_store, monkeypatch
+    ):
+        """embed_url/embed_model from unified config are forwarded to reconcile.
+
+        The env vars are cleared EXPLICITLY. The yaml value only applies when
+        the per-node env does not name an endpoint, so without this the test
+        passes on a bare CI runner and fails on any developer machine that has
+        SKMEMORY_EMBED_URLS exported, which is every node that runs the agent.
+        """
+        monkeypatch.delenv("SKMEMORY_EMBED_URLS", raising=False)
+        monkeypatch.delenv("SKMEMORY_EMBED_URL", raising=False)
         cfg = SimpleNamespace(
             embed_url="http://192.168.0.100:11434/api/embed",
             embed_model="mxbai-embed-large",
@@ -108,6 +118,33 @@ class TestSyncRetarget:
         assert result.exit_code == 0, result.output
         kwargs = recon.call_args.kwargs
         assert kwargs["embed_url"] == "http://192.168.0.100:11434/api/embed"
+        assert kwargs["embed_model"] == "mxbai-embed-large"
+
+    def test_vector_honors_embed_env_over_yaml(self, runner, agent_paths, fake_store, monkeypatch):
+        """Mirror of the DSN rule: the per-node env beats the shared yaml.
+
+        A yaml `embed_url` is a Syncthing-shared value AND passing it collapses
+        the backend's endpoint list to that one URL, killing per-node failover.
+        One agent's yaml pinned a CPU-only local ollama taking 53.8s to 120.1s
+        per embed while the env listed endpoints answering in 0.32s; another
+        pinned a host down for 26 days as its only endpoint.
+        """
+        monkeypatch.setenv("SKMEMORY_EMBED_URLS", "http://fast/embed,http://backup/embed")
+        cfg = SimpleNamespace(
+            embed_url="http://slow-and-shared/embed",
+            embed_model="mxbai-embed-large",
+            pgvector_dsn=None,
+        )
+        with (
+            patch("skmemory.reconcile.reconcile", return_value=_pg_stats()) as recon,
+            patch("skmemory.config.load_config", return_value=cfg),
+        ):
+            result = runner.invoke(cli, ["sync", "--vector"], obj={"store": fake_store})
+        assert result.exit_code == 0, result.output
+        kwargs = recon.call_args.kwargs
+        # Not forwarded at all, so reconcile resolves its own list from the env.
+        assert "embed_url" not in kwargs
+        # embed_model is unrelated to endpoint selection and still comes from yaml.
         assert kwargs["embed_model"] == "mxbai-embed-large"
 
     def test_graph_honors_pg_dsn_env_over_yaml(self, runner, agent_paths, fake_store, monkeypatch):
