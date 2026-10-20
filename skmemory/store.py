@@ -2109,9 +2109,11 @@ class MemoryStore:
         primary_sync = (
             status["primary"].get("sync") if isinstance(status["primary"], dict) else None
         )
+        missing_tiers: list[str] = []
         if isinstance(primary_sync, dict):
             sqlite_only = primary_sync.get("sqlite_only")
             flat_only = primary_sync.get("flat_only")
+            missing_tiers = list(primary_sync.get("missing_tiers") or [])
 
         if self.vector:
             try:
@@ -2141,6 +2143,34 @@ class MemoryStore:
                 logger.warning("store.py: %s", e)
                 status["graph"] = {"ok": False, "error": str(e)}
 
+        # The sync-failure table had NO readers. `snapshot()` records a row
+        # every time vector/graph indexing fails on a write, which is exactly
+        # what happens whenever a derived backend is down, and then nothing
+        # ever looked at it again: not health(), not the CLI, not the MCP
+        # server. A memory that never made it into the index was discoverable
+        # only by hand-querying index.db. The flat file is safe; its
+        # SEARCHABILITY is silently gone, which is the half that matters.
+        unindexed: int | None = None
+        get_sync_failures = getattr(self.primary, "get_sync_failures", None)
+        if callable(get_sync_failures):
+            try:
+                failures = get_sync_failures(limit=1000)
+                unindexed = len(failures)
+                if unindexed:
+                    by_backend: dict[str, int] = {}
+                    for row in failures:
+                        name = str(row.get("backend") or "unknown")
+                        by_backend[name] = by_backend.get(name, 0) + 1
+                    status["unindexed_detail"] = {
+                        "count": unindexed,
+                        "by_backend": by_backend,
+                        "hint": "memories whose derived-store indexing failed; "
+                        "re-run `skmemory sync --vector --graph`",
+                    }
+            except Exception as e:
+                # Undetectable, not zero. Same rule as pg_only.
+                logger.warning("store.py: sync-failure read failed: %s", e)
+
         # A derived backend whose embedder does not answer is degraded even
         # when every count is clean. Semantic recall is silently gone and the
         # legacy chain answers from lexical matching instead, which looks like
@@ -2153,6 +2183,13 @@ class MemoryStore:
         overall = "ok"
         if (sqlite_only or 0) > 0 or (flat_only or 0) > 0:
             overall = "degraded"
+        # An ABSENT tier directory is not an empty one. A layer that never
+        # synced onto this node has no index rows and no files, so every count
+        # reads zero and the old check called that in sync.
+        if missing_tiers:
+            overall = "degraded"
+        if (unindexed or 0) > 0:
+            overall = "degraded"
         # A vector backend that is WIRED and reporting ok:false was green at the
         # top level until now. Observed 2026-10-20: two agents whose derived
         # backend was a retired Chroma store answering "Not initialized", and
@@ -2161,6 +2198,15 @@ class MemoryStore:
         if vector_ok is False:
             overall = "degraded"
         if embed_ok is False:
+            overall = "degraded"
+        # The graph backend got the same treatment as the vector one, which it
+        # had been missing. `status["graph"]` was set and then never read when
+        # computing the verdict, so a wired graph answering ok:false left the
+        # top level green. Confirmed 2026-10-20 with a stub backend:
+        # graph.ok False, overall "ok".
+        graph_status = status.get("graph")
+        graph_ok = graph_status.get("ok") if isinstance(graph_status, dict) else None
+        if graph_ok is False:
             overall = "degraded"
         if (pg_only or 0) > 0:
             overall = "red"
@@ -2171,6 +2217,9 @@ class MemoryStore:
         status["pg_only"] = pg_only
         status["embed_ok"] = embed_ok
         status["vector_ok"] = vector_ok
+        status["graph_ok"] = graph_ok
+        status["missing_tiers"] = missing_tiers
+        status["unindexed"] = unindexed
         return status
 
 

@@ -218,12 +218,20 @@ class TestHealthGraphIntegration:
     def test_health_reports_graph_failure(
         self, store_with_graph: MemoryStore, graph: FakeSKGraphBackend
     ) -> None:
-        """Health should report graph failure gracefully."""
+        """Health should report graph failure gracefully AND in the verdict.
+
+        This test used to assert only `health["graph"]["ok"] is False` and
+        passed the whole time the top-level `status` stayed "ok" for a dead
+        graph, so it read as coverage while covering nothing that mattered.
+        The nested detail was never the part anyone gates on.
+        """
         graph.health_check = MagicMock(side_effect=RuntimeError("SKGraph down"))
 
         health = store_with_graph.health()
         assert "graph" in health
         assert health["graph"]["ok"] is False
+        assert health["graph_ok"] is False
+        assert health["status"] == "degraded", "a dead graph left the store green"
 
 
 class TestSKGraphBackendMethods:

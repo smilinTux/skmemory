@@ -89,6 +89,7 @@ import argparse
 import contextlib
 import csv
 import glob
+import hashlib
 import io
 import json
 import os
@@ -412,6 +413,7 @@ def reconcile(
     max_prune_fraction: float | None = None,
     prune_min_sample: int | None = None,
     force_stubs: bool = False,
+    refresh: bool = False,
     dry_run: bool = False,
 ) -> dict:
     """Reconcile one agent's flat JSON memories into the node-local skmem-pg.
@@ -420,14 +422,26 @@ def reconcile(
         force_stubs: backfill a flat file carrying the lossy
             recovered_from_sqlite_preview stub marker anyway. Default False
             (refuse, loudly) -- see the stub guard in the module docstring.
+        refresh: also UPDATE pg rows whose flat file content has CHANGED
+            since the row was written. Default False, but the divergence is
+            DETECTED and reported either way (``stale``), because the backfill
+            is `ON CONFLICT (id) DO NOTHING`: a flat file that is corrected
+            after its id is already in pg stays stale in the derived cache
+            forever, and nothing noticed. `drift_check` compares id SETS only,
+            so every count reads clean while title/content/tags/source and the
+            embedding are all wrong. Detection is free and always on; the
+            overwrite is opt-in because a flat file is not unconditionally
+            better than the row it would replace. Stub-flagged flat files are
+            NEVER used to refresh, regardless of this flag, so a lossy
+            recovery preview can never overwrite fuller content already in pg.
         dry_run: compute and report every count (flat/pg/missing/shared/
-            stub_skipped/would-prune/would-embed) WITHOUT issuing any
+            stub_skipped/stale/would-prune/would-embed) WITHOUT issuing any
             mutating SQL and WITHOUT calling the embed endpoint. Safe to run
             against production data.
 
     Returns a stats dict:
-        {agent, flat, pg, missing, shared, stub_skipped, backfilled, pruned,
-         null_embedded, embedded, total, dry_run}
+        {agent, flat, pg, missing, shared, stub_skipped, backfilled, stale,
+         stale_ids, refreshed, pruned, null_embedded, embedded, total, dry_run}
     where ``flat`` is the count of flat memory files, ``pg`` the pre-run pg row
     count for this agent, ``missing`` ids absent from the table for any agent,
     ``shared`` ids already owned by a different agent (never retried, see the
@@ -674,6 +688,155 @@ def reconcile(
             f"the content to keep: {preview}"
         )
 
+    # 1b. DETECT (and optionally repair) content divergence.
+    #
+    # The backfill above is `ON CONFLICT (id) DO NOTHING`, so it only ever
+    # inserts ids that are absent. An id present in BOTH flat and pg is never
+    # revisited, which means a flat file corrected after the fact (repair.py
+    # backfilling a title, an operator fixing content by hand, a Syncthing
+    # update from another node) leaves pg permanently stale. `drift_check`
+    # compares id SETS only, so sqlite_only/flat_only/pg_only all read zero
+    # while title, content, summary, tags, source and the EMBEDDING are wrong.
+    # The embedding is the worst of it: computed from the old text and not
+    # NULL, so the null-embedding pass below never touches it either.
+    #
+    # Found 2026-10-20 after repairing 35 rows by hand: the repair fixed the
+    # flat files, every drift count stayed 0, and pg kept serving the old
+    # content. Detection is always on. The UPDATE is opt-in, because a flat
+    # file is not unconditionally better than the row it would replace.
+    present_ids = [i for i in flat if i in pg_ids]
+    stale_ids: list[str] = []
+    refreshed = 0
+    if present_ids:
+        pg_hashes: dict[str, str] = {}
+        try:
+            CH = 400
+            for i in range(0, len(present_ids), CH):
+                chunk = present_ids[i : i + CH]
+                literals = ",".join("'" + c.replace("'", "''") + "'" for c in chunk)
+                rows = psql(
+                    "select id||' '||md5(coalesce(content,'')) from memories "
+                    f"where agent='{agent}' and id in ({literals});",
+                    True,
+                ).split("\n")
+                for row in rows:
+                    parts = row.split()
+                    if len(parts) == 2:
+                        pg_hashes[parts[0]] = parts[1]
+        except Exception as e:
+            # Undetectable, not "no divergence". Say so rather than report 0.
+            log(f"[{agent}] stale-content check FAILED (not proof of none): {e}")
+            pg_hashes = {}
+
+        if pg_hashes:
+            stub_blocked_refresh = 0
+            for mid in present_ids:
+                want = pg_hashes.get(mid)
+                if want is None:
+                    continue
+                try:
+                    with open(flat[mid]) as fh:
+                        o = json.load(fh)
+                except Exception:
+                    continue
+                if not isinstance(o, dict):
+                    continue
+                content = o.get("content") or ""
+                if hashlib.md5(content.encode("utf-8")).hexdigest() == want:
+                    continue
+                # A lossy recovery preview must never overwrite a fuller row.
+                if is_stub_payload(o.get("content"), o.get("metadata")):
+                    stub_blocked_refresh += 1
+                    continue
+                stale_ids.append(mid)
+
+            if stale_ids or stub_blocked_refresh:
+                preview = ",".join(stale_ids[:10]) + ("..." if len(stale_ids) > 10 else "")
+                log(
+                    f"[{agent}] STALE pg rows (flat content changed since the row "
+                    f"was written): {len(stale_ids)}"
+                    + (f" [{preview}]" if preview else "")
+                    + (
+                        f"; {stub_blocked_refresh} further mismatch(es) refused as "
+                        "stub-flagged (a recovery preview must not overwrite pg)"
+                        if stub_blocked_refresh
+                        else ""
+                    )
+                    + ("" if refresh else "; pass refresh=True to UPDATE them")
+                )
+
+    if stale_ids and refresh and not dry_run:
+        rf = _scratch_table_name(agent) + "_rf"
+        psql(
+            f"DROP TABLE IF EXISTS {rf}; CREATE TABLE {rf} (id text,layer text,"
+            "role text,title text,content text,summary text,tags text,source text,"
+            "created_at text,updated_at text,memory_json text,agent text,embedding text);"
+        )
+        B = 24
+        for i in range(0, len(stale_ids), B):
+            pairs = []
+            for mid in stale_ids[i : i + B]:
+                try:
+                    with open(flat[mid]) as fh:
+                        o = json.load(fh)
+                    if isinstance(o, dict) and (o.get("content") or o.get("title")):
+                        pairs.append((mid, o))
+                except Exception:
+                    pass
+            if not pairs:
+                continue
+            # Content changed, so the embedding MUST be recomputed. This is the
+            # part a null-embedding backfill can never do: the old vector is
+            # present and wrong.
+            embs = embed([(o.get("content") or o.get("title") or " ")[:1100] for _, o in pairs])
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            for (mid, o), e in zip(pairs, embs, strict=False):
+                tags = (
+                    "{"
+                    + ",".join(
+                        '"' + str(t).replace('"', '\\"') + '"' for t in (o.get("tags") or [])
+                    )
+                    + "}"
+                )
+                cr = o.get("created_at") or "1970-01-01T00:00:00+00:00"
+                w.writerow(
+                    [
+                        mid,
+                        o.get("layer", ""),
+                        o.get("role", "general"),
+                        o.get("title", ""),
+                        o.get("content", ""),
+                        o.get("summary", ""),
+                        tags,
+                        o.get("source", ""),
+                        cr,
+                        o.get("updated_at") or cr,
+                        json.dumps(o),
+                        o.get("agent", agent),
+                        vlit(e),
+                    ]
+                )
+            run_psql(
+                PSQL + ["-c", f"COPY {rf} FROM STDIN WITH (FORMAT csv);"],
+                input_text=buf.getvalue(),
+            )
+            refreshed += len(pairs)
+        # DO UPDATE, not DO NOTHING. The whole point of this phase.
+        psql_stdin(
+            "INSERT INTO memories (id,layer,role,title,content,summary,tags,source,"
+            "created_at,updated_at,memory_json,agent,embedding) SELECT id,layer,role,title,"
+            "content,summary,tags::text[],source,created_at::timestamptz,"
+            "COALESCE(NULLIF(updated_at,'')::timestamptz,created_at::timestamptz),"
+            f"memory_json::jsonb,agent,embedding::vector FROM {rf} "
+            "ON CONFLICT (id) DO UPDATE SET layer=EXCLUDED.layer, role=EXCLUDED.role, "
+            "title=EXCLUDED.title, content=EXCLUDED.content, summary=EXCLUDED.summary, "
+            "tags=EXCLUDED.tags, source=EXCLUDED.source, updated_at=EXCLUDED.updated_at, "
+            "memory_json=EXCLUDED.memory_json, embedding=EXCLUDED.embedding;"
+        )
+        psql(f"DROP TABLE IF EXISTS {rf};")
+        log(f"[{agent}] refreshed {refreshed} stale pg row(s) from flat")
+
     # 2. prune orphans (pg rows for this agent with no flat file) -- GUARDED.
     # would_prune is computed in Python from the already-agent-scoped pg_ids and
     # flat keys (same set semantics as the SQL DELETE below), so the guardrail can
@@ -777,6 +940,9 @@ def reconcile(
         "shared": len(shared_ids),
         "stub_skipped": len(stub_skipped_ids),
         "backfilled": loaded,
+        "stale": len(stale_ids),
+        "stale_ids": stale_ids[:50],
+        "refreshed": refreshed,
         "pruned": pruned_n,
         "prune_skipped": prune_skipped,
         "prune_reason": prune_reason,

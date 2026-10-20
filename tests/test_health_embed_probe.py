@@ -131,7 +131,13 @@ class TestProbeToggle:
 
 
 class _FakeVector:
-    """Only what MemoryStore.health() asks of a vector backend."""
+    """Only what MemoryStore.health() asks of a vector backend.
+
+    `index_memory` has to succeed. Without it `snapshot()` records a real
+    sync failure, which health() now (correctly) reports as `unindexed` and
+    degrades on, so the fixture itself would make every status test fail for
+    a reason that has nothing to do with the embedder.
+    """
 
     def __init__(self, embed_ok, ok=None):
         self._embed_ok = embed_ok
@@ -139,6 +145,15 @@ class _FakeVector:
 
     def health_check(self) -> dict:
         return {"ok": self._ok, "embed_ok": self._embed_ok}
+
+    def index_memory(self, *args, **kwargs):
+        return True
+
+    def save(self, *args, **kwargs):
+        return True
+
+    def remove_memory(self, *args, **kwargs):
+        return True
 
 
 def _store(tmp_path, embed_ok, ok=None):
