@@ -44,8 +44,14 @@ class _FakePsql:
     what lets a test make the flat file agree or disagree with pg.
     """
 
-    def __init__(self, pg_content: dict[str, str]):
+    def __init__(self, pg_content: dict[str, str], pg_title=None, pg_broken=()):
         self.pg_content = dict(pg_content)
+        #: What pg holds in its TITLE column per id. Defaults to the same title
+        #: the flat file uses, so a content-only test stays a content-only test.
+        self.pg_title = dict(pg_title or {})
+        #: Ids whose memory_json is missing a required key (structurally
+        #: broken), which is stale regardless of the hashes.
+        self.pg_broken = set(pg_broken)
         self.statements: list[str] = []
         self.copy_inputs: list[str] = []
         self.updated = False
@@ -77,8 +83,13 @@ class _FakePsql:
             out = []
             for mid in ids:
                 if mid in self.pg_content:
-                    digest = hashlib.md5(self.pg_content[mid].encode("utf-8")).hexdigest()
-                    out.append(f"{mid} {digest}")
+                    # Mirror the real query: md5(title || US || content), plus
+                    # an ok/broken flag.
+                    title = self.pg_title.get(mid, "t")
+                    payload = title + "\x1f" + self.pg_content[mid]
+                    digest = hashlib.md5(payload.encode("utf-8")).hexdigest()
+                    flag = "broken" if mid in self.pg_broken else "ok"
+                    out.append(f"{mid} {digest} {flag}")
             return _CP(stdout="\n".join(out) + ("\n" if out else ""))
         if "delete from memories" in low:
             return _CP(stdout="0\n")
@@ -293,3 +304,60 @@ def test_an_unreadable_hash_query_is_not_reported_as_clean(monkeypatch, tmp_path
     # It could not tell, so it must not claim a refresh happened.
     assert stats["refreshed"] == 0
     assert fake.updated is False
+
+
+class TestTitleOnlyDivergence:
+    """The case that motivated this phase and that it originally MISSED.
+
+    `repair.py` backfills a missing title and leaves content untouched. The
+    first version of this detector hashed CONTENT alone, so the hashes matched
+    and the row read as fresh. Found on a second node: 10 ava rows had no title
+    in pg, a title in the flat file, byte-identical content, and the detector
+    reported STALE=0 while health reported 10 unparseable rows.
+    """
+
+    def test_a_title_only_change_is_stale(self, monkeypatch, tmp_path, fake_embed):
+        mem = tmp_path / "memory"
+        _write_flat(mem, "m1", "identical content")  # flat title is "t"
+        fake = _FakePsql({"m1": "identical content"}, pg_title={"m1": ""})
+
+        stats = _run(monkeypatch, fake, mem)
+
+        assert stats["stale"] == 1, "a title-only correction must be detected"
+        assert stats["stale_ids"] == ["m1"]
+
+    def test_a_structurally_broken_row_is_stale_even_if_hashes_agree(
+        self, monkeypatch, tmp_path, fake_embed
+    ):
+        """memory_json missing a required key is stale by definition."""
+        mem = tmp_path / "memory"
+        _write_flat(mem, "m1", "identical content")
+        fake = _FakePsql({"m1": "identical content"}, pg_broken={"m1"})
+
+        stats = _run(monkeypatch, fake, mem)
+
+        assert stats["stale"] == 1
+
+    def test_a_broken_row_with_an_UNLOADABLE_flat_file_is_not_refreshable(
+        self, monkeypatch, tmp_path, fake_embed
+    ):
+        """Refreshing from a flat file that is itself broken fixes nothing."""
+        mem = tmp_path / "memory"
+        d = mem / "short-term"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "m1.json").write_text(json.dumps({"id": "m1", "content": "identical content"}))
+        fake = _FakePsql({"m1": "identical content"}, pg_title={"m1": ""}, pg_broken={"m1"})
+
+        stats = _run(monkeypatch, fake, mem)
+
+        assert stats["stale"] == 0
+
+    def test_an_identical_row_is_still_not_stale(self, monkeypatch, tmp_path, fake_embed):
+        """The new checks must not make everything look stale."""
+        mem = tmp_path / "memory"
+        _write_flat(mem, "m1", "identical content")
+        fake = _FakePsql({"m1": "identical content"})  # title defaults to "t"
+
+        stats = _run(monkeypatch, fake, mem)
+
+        assert stats["stale"] == 0

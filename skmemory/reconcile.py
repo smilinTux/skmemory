@@ -862,15 +862,31 @@ def reconcile(
             for i in range(0, len(present_ids), CH):
                 chunk = present_ids[i : i + CH]
                 literals = ",".join("'" + c.replace("'", "''") + "'" for c in chunk)
+                # TITLE as well as content, and a third column saying whether
+                # the row is structurally broken.
+                #
+                # The first version hashed content ALONE, which missed the very
+                # case that motivated this phase: `repair.py` backfills a
+                # missing TITLE and leaves content untouched, so the hashes
+                # matched and the row read as fresh. Found on a second node
+                # where 10 ava rows had no title in pg, a title in the flat
+                # file, and byte-identical content. The detector said STALE=0
+                # while health said 10 unparseable.
+                #
+                # `broken` is belt to that brace: a row whose memory_json is
+                # missing a required key is stale by definition, whatever the
+                # hashes say, as long as its flat file loads.
                 rows = psql(
-                    "select id||' '||md5(coalesce(content,'')) from memories "
+                    "select id||' '||md5(coalesce(title,'')||chr(31)||coalesce(content,''))"
+                    "||' '||(case when (memory_json ? 'title' and memory_json ? 'content') "
+                    "then 'ok' else 'broken' end) from memories "
                     f"where agent='{agent}' and id in ({literals});",
                     True,
                 ).split("\n")
                 for row in rows:
                     parts = row.split()
-                    if len(parts) == 2:
-                        pg_hashes[parts[0]] = parts[1]
+                    if len(parts) == 3:
+                        pg_hashes[parts[0]] = (parts[1], parts[2] == "broken")
         except Exception as e:
             # Undetectable, not "no divergence". Say so rather than report 0.
             log(f"[{agent}] stale-content check FAILED (not proof of none): {e}")
@@ -889,8 +905,13 @@ def reconcile(
                     continue
                 if not isinstance(o, dict):
                     continue
-                content = o.get("content") or ""
-                if hashlib.md5(content.encode("utf-8")).hexdigest() == want:
+                want_hash, pg_broken = want
+                payload = (o.get("title") or "") + "\x1f" + (o.get("content") or "")
+                fresh = hashlib.md5(payload.encode("utf-8")).hexdigest() == want_hash
+                # A structurally broken pg row is stale no matter what the
+                # hashes say, provided the flat file is actually loadable.
+                flat_loadable = bool(o.get("title")) and bool(o.get("content"))
+                if fresh and not (pg_broken and flat_loadable):
                     continue
                 # A lossy recovery preview must never overwrite a fuller row.
                 if is_stub_payload(o.get("content"), o.get("metadata")):
