@@ -41,6 +41,39 @@ logger = logging.getLogger("skmemory.cli")
 _active_selector = None  # Module-level reference for routing commands
 
 
+def _env_pins_embed_endpoint() -> bool:
+    """True when the per-node env already names the embed endpoint(s).
+
+    A yaml ``embed_url`` is a SHARED value: the agent home is one Syncthing
+    folder, so it cannot carry anything node-specific. Same reasoning as the
+    DSN precedence below it, and the agent yamls say so themselves:
+
+        "SKMEMORY_EMBED_URL / SKMEMORY_EMBED_URLS in the env OVERRIDE this
+         file. A node with no local ollama gets its answer from the failover
+         list, not from here."
+
+    Both of those sentences were FALSE. The yaml value was passed through
+    unconditionally, and an explicit ``embed_url`` collapses the backend's
+    endpoint list to that one URL (see PGVectorBackend.__init__), so a single
+    shared line both beat the env and disabled per-node failover entirely.
+
+    Observed 2026-10-20: one agent's yaml pinned node-local ollama, which on
+    this box is CPU only and took 53.8s to 120.1s per embed against a 15s
+    timeout, while the env listed two endpoints that answered in 0.32s and
+    10.5s. The fast ones were never tried. A sibling agent pinned a host that
+    had been down for 26 days as its ONLY endpoint, so it could not embed at
+    all. In both cases the env was already correct.
+
+    Now the env wins, which is what the file always claimed.
+    """
+    import os  # local, matching this module's convention
+
+    return bool(
+        (os.environ.get("SKMEMORY_EMBED_URLS") or "").strip()
+        or (os.environ.get("SKMEMORY_EMBED_URL") or "").strip()
+    )
+
+
 def _get_store(
     skvector_url: str | None = None,
     api_key: str | None = None,
@@ -167,7 +200,9 @@ def _get_store(
             )
             if pg_dsn:
                 pg_kwargs["dsn"] = pg_dsn
-            if cfg and cfg.embed_url:
+            # Embed precedence mirrors the DSN above: the per-node env wins
+            # over the shared yaml. See _env_pins_embed_endpoint().
+            if cfg and cfg.embed_url and not _env_pins_embed_endpoint():
                 pg_kwargs["embed_url"] = cfg.embed_url
             if cfg and cfg.embed_model:
                 pg_kwargs["embed_model"] = cfg.embed_model
@@ -1343,7 +1378,8 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
             from . import reconcile as _reconcile
 
             recon_kwargs: dict = {}
-            if cfg and getattr(cfg, "embed_url", None):
+            # Same precedence as the search path: env over shared yaml.
+            if cfg and getattr(cfg, "embed_url", None) and not _env_pins_embed_endpoint():
                 recon_kwargs["embed_url"] = cfg.embed_url
             if cfg and getattr(cfg, "embed_model", None):
                 recon_kwargs["embed_model"] = cfg.embed_model
