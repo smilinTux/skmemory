@@ -1304,8 +1304,15 @@ def export_flat(ctx: click.Context, show_ids: bool) -> None:
     is_flag=True,
     help="Also reconcile flat-file memories into the AGE knowledge graph in skmem-pg.",
 )
+@click.option(
+    "--refresh",
+    is_flag=True,
+    help="With --vector, also UPDATE pg rows whose flat content has CHANGED. "
+    "Divergence is DETECTED and reported either way; this opts in to the "
+    "overwrite. Stub-flagged flat files are never used to refresh.",
+)
 @click.pass_context
-def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None:
+def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh: bool) -> None:
     """Reconcile SQLite ↔ flat files (bidirectional, idempotent).
 
     Phases:
@@ -1383,7 +1390,9 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
                 recon_kwargs["embed_url"] = cfg.embed_url
             if cfg and getattr(cfg, "embed_model", None):
                 recon_kwargs["embed_model"] = cfg.embed_model
-            pg_stats = _reconcile.reconcile(agent, verbose=not quiet, **recon_kwargs)
+            pg_stats = _reconcile.reconcile(
+                agent, verbose=not quiet, refresh=refresh, **recon_kwargs
+            )
         except Exception as e:
             # Fail closed (card 9157c2c5): a reconcile that could not prove
             # transport health must exit nonzero, never report a clean sync.
@@ -1416,6 +1425,11 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
                 (pg_stats.get("backfilled") or 0) > 0
                 or (pg_stats.get("pruned") or 0) > 0
                 or (pg_stats.get("null_embedded") or 0) > 0
+                # A stale row is a finding, so --quiet must not swallow it.
+                # This is the signal that was invisible for as long as the
+                # backfill was ON CONFLICT DO NOTHING.
+                or (pg_stats.get("stale") or 0) > 0
+                or (pg_stats.get("refreshed") or 0) > 0
             )
         )
         or (graph_stats and graph_stats.get("indexed", 0) > 0)
@@ -1430,6 +1444,8 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool) -> None
         + (
             f" pg_backfilled={pg_stats.get('backfilled')} "
             f"pg_pruned={pg_stats.get('pruned')} "
+            f"pg_stale={pg_stats.get('stale')} "
+            f"pg_refreshed={pg_stats.get('refreshed')} "
             f"pg_embedded={pg_stats.get('embedded')}/{pg_stats.get('total')}"
             if pg_stats
             else ""
