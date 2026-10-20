@@ -157,6 +157,37 @@ def _scratch_table_name(agent: str) -> str:
     return f"memories_bf_{slug}_{os.getpid()}"[:63]
 
 
+def pg_text_array(values) -> str:
+    """Render a Python iterable as a Postgres text[] array LITERAL.
+
+    Inside a double-quoted array element Postgres treats BOTH `"` and `\\` as
+    escape-requiring. The old inline version escaped only the quote, so a tag
+    containing a backslash produced a literal Postgres could not parse. A tag
+    ENDING in a backslash was fatal: the trailing `\\` escaped the closing
+    quote, the element never terminated, and the statement died with
+    "malformed array literal ... DETAIL: Unexpected end of input."
+
+    That is not a theoretical input. Session-digest tags embed a section
+    heading verbatim (`section:<heading>`), and headings contain quotes and
+    backslashes. Measured 2026-10-20: 200 of 24,429 staged lumina rows carried
+    a backslash in their tags.
+
+    The cost was the whole batch. The backfill COPYs every row into a scratch
+    table and then does ONE `INSERT ... SELECT`, so a single unparseable tag
+    among 24,429 rows aborted the entire statement and threw away 40 minutes of
+    embedding. Escaping the backslash first is the fix; the all-or-nothing
+    shape of the insert is a separate problem.
+
+    Order matters: backslashes are doubled BEFORE quotes are escaped, or the
+    backslash this function adds would itself be doubled.
+    """
+    parts = []
+    for value in values or []:
+        text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+        parts.append(f'"{text}"')
+    return "{" + ",".join(parts) + "}"
+
+
 def _scratch_pid(table: str) -> int | None:
     """The PID embedded in a scratch table name, if it has one."""
     match = re.fullmatch(r"memories_bf_[A-Za-z0-9_]+_(\d+)", table)
@@ -738,13 +769,7 @@ def reconcile(
             buf = io.StringIO()
             w = csv.writer(buf)
             for (mid, o), e in zip(pairs, embs, strict=False):
-                tags = (
-                    "{"
-                    + ",".join(
-                        '"' + str(t).replace('"', '\\"') + '"' for t in (o.get("tags") or [])
-                    )
-                    + "}"
-                )
+                tags = pg_text_array(o.get("tags"))
                 cr = o.get("created_at") or "1970-01-01T00:00:00+00:00"
                 w.writerow(
                     [
@@ -893,13 +918,7 @@ def reconcile(
             buf = io.StringIO()
             w = csv.writer(buf)
             for (mid, o), e in zip(pairs, embs, strict=False):
-                tags = (
-                    "{"
-                    + ",".join(
-                        '"' + str(t).replace('"', '\\"') + '"' for t in (o.get("tags") or [])
-                    )
-                    + "}"
-                )
+                tags = pg_text_array(o.get("tags"))
                 cr = o.get("created_at") or "1970-01-01T00:00:00+00:00"
                 w.writerow(
                     [
