@@ -1429,6 +1429,56 @@ class AGEGraphBackend:
             logger.warning("AGEGraphBackend: stats failed: %s", exc)
             return {"ok": False, "backend": "AGEGraphBackend", "error": str(exc)}
 
+    def ensure_graph(self) -> bool:
+        """Create this agent's AGE graph if it is not registered yet.
+
+        Nothing in skmemory provisioned a per-agent graph. The graph role was
+        wired, queried and health-checked, but whoever added an agent had to
+        know to run `SELECT ag_catalog.create_graph('<agent>_knowledge')` by
+        hand. Three agents on one node had no graph at all as a result, and
+        until the health fix landed they reported a healthy EMPTY graph rather
+        than a missing one, so nobody found out.
+
+        Two things make this easy to get wrong by hand, both of them real:
+
+        * `create_graph` needs `ag_catalog` on the search_path, or it fails
+          with `operator class "graphid_ops" does not exist for access method
+          "btree"`, which says nothing about search_path.
+        * It is not idempotent, so a second call errors rather than no-ops.
+
+        Both are handled here: the catalog is checked first and the search_path
+        is set for the duration of this transaction only.
+
+        Returns:
+            bool: True if a graph was created, False if it already existed.
+
+        Raises:
+            GraphTransportError: Graph disabled or connection unavailable.
+        """
+        if self.graph is None:
+            raise GraphTransportError("AGE graph disabled: invalid graph name")
+        conn = self._conn()
+        if conn is None:
+            raise GraphTransportError(f"AGE connection unavailable ({self._safe_dsn()})")
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM ag_catalog.ag_graph WHERE name::text = %s", (self.graph,)
+                )
+                if cur.fetchone() is not None:
+                    return False
+                # ag_catalog must be on the path for create_graph's internal
+                # index creation to resolve graphid_ops. SET LOCAL keeps it
+                # scoped to this transaction.
+                cur.execute('SET LOCAL search_path = ag_catalog, "$user", public')
+                cur.execute("SELECT ag_catalog.create_graph(%s)", (self.graph,))
+            conn.commit()
+            logger.info("AGEGraphBackend: created graph %s", self.graph)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            self._rollback(conn)
+            raise GraphTransportError(f"could not create AGE graph {self.graph!r}: {exc}") from exc
+
     def _rollback(self, conn) -> None:
         """Best-effort rollback so one failed probe cannot poison the session."""
         try:
