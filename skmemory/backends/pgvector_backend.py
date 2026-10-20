@@ -33,6 +33,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -288,6 +289,21 @@ class PgForgetPlan:
     def sql(self) -> list[str]:
         """Just the SQL strings, in order."""
         return [s for s, _ in self.statements]
+
+
+#: Text sent by the health probe. Short on purpose: the probe must measure
+#: whether the embedder answers, not how it handles a big input.
+_EMBED_PROBE_TEXT = "skmemory health probe"
+
+
+def _probe_embed_enabled() -> bool:
+    """Whether ``health_check`` should actually call the embedder.
+
+    On by default. ``SKMEMORY_HEALTH_PROBE_EMBED=0`` turns it off for callers
+    that poll health in a tight loop and cannot afford one embed round trip.
+    """
+    raw = os.environ.get("SKMEMORY_HEALTH_PROBE_EMBED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 class PGVectorBackend(BaseBackend):
@@ -1007,6 +1023,63 @@ class PGVectorBackend(BaseBackend):
             logger.warning("PGVectorBackend find_similar failed: %s", e)
             return []
 
+    def probe_embed(self) -> dict:
+        """Prove the embedder answers, rather than trusting that a URL is set.
+
+        ``health_check`` used to list ``embed_url``/``embed_urls`` and report
+        ``ok: True`` without ever calling them. On 2026-10-20 BOTH configured
+        endpoints were unusable (one host entirely down, the other taking 53s
+        against a 15s timeout) while health stayed green, and ``search()``
+        quietly fell back to lexical matching and returned confident, wrong
+        answers. A health check that cannot fail the way the system actually
+        fails is not a health check.
+
+        Walks ``embed_urls`` in the same order as the read path, so the result
+        reflects what a real query would get, and reports which endpoint
+        answered and how long it took. Latency is part of the signal: an
+        endpoint slower than ``embed_timeout`` fails every real call while
+        looking reachable to anything that only pings it.
+        """
+        probe: dict = {"ok": False, "endpoint": "", "latency_ms": None, "tried": [], "error": ""}
+
+        if self._embed_fn is not None:
+            started = time.monotonic()
+            try:
+                vec = self._embed_fn(_EMBED_PROBE_TEXT)
+            except Exception as exc:  # noqa: BLE001
+                probe["error"] = f"embed_fn raised: {exc}"
+                return probe
+            probe["endpoint"] = "embed_fn"
+            probe["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
+            probe["ok"] = bool(vec) and any(vec)
+            if not probe["ok"]:
+                probe["error"] = "embed_fn returned an empty or all-zero vector"
+            return probe
+
+        if not self.embed_urls:
+            probe["error"] = "no embed endpoint configured"
+            return probe
+
+        for url in self.embed_urls:
+            started = time.monotonic()
+            try:
+                vec = self._embed_one(url, _EMBED_PROBE_TEXT)
+            except Exception as exc:  # noqa: BLE001
+                probe["tried"].append({"endpoint": url, "error": str(exc)})
+                continue
+            elapsed = round((time.monotonic() - started) * 1000, 1)
+            if vec and any(vec):
+                probe["ok"] = True
+                probe["endpoint"] = url
+                probe["latency_ms"] = elapsed
+                return probe
+            probe["tried"].append(
+                {"endpoint": url, "error": "empty or all-zero vector", "latency_ms": elapsed}
+            )
+
+        probe["error"] = "every configured embed endpoint failed"
+        return probe
+
     def health_check(self) -> dict:
         try:
             conn = self._connection()
@@ -1031,9 +1104,18 @@ class PGVectorBackend(BaseBackend):
                 n = cur.fetchone()[0]
             # Computed from the defect count, not from "the query did not raise".
             unparseable = self.count_unparseable()
+            # And from whether the embedder ANSWERS, not whether one is named.
+            # Semantic search is the reason this backend exists; with the
+            # embedder down, every query silently degrades to lexical and the
+            # caller cannot tell. None means "not probed", never "fine".
+            embed_probe = self.probe_embed() if _probe_embed_enabled() else None
+            embed_ok = None if embed_probe is None else bool(embed_probe["ok"])
+            healthy = unparseable == 0 and embed_ok is not False
             return {
-                "ok": unparseable == 0,
-                "status": "ok" if unparseable == 0 else "degraded",
+                "ok": healthy,
+                "status": "ok" if healthy else "degraded",
+                "embed_ok": embed_ok,
+                "embed_probe": embed_probe,
                 "unparseable_rows": unparseable,
                 "unparseable_seen_this_process": sorted(self._unparseable_seen),
                 "backend": "PGVectorBackend",
