@@ -132,7 +132,7 @@ def derive_title(content: str, *, max_length: int = MAX_DERIVED_TITLE) -> str:
 
 
 def normalise_legacy_id(obj: dict) -> bool:
-    """Copy a legacy ``memory_id`` into the canonical ``id``. True if changed.
+    """Move a legacy ``memory_id`` to the canonical ``id``. True if changed.
 
     This matters more than the missing title, and it is the subtler bug of the
     two. ``Memory`` reads ``id``; a file carrying only ``memory_id`` therefore
@@ -146,16 +146,46 @@ def normalise_legacy_id(obj: dict) -> bool:
     duplicates were identified by content and source and removed, and the count
     is back to 20,299.
 
-    The id is already in the file, under the wrong key, so copying it across is
-    content-preserving: nothing is invented and nothing is dropped. The legacy
-    key is deliberately LEFT IN PLACE, since some other reader may still want
-    it and removing a field is not this function's business.
+    The id is already in the file, under the wrong key, so moving it across is
+    content-preserving: nothing is invented.
+
+    The redundant legacy key is now REMOVED, reversing the earlier decision to
+    leave it in place. Leaving it was not neutral, it was load-bearing for a
+    perpetual data-loss loop:
+
+      * skcapstone's legacy ``MemoryEntry`` model has no ``title`` field and
+        keys identity as ``memory_id``. Round-tripping a record through it
+        silently drops both ``id`` and ``title`` (pydantic ``extra="ignore"``).
+      * ``memory_engine._load_entry`` skips a unified record only when ``id``
+        is present AND ``memory_id`` is absent. A file carrying BOTH keys, the
+        exact shape this function used to produce, slips past that guard.
+      * The hourly promotion sweep's compress pass then re-saves it through
+        that model, stripping the title again.
+
+    Observed 2026-10-20: a file repaired three days earlier was back to
+    title-less, rewritten on the hour, every hour. Dropping the redundant key
+    is what makes a repaired file legible as a unified record and therefore
+    skipped by the legacy writer.
+
+    A legacy value that DISAGREES with an existing ``id`` is left alone. Two
+    different identifiers is a conflict, not redundancy, and silently dropping
+    one of them would be the same class of mistake as the loop above.
     """
     legacy = obj.get(LEGACY_ID_KEY)
-    if obj.get("id") or not isinstance(legacy, str) or not legacy.strip():
+    if not isinstance(legacy, str) or not legacy.strip():
         return False
-    obj["id"] = legacy.strip()
-    return True
+    legacy = legacy.strip()
+
+    existing = obj.get("id")
+    if not existing:
+        obj["id"] = legacy
+        del obj[LEGACY_ID_KEY]
+        return True
+    if str(existing).strip() == legacy:
+        del obj[LEGACY_ID_KEY]
+        return True
+    # Conflicting identifiers: preserve both and let a human decide.
+    return False
 
 
 def _tier_dirs(memory_dir: Path) -> list[Path]:
@@ -258,5 +288,67 @@ def repair_missing_titles(memory_dir: Path | str, *, dry_run: bool = True) -> Re
             # rather than letting it look like a success.
             report.failed.append((item.path, str(exc)))
             logger.warning("could not repair %s: %s", item.path, exc)
+
+    return report
+
+def strip_legacy_ids(memory_dir: Path | str, *, dry_run: bool = True) -> RepairReport:
+    """Remove a redundant legacy ``memory_id`` from every live flat file.
+
+    ``repair_missing_titles`` only ever visits files that ``Memory`` cannot
+    validate. A file repaired by an EARLIER run already has its title, so it is
+    no longer unloadable and that pass never looks at it again, which leaves the
+    redundant ``memory_id`` key sitting in it. That key is what lets
+    skcapstone's legacy ``MemoryEntry`` writer pick the record up and strip the
+    title straight back off (see :func:`normalise_legacy_id`).
+
+    So this is a separate sweep over ALL live files rather than an extension of
+    the repair pass: the files that most need it are precisely the ones that
+    look healthy.
+
+    Files whose ``memory_id`` disagrees with their ``id`` are reported as
+    skipped, never rewritten.
+    """
+    memory_dir = Path(memory_dir).expanduser()
+    report = RepairReport(dry_run=dry_run)
+
+    for tier_dir in _tier_dirs(memory_dir):
+        for path in sorted(tier_dir.glob("*.json")):
+            report.scanned += 1
+            try:
+                obj = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                # Not this function's job: scan_unloadable reports these.
+                continue
+            if not isinstance(obj, dict) or LEGACY_ID_KEY not in obj:
+                continue
+
+            legacy = obj.get(LEGACY_ID_KEY)
+            existing = obj.get("id")
+            if (
+                isinstance(legacy, str)
+                and isinstance(existing, str)
+                and legacy.strip()
+                and existing.strip()
+                and legacy.strip() != existing.strip()
+            ):
+                report.skipped.append(
+                    (path, f"conflicting ids: id={existing!r} {LEGACY_ID_KEY}={legacy!r}")
+                )
+                continue
+
+            if not normalise_legacy_id(obj):
+                continue
+            if dry_run:
+                report.repaired.append(path)
+                continue
+            try:
+                atomic_write_text(
+                    path, json.dumps(obj, ensure_ascii=False, indent=2, sort_keys=True)
+                )
+                report.repaired.append(path)
+                logger.info("stripped redundant %s from %s", LEGACY_ID_KEY, path.name)
+            except Exception as exc:
+                report.failed.append((path, str(exc)))
+                logger.warning("could not strip %s from %s: %s", LEGACY_ID_KEY, path, exc)
 
     return report
