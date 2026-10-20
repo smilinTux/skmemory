@@ -13,8 +13,6 @@ give up. The read path has walked a list for a while; the write path did not.
 
 from __future__ import annotations
 
-import importlib
-
 import pytest
 
 import skmemory.reconcile as reconcile
@@ -80,16 +78,20 @@ class TestParsing:
 
 
 class TestModuleDefaults:
-    def test_default_embed_url_is_the_first_of_the_list(self, monkeypatch):
-        monkeypatch.setenv("SKMEMORY_EMBED_URLS", "http://first/embed,http://second/embed")
-        for var in ("SKMEMORY_EMBED_URL", "EMBED_URL"):
-            monkeypatch.delenv(var, raising=False)
-        reloaded = importlib.reload(reconcile)
-        try:
-            assert reloaded.DEFAULT_EMBED_URLS == ["http://first/embed", "http://second/embed"]
-            assert reloaded.DEFAULT_EMBED_URL == "http://first/embed"
-        finally:
-            # Leave the module as the rest of the suite expects to find it.
-            for var in ALL_VARS:
-                monkeypatch.delenv(var, raising=False)
-            importlib.reload(reconcile)
+    def test_default_embed_url_is_the_first_of_the_list(self):
+        """Checked WITHOUT importlib.reload, on purpose.
+
+        An earlier version of this test reloaded the module to observe the
+        constants under a patched environment. `importlib.reload` rebinds the
+        module's contents in place, so every other test file that did
+        `from skmemory.reconcile import ...` was left holding stale function
+        objects and four tests in `test_reconcile_transport_failclosed.py`
+        failed, but only when this file ran first. Passed in isolation, failed
+        in CI. The invariant is checkable directly, so check it directly.
+        """
+        assert reconcile.DEFAULT_EMBED_URLS, "there is always at least one endpoint"
+        assert reconcile.DEFAULT_EMBED_URLS[0] == reconcile.DEFAULT_EMBED_URL
+
+    def test_a_single_url_resolves_to_a_one_element_list(self, monkeypatch):
+        urls = _resolve(monkeypatch, SKMEMORY_EMBED_URL="http://solo/embed")
+        assert urls == ["http://solo/embed"]
