@@ -1131,7 +1131,7 @@ class PGVectorBackend(BaseBackend):
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "backend": "PGVectorBackend", "error": str(e)}
 
-    def drift_check(self, flat_ids: set[str]) -> dict:
+    def drift_check(self, flat_ids: set[str], archived_ids: set[str] | None = None) -> dict:
         """Compare this agent's pg row ids against the flat-file ground truth.
 
         skmem-pg's ``memories`` table is a DERIVED, rebuildable cache (same
@@ -1141,12 +1141,27 @@ class PGVectorBackend(BaseBackend):
         should catch and treat a raised exception as "undetectable", not as
         zero.
 
+        A row whose flat file moved to ``memory/archive/`` is ARCHIVED, not
+        drift, exactly as in :meth:`SQLiteBackend.drift_check`. That mattered:
+        :meth:`SQLiteBackend.flat_id_set` deliberately omits the archive tree
+        ("intentional cold storage, not an active-tier id"), so without
+        ``archived_ids`` every archived memory still carrying a pg row counted
+        as a ``pg_only`` orphan -- and ``MemoryStore.health()`` turns
+        ``pg_only > 0`` into a RED status. Observed 2026-10-20 on a node whose
+        promoter had archived most of its corpus: 5,243 pg rows, every single
+        one of them archived, reported as 5,243 orphans and a red estate. The
+        sqlite side had always separated the two; this side had not.
+
         Args:
-            flat_ids: The full set of flat-file id stems (ground truth),
-                e.g. from :meth:`SQLiteBackend.flat_id_set`.
+            flat_ids: The full set of ACTIVE-tier flat-file id stems (ground
+                truth), e.g. from :meth:`SQLiteBackend.flat_id_set`.
+            archived_ids: Stems under ``memory/archive/``, e.g. from
+                ``SQLiteBackend._archived_stems()``. Rows matching these are
+                counted as ``pg_archived`` instead of ``pg_only``. When None,
+                the old behaviour is preserved and nothing is tolerated.
 
         Returns:
-            dict: ``{"pg_total": N, "pg_only": M}``.
+            dict: ``{"pg_total": N, "pg_only": M, "pg_archived": A}``.
 
         Raises:
             Exception: If the database is unreachable or the query fails.
@@ -1155,8 +1170,19 @@ class PGVectorBackend(BaseBackend):
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM memories WHERE agent=%s", (self.agent,))
             pg_ids = {row[0] for row in cur.fetchall()}
-        pg_only = sum(1 for pid in pg_ids if pid not in flat_ids)
-        return {"pg_total": len(pg_ids), "pg_only": pg_only}
+        archived = archived_ids or set()
+        pg_only = 0
+        pg_archived = 0
+        for pid in pg_ids:
+            if pid in flat_ids:
+                continue
+            # Same shortform tolerance the sqlite drift check applies.
+            short = str(pid)[:12].replace("-", "")
+            if pid in archived or short in archived:
+                pg_archived += 1
+            else:
+                pg_only += 1
+        return {"pg_total": len(pg_ids), "pg_only": pg_only, "pg_archived": pg_archived}
 
 
 def _as_json_str(value) -> str:

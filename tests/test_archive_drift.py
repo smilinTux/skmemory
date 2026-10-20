@@ -135,3 +135,88 @@ class TestExportOrphansSkipsArchived:
         data = json.loads(archived_file.read_text())
         assert "content lost" not in data["content"]
         assert data["content"] == m.content
+
+
+class TestPgDriftArchiveAware:
+    """The pg side of the same rule (2026-10-20).
+
+    ``SQLiteBackend.flat_id_set`` deliberately omits the archive tree, so
+    ``PGVectorBackend.drift_check`` counted every archived memory that still
+    carried a pg row as a ``pg_only`` orphan. ``MemoryStore.health()`` turns
+    ``pg_only > 0`` into RED, so a node whose promoter had archived most of its
+    corpus reported 5,243 orphans and a red estate while nothing was wrong.
+    """
+
+    class _FakePg:
+        """Minimal stand-in: only drift_check's id arithmetic is under test."""
+
+        def __init__(self, pg_ids):
+            self._pg_ids = set(pg_ids)
+            self.agent = "tester"
+
+        def drift_check(self, flat_ids, archived_ids=None):
+            from skmemory.backends.pgvector_backend import PGVectorBackend
+
+            class _Cur:
+                def __init__(self, ids):
+                    self._ids = ids
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def execute(self, *a):
+                    return None
+
+                def fetchall(self):
+                    return [(i,) for i in self._ids]
+
+            class _Conn:
+                def __init__(self, ids):
+                    self._ids = ids
+
+                def cursor(self):
+                    return _Cur(self._ids)
+
+            inst = PGVectorBackend.__new__(PGVectorBackend)
+            inst.agent = self.agent
+            inst._connection = lambda: _Conn(self._pg_ids)  # noqa: SLF001
+            return PGVectorBackend.drift_check(inst, flat_ids, archived_ids)
+
+    def test_archived_pg_row_is_not_pg_only(self):
+        pg = self._FakePg({"live-1", "archived-1"})
+
+        drift = pg.drift_check({"live-1"}, {"archived-1"})
+
+        assert drift["pg_only"] == 0, "archived pg row wrongly counted as drift"
+        assert drift["pg_archived"] == 1
+        assert drift["pg_total"] == 2
+
+    def test_genuine_orphan_still_counted(self):
+        """The guard must not swallow a row that is nowhere on disk."""
+        pg = self._FakePg({"live-1", "archived-1", "nowhere-1"})
+
+        drift = pg.drift_check({"live-1"}, {"archived-1"})
+
+        assert drift["pg_only"] == 1
+        assert drift["pg_archived"] == 1
+
+    def test_without_archived_ids_old_behaviour_holds(self):
+        pg = self._FakePg({"live-1", "archived-1"})
+
+        drift = pg.drift_check({"live-1"})
+
+        assert drift["pg_only"] == 1
+        assert drift["pg_archived"] == 0
+
+    def test_shortform_archive_stem_tolerated(self):
+        """drift_check's sqlite side tolerates the 12-char shortform; so must this."""
+        full = "abcdef123456-7890-dead-beef-feedfacecafe"
+        pg = self._FakePg({full})
+
+        drift = pg.drift_check(set(), {"abcdef123456"})
+
+        assert drift["pg_only"] == 0
+        assert drift["pg_archived"] == 1
