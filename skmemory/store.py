@@ -1672,7 +1672,19 @@ class MemoryStore:
 
         Returns:
             Optional[Memory]: The promoted memory, or None if source not found.
+
+        Raises:
+            ValueError: ``memory_id`` is empty or whitespace. An empty id is a
+                CALLER bug, not a lookup that happened to miss, and returning
+                None for it made the two indistinguishable: `promote("")`
+                silently returned None, which reads as "that memory does not
+                exist" when nothing was ever looked for. Every other write path
+                here fails closed on an empty id (`require_memory_id`); promote
+                was the one that did not.
         """
+        if not str(memory_id or "").strip():
+            raise ValueError("memory_id cannot be empty or null for promote()")
+
         source = self.primary.load(memory_id)
         if source is None:
             return None
