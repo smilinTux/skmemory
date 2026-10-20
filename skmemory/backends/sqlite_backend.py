@@ -188,6 +188,11 @@ class SQLiteBackend(BaseBackend):
         self._ensure_dirs()
         self._db_path = self.base_path / "index.db"
         self._conn: sqlite3.Connection | None = None
+        #: Flat files this process could not parse. Seen-once so a repeated
+        #: read does not spam the log, and countable so health can report it.
+        self._unloadable_seen: set[str] = set()
+        #: Set by the most recent import_backup(): attempted/restored/skipped.
+        self.last_import_report: dict | None = None
         self._ensure_db()
 
     def _ensure_dirs(self) -> None:
@@ -471,6 +476,67 @@ class SQLiteBackend(BaseBackend):
             "related_ids": _csv("related_ids"),
         }
 
+    def count_unloadable(self) -> int:
+        """How many LIVE flat files cannot be parsed into a Memory.
+
+        Scans, rather than reporting what this process happened to touch:
+        `_unloadable_seen` only knows about files something already tried to
+        read, and the whole failure mode is that nobody notices. Mirrors
+        `PGVectorBackend.count_unparseable()`, which does the same for the
+        derived store, so both halves of the system can be asked the same
+        question.
+        """
+        bad = 0
+        for layer in MemoryLayer:
+            tier = self.base_path / layer.value
+            if not tier.exists():
+                continue
+            for path in tier.glob("*.json"):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    Memory(**data)
+                except Exception:  # noqa: BLE001
+                    bad += 1
+        return bad
+
+    def _load_json_memory(self, path: Path, *, context: str) -> Memory | None:
+        """Parse one flat file into a Memory, COUNTING the ones that fail.
+
+        The previous inline version was::
+
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return Memory(**data)
+            except (json.JSONDecodeError, Exception):
+                return None
+
+        which made a CORRUPT file indistinguishable from an absent one. A
+        memory that exists on disk and cannot be parsed simply vanished from
+        `recall()`, `list_memories()` and `search_text()` with no exception, no
+        log line and no counter anywhere, and `recall()` reported it to the MCP
+        caller as "Memory not found", which is a factually wrong diagnosis
+        that sends an operator looking for a deletion that never happened.
+
+        The pg side already counts this exact failure (`count_unparseable`,
+        surfaced as `unparseable_rows` in health). The flat and SQLite side
+        never got the equivalent, which is the half that holds the SOURCE OF
+        TRUTH. Returning None is still correct; doing it silently was not.
+        """
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return Memory(**data)
+        except Exception as exc:  # noqa: BLE001
+            key = str(path)
+            if key not in self._unloadable_seen:
+                self._unloadable_seen.add(key)
+                logger.warning(
+                    "sqlite_backend.py: unloadable flat file (%s): %s: %s",
+                    context,
+                    path.name,
+                    exc,
+                )
+            return None
+
     def _row_to_memory(self, row: sqlite3.Row) -> Memory | None:
         """Load the full Memory object from disk using the index path.
 
@@ -483,11 +549,7 @@ class SQLiteBackend(BaseBackend):
         path = Path(row["file_path"])
         if not path.exists():
             return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return Memory(**data)
-        except (json.JSONDecodeError, Exception):
-            return None
+        return self._load_json_memory(path, context="index row")
 
     def save(self, memory: Memory) -> str:
         """Persist a memory as JSON and update the index.
@@ -536,11 +598,7 @@ class SQLiteBackend(BaseBackend):
         path = self._find_file(memory_id)
         if path is None:
             return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return Memory(**data)
-        except (json.JSONDecodeError, Exception):
-            return None
+        return self._load_json_memory(path, context=f"load({memory_id})")
 
     def delete(self, memory_id: str) -> bool:
         """Delete a memory file and its index entry.
@@ -975,6 +1033,13 @@ class SQLiteBackend(BaseBackend):
         if "memories" not in data or not isinstance(data["memories"], list):
             raise ValueError("Invalid backup file: missing 'memories' array")
 
+        #: Attempted and failed are tracked, not just succeeded. Returning
+        #: only the success count let the CLI print "Restored 850 memories"
+        #: for a backup of 1000 with no hint that 150 were dropped, which is
+        #: the difference between a restore and a partial restore the operator
+        #: never heard about. Exposed via `last_import_report`.
+        attempted = len(data["memories"])
+        skipped: list[str] = []
         count = 0
         for mem_data in data["memories"]:
             try:
@@ -993,8 +1058,23 @@ class SQLiteBackend(BaseBackend):
                 count += 1
             except Exception as e:
                 logger.warning("sqlite_backend.py: %s", e)
+                ref = str(mem_data.get("id") or mem_data.get("memory_id") or "<no id>")
+                skipped.append(f"{ref}: {e}")
                 continue
 
+        self.last_import_report = {
+            "attempted": attempted,
+            "restored": count,
+            "skipped": len(skipped),
+            "skipped_detail": skipped[:20],
+        }
+        if skipped:
+            logger.warning(
+                "sqlite_backend.py: import_backup restored %d of %d, SKIPPED %d",
+                count,
+                attempted,
+                len(skipped),
+            )
         return count
 
     def export_orphans_to_flat(
@@ -1394,8 +1474,9 @@ class SQLiteBackend(BaseBackend):
         try:
             s = self.stats()
             drift = self.drift_check()
+            unloadable = self.count_unloadable()
             return {
-                "ok": True,
+                "ok": unloadable == 0,
                 "backend": "SQLiteBackend",
                 "base_path": str(self.base_path),
                 "total_memories": s["total"],
@@ -1409,6 +1490,11 @@ class SQLiteBackend(BaseBackend):
                     # these; omitting them here is what let the signal die on
                     # the way up to MemoryStore.health().
                     "missing_tiers": drift.get("missing_tiers", []),
+                    # A flat file that exists and cannot be parsed is neither
+                    # in_sync nor absent. The pg side has counted this since
+                    # the malformed-row fix; the source of truth had no
+                    # equivalent until now.
+                    "unloadable": unloadable,
                     "hint": (
                         None
                         if drift["in_sync"]

@@ -181,7 +181,25 @@ class MemoryStore:
             skseed_auto_validate if skseed_auto_validate is not None else resolve_auto_validate()
         )
 
-        # Write-ahead log — resilient init so missing agent config doesn't block
+        # Write-ahead log, resilient init so missing agent config doesn't block.
+        #
+        # The WAL belongs with the store it DESCRIBES. This used to come from
+        # get_agent_paths() unconditionally, ignoring where the primary backend
+        # was actually rooted, so a store explicitly pointed somewhere else
+        # (every test that passes base_path=tmp_path) wrote its write-ahead log
+        # straight into the LIVE agent directory. Same test-isolation shape as
+        # the pytest rows that reached production pg, and `pytest_guard` does
+        # not cover the WAL.
+        #
+        # For a real agent this resolves to the identical path it always did:
+        # the primary's base_path IS <agent>/memory, so base_path/"wal" is
+        # <agent>/memory/wal. Production behaviour is unchanged.
+        from pathlib import Path as _Path
+
+        primary_base = getattr(self.primary, "base_path", None)
+        if primary_base is not None:
+            self._wal = WriteAheadLog(_Path(primary_base) / "wal" / "write_log.jsonl")
+            return
         try:
             agent_paths = get_agent_paths()
             wal_path = agent_paths["base"] / "memory" / "wal" / "write_log.jsonl"
@@ -2079,6 +2097,65 @@ class MemoryStore:
 
         return _lookup
 
+    def reconcile_sync_failures(self) -> dict:
+        """Clear recorded sync failures for memories that ARE now indexed.
+
+        `snapshot()` records a row when vector or graph indexing fails, and
+        clears it when that same write later succeeds. Nothing else ever
+        cleared one. A `reconcile` that successfully backfilled the memory
+        left the record standing, so `health()`'s `unindexed` count only ever
+        went up unless the identical snapshot path happened to run again.
+
+        Found 2026-10-20: of 10 recorded failures on one agent, 6 were already
+        present in pg (later syncs had fixed them) and 4 were real. Having to
+        tell those apart by hand is the signal crying wolf, which is how a
+        health number gets ignored, which is how this whole class of bug
+        survived six months in the first place.
+
+        Checks the live backend for each recorded id and clears only what is
+        genuinely there. Returns counts; never raises.
+        """
+        report = {"checked": 0, "cleared": 0, "still_missing": 0, "errors": 0}
+        get_failures = getattr(self.primary, "get_sync_failures", None)
+        clear = getattr(self.primary, "clear_sync_failure", None)
+        if not callable(get_failures) or not callable(clear):
+            return report
+
+        try:
+            failures = get_failures(limit=1000)
+        except Exception as e:
+            logger.warning("store.py: could not read sync failures: %s", e)
+            report["errors"] += 1
+            return report
+
+        for row in failures:
+            memory_id = str(row.get("memory_id") or "")
+            backend = str(row.get("backend") or "")
+            if not memory_id:
+                continue
+            report["checked"] += 1
+            # Which store the record is ABOUT decides which store to ask.
+            target = self.graph if backend in {"skgraph", "graph", "age"} else self.vector
+            loader = getattr(target, "load", None) or getattr(target, "get", None)
+            if not callable(loader):
+                continue
+            try:
+                present = loader(memory_id) is not None
+            except Exception as e:
+                logger.warning("store.py: presence check failed for %s: %s", memory_id, e)
+                report["errors"] += 1
+                continue
+            if present:
+                try:
+                    clear(memory_id, backend)
+                    report["cleared"] += 1
+                except Exception as e:
+                    logger.warning("store.py: could not clear %s/%s: %s", memory_id, backend, e)
+                    report["errors"] += 1
+            else:
+                report["still_missing"] += 1
+        return report
+
     def health(self) -> dict:
         """Check health of all backends.
 
@@ -2110,10 +2187,12 @@ class MemoryStore:
             status["primary"].get("sync") if isinstance(status["primary"], dict) else None
         )
         missing_tiers: list[str] = []
+        unloadable: int | None = None
         if isinstance(primary_sync, dict):
             sqlite_only = primary_sync.get("sqlite_only")
             flat_only = primary_sync.get("flat_only")
             missing_tiers = list(primary_sync.get("missing_tiers") or [])
+            unloadable = primary_sync.get("unloadable")
 
         if self.vector:
             try:
@@ -2171,6 +2250,33 @@ class MemoryStore:
                 # Undetectable, not zero. Same rule as pg_only.
                 logger.warning("store.py: sync-failure read failed: %s", e)
 
+        # The WAL's own crash-recovery feature had NO consumer. `wal.py`
+        # faithfully logs every write as pending then done/failed, and
+        # `pending_writes()` exists precisely to "detect incomplete writes
+        # after a crash", but nothing in the repo ever called it: not health,
+        # not the CLI, not the MCP server, not a startup check. A write
+        # interrupted by a crash or OOM left a pending entry that no code path
+        # would ever read. Its unit test passes against the class directly,
+        # which hid the absence of any integration point.
+        interrupted: int | None = None
+        try:
+            pending = self._wal.pending_writes()
+            interrupted = len(pending)
+            if interrupted:
+                ops: dict[str, int] = {}
+                for row in pending:
+                    name = str(row.get("op") or "unknown")
+                    ops[name] = ops.get(name, 0) + 1
+                status["interrupted_writes_detail"] = {
+                    "count": interrupted,
+                    "by_op": ops,
+                    "hint": "writes logged as pending that never completed; "
+                    "verify those memories landed, then `skmemory sync`",
+                }
+        except Exception as e:
+            # Undetectable, not zero. Same rule as pg_only.
+            logger.warning("store.py: WAL pending-write read failed: %s", e)
+
         # A derived backend whose embedder does not answer is degraded even
         # when every count is clean. Semantic recall is silently gone and the
         # legacy chain answers from lexical matching instead, which looks like
@@ -2189,6 +2295,12 @@ class MemoryStore:
         if missing_tiers:
             overall = "degraded"
         if (unindexed or 0) > 0:
+            overall = "degraded"
+        # A flat file that exists and cannot be parsed is the SOURCE OF TRUTH
+        # being unreadable, which is worse than a stale derived cache.
+        if (unloadable or 0) > 0:
+            overall = "degraded"
+        if (interrupted or 0) > 0:
             overall = "degraded"
         # A vector backend that is WIRED and reporting ok:false was green at the
         # top level until now. Observed 2026-10-20: two agents whose derived
@@ -2220,6 +2332,8 @@ class MemoryStore:
         status["graph_ok"] = graph_ok
         status["missing_tiers"] = missing_tiers
         status["unindexed"] = unindexed
+        status["unloadable"] = unloadable
+        status["interrupted_writes"] = interrupted
         return status
 
 

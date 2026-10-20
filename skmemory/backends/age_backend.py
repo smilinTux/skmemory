@@ -1429,6 +1429,14 @@ class AGEGraphBackend:
             logger.warning("AGEGraphBackend: stats failed: %s", exc)
             return {"ok": False, "backend": "AGEGraphBackend", "error": str(exc)}
 
+    def _rollback(self, conn) -> None:
+        """Best-effort rollback so one failed probe cannot poison the session."""
+        try:
+            if conn is not None and not conn.closed:
+                conn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
     def health_check(self) -> dict:
         """Check AGE backend connectivity and graph size.
 
@@ -1447,8 +1455,50 @@ class AGEGraphBackend:
                 "graph": self.graph,
                 "error": "connection failed",
             }
+        # A graph that does NOT EXIST must not look like an empty one.
+        #
+        # This used to call the lenient `_cypher`, which swallows every failure
+        # and returns [], so `node_count` fell to 0 and the result still said
+        # ok: True. An agent whose <agent>_knowledge graph had never been
+        # created therefore reported a perfectly healthy, empty graph.
+        #
+        # Found 2026-10-20: `architect_knowledge` was absent from
+        # ag_catalog.ag_graph entirely while health returned
+        # {"ok": true, "node_count": 0}. Same shape as a missing tier
+        # directory reading as an empty tier, and the catalog is the authority
+        # here, so ask it rather than inferring from a count.
         try:
-            rows = self._cypher("MATCH (n) RETURN count(n)", cols="c agtype")
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM ag_catalog.ag_graph WHERE name::text = %s", (self.graph,)
+                )
+                registered = cur.fetchone() is not None
+        except Exception as exc:  # noqa: BLE001
+            self._rollback(conn)
+            return {
+                "ok": False,
+                "backend": "AGEGraphBackend",
+                "dsn": self._safe_dsn(),
+                "graph": self.graph,
+                "error": f"could not read ag_catalog.ag_graph: {exc}",
+            }
+        if not registered:
+            return {
+                "ok": False,
+                "backend": "AGEGraphBackend",
+                "dsn": self._safe_dsn(),
+                "graph": self.graph,
+                "node_count": None,
+                "error": (
+                    f"graph {self.graph!r} is not registered in ag_catalog.ag_graph "
+                    "(never created). Provision it with "
+                    "SELECT ag_catalog.create_graph(...) after setting "
+                    "search_path to include ag_catalog."
+                ),
+            }
+        try:
+            # STRICT: a count that could not run is not a count of zero.
+            rows = self._cypher_strict("MATCH (n) RETURN count(n)", cols="c agtype")
             node_count = self._agtype(rows[0][0]) if rows else 0
             return {
                 "ok": True,
