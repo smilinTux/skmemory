@@ -45,6 +45,10 @@
 #                            tree, so the dump propagates to every node), or
 #                          - a REMOTE rsync/ssh spec "user@host:/path" or
 #                            "host:/path" (e.g. .41), shipped via rsync-over-ssh.
+#                          - "restic:/path/to/creds.env", shipped to a restic
+#                            repository: encrypted client-side, deduplicated,
+#                            and genuinely OFF-SITE rather than merely off-box.
+#                            Preferred for anything sensitive.
 #                        If UNSET: the run still succeeds but prints a loud WARNING
 #                        that DR shipping is not configured (backward compatible).
 #                        If SET: every target MUST receive the dump or the whole
@@ -63,6 +67,9 @@ CONTAINER="${SKMEM_PG_CONTAINER:-skmem-pg}"
 PGUSER="${SKMEM_PG_USER:-postgres}"
 PGDB="${SKMEM_PG_DB:-skmemory}"
 RETAIN="${SKMEM_BACKUP_RETAIN:-14}"
+#: Tag applied to restic snapshots so forget/prune only ever considers OUR
+#: snapshots. The repo is shared with other hosts and other backup sets.
+RESTIC_TAG="${SKMEM_BACKUP_RESTIC_TAG:-skmem-pg}"
 WEEKLY_RETAIN="${SKMEM_BACKUP_WEEKLY_RETAIN:-8}"
 MONTHLY_RETAIN="${SKMEM_BACKUP_MONTHLY_RETAIN:-12}"
 DOW="${SKMEM_BACKUP_DOW_OVERRIDE:-$(date -u +%u)}"
@@ -120,6 +127,52 @@ ship_one() {
   # ship $OUT to a single target; return non-zero on failure
   local target="$1"
   case "$target" in
+    restic:*)
+      # restic repository. Target form: restic:/path/to/creds.env
+      #
+      # Why this exists: the only other target types are a local directory and
+      # an rsync host. For an AGE graph holding court and medical records, a
+      # plaintext dump sitting in a replicated tree or on a laptop is the wrong
+      # shape. restic encrypts client-side and deduplicates, so a nightly
+      # ~550MB dump that mostly repeats itself costs a fraction of that
+      # off-site, and the dump never exists in the clear anywhere but here.
+      #
+      # The env file must supply RESTIC_REPOSITORY and RESTIC_PASSWORD plus
+      # whatever the backend needs. For an "s3:" repository on Backblaze B2
+      # that is AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, NOT
+      # B2_ACCOUNT_ID / B2_ACCOUNT_KEY (those are only read by restic's native
+      # "b2:" backend). Getting that wrong returns
+      # "Fatal: unable to open config file: Stat: 401", which names neither
+      # the variable nor the backend, and is why one such file sat provisioned
+      # and unused for three weeks.
+      local envfile="${target#restic:}"
+      if [ ! -r "$envfile" ]; then
+        warn "restic creds not readable: $envfile"
+        return 1
+      fi
+      if ! command -v restic >/dev/null 2>&1; then
+        warn "restic not installed; cannot ship to $envfile"
+        return 1
+      fi
+      # Subshell so the credentials never enter this script's environment,
+      # where they would be visible to anything it later runs.
+      (
+        set -a
+        # shellcheck disable=SC1090
+        . "$envfile"
+        set +a
+        [ -n "${RESTIC_REPOSITORY:-}" ] || { echo "RESTIC_REPOSITORY unset" >&2; exit 1; }
+        [ -n "${RESTIC_PASSWORD:-}" ] || { echo "RESTIC_PASSWORD unset" >&2; exit 1; }
+        restic backup --tag "$RESTIC_TAG" --host "$(hostname)" "$OUT" >/dev/null || exit 1
+        # Retention mirrors the local GFS policy. Non-fatal: a failed prune
+        # leaves MORE copies, which is the safe direction, and must not fail a
+        # run whose backup already landed.
+        restic forget --tag "$RESTIC_TAG" --host "$(hostname)" \
+          --keep-daily "$RETAIN" --keep-weekly "$WEEKLY_RETAIN" \
+          --keep-monthly "$MONTHLY_RETAIN" --prune >/dev/null 2>&1 \
+          || echo "restic forget/prune skipped" >&2
+      ) || return 1
+      ;;
     *:*)
       # remote rsync/ssh spec (host:/path or user@host:/path). A bare absolute
       # local path never matches because it has no ':'.
