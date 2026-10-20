@@ -735,6 +735,10 @@ def reconcile(
     # docstring). dry_run computes the same pairs/counts but issues no
     # mutating SQL and never calls the embed endpoint.
     loaded = 0
+    #: Rows actually INSERTed and committed, as opposed to merely staged.
+    #: Before per-batch commits these were the same number right up until the
+    #: final statement failed and `loaded` became a count of work thrown away.
+    committed = 0
     stub_skipped_ids: list[str] = []
     if missing:
         if not dry_run:
@@ -793,7 +797,22 @@ def reconcile(
                 input_text=buf.getvalue(),
             )
             loaded += len(pairs)
-        if not dry_run:
+            # COMMIT THIS BATCH NOW, then clear the staging table.
+            #
+            # This used to accumulate every row in the scratch table and do ONE
+            # INSERT at the very end, so the whole run was all-or-nothing. On
+            # 2026-10-20 a lumina backfill embedded 24,429 rows over 40 minutes
+            # and then died on the final statement because ONE tag out of
+            # 24,429 carried an unescaped backslash. Nothing landed. The rows
+            # were only recoverable because the scratch table happened to
+            # outlive the failure and could be re-inserted by hand.
+            #
+            # Per batch, the same failure costs one batch. Everything already
+            # committed stays committed, and the next run sees a smaller
+            # `missing` list, so the work resumes instead of restarting. That
+            # matters most for exactly the case that is slowest to redo: the
+            # embedding, which is the expensive part and is already spent by
+            # the time the insert runs.
             psql_stdin(
                 "INSERT INTO memories (id,layer,role,title,content,summary,tags,source,"
                 "created_at,updated_at,memory_json,agent,embedding) SELECT id,layer,role,title,"
@@ -801,6 +820,9 @@ def reconcile(
                 "COALESCE(NULLIF(updated_at,'')::timestamptz,created_at::timestamptz),"
                 f"memory_json::jsonb,agent,embedding::vector FROM {bf} ON CONFLICT (id) DO NOTHING;"
             )
+            psql(f"TRUNCATE {bf};")
+            committed += len(pairs)
+        if not dry_run:
             psql(f"DROP TABLE IF EXISTS {bf};")
 
     if stub_skipped_ids:
@@ -1060,6 +1082,7 @@ def reconcile(
         "shared": len(shared_ids),
         "stub_skipped": len(stub_skipped_ids),
         "backfilled": loaded,
+        "committed": committed,
         "stale": len(stale_ids),
         "stale_ids": stale_ids[:50],
         "refreshed": refreshed,
