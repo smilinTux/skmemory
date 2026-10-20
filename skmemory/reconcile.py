@@ -157,6 +157,71 @@ def _scratch_table_name(agent: str) -> str:
     return f"memories_bf_{slug}_{os.getpid()}"[:63]
 
 
+def _scratch_pid(table: str) -> int | None:
+    """The PID embedded in a scratch table name, if it has one."""
+    match = re.fullmatch(r"memories_bf_[A-Za-z0-9_]+_(\d+)", table)
+    return int(match.group(1)) if match else None
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a PID is still running on THIS node.
+
+    skmem-pg is node-local (per-node container, prb-6f069c5e), so the PIDs in
+    scratch table names are this host's PIDs and /proc is the right authority.
+    """
+    return os.path.isdir(f"/proc/{pid}")
+
+
+def sweep_stale_scratch_tables(psql_exec, log=lambda _m: None) -> int:
+    """Drop backfill scratch tables left behind by runs that are gone.
+
+    The scratch name is scoped to the agent AND the process to stop concurrent
+    timer units dropping each other's table mid-COPY (see
+    :func:`_scratch_table_name`). That fixed the collision and created a leak:
+    the closing DROP only runs on the success path, so any run that is killed
+    (SIGKILL, a stalled sync stopped by hand, OOM, a reboot) leaves its table
+    behind FOREVER, named after a PID that will never come back.
+
+    A ``finally`` cannot fix this on its own, because SIGKILL runs no Python.
+    So each run sweeps the corpses of previous ones.
+
+    Measured on one node 2026-10-20: 136 orphan tables holding 293 MB, 53 of
+    them for a single agent, in a database of 2.4 GB. Dropping the 134 whose
+    PID was dead reclaimed 263 MB.
+
+    A PID that has been REUSED by an unrelated process just means its table
+    survives another cycle. That is the safe direction to be wrong in.
+
+    Returns the number of tables dropped.
+    """
+    try:
+        listing = psql_exec(
+            "select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace "
+            "where n.nspname='public' and c.relkind='r' "
+            "and c.relname like 'memories\\_bf\\_%';",
+            True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log(f"scratch sweep skipped (could not list): {exc}")
+        return 0
+
+    mine = os.getpid()
+    dropped = 0
+    for raw in (listing or "").split():
+        table = raw.strip()
+        pid = _scratch_pid(table)
+        if pid is None or pid == mine or _pid_alive(pid):
+            continue
+        try:
+            psql_exec(f'DROP TABLE IF EXISTS public."{table}";')
+            dropped += 1
+        except Exception as exc:  # noqa: BLE001
+            log(f"could not drop stale scratch table {table}: {exc}")
+    if dropped:
+        log(f"swept {dropped} stale backfill scratch table(s) from dead runs")
+    return dropped
+
+
 def default_psql_cmd() -> list[str]:
     """Select the protected DSN transport before the legacy Docker fallback."""
     if os.environ.get("SKMEMORY_PG_DSN", "").strip():
@@ -598,6 +663,11 @@ def reconcile(
     # unreachable) raises ReconcileTransportError here, so a failed query can
     # never be misread as "0 rows" and start an unnecessary full backfill.
     probe_transport(PSQL)
+
+    # Clean up after runs that were killed before they could drop their own
+    # scratch table. Cheap, idempotent, and the only thing that ever will.
+    if not dry_run:
+        sweep_stale_scratch_tables(psql, log)
 
     pg_ids = set(psql(f"select id from memories where agent='{agent}';", True).split())
 
