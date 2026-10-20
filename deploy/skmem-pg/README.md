@@ -77,10 +77,22 @@ transaction, so a re-run is a safe no-op and a partial apply cannot occur.
 
 ## Vendoring notes and caveats
 
-- `schema.sql` was edited in exactly one way after dumping: the
-  `CREATE SCHEMA ag_catalog;` and `CREATE SCHEMA paradedb;` lines were removed,
-  because `CREATE EXTENSION age / pg_search` creates those schemas itself and a
-  pre-existing schema aborts extension creation on a fresh initdb.
+- `schema.sql` was edited after dumping, in two ways:
+  1. The `CREATE SCHEMA ag_catalog;` and `CREATE SCHEMA paradedb;` lines were
+     removed, because `CREATE EXTENSION age / pg_search` creates those schemas
+     itself and a pre-existing schema aborts extension creation on a fresh
+     initdb.
+  2. (2026-10-16, first real fresh-node bootstrap, laptop/.41) `pg_dump` had
+     re-added an explicit `WITH SCHEMA paradedb` / `WITH SCHEMA ag_catalog` to
+     the two `CREATE EXTENSION` statements (pg_dump always re-emits the
+     extension's actual schema for fidelity). Combined with edit 1 above,
+     that aborted a true fresh initdb with `schema "paradedb" does not
+     exist` (never caught before because no prior bring-up had actually
+     started from an empty volume end-to-end -- see card `23b3ceb6`). Fixed
+     by dropping the `WITH SCHEMA ...` clause from both statements, matching
+     the proven-working historical `02-enable-bm25-age.sql` form
+     (`CREATE EXTENSION IF NOT EXISTS pg_search;` / `... age;`, no schema
+     clause); each extension creates its own default schema on first use.
 - AGE graph label tables (`lumina_knowledge`, `opus_knowledge`,
   `personal_history` schemas) are recreated as plain tables by this dump, but a
   schema-only dump does NOT restore the `ag_catalog.ag_graph` /
