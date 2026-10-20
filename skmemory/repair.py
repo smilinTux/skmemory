@@ -291,6 +291,7 @@ def repair_missing_titles(memory_dir: Path | str, *, dry_run: bool = True) -> Re
 
     return report
 
+
 def strip_legacy_ids(memory_dir: Path | str, *, dry_run: bool = True) -> RepairReport:
     """Remove a redundant legacy ``memory_id`` from every live flat file.
 
