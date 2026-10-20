@@ -71,7 +71,10 @@ Usage:
     python -m skmemory.reconcile lumina --dry-run    # report only, no writes
 
 Env:
-    EMBED_URL    (default http://192.168.0.100:11434/api/embed)
+    SKMEMORY_EMBED_URLS  comma-separated endpoints, tried in order
+    SKMEMORY_EMBED_URL   single endpoint (used when _URLS is unset)
+    EMBED_URL            legacy alias for the single endpoint
+                         (default http://localhost:11434/api/embed)
     EMBED_MODEL  (default mxbai-embed-large)
     SKMEMORY_RECONCILE_PRUNE_FLOOR         (default 1)   flat count must be >= this to prune
     SKMEMORY_RECONCILE_MAX_PRUNE_FRACTION  (default 0.20) refuse if prune > this fraction of pg
@@ -100,7 +103,41 @@ from skmemory.stub_markers import is_stub_payload
 from skmemory.tombstones import load_tombstones
 
 LAYERS = ["short-term", "mid-term", "long-term"]
-DEFAULT_EMBED_URL = os.environ.get("EMBED_URL", "http://192.168.0.100:11434/api/embed")
+
+
+def _resolve_embed_urls() -> list[str]:
+    """Embed endpoints for the reconcile path, in failover order.
+
+    This module used to read a bare ``EMBED_URL`` and default to a hardcoded
+    ``http://192.168.0.100:11434/api/embed``, which is BOTH a different knob
+    from the one the rest of the package documents (``SKMEMORY_EMBED_URL`` /
+    ``SKMEMORY_EMBED_URLS``) and, since that host went down, an endpoint that
+    cannot answer. A node could configure the documented variables correctly,
+    see them reflected in `skmemory health`, and still have every reconcile
+    embed call go to a dead address.
+
+    It also had no failover at all: one URL, four retries against the same
+    URL, then give up. The read path has walked a list since the endpoint
+    failover work; the write path silently did not.
+
+    Precedence, most specific first. ``EMBED_URL`` is kept as a legacy alias so
+    existing unit files and cron entries that set it keep working.
+    """
+    raw_list = (os.environ.get("SKMEMORY_EMBED_URLS") or "").strip()
+    if raw_list:
+        urls = [u.strip() for u in raw_list.split(",") if u.strip()]
+        if urls:
+            return list(dict.fromkeys(urls))
+    for var in ("SKMEMORY_EMBED_URL", "EMBED_URL"):
+        single = (os.environ.get(var) or "").strip()
+        if single:
+            return [single]
+    return ["http://localhost:11434/api/embed"]
+
+
+DEFAULT_EMBED_URLS = _resolve_embed_urls()
+#: First endpoint, kept for callers and log lines that want a single name.
+DEFAULT_EMBED_URL = DEFAULT_EMBED_URLS[0]
 DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "mxbai-embed-large")
 # Node-LOCAL psql. No host param: acts only on the box it runs on.
 DEFAULT_PSQL = ["docker", "exec", "-i", "skmem-pg", "psql", "-U", "postgres", "-d", "skmemory"]
@@ -403,7 +440,10 @@ def reconcile(
 
     agent = require_memory_profile(agent).profile_id
     mem = mem_dir or _mem_dir(agent)
-    embed_url = embed_url or DEFAULT_EMBED_URL
+    # An explicitly passed single URL wins and disables failover, so a caller
+    # that names one endpoint gets exactly that endpoint.
+    embed_urls = [embed_url] if embed_url else list(DEFAULT_EMBED_URLS)
+    embed_url = embed_urls[0]
     embed_model = embed_model or DEFAULT_EMBED_MODEL
     PSQL = list(psql_cmd) if psql_cmd else default_psql_cmd()
     floor = DEFAULT_PRUNE_FLOOR if prune_floor is None else prune_floor
@@ -440,20 +480,23 @@ def reconcile(
 
     def embed(texts):
         for _ in range(4):
-            try:
-                j = requests.post(
-                    embed_url, json={"model": embed_model, "input": texts}, timeout=180
-                ).json()
-                vecs = _embeddings_from_response(j)
-                if vecs is not None and len(vecs) == len(texts):
-                    return vecs
-            except Exception:
-                pass
+            # Walk every endpoint before shrinking the input. Retrying the same
+            # dead address four times is not failover, which is what this did.
+            for url in embed_urls:
+                try:
+                    j = requests.post(
+                        url, json={"model": embed_model, "input": texts}, timeout=180
+                    ).json()
+                    vecs = _embeddings_from_response(j)
+                    if vecs is not None and len(vecs) == len(texts):
+                        return vecs
+                except Exception:
+                    continue
             if len(texts) > 1:
                 m = len(texts) // 2
                 return embed(texts[:m]) + embed(texts[m:])
             texts = [texts[0][: max(200, len(texts[0]) // 2)]]
-        raise RuntimeError("embed failed")
+        raise RuntimeError(f"embed failed against every endpoint: {', '.join(embed_urls)}")
 
     def vlit(e):
         return "[" + ",".join(f"{x:.6f}" for x in e) + "]"

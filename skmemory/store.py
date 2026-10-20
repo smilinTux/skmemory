@@ -2141,8 +2141,26 @@ class MemoryStore:
                 logger.warning("store.py: %s", e)
                 status["graph"] = {"ok": False, "error": str(e)}
 
+        # A derived backend whose embedder does not answer is degraded even
+        # when every count is clean. Semantic recall is silently gone and the
+        # legacy chain answers from lexical matching instead, which looks like
+        # a result and is not one. `None` means the probe did not run, which is
+        # not evidence of health, so only an explicit False counts.
+        vector_status = status.get("vector")
+        embed_ok = vector_status.get("embed_ok") if isinstance(vector_status, dict) else None
+        vector_ok = vector_status.get("ok") if isinstance(vector_status, dict) else None
+
         overall = "ok"
         if (sqlite_only or 0) > 0 or (flat_only or 0) > 0:
+            overall = "degraded"
+        # A vector backend that is WIRED and reporting ok:false was green at the
+        # top level until now. Observed 2026-10-20: two agents whose derived
+        # backend was a retired Chroma store answering "Not initialized", and
+        # one with 13 unparseable rows, every one of them reporting an overall
+        # `status: ok`. If a backend is attached, its own verdict counts.
+        if vector_ok is False:
+            overall = "degraded"
+        if embed_ok is False:
             overall = "degraded"
         if (pg_only or 0) > 0:
             overall = "red"
@@ -2151,6 +2169,8 @@ class MemoryStore:
         status["sqlite_only"] = sqlite_only
         status["flat_only"] = flat_only
         status["pg_only"] = pg_only
+        status["embed_ok"] = embed_ok
+        status["vector_ok"] = vector_ok
         return status
 
 
