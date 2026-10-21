@@ -2182,6 +2182,8 @@ class MemoryStore:
           * ``"red"``      -- ``pg_only`` > 0 on a wired skmem-pg backend
             (a row with no backing flat file in the PRODUCTION derived
             store, the more severe sibling of the same failure shape).
+            An ARCHIVED memory is not drift: its pg row is counted as
+            ``pg_archived`` and does not colour the status.
 
         ``sqlite_only``/``flat_only``/``pg_only`` are always present in the
         returned dict (``None`` when not applicable/detectable, e.g. no
@@ -2218,7 +2220,19 @@ class MemoryStore:
         pg_drift_check = getattr(self.vector, "drift_check", None) if self.vector else None
         if callable(flat_id_set) and callable(pg_drift_check):
             try:
-                pg_drift = pg_drift_check(flat_id_set())
+                # Pass the archive stems so a memory the promoter moved to cold
+                # storage is reported as pg_archived, not as pg_only drift (and
+                # so does not turn the whole node red). Optional capability:
+                # a primary without _archived_stems keeps the old behaviour.
+                archived_stems = getattr(self.primary, "_archived_stems", None)
+                try:
+                    archived_ids = archived_stems() if callable(archived_stems) else None
+                except Exception:  # noqa: BLE001
+                    archived_ids = None
+                if archived_ids is None:
+                    pg_drift = pg_drift_check(flat_id_set())
+                else:
+                    pg_drift = pg_drift_check(flat_id_set(), archived_ids)
                 pg_only = pg_drift.get("pg_only")
                 status["pg"] = pg_drift
             except Exception as e:
@@ -2339,6 +2353,7 @@ class MemoryStore:
         status["sqlite_only"] = sqlite_only
         status["flat_only"] = flat_only
         status["pg_only"] = pg_only
+        status["pg_archived"] = (status.get("pg") or {}).get("pg_archived")
         status["embed_ok"] = embed_ok
         status["vector_ok"] = vector_ok
         status["graph_ok"] = graph_ok
