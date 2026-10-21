@@ -105,6 +105,57 @@ from skmemory.tombstones import load_tombstones
 
 LAYERS = ["short-term", "mid-term", "long-term"]
 
+#: Subtree the memory promoter moves aged/duplicate memories into. Its contents
+#: are intentional COLD STORAGE, not drift: see ``archived_stems`` below.
+ARCHIVE_DIRNAME = "archive"
+
+
+def archived_stems(mem_dir: str) -> set[str]:
+    """Stems of every memory file under ``<mem_dir>/archive/`` (recursively).
+
+    The promoter (skcapstone.memory_promoter) moves aged and deduplicated
+    memories out of the active tiers into ``memory/archive/`` and
+    ``memory/archive/deduped/``. Those files are deliberate cold storage, so a
+    pg row that still backs one is NOT an orphan.
+
+    ``SQLiteBackend.drift_check`` has drawn that distinction since the
+    2026-07-12 drift incident. The prune here did not, which is the defect this
+    exists to close: every archived memory looked like an orphan on EVERY run,
+    and only the fraction cap in :func:`prune_guard` stood between the fleet and
+    losing those rows. Measured on chi 2026-10-20: one node kept 5,243 archived
+    rows purely because they were 92% of its table (so the cap refused), while a
+    sibling's 280 archived rows were 7.7% and would have been deleted on the
+    next daily tick.
+
+    Returns both the full stem and nothing else; callers match shortforms via
+    :func:`is_archived_id`.
+    """
+    stems: set[str] = set()
+    root = os.path.join(mem_dir, ARCHIVE_DIRNAME)
+    if not os.path.isdir(root):
+        return stems
+    for dirpath, _dirnames, filenames in os.walk(root):
+        del dirpath
+        for name in filenames:
+            if name.endswith(".json"):
+                stems.add(os.path.splitext(name)[0])
+    return stems
+
+
+def is_archived_id(memory_id: str, archived: set[str]) -> bool:
+    """True when ``memory_id`` is backed by a file in the archive tree.
+
+    Tolerates the 12-char shortform exactly as ``SQLiteBackend.drift_check``
+    does, because a row's id and its on-disk filename do not always agree on
+    which form they use.
+    """
+    if not archived or not memory_id:
+        return False
+    if memory_id in archived:
+        return True
+    return str(memory_id)[:12].replace("-", "") in archived
+
+
 
 def _resolve_embed_urls() -> list[str]:
     """Embed endpoints for the reconcile path, in failover order.
@@ -688,6 +739,13 @@ def reconcile(
             "copy present (forgotten memories stay gone)"
         )
 
+    # Archive truth, read once. Kept SEPARATE from `flat` on purpose: an
+    # archived memory must not be backfilled into pg as if it were active, it
+    # must only be spared from the prune.
+    archived = archived_stems(mem)
+    if archived:
+        log(f"[{agent}] archive tree holds {len(archived)} memory file(s) (not drift)")
+
     # Transport probe (card 9157c2c5): a cheap select 1 through the chosen
     # transport BEFORE the first counting query and long before any mutation.
     # A dead transport (docker socket permission denied, missing binary, DSN
@@ -1004,8 +1062,22 @@ def reconcile(
     # would_prune is computed in Python from the already-agent-scoped pg_ids and
     # flat keys (same set semantics as the SQL DELETE below), so the guardrail can
     # veto the destructive DELETE before it runs.
-    orphan_ids = pg_ids - set(flat.keys())
+    # An archived memory's row is cold storage, NOT an orphan, so it is excluded
+    # from the prune set. A TOMBSTONED id is excluded from that protection: the
+    # resurrection guard above deliberately drops tombstoned ids from `flat` so
+    # that "forgotten" also leaves the derived index, and an archived copy must
+    # not resurrect it. Tombstone beats archive.
+    unbacked_ids = pg_ids - set(flat.keys())
+    archived_pg_ids = {
+        i for i in unbacked_ids if i not in tombstoned and is_archived_id(i, archived)
+    }
+    orphan_ids = unbacked_ids - archived_pg_ids
     would_prune = len(orphan_ids)
+    if archived_pg_ids:
+        log(
+            f"[{agent}] sparing {len(archived_pg_ids)} pg row(s) backed by the archive "
+            "tree (cold storage, not drift)"
+        )
     allowed, reason = prune_guard(
         len(flat),
         len(pg_ids),
@@ -1026,14 +1098,25 @@ def reconcile(
             key=f"skmem-reconcile-prune-refused-{agent}",
         )
         pruned = "0"
+    elif would_prune == 0:
+        # Nothing to prune: do not issue the DELETE at all. It would remove zero
+        # rows today, but it is a statement that deletes every pg row absent from
+        # a table this process just populated, so a silently-empty COPY would wipe
+        # the agent. Not running it is strictly safer than running it for no gain.
+        log(f"[{agent}] nothing to prune ({reason})")
+        pruned = "0"
     elif dry_run:
         log(f"[{agent}] DRY RUN: would prune ({reason})")
         pruned = str(would_prune)
     else:
         psql("DROP TABLE IF EXISTS flat_ids; CREATE TABLE flat_ids (id text primary key);")
+        # The DELETE below removes every pg row absent from this table, so the
+        # table must carry the archived ids too. Populating it from flat alone
+        # would delete exactly the rows `would_prune` just promised to spare.
+        keep_ids = set(flat.keys()) | archived_pg_ids
         run_psql(
             PSQL + ["-c", "COPY flat_ids FROM STDIN;"],
-            input_text="\n".join(flat.keys()),
+            input_text="\n".join(sorted(keep_ids)),
         )
         pruned = psql(
             f"WITH d AS (DELETE FROM memories m WHERE m.agent='{agent}' AND NOT EXISTS "
@@ -1108,6 +1191,7 @@ def reconcile(
         "stale_ids": stale_ids[:50],
         "refreshed": refreshed,
         "pruned": pruned_n,
+        "archived": len(archived_pg_ids),
         "prune_skipped": prune_skipped,
         "prune_reason": prune_reason,
         "tombstoned": len(tombstoned),
