@@ -156,7 +156,6 @@ def is_archived_id(memory_id: str, archived: set[str]) -> bool:
     return str(memory_id)[:12].replace("-", "") in archived
 
 
-
 def _resolve_embed_urls() -> list[str]:
     """Embed endpoints for the reconcile path, in failover order.
 

@@ -342,9 +342,7 @@ class TestArchiveAwarePrune:
             _write_flat(mem, "mid-term", mid)
         _write_archived(mem, archived_id)
 
-        reconcile_mod.reconcile(
-            "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
-        )
+        reconcile_mod.reconcile("test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False)
 
         payload = "\n".join(fake.copy_inputs)
         assert payload, "no COPY payload captured"
