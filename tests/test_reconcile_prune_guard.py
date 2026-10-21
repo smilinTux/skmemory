@@ -217,3 +217,162 @@ def test_reconcile_force_overrides_empty_guard(monkeypatch, tmp_path):
     assert stats["prune_skipped"] is False
     assert fake.delete_issued is True
     assert stats["pruned"] == 10
+
+
+# --------------------------------------------------------------------------- #
+# 3. Archive awareness (2026-10-20)                                           #
+#                                                                             #
+# The promoter moves aged/duplicate memories into memory/archive/. Those are   #
+# intentional COLD STORAGE. drift_check has distinguished them from orphans    #
+# since the 2026-07-12 drift incident, and health since PR #76, but the prune  #
+# did not: every archived memory looked like an orphan on EVERY run, and only  #
+# the fraction cap stood in the way. Measured on chi: one node kept 5,243      #
+# archived rows purely because they were 92% of its table, while a sibling's   #
+# 280 were 7.7% and were due to be deleted on the next daily tick.            #
+# --------------------------------------------------------------------------- #
+
+
+class _FakePsqlCopyCapture(_FakePsql):
+    """``_FakePsql`` plus the COPY stdin payload, which is where the keep-set goes.
+
+    reconcile populates the keep table with ``psql -c "COPY flat_ids FROM STDIN;"``
+    and passes the ids via stdin, so the base fake (which only records the SQL
+    string) never sees them.
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.copy_inputs: list[str] = []
+
+    def run(self, args, capture_output=False, text=False, input=None, timeout=None):
+        sql = args[args.index("-c") + 1] if "-c" in args else ""
+        if sql.lower().startswith("copy ") and input:
+            self.copy_inputs.append(input)
+        return super().run(
+            args, capture_output=capture_output, text=text, input=input, timeout=timeout
+        )
+
+
+def _write_archived(mem_dir, mem_id, subdir="archive"):
+    """Simulate the promoter: the memory's file lives under archive/, not a tier."""
+    d = mem_dir / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{mem_id}.json").write_text(json.dumps({"id": mem_id, "content": "archived"}))
+    return mem_id
+
+
+class TestArchivedStemsHelper:
+    def test_absent_archive_dir_is_empty_not_an_error(self, tmp_path):
+        assert reconcile_mod.archived_stems(str(tmp_path / "memory")) == set()
+
+    def test_finds_nested_deduped_subdir(self, tmp_path):
+        mem = tmp_path / "memory"
+        _write_archived(mem, "aaaa1111", "archive")
+        _write_archived(mem, "bbbb2222", "archive/deduped")
+        assert reconcile_mod.archived_stems(str(mem)) == {"aaaa1111", "bbbb2222"}
+
+    def test_shortform_match(self):
+        archived = {"abcdef123456"}
+        assert reconcile_mod.is_archived_id("abcdef123456-7890-dead-beef-f00d", archived)
+        assert reconcile_mod.is_archived_id("abcdef123456", archived)
+        assert not reconcile_mod.is_archived_id("999999999999", archived)
+
+    def test_empty_inputs_are_false_not_crashes(self):
+        assert reconcile_mod.is_archived_id("", {"x"}) is False
+        assert reconcile_mod.is_archived_id("x", set()) is False
+
+
+class TestArchiveAwarePrune:
+    def test_archived_row_is_spared(self, monkeypatch, tmp_path):
+        """The regression: an archived memory's pg row must NOT be pruned."""
+        kept = [str(uuid.uuid4()) for _ in range(20)]
+        archived_id = str(uuid.uuid4())
+        fake = _FakePsql(kept + [archived_id], delete_count=0)
+        monkeypatch.setattr(reconcile_mod.subprocess, "run", fake.run)
+
+        mem = tmp_path / "memory"
+        for mid in kept:
+            _write_flat(mem, "mid-term", mid)
+        _write_archived(mem, archived_id)
+
+        stats = reconcile_mod.reconcile(
+            "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        )
+
+        assert stats["archived"] == 1
+        assert stats["pruned"] == 0
+        assert fake.delete_issued is False, "archived cold storage must never be pruned"
+
+    def test_genuine_orphan_still_pruned_beside_an_archived_row(self, monkeypatch, tmp_path):
+        """The guard must spare archive WITHOUT blinding the prune to real orphans."""
+        kept = [str(uuid.uuid4()) for _ in range(20)]
+        archived_id = str(uuid.uuid4())
+        orphan = str(uuid.uuid4())
+        fake = _FakePsql(kept + [archived_id, orphan], delete_count=1)
+        monkeypatch.setattr(reconcile_mod.subprocess, "run", fake.run)
+
+        mem = tmp_path / "memory"
+        for mid in kept:
+            _write_flat(mem, "mid-term", mid)
+        _write_archived(mem, archived_id)
+
+        stats = reconcile_mod.reconcile(
+            "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        )
+
+        assert stats["archived"] == 1
+        assert stats["pruned"] == 1
+        assert fake.delete_issued is True
+
+    def test_delete_keep_table_carries_the_archived_id(self, monkeypatch, tmp_path):
+        """The SQL must agree with the count, or the spared row dies anyway.
+
+        The DELETE removes every pg row absent from the `flat_ids` table, so that
+        table has to carry the archived ids too. Populating it from flat alone
+        would delete exactly the rows the prune count just promised to spare.
+        """
+        kept = [str(uuid.uuid4()) for _ in range(20)]
+        archived_id = str(uuid.uuid4())
+        orphan = str(uuid.uuid4())
+        fake = _FakePsqlCopyCapture(kept + [archived_id, orphan], delete_count=1)
+        monkeypatch.setattr(reconcile_mod.subprocess, "run", fake.run)
+
+        mem = tmp_path / "memory"
+        for mid in kept:
+            _write_flat(mem, "mid-term", mid)
+        _write_archived(mem, archived_id)
+
+        reconcile_mod.reconcile("test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False)
+
+        payload = "\n".join(fake.copy_inputs)
+        assert payload, "no COPY payload captured"
+        assert archived_id in payload, "archived id missing from the keep table"
+        assert orphan not in payload, "a real orphan must not be added to the keep table"
+
+    def test_tombstone_beats_archive(self, monkeypatch, tmp_path):
+        """A forgotten memory stays gone even if an archived copy exists.
+
+        The resurrection guard deliberately drops tombstoned ids from the flat
+        truth so that "forgotten" also leaves the derived index. Archive
+        tolerance must not resurrect one.
+        """
+        from skmemory.tombstones import write_tombstone
+
+        kept = [str(uuid.uuid4()) for _ in range(20)]
+        forgotten = str(uuid.uuid4())
+        fake = _FakePsql(kept + [forgotten], delete_count=1)
+        monkeypatch.setattr(reconcile_mod.subprocess, "run", fake.run)
+
+        mem = tmp_path / "memory"
+        for mid in kept:
+            _write_flat(mem, "mid-term", mid)
+        _write_archived(mem, forgotten)  # archived copy present...
+        write_tombstone(str(mem), forgotten)  # ...but deliberately forgotten
+
+        stats = reconcile_mod.reconcile(
+            "test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False
+        )
+
+        assert stats["archived"] == 0, "a tombstoned id must not be spared as archived"
+        assert stats["pruned"] == 1
+        assert fake.delete_issued is True
