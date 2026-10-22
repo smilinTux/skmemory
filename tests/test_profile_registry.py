@@ -378,3 +378,104 @@ def test_sensitivity_rehashed_service_privilege_attempt_is_denied(tmp_path: Path
     profile = resolve_memory_profile(tmp_path, service["profile_id"])
     assert not profile.healthy
     assert profile.memory_principal_id is None
+
+
+# --------------------------------------------------------------------------- #
+# Default-agent fallback (2026-10-21)                                          #
+#                                                                              #
+# With no selector set, get_active_agent() returned agents[0], the             #
+# ALPHABETICALLY FIRST eligible agent, and ignored SK_DEFAULT_AGENT entirely.  #
+# On noroc2027 that silently opened `architect` (1,667 memories) instead of    #
+# `lumina` (41,046) while SK_DEFAULT_AGENT=lumina sat in the environment.      #
+# Nothing errored; the agent just remembered the wrong life. Found by Lumina   #
+# from a Talk chat; regression arrived with 4651d39 (2026-08-24).              #
+#                                                                              #
+# skcapstone already documents the order this now follows: selectors, then an  #
+# explicit SK_DEFAULT_AGENT, then the SOLE installed agent, else refuse        #
+# ("No active SK agent could be resolved without guessing").                   #
+# --------------------------------------------------------------------------- #
+
+
+def _clone_human(case: dict, new_id: str) -> dict:
+    """A second eligible human, with every hash and binding recomputed.
+
+    The registry validates profile_hash and every binding field, so a lazy
+    copy with a swapped id resolves as `profile_hash_mismatch` and is filtered
+    straight back out of list_agents(), which would make the multi-agent tests
+    below pass for the wrong reason.
+    """
+    clone = copy.deepcopy(case)
+    clone["name"] = new_id
+    clone["profile_id"] = new_id
+    profile = clone["profile"]
+    profile["profile_id"] = new_id
+    profile["memory_principal_id"] = f"memory:{new_id}"
+    profile["profile_hash"] = profile_content_hash(profile)
+    entry = next(
+        item for item in clone["registry"]["profiles"] if item["profile_id"] == case["profile_id"]
+    )
+    entry["profile_id"] = new_id
+    entry["memory_principal_id"] = profile["memory_principal_id"]
+    entry["profile_hash"] = profile["profile_hash"]
+    return clone
+
+
+@pytest.fixture
+def two_humans(agent_root: Path) -> tuple[Path, str, str]:
+    first = _case("healthy_human")
+    second = _clone_human(first, "zz-second-human")
+    _install_cases(agent_root, first, second)
+    # Sanity: both really are eligible, and sorted() puts `first` ahead, so a
+    # regression to agents[0] is observably different from honouring a default.
+    assert agents.list_agents() == sorted([first["profile_id"], second["profile_id"]])
+    return agent_root, first["profile_id"], second["profile_id"]
+
+
+class TestDefaultAgentFallback:
+    def test_several_agents_and_no_default_refuses(self, two_humans) -> None:
+        """The bug: it used to return the alphabetically first of several."""
+        _root, first, _second = two_humans
+        assert agents.get_active_agent({}) is None, (
+            f"picked {first!r} by name order instead of refusing; a memory system "
+            "must not guess whose memories to open"
+        )
+
+    def test_sk_default_agent_is_honoured(self, two_humans) -> None:
+        _root, first, second = two_humans
+        # Deliberately the LAST one alphabetically, so passing cannot be the
+        # old agents[0] behaviour coincidentally agreeing.
+        assert second > first
+        assert agents.get_active_agent({"SK_DEFAULT_AGENT": second}) == second
+
+    def test_default_naming_an_ineligible_agent_refuses(self, two_humans) -> None:
+        """An explicit instruction we cannot honour must not fall back to a guess."""
+        assert agents.get_active_agent({"SK_DEFAULT_AGENT": "no-such-agent"}) is None
+
+    def test_default_naming_a_service_refuses(self, agent_root: Path) -> None:
+        human = _case("healthy_human")
+        service = _case("bounded_service")
+        _install_cases(agent_root, human, service)
+        assert agents.get_active_agent({"SK_DEFAULT_AGENT": service["profile_id"]}) is None, (
+            "a service profile must not become the human default"
+        )
+
+    def test_explicit_selector_still_wins_over_default(self, two_humans) -> None:
+        """Precedence: the three selectors outrank SK_DEFAULT_AGENT."""
+        _root, first, second = two_humans
+        assert agents.get_active_agent({"SKAGENT": first, "SK_DEFAULT_AGENT": second}) == first
+
+    def test_sole_agent_needs_no_default(self, agent_root: Path) -> None:
+        """Unambiguous: one installed agent is not a guess. Pins the old contract."""
+        human = _case("healthy_human")
+        _configure_profile(agent_root, human)
+        assert agents.list_agents() == [human["profile_id"]]
+        assert agents.get_active_agent({}) == human["profile_id"]
+
+    def test_refusal_message_names_the_fix_and_the_options(self, two_humans) -> None:
+        """The refusal is now the operator's only guidance, so it must be useful."""
+        _root, first, second = two_humans
+        with pytest.raises(ValueError) as excinfo:
+            agents.require_memory_profile(environment={})
+        message = str(excinfo.value)
+        assert "SK_DEFAULT_AGENT" in message
+        assert first in message and second in message
