@@ -680,6 +680,7 @@ class AGEGraphBackend:
         Returns:
             str: The memory ID (unchanged), matching other backends' convention.
         """
+        require_memory_id(memory.id)
         self.index_memory(memory)
         return memory.id
 

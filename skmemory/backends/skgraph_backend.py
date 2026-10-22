@@ -46,7 +46,7 @@ from collections import OrderedDict
 from collections.abc import Iterable
 
 from .. import graph_queries as Q
-from ..invalid_records import require_memory_id
+from ..invalid_records import payload_memory_id, quarantine_invalid_flat_file, require_memory_id
 from ..models import Memory
 
 logger = logging.getLogger(__name__)
@@ -174,6 +174,7 @@ class SKGraphBackend:
         Returns:
             str: The memory ID (unchanged).
         """
+        require_memory_id(memory.id)
         self.index_memory(memory)
         return memory.id
 
@@ -964,6 +965,13 @@ class SKGraphBackend:
             for json_file in tier_dir.glob("*.json"):
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
+                    try:
+                        payload_memory_id(data, json_file.stem)
+                    except ValueError as exc:
+                        quarantine_invalid_flat_file(
+                            flat_files_dir, json_file, reason=str(exc)
+                        )
+                        continue
                     memory = Memory.model_validate(data)
                     if self.index_memory(memory):
                         stats["indexed"] += 1

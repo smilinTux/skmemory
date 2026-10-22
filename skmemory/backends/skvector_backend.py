@@ -22,6 +22,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..invalid_records import payload_memory_id, quarantine_invalid_flat_file, require_memory_id
 from ..models import Memory, MemoryLayer
 from .base import BaseBackend
 
@@ -47,9 +48,8 @@ MODEL_ALIASES = {
 def _legacy_payload_memory_id(payload: dict) -> str:
     """Derive a deterministic memory id from a legacy payload."""
     for key in ("id", "memory_id"):
-        value = payload.get(key)
-        if value:
-            return str(value)
+        if key in payload:
+            return require_memory_id(payload[key])
 
     basis = [
         payload.get("file_path"),
@@ -484,6 +484,7 @@ class SKVectorBackend(BaseBackend):
         Returns:
             str: The memory ID.
         """
+        require_memory_id(memory.id)
         if not self._ensure_initialized():
             return memory.id
 
@@ -801,6 +802,13 @@ class SKVectorBackend(BaseBackend):
                 try:
                     raw = json_file.read_text(encoding="utf-8")
                     data = json.loads(raw)
+                    try:
+                        payload_memory_id(data, json_file.stem)
+                    except ValueError as exc:
+                        quarantine_invalid_flat_file(
+                            flat_files_dir, json_file, reason=str(exc)
+                        )
+                        continue
                     memory = Memory.model_validate(data)
                     flat_memory_ids.add(memory.id)
 
