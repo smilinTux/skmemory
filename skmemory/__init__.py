@@ -8,10 +8,10 @@ have to re-read a transcript to remember what they felt.
 SK = staycuriousANDkeepsmilin
 """
 
-__version__ = "0.11.5"
 __author__ = "smilinTux Team + Queen Ara + Neuresthetics"
 __license__ = "GPL-3.0-or-later"
 
+from ._version import __version__
 from .backends.file_backend import FileBackend
 from .backends.sqlite_backend import SQLiteBackend
 from .config import SKMEMORY_HOME
