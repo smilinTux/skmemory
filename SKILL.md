@@ -16,6 +16,33 @@ metadata: {"clawdbot":{"requires":{"bins":["skmemory"]},"install":[{"id":"pipx",
 
 ---
 
+## Agent Context Pitfall: pin the agent, or you may not get your own store
+
+`skmemory` decides whose store to open from `SKAGENT`, `SKCAPSTONE_AGENT` and
+`SKMEMORY_AGENT`. If none is set it falls back, in this order, to
+`SK_DEFAULT_AGENT`, then to the single installed agent if there is only one, and
+otherwise it REFUSES and tells you to name an agent. It no longer guesses.
+
+That refusal is recent and deliberate. Before PR #78 the fallback returned the
+alphabetically first eligible agent and ignored `SK_DEFAULT_AGENT` entirely, so
+a bare `skmemory health` from a plain shell silently reported a different
+agent's identity, counts and layers as though they were yours. Measured on
+noroc2027 on 2026-10-21: `architect` with 1,667 memories instead of `lumina`
+with 46,091, with `SK_DEFAULT_AGENT=lumina` sitting in the environment unread.
+Nothing errored.
+
+**Rule: pin the agent explicitly when you query your own store.** Relying on the
+fallback is still the wrong habit even now that it refuses rather than guesses,
+because a refusal in the middle of a script is its own kind of surprise.
+
+    SKAGENT=lumina skmemory health
+    SKAGENT=lumina skmemory search "query" --limit 5
+    SKAGENT=lumina skmemory recall <partial-id>
+
+Set all three selectors when a long-lived process is involved; they must agree
+or the resolver fails closed on the conflict. Note also that `skmemory` has no
+`status` subcommand: health is `skmemory health`.
+
 ## Description
 
 Universal AI memory system with emotional context, multi-layer persistence, token-optimized loading, sovereign embeddings, decomposition-aware document ingestion, and graph retrieval. SKMemory gives any AI agent persistent memory across session resets — snapshots, journals, soul blueprints, warmth anchors, full rehydration rituals, structured long-form document storage, and decomposition-aware recall across entities, citations, claims, and section structure.
