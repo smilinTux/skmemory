@@ -172,7 +172,41 @@ def get_active_agent(environment: Mapping[str, str] | None = None) -> str | None
         return profile_id if profile.selectable else None
 
     agents = list_agents()
-    return agents[0] if agents else None
+    if not agents:
+        return None
+
+    # No selector was set. Historically this returned agents[0], i.e. the
+    # ALPHABETICALLY FIRST eligible agent, and ignored SK_DEFAULT_AGENT
+    # entirely. On a multi-agent household that silently opened a stranger's
+    # memories: measured on noroc2027 2026-10-21, a process started without
+    # the three selectors resolved to `architect` (1,667 memories) instead of
+    # `lumina` (41,046), while SK_DEFAULT_AGENT=lumina sat right there in the
+    # environment being ignored. Nothing errored; the agent simply remembered
+    # the wrong life. Regression arrived with 4651d39 (2026-08-24).
+    #
+    # skcapstone already documents the contract this now follows:
+    #   "$SKAGENT, $SKCAPSTONE_AGENT, $SKMEMORY_AGENT, then an explicitly
+    #    configured $SK_DEFAULT_AGENT, or the sole installed agent"
+    # and otherwise refuses: "No active SK agent could be resolved without
+    # guessing." Picking one of several by name order is exactly the guess
+    # that contract forbids, and it is the one failure mode a memory system
+    # must not have.
+    default = source.get("SK_DEFAULT_AGENT", "").strip()
+    if default:
+        # Membership in `agents` IS the validation: list_agents() already
+        # filters to healthy, human, selectable, fallback-eligible profiles.
+        # A default naming something ineligible is an explicit instruction we
+        # cannot honour, so refuse rather than fall through and guess.
+        return default if default in agents else None
+
+    # A single installed agent is unambiguous, so it needs no default.
+    if len(agents) == 1:
+        return agents[0]
+
+    # Several agents and no stated default: refuse. Returning None makes
+    # require_memory_profile() raise with a message naming the fix, which is
+    # strictly better than opening the wrong corpus and reporting success.
+    return None
 
 
 def require_memory_profile(
@@ -183,7 +217,17 @@ def require_memory_profile(
 
     selected = agent_name if agent_name is not None else get_active_agent(environment)
     if not selected:
-        raise ValueError("No valid registered memory profile is available")
+        # This message is now the operator's only guidance: the resolver
+        # refuses rather than guessing, so a caller that used to get the
+        # alphabetically-first agent's memories gets this instead. Name the
+        # actual fix, and list what is available, or the refusal just reads as
+        # a broken install.
+        available = list_agents()
+        detail = ", ".join(available) if available else "none registered"
+        raise ValueError(
+            "No valid registered memory profile is available. Set SKAGENT "
+            "(or SK_DEFAULT_AGENT) to one of: " + detail
+        )
     profile = resolve_memory_profile(AGENTS_BASE_DIR.parent, selected, agents_base=AGENTS_BASE_DIR)
     if not profile.healthy:
         raise ValueError(f"Unregistered or invalid memory profile: {selected}")
