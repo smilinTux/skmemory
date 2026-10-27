@@ -106,6 +106,19 @@ PROPERTY_INDEXED_LABELS = ("Memory", "Tag", "Entity", "Source")
 GRAPH_SYNC_INDEX_VERSION = "1"
 
 
+#: Stamp the open bitemporal interval on an edge ONLY when it has none yet.
+#: This used to be an unconditional ``SET e.valid_from = coalesce(...)``:
+#: a no-op by value on every re-index, but AGE still rewrote every edge row,
+#: and that SET was ~97% of index_memory's time (measured 2026-10-27 on
+#: lumina: 45-75 ms for a 7-tag memory with it, ~1 ms without). Filtering
+#: first keeps the original stamps and writes nothing for existing edges.
+#: Expects the edge bound as ``e`` and the far node as ``n``.
+_STAMP_NEW_EDGE = (
+    "WITH n, e WHERE e.valid_from IS NULL "
+    "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
+)
+
+
 def _graph_sync_budget_s() -> float:
     """Wall-clock budget for one sync_all() pass, seconds (0 = unbounded).
 
@@ -679,10 +692,7 @@ class AGEGraphBackend:
         query = (
             "MATCH (m:Memory {id: $mem_id}) "
             "MERGE (n:" + label + " {" + key + ": $value}) "
-            "MERGE (m)-[e:" + rel + "]->(n) "
-            "SET e.valid_from = coalesce(e.valid_from, $now), "
-            "e.recorded_at = coalesce(e.recorded_at, $now) "
-            "RETURN n"
+            "MERGE (m)-[e:" + rel + "]->(n) " + _STAMP_NEW_EDGE + "RETURN n"
         )
         rows = self._cypher(
             query,
@@ -707,10 +717,7 @@ class AGEGraphBackend:
             "MATCH (m:Memory {id: $mem_id}) "
             "UNWIND $values AS value "
             "MERGE (n:" + label + " {" + key + ": value}) "
-            "MERGE (m)-[e:" + rel + "]->(n) "
-            "SET e.valid_from = coalesce(e.valid_from, $now), "
-            "e.recorded_at = coalesce(e.recorded_at, $now) "
-            "RETURN n"
+            "MERGE (m)-[e:" + rel + "]->(n) " + _STAMP_NEW_EDGE + "RETURN n"
         )
         self._cypher(
             query,
@@ -727,8 +734,8 @@ class AGEGraphBackend:
             "MATCH (a:Memory {id: $a_id}) "
             "MERGE (b:Memory {id: $b_id}) "
             "MERGE (a)-[e:RELATED_TO]->(b) "
-            "SET e.valid_from = coalesce(e.valid_from, $now), "
-            "e.recorded_at = coalesce(e.recorded_at, $now) "
+            "WITH b, e WHERE e.valid_from IS NULL "
+            "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
             "RETURN b"
         )
         rows = self._cypher(
@@ -736,6 +743,8 @@ class AGEGraphBackend:
             {"a_id": a_id, "b_id": b_id, "now": _now_iso()},
             cols="b agtype",
         )
+        # True only when this call stamped a NEW edge; an existing one is
+        # left untouched (see _STAMP_NEW_EDGE).
         return bool(rows)
 
     def _merge_supersedes(
