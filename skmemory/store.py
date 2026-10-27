@@ -2047,21 +2047,27 @@ class MemoryStore:
             return self.primary.prune_backups(keep=keep, backup_dir=backup_dir)
         return []
 
-    def reindex(self, force: bool = False) -> int:
+    def reindex(self, force: bool = False, allow_preview_stubs: bool = False) -> int:
         """Rebuild the SQLite index from JSON files.
 
         Only works if the primary backend is SQLiteBackend. By default,
-        SQLite-only memories are exported to flat files first so they
-        survive the rebuild; pass ``force=True`` to skip that safety step.
+        SQLite-only memories survive the rebuild: those whose full content pg
+        still holds are written to flat files, and preview-only ones keep
+        their index row (never a lossy stub in the flat tier unless
+        ``allow_preview_stubs``). Pass ``force=True`` to skip that safety step.
 
         Returns:
             int: Number of memories indexed, or -1 if not applicable.
         """
         if isinstance(self.primary, SQLiteBackend):
-            return self.primary.reindex(force=force)
+            return self.primary.reindex(
+                force=force,
+                allow_preview_stubs=allow_preview_stubs,
+                full_content_lookup=self._pg_fallback_content_lookup(),
+            )
         return -1
 
-    def export_orphans_to_flat(self) -> dict:
+    def export_orphans_to_flat(self, allow_preview_stubs: bool = True) -> dict:
         """Write any SQLite-only memories out as flat JSON files.
 
         Useful before a destructive operation, or after an import that
@@ -2075,7 +2081,8 @@ class MemoryStore:
         """
         if isinstance(self.primary, SQLiteBackend):
             return self.primary.export_orphans_to_flat(
-                full_content_lookup=self._pg_fallback_content_lookup()
+                full_content_lookup=self._pg_fallback_content_lookup(),
+                allow_preview_stubs=allow_preview_stubs,
             )
         return {"exported": 0, "skipped": 0, "errors": 0, "recovered_full": 0, "orphan_ids": []}
 

@@ -1260,8 +1260,11 @@ def reindex(ctx: click.Context, vector: bool, force: bool) -> None:
     store: MemoryStore = ctx.obj["store"]
 
     if not force:
-        # Pre-export orphans so they survive the rebuild
-        orphan_stats = store.export_orphans_to_flat()
+        # Pre-export orphans so they survive the rebuild. Full content only:
+        # reindex is what hooks and timers run, so it never writes a lossy
+        # preview stub into the flat tier (preview-only rows are kept in the
+        # index instead; `export-flat` materializes them on request).
+        orphan_stats = store.export_orphans_to_flat(allow_preview_stubs=False)
         if orphan_stats["exported"]:
             click.echo(
                 f"Safety: exported {orphan_stats['exported']} SQLite-only "
@@ -1269,7 +1272,7 @@ def reindex(ctx: click.Context, vector: bool, force: bool) -> None:
                 f"(skipped={orphan_stats['skipped']}, errors={orphan_stats['errors']})."
             )
 
-    count = store.reindex(force=force)
+    count = store.reindex(force=force, allow_preview_stubs=False)
     if count < 0:
         click.echo("Reindex only works with SQLite backend.", err=True)
         sys.exit(1)
@@ -1383,8 +1386,23 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
     paths = get_agent_paths()
     agent = paths["base"].name
 
-    # Phase 1: rescue SQLite-only orphans to flat files
-    orphan_stats = store.export_orphans_to_flat()
+    # Phase 1: rescue SQLite-only orphans to flat files, but only with FULL
+    # content (from pg). sync runs unattended on a 15-minute timer, so it must
+    # never write a ~150-char SQLite preview into the source of truth: that
+    # stub would be Syncthing-replicated to every node as if it were the
+    # memory. Preview-only orphans keep their index row and stay visible as
+    # `sqlite_only` in health; `skmemory export-flat` is the explicit,
+    # human-run way to materialize them anyway.
+    orphan_stats = store.export_orphans_to_flat(allow_preview_stubs=False)
+    if orphan_stats.get("preview_only"):
+        logger.warning(
+            "skmemory sync[%s]: %d SQLite-only memory(ies) have no full content "
+            "anywhere (pg has none); NOT writing truncated preview stubs into the "
+            "flat tier. Their index rows are kept. Run `skmemory export-flat` by "
+            "hand only if a lossy stub is better than nothing.",
+            agent,
+            orphan_stats["preview_only"],
+        )
 
     # This is the safety net, and it must be LOUD (card: sqlite-only
     # orphans, 2026-10-16 -- 23,525 rows sat silent on a laptop for months
@@ -1403,8 +1421,9 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
             orphan_stats["errors"],
         )
 
-    # Phase 2: pick up flat-only files (safe — orphans already exported)
-    indexed = store.reindex(force=False)
+    # Phase 2: pick up flat-only files. Preview-only orphans survive the
+    # rebuild as index rows instead of being written out as stubs.
+    indexed = store.reindex(force=False, allow_preview_stubs=False)
 
     cfg = None
     if vector or graph:
@@ -1497,6 +1516,8 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
             )
         )
         or (graph_stats and graph_stats.get("indexed", 0) > 0)
+        # A budgeted graph pass that left work behind is a finding too.
+        or (graph_stats and (graph_stats.get("deferred") or 0) > 0)
         or (failure_report or {}).get("cleared", 0) > 0
     )
     if quiet and not changed:
@@ -1522,6 +1543,8 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
         )
         + (
             f" graph_indexed={graph_stats['indexed']} graph_errors={graph_stats['errors']}"
+            f" graph_skipped={graph_stats.get('skipped', 0)}"
+            f" graph_deferred={graph_stats.get('deferred', 0)}"
             if graph_stats
             else ""
         )

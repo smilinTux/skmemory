@@ -1078,7 +1078,9 @@ class SQLiteBackend(BaseBackend):
         return count
 
     def export_orphans_to_flat(
-        self, full_content_lookup: Callable[[str], str | None] | None = None
+        self,
+        full_content_lookup: Callable[[str], str | None] | None = None,
+        allow_preview_stubs: bool = True,
     ) -> dict:
         """Write any SQLite-only memories out as flat JSON files.
 
@@ -1110,12 +1112,26 @@ class SQLiteBackend(BaseBackend):
                 path logs a WARNING per id naming the orphan and its source
                 -- a silent full-fleet loss must never be invisible again.
 
-        Safe: non-destructive, idempotent.
+            allow_preview_stubs: When False, an orphan with no full content
+                is NOT written: it is counted in ``preview_only`` and its id
+                listed in ``preview_only_ids`` instead. Unattended callers
+                (``sync``, ``reindex``) pass False so a lossy stub never
+                lands in the Syncthing-replicated source of truth on a timer.
+
+        An orphan whose flat file exists in ANY active tier (full or 12-char
+        shortform name) is skipped, not just one in the tier its index row
+        records. A memory promoted to another tier on another node used to
+        read as an orphan here, and got a preview stub written into its old
+        tier next to the real file: a full memory downgraded to a duplicate
+        stub (2026-10-27).
+
+        Safe: never overwrites a flat file; idempotent.
 
         Returns:
             dict: ``{"exported": N, "skipped": M, "errors": K,
-            "recovered_full": F, "orphan_ids": [...]}``, where ``F`` is how
-            many of the exported orphans got real full content from
+            "recovered_full": F, "orphan_ids": [...], "preview_only": P,
+            "preview_only_ids": [...]}``, where ``F`` is how many of the
+            exported orphans got real full content from
             ``full_content_lookup`` rather than the lossy preview.
         """
         from .file_backend import FileBackend
@@ -1135,7 +1151,10 @@ class SQLiteBackend(BaseBackend):
             "errors": 0,
             "recovered_full": 0,
             "orphan_ids": [],
+            "preview_only": 0,
+            "preview_only_ids": [],
         }
+        tier_dirs = [self.base_path / ml.value for ml in MemoryLayer]
         # Memories moved to the archive tree are intentional cold storage —
         # never resurrect them into an active tier as a truncated preview stub.
         archived_stems = self._archived_stems()
@@ -1162,9 +1181,10 @@ class SQLiteBackend(BaseBackend):
             ) = row
 
             short = memory_id[:12].replace("-", "")
-            full_path = self.base_path / layer / f"{memory_id}.json"
-            short_path = self.base_path / layer / f"{short}.json"
-            if full_path.exists() or short_path.exists():
+            if any(
+                (tier / f"{memory_id}.json").exists() or (tier / f"{short}.json").exists()
+                for tier in tier_dirs
+            ):
                 stats["skipped"] += 1
                 continue
             if memory_id in archived_stems or short in archived_stems:
@@ -1192,6 +1212,11 @@ class SQLiteBackend(BaseBackend):
                     and len(candidate) >= len(content_preview or "")
                 ):
                     full_content = candidate
+
+            if full_content is None and not allow_preview_stubs:
+                stats["preview_only"] += 1
+                stats["preview_only_ids"].append(memory_id)
+                continue
 
             if full_content is not None:
                 content = full_content
@@ -1247,29 +1272,54 @@ class SQLiteBackend(BaseBackend):
 
         return stats
 
-    def reindex(self, force: bool = False) -> int:
+    def reindex(
+        self,
+        force: bool = False,
+        allow_preview_stubs: bool = False,
+        full_content_lookup: Callable[[str], str | None] | None = None,
+    ) -> int:
         """Rebuild the entire index from JSON files on disk.
 
-        DESTRUCTIVE: deletes every row in the index, then re-reads flat files.
-        Any SQLite-only memories (with no backing flat file) are dropped.
+        Deletes the index rows, then re-reads flat files.
 
-        Safety: by default, ``export_orphans_to_flat()`` runs first to write
-        SQLite-only entries to disk, so they survive the rebuild. Pass
-        ``force=True`` to skip that step (the old destructive behavior).
+        Safety: by default, ``export_orphans_to_flat()`` runs first so
+        SQLite-only entries survive the rebuild: those with full content
+        (via ``full_content_lookup``) are written to disk, and those with
+        only the lossy preview KEEP their index row rather than being
+        written out as a truncated stub (unless ``allow_preview_stubs``).
+        A reindex never writes lossy content into the flat tier by default.
+        Pass ``force=True`` to skip all of that (the old destructive
+        behavior: every SQLite-only row is dropped).
 
         Use this after manual file edits or migration from FileBackend.
 
         Args:
             force: If True, skip orphan export before rebuilding.
+            allow_preview_stubs: Materialize preview-only orphans as stubs.
+            full_content_lookup: Passed to :meth:`export_orphans_to_flat`.
 
         Returns:
             int: Number of memories indexed.
         """
+        keep: list[str] = []
         if not force:
-            self.export_orphans_to_flat()
+            orphan_stats = self.export_orphans_to_flat(
+                full_content_lookup=full_content_lookup,
+                allow_preview_stubs=allow_preview_stubs,
+            )
+            keep = list(orphan_stats.get("preview_only_ids") or [])
 
         conn = self._get_conn()
-        conn.execute("DELETE FROM memories")
+        if keep:
+            conn.execute("CREATE TEMP TABLE IF NOT EXISTS _reindex_keep (id TEXT PRIMARY KEY)")
+            conn.execute("DELETE FROM _reindex_keep")
+            conn.executemany(
+                "INSERT OR IGNORE INTO _reindex_keep (id) VALUES (?)", [(i,) for i in keep]
+            )
+            conn.execute("DELETE FROM memories WHERE id NOT IN (SELECT id FROM _reindex_keep)")
+            conn.execute("DROP TABLE _reindex_keep")
+        else:
+            conn.execute("DELETE FROM memories")
         conn.commit()
 
         count = 0
