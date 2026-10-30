@@ -1,0 +1,12 @@
+[Unit]
+Description=Ensure SKMemory log directory exists for %i
+# Pulled in by skmemory-sync@ and skmemory-fortress-verify@. Those units
+# append stdout/stderr to %h/.skcapstone/agents/%i/logs/, and systemd opens
+# that file before ANY Exec line runs (ExecStartPre included), so a missing
+# logs/ dir fails the job instantly with "Failed to set up standard output".
+# LogsDirectory= cannot point into $HOME for user units, so a separate unit
+# with default (journal) stdio creates it first.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/mkdir -p %h/.skcapstone/agents/%i/logs

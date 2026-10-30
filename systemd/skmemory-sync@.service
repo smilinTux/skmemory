@@ -1,6 +1,7 @@
 [Unit]
 Description=SKMemory sync (flat files -> SQLite + skmem-pg pgvector + AGE graph) for %i
-After=network.target
+After=network.target skmemory-logdir@%i.service
+Requires=skmemory-logdir@%i.service
 
 [Service]
 Type=oneshot

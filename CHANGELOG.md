@@ -160,6 +160,14 @@
 
 ### Fixed
 
+- **Sync / fortress units no longer die on a missing `logs/` dir.** A new
+  agent without `~/.skcapstone/agents/<agent>/logs/` failed `skmemory-sync@` and
+  `skmemory-fortress-verify@` instantly with "Failed to set up standard output",
+  because systemd opens the `append:` log before any Exec line (so an
+  `ExecStartPre=mkdir` cannot help). New `skmemory-logdir@.service` creates the
+  dir with journal stdio; both units `Requires=`/`After=` it. The installer
+  copies it.
+
 - **One malformed row no longer kills an entire search.** Every read path in
   `PGVectorBackend` parsed rows with an unguarded comprehension, and `Memory`
   requires `title` and `content`, so a single row missing either raised

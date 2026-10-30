@@ -103,10 +103,12 @@ fi
 
 echo "Installing unit templates -> $UNIT_DST"
 if [[ "$DO_SYNC" == "yes" ]]; then
+  copy_unit "skmemory-logdir@.service"
   copy_unit "skmemory-sync@.service"
   copy_unit "skmemory-sync@.timer"
 fi
 if [[ "$DO_FORTRESS" == "yes" ]]; then
+  [[ "$DO_SYNC" == "yes" ]] || copy_unit "skmemory-logdir@.service"
   copy_unit "skmemory-fortress-verify@.service"
   copy_unit "skmemory-fortress-verify@.timer"
 fi
