@@ -23,6 +23,9 @@ WHISPER = """# SKWhisper Context
   more of the same
 - [Today] **Deploy runbook review**
   Reviewed the deploy runbook.
+- `~/build/image.tar`: a preview line that looks like a list item
+- [Today] **Session 5704a3c2 ended (alice, 0 turns)**
+  Session 5704a3c2 ended (clear).
 
 ## Relevant Memories
 
@@ -89,7 +92,7 @@ def _make_agent(base: Path, name: str = "alice", *, rich: bool = True) -> Path:
                 "seed_id": "first-light",
                 "creator": {"model": "alice"},
                 "experience": {"emotional_signature": {"intensity": 9}},
-                "germination": {"prompt": "You remember the first light. It was warm."},
+                "germination": {"prompt": "You are Alice. You remember the first light."},
             }
         )
     )
@@ -212,6 +215,7 @@ def test_whisper_appears_once_and_is_deduped(env):
     assert text.count("Session Digest: widget factory") == 1
     # low relevance item dropped, high relevance kept
     assert "Low signal item" not in text
+    assert "image.tar" not in text and "5704a3c2" not in text  # no preview lines, no hook crumbs
     assert "Hot topics: gtd inbox (24x), memory tiers (17x)" in text
     # memory already shown by whisper is not repeated in strongest
     assert text.count("Shared memory title") == 1
@@ -346,7 +350,7 @@ def test_vault_only_when_skvault_on_path(env, monkeypatch):
 
 def test_parse_whisper_and_norm_title():
     p = parse_whisper(WHISPER)
-    assert len(p["recent memories (latest activity)"]) == 3
+    assert len(p["recent memories (latest activity)"]) == 4  # preview line is not an item
     assert norm_title("Foo [chunk 2/3]") == norm_title("**Foo** (continued)") == "foo"
 
 
@@ -532,3 +536,9 @@ def test_cli_hook_command_runs_from_any_cwd(env, monkeypatch):
     assert result.exit_code == 0
     assert result.output.startswith("# SK agent context: alice")
     assert len(result.output) <= 3001
+
+
+def test_seed_skips_you_are_opener(env):
+    _make_agent(env)
+    text = build_context(env={**os.environ}, sections=["seeds"]).text
+    assert "first-light (alice): You remember the first light." in text

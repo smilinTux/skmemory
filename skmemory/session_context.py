@@ -407,6 +407,11 @@ def collect_feb(c: Ctx) -> Section | None:
     return Section("feb", "Emotional state (FEB)", lines, min_lines=1)
 
 
+# Our own hook breadcrumbs ("Session ab12cd34 ended (...)", "Pre-compact session
+# content (...)") flow back into whisper.md via skwhisper; they are not news.
+_HOOK_CRUMB = re.compile(r"^(session \w+ ended\b|pre-compact session content\b)", re.I)
+
+
 def parse_whisper(text: str) -> dict:
     """Split whisper.md into {heading: [(title, preview, meta)]} plus header."""
     out: dict[str, list[tuple[str, str, str]]] = {}
@@ -421,7 +426,9 @@ def parse_whisper(text: str) -> dict:
             continue
         if current is None:
             continue
-        m = re.match(r"^- (?:\[([^\]]+)\]\s*)?(.*)$", line)
+        # Items are "- [when] **title**" or "- **title** meta"; multi-line
+        # previews can contain their own "- " lines, which are not items.
+        m = re.match(r"^- (?:\[([^\]]+)\]\s*)?(\*\*.*)$", line)
         if m:
             when, rest = m.group(1) or "", m.group(2)
             t = re.match(r"^\*\*(.+)\*\*\s*(.*)$", rest)
@@ -456,7 +463,7 @@ def collect_open(c: Ctx) -> Section | None:
         (v for k, v in parsed.items() if k.startswith("recent")), []
     ):
         key = norm_title(title)
-        if not key or key in seen:
+        if not key or key in seen or _HOOK_CRUMB.search(title):
             continue
         seen.add(key)
         titles.append(key)
@@ -756,7 +763,9 @@ def collect_seeds(c: Ctx) -> Section | None:
     lines = [f"{len(seeds)} seeds; strongest germination prompts:"]
     for _i, sid, creator, prompt in seeds[: int(c.cfg.get("seeds", 3) or 3)]:
         who = f" ({creator})" if creator else ""
-        lines.append(f"- {sid}{who}: {_first_sentence(prompt, 180)}")
+        # Most prompts open with "You are <name>."; show what comes after it.
+        body = re.sub(r"^\s*You are [^.!?]{1,40}[.!?]\s*", "", prompt) or prompt
+        lines.append(f"- {sid}{who}: {_first_sentence(body, 180)}")
     return Section("seeds", "Seeds", lines, min_lines=2)
 
 
