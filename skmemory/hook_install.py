@@ -202,8 +202,9 @@ def _strip_managed(hooks: dict) -> tuple[dict, list[str]]:
                 kept_groups.append({**g, "hooks": kept})
             elif not g["hooks"]:
                 kept_groups.append(g)
-        if kept_groups:
-            out[event] = kept_groups
+        # Keep the key (even if now empty) so a reinstall extends it in place
+        # instead of moving the event to the end of the map.
+        out[event] = kept_groups
     return out, removed
 
 
@@ -215,7 +216,7 @@ def merge_hook_map(
         for event, groups in _desired_groups(harness, exe).items():
             stripped.setdefault(event, [])
             stripped[event].extend(groups)
-    return stripped, removed
+    return {k: v for k, v in stripped.items() if v != []}, removed
 
 
 def _json_dump(data: dict) -> str:
