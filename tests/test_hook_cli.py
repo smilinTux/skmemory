@@ -26,6 +26,11 @@ WHISPER = """# SKWhisper Context
 - `~/build/image.tar`: a preview line that looks like a list item
 - [Today] **Session 5704a3c2 ended (alice, 0 turns)**
   Session 5704a3c2 ended (clear).
+- [Today] **Session 42365cd3 ended (alice, 30 turns)**
+  TURNS: 30
+
+USER REQUESTS:
+can you clean up disk space on this box?
 
 ## Relevant Memories
 
@@ -215,7 +220,8 @@ def test_whisper_appears_once_and_is_deduped(env):
     assert text.count("Session Digest: widget factory") == 1
     # low relevance item dropped, high relevance kept
     assert "Low signal item" not in text
-    assert "image.tar" not in text and "5704a3c2" not in text  # no preview lines, no hook crumbs
+    assert "image.tar" not in text and "5704a3c2" not in text  # no preview lines, no bare crumbs
+    assert "Session 42365cd3 ended (alice, 30 turns) (Today): asked: can you clean up disk" in text
     assert "Hot topics: gtd inbox (24x), memory tiers (17x)" in text
     # memory already shown by whisper is not repeated in strongest
     assert text.count("Shared memory title") == 1
@@ -350,7 +356,7 @@ def test_vault_only_when_skvault_on_path(env, monkeypatch):
 
 def test_parse_whisper_and_norm_title():
     p = parse_whisper(WHISPER)
-    assert len(p["recent memories (latest activity)"]) == 4  # preview line is not an item
+    assert len(p["recent memories (latest activity)"]) == 5  # preview line is not an item
     assert norm_title("Foo [chunk 2/3]") == norm_title("**Foo** (continued)") == "foo"
 
 

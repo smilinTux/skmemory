@@ -417,6 +417,7 @@ def parse_whisper(text: str) -> dict:
     out: dict[str, list[tuple[str, str, str]]] = {}
     current = None
     item = None
+    bodies: dict[int, list[str]] = {}
     for raw in text.splitlines():
         line = raw.rstrip()
         if line.startswith("## "):
@@ -438,9 +439,17 @@ def parse_whisper(text: str) -> dict:
                 title, meta = rest, ""
             item = [title.replace("**", "").strip(), "", meta or when]
             out[current].append(item)  # type: ignore[arg-type]
+            bodies[id(item)] = []
             continue
-        if item is not None and line.startswith("  ") and line.strip() and not item[1]:
-            item[1] = re.sub(r"^\[[\w -]+\]\s*", "", line.strip().replace("**", ""))
+        if item is not None:
+            bodies[id(item)].append(line)
+            if line.startswith("  ") and line.strip() and not item[1]:
+                item[1] = re.sub(r"^\[[\w -]+\]\s*", "", line.strip().replace("**", ""))
+    for items in out.values():
+        for it in items:
+            m = re.search(r"USER REQUESTS:\s*\n\s*-?\s*(\S.*)", "\n".join(bodies.get(id(it), [])))
+            if m and _HOOK_CRUMB.search(it[0]):
+                it[1] = "asked: " + m.group(1).strip()  # type: ignore[index]
     return {k: [tuple(i) for i in v] for k, v in out.items()}  # type: ignore[misc]
 
 
@@ -463,8 +472,13 @@ def collect_open(c: Ctx) -> Section | None:
         (v for k, v in parsed.items() if k.startswith("recent")), []
     ):
         key = norm_title(title)
-        if not key or key in seen or _HOOK_CRUMB.search(title):
+        if not key or key in seen:
             continue
+        if _HOOK_CRUMB.search(title):
+            # Session summaries are news only when they carry real requests.
+            turns = re.search(r"(\d+) turns", title)
+            if not preview.startswith("asked: ") or (turns and int(turns.group(1)) < 3):
+                continue
         seen.add(key)
         titles.append(key)
         clean = _clip(_CHUNK_RE.sub(" ", title).replace("**", ""), 110)
