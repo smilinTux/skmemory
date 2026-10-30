@@ -642,112 +642,45 @@ def register_hooks(
     environments: list[str] | None = None,
     dry_run: bool = False,
 ) -> dict:
-    """Register skmemory auto-save hooks in Claude Code settings.
+    """Register skmemory lifecycle hooks in every detected harness.
 
-    Adds hooks for:
-      - PreCompact: save context to skmemory before compaction
-      - SessionEnd: journal session end
-      - SessionStart (compact): reinject memory context after compaction
+    Delegates to :mod:`skmemory.hook_install`, which wires the packaged
+    ``skmemory hook <event>`` entrypoint into Claude Code (settings.json),
+    Codex (hooks.json), OpenCode (plugin) and Pi (extension), replacing the
+    legacy repo-path ``hooks/*.sh`` entries and leaving other hooks alone.
 
     Args:
-        environments: Target environments (auto-detect if None).
+        environments: Target environments (auto-detect if None). Accepts the
+            detect_environments() names (``claude-code``) or harness names.
         dry_run: If True, only report what would be done.
 
     Returns:
-        Dict with action taken: "created", "updated", "exists", "skip", or "error:...".
+        Dict with an aggregate "action" plus per-harness results.
     """
+    from .hook_install import _ENV_TO_HARNESS, install_harness
+
     if environments is None:
         environments = detect_environments()
+    harnesses = [_ENV_TO_HARNESS.get(e, e) for e in environments]
+    harnesses = [h for h in ("claude", "codex", "opencode", "pi") if h in harnesses]
+    if not harnesses:
+        return {"action": "skip", "reason": "no supported harness detected"}
 
-    if "claude-code" not in environments:
-        return {"action": "skip", "reason": "claude-code not detected"}
-
-    if dry_run:
-        return {"action": "dry-run"}
-
-    home = Path.home()
-    settings_path = home / ".claude" / "settings.json"
-
-    # Resolve hook script paths from the installed package
-    hooks_dir = Path(__file__).parent / "hooks"
-    pre_compact = str(hooks_dir / "pre-compact-save.sh")
-    session_end = str(hooks_dir / "session-end-save.sh")
-    post_compact = str(hooks_dir / "post-compact-reinject.sh")
-
-    # Verify hook scripts exist
-    for script in [pre_compact, session_end, post_compact]:
-        if not Path(script).exists():
-            return {"action": f"error: hook script not found: {script}"}
-
-    desired_hooks = {
-        "PreCompact": [
-            {
-                "matcher": "",
-                "hooks": [{"type": "command", "command": pre_compact}],
-            }
-        ],
-        "SessionEnd": [
-            {
-                "matcher": "",
-                "hooks": [{"type": "command", "command": session_end}],
-            }
-        ],
-        "SessionStart": [
-            {
-                "matcher": "compact",
-                "hooks": [{"type": "command", "command": post_compact}],
-            }
-        ],
-    }
-
-    try:
-        data = _read_json(settings_path)
-        existing_hooks = data.get("hooks", {})
-
-        # Check if already configured
-        needs_update = False
-        for event, hook_list in desired_hooks.items():
-            if event not in existing_hooks:
-                needs_update = True
-                break
-            # Check if our hook command is already present
-            existing_cmds = []
-            for entry in existing_hooks[event]:
-                for h in entry.get("hooks", []):
-                    existing_cmds.append(h.get("command", ""))
-            desired_cmd = hook_list[0]["hooks"][0]["command"]
-            if desired_cmd not in existing_cmds:
-                needs_update = True
-                break
-
-        if not needs_update:
-            return {"action": "exists"}
-
-        # Merge: add our hooks without removing existing ones
-        for event, hook_list in desired_hooks.items():
-            if event not in existing_hooks:
-                existing_hooks[event] = hook_list
-            else:
-                # Check if our command is already there
-                desired_cmd = hook_list[0]["hooks"][0]["command"]
-                already_present = False
-                for entry in existing_hooks[event]:
-                    for h in entry.get("hooks", []):
-                        if h.get("command") == desired_cmd:
-                            already_present = True
-                            break
-                if not already_present:
-                    existing_hooks[event].extend(hook_list)
-
-        data["hooks"] = existing_hooks
-        _write_json(settings_path, data)
-
-        action = "updated" if settings_path.exists() else "created"
-        return {"action": action}
-
-    except Exception as exc:
-        logger.warning("register.py: %s", exc)
-        return {"action": f"error: {exc}"}
+    results = {h: install_harness(h, dry_run=dry_run) for h in harnesses}
+    actions = {str(r.get("action", "")) for r in results.values()}
+    if any(a.startswith("error") for a in actions):
+        action = "error: " + "; ".join(
+            f"{h}: {r['action']}"
+            for h, r in results.items()
+            if str(r["action"]).startswith("error")
+        )
+    elif dry_run:
+        action = "dry-run"
+    elif actions <= {"unchanged"}:
+        action = "exists"
+    else:
+        action = "updated"
+    return {"action": action, "harnesses": results}
 
 
 # ── High-level package registration ──────────────────────────────────────────
