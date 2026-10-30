@@ -1,29 +1,4 @@
 #!/usr/bin/env bash
-# skmemory Session Start Wrapper for OpenCode
-# 
-# This script is called by OpenCode at the start of each session.
-# It injects the full SK ecosystem context: soul, FEB, seeds, memories, whisper.
-#
-# OpenCode calls this via the on_start hook in ~/.config/opencode/opencode.json
-# The hook runs the session-start-ritual.sh which outputs context to stdout.
-#
-# Usage: opencode-skmemory-start
-
-set -euo pipefail
-
-# Source the main ritual hook
-RITUAL_SCRIPT="/home/cbrd21/clawd/skcapstone-repos/skmemory/skmemory/hooks/session-start-ritual.sh"
-if [ -f "$RITUAL_SCRIPT" ]; then
-    bash "$RITUAL_SCRIPT"
-fi
-
-exit 0
-</parameter>
-<function>write</parameter>
-<parameter=filePath>/home/cbrd21/clawd/skcapstone-repos/skmemory/skmemory/hooks/opencode-session-end.sh
-</parameter>
-<parameter=content>
-#!/usr/bin/env bash
 # skmemory Session End Wrapper for OpenCode
 #
 # This script is called when an OpenCode session ends.
