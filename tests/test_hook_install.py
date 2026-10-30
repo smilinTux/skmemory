@@ -349,3 +349,11 @@ def test_register_hooks_delegates(home):
     assert res["action"] == "updated"
     assert register_hooks(environments=["claude-code"])["action"] == "exists"
     assert register_hooks(environments=["cursor"])["action"] == "skip"
+
+
+def test_codex_dry_run_previews_trust_diff(home):
+    res = hook_install.install("codex", dry_run=True)["codex"]
+    assert res["action"] == "would-create"
+    assert res["trust"]["action"] == "would-create"
+    assert "trusted_hash" in res["trust"]["diff"]
+    assert not (home / ".codex").exists()

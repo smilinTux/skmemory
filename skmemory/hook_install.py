@@ -249,19 +249,20 @@ def _install_json_hooks(path: Path, harness: str, exe: str, dry_run: bool, insta
         pass
     res = _apply(path, old, new, dry_run)
     res["replaced"] = [r for r in removed if is_legacy_command(r.split(": ", 1)[1])]
+    res["_data"] = data
     return res
 
 
 # ── Codex hook trust ─────────────────────────────────────────────────────────
 
 
-def codex_trust(dry_run: bool = False) -> dict:
-    """Record trust for our skmemory hooks via `codex app-server` (best effort)."""
+def codex_trust(dry_run: bool = False, hooks_data: dict | None = None) -> dict:
+    """Record trust for our skmemory hooks in config.toml (verified via app-server)."""
     try:
         from .codex_trust import trust_skmemory_hooks
     except Exception as exc:  # pragma: no cover
         return {"action": f"skip: {exc}"}
-    return trust_skmemory_hooks(dry_run=dry_run)
+    return trust_skmemory_hooks(dry_run=dry_run, hooks_data=hooks_data)
 
 
 # ── per-harness entry points ─────────────────────────────────────────────────
@@ -292,11 +293,14 @@ def install_harness(
     exe = exe or skmemory_bin()
     try:
         if harness == "claude":
-            return _install_json_hooks(claude_settings_path(), "claude", exe, dry_run, install)
+            res = _install_json_hooks(claude_settings_path(), "claude", exe, dry_run, install)
+            res.pop("_data", None)
+            return res
         if harness == "codex":
             res = _install_json_hooks(codex_hooks_path(), "codex", exe, dry_run, install)
+            data = res.pop("_data", None)
             if install and not str(res.get("action", "")).startswith("error"):
-                res["trust"] = codex_trust(dry_run=dry_run)
+                res["trust"] = codex_trust(dry_run=dry_run, hooks_data=data)
             return res
         if harness == "opencode":
             return _template_file(

@@ -74,14 +74,15 @@ def hook_key(source_path: str, event: str, gi: int, hi: int) -> str:
     return f"{source_path}:{EVENT_LABEL[event]}:{gi}:{hi}"
 
 
-def our_trust_entries(hooks_json: Path) -> dict[str, str]:
-    """{key: hash} for every skmemory handler in hooks.json."""
+def our_trust_entries(hooks_json: Path, data: dict | None = None) -> dict[str, str]:
+    """{key: hash} for every skmemory handler in hooks.json (or in ``data``)."""
     from .hook_install import _OURS
 
-    try:
-        data = json.loads(hooks_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    if data is None:
+        try:
+            data = json.loads(hooks_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
     src = str(hooks_json.absolute())
     out: dict[str, str] = {}
     for event, groups in (data.get("hooks") or {}).items():
@@ -180,15 +181,19 @@ def codex_hooks_list(codex_home: Path, cwd: str = "/", timeout: float = 20.0) ->
             pass
 
 
-def trust_skmemory_hooks(dry_run: bool = False, verify: bool = True) -> dict:
-    """Trust our handlers in hooks.json by writing hooks.state into config.toml."""
+def trust_skmemory_hooks(
+    dry_run: bool = False, verify: bool = True, hooks_data: dict | None = None
+) -> dict:
+    """Trust our handlers in hooks.json by writing hooks.state into config.toml.
+
+    ``hooks_data`` is the hooks.json content about to be written; dry runs pass
+    it so the config.toml diff can be previewed before hooks.json exists.
+    """
     from .hook_install import _apply, _read_text, codex_home, codex_hooks_path
 
     if os.environ.get("SKMEMORY_CODEX_NO_TRUST") == "1":
         return {"action": "skip: SKMEMORY_CODEX_NO_TRUST=1 (approve once with /hooks in codex)"}
-    entries = our_trust_entries(codex_hooks_path())
-    if not entries and dry_run:
-        return {"action": "would-trust skmemory handlers after hooks.json is written"}
+    entries = our_trust_entries(codex_hooks_path(), hooks_data)
     if not entries:
         return {"action": "skip: no skmemory handlers in hooks.json"}
     cfg = codex_home() / "config.toml"
