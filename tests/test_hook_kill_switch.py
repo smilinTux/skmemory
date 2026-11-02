@@ -30,11 +30,13 @@ def test_disabled_unified_hook_is_silent_before_all_work(monkeypatch, capsys, ev
     monkeypatch.setenv("SKMEMORY_HOOK_DEBUG", "1")
     out = io.StringIO()
     with (
+        patch.object(hook_cli, "read_stdin_json") as read_stdin,
         patch.object(hook_cli, "_context_event") as context_event,
         patch.object(hook_cli, "_save_event") as save_event,
         patch.object(hook_cli, "_stop_event") as stop_event,
     ):
         assert hook_cli.run_hook(event, harness, stdin=ForbiddenInput(), out=out) == 0
+    read_stdin.assert_not_called()
     context_event.assert_not_called()
     save_event.assert_not_called()
     stop_event.assert_not_called()
