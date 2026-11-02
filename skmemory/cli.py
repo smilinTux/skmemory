@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -3425,6 +3426,9 @@ def hook_cmd(event, harness, budget, agent, session_id, transcript, reason):
       skmemory hook session-start --harness generic     # preview the ritual
       skmemory hook session-start --harness claude --budget 6000
     """
+    if os.environ.get("SKMEMORY_HOOKS") == "off":
+        return
+
     from .hook_cli import run_hook
 
     run_hook(

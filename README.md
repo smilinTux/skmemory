@@ -260,6 +260,11 @@ skmemory hooks uninstall --harness all
 skmemory hook session-start --harness generic    # preview the ritual
 ```
 
+Set `SKMEMORY_HOOKS=off` to disable every SKMemory lifecycle hook. Disabled
+hooks exit successfully without reading stdin, loading agent context, reading
+transcripts, updating counters, or starting persistence work. Unset or set the
+variable to `on` to retain the default behavior.
+
 | Harness | Mechanism | Events |
 |---|---|---|
 | Claude Code | `~/.claude/settings.json` hooks | SessionStart (startup/clear, compact/resume), PreCompact, SessionEnd, Stop |

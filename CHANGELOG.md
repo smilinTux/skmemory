@@ -8,6 +8,11 @@
 
 ### Added
 
+- **Lifecycle hook kill switch.** Set `SKMEMORY_HOOKS=off` to make every event
+  and harness return successfully and silently before input, context, transcript,
+  counter, persistence, journal, activity, or digest work. Legacy shipped hook
+  entrypoints honor the same setting. Unset and `on` preserve existing behavior.
+
 - **Universal session hooks + ritual v2** (`skmemory hook <event>`, `skmemory hooks install|uninstall|status`).
   One packaged entrypoint for Claude Code, Codex, OpenCode and Pi with no repo-path
   dependency; a budgeted ritual (default 8000 chars, whisper deduped). Legacy
