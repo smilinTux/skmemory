@@ -97,7 +97,7 @@ Issues = "https://github.com/smilinTux/skmemory/issues"
 include = ["skmemory*"]
 
 [tool.setuptools.package-data]
-skmemory = ["data/*.json", "SKILL.md", "hooks/*.sh"]
+skmemory = ["data/*.json", "SKILL.md", "hooks/*.sh", "harness/*.js", "harness/*.ts"]
 
 [tool.black]
 line-length = 99

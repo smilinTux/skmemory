@@ -1,11 +1,9 @@
-"""Claude Code hooks for skmemory auto-save.
+"""Legacy hook scripts, kept as thin back-compat wrappers.
 
-Ships three hook scripts:
-  pre-compact-save.sh    — Snapshots context before compaction
-  session-end-save.sh    — Journals session end
-  post-compact-reinject.sh — Re-injects memory context after compaction
-
-Installed by `skmemory register` into ~/.claude/settings.json.
+All hook logic now lives in ``skmemory hook <event>`` (skmemory/hook_cli.py)
+and is wired into harness configs by ``skmemory hooks install``. These .sh
+files only exec that command so existing settings.json entries keep working
+until the installer replaces them.
 """
 
 from pathlib import Path

@@ -423,7 +423,7 @@ def cli(
     # The operator facet (explain/observe/act) is store-free and must stay
     # hermetic: never build a MemoryStore (backends, embeddings) just to print
     # the operator contract or read fail-safe health probes.
-    if ctx.invoked_subcommand == "operator":
+    if ctx.invoked_subcommand in ("operator", "hook", "hooks"):
         ctx.obj["ai"] = None
         return
     if "store" not in ctx.obj:
@@ -3385,6 +3385,139 @@ def _auto_register_once() -> None:
         pass  # Never fail the CLI over registration
 
 
+# ═══════════════════════════════════════════════════════════
+# Harness hooks (Claude Code, Codex, OpenCode, Pi)
+# ═══════════════════════════════════════════════════════════
+
+_HOOK_EVENTS = ["session-start", "post-compact", "pre-compact", "session-end", "stop"]
+_HOOK_HARNESSES = ["claude", "codex", "opencode", "pi", "generic"]
+
+
+@cli.command("hook")
+@click.argument("event", type=click.Choice(_HOOK_EVENTS))
+@click.option(
+    "--harness",
+    type=click.Choice(_HOOK_HARNESSES),
+    default="generic",
+    show_default=True,
+    help="Output format: claude/codex print hook JSON, others print markdown.",
+)
+@click.option(
+    "--budget",
+    type=int,
+    default=None,
+    help="Character budget (env SKMEMORY_HOOK_BUDGET / SKMEMORY_HOOK_COMPACT_BUDGET, "
+    "or ritual.budget / ritual.compact_budget in skmemory.yaml). Default 8000 / 3500.",
+)
+@click.option("--agent", default=None, help="Agent name (default: resolved from env).")
+@click.option("--session-id", default=None, help="Session id when the harness has no stdin JSON.")
+@click.option("--transcript", default=None, help="Transcript path when not given on stdin.")
+@click.option("--reason", default=None, help="Session end reason when not given on stdin.")
+def hook_cmd(event, harness, budget, agent, session_id, transcript, reason):
+    """Run one harness lifecycle hook (fail soft, always exits 0).
+
+    Reads the harness JSON payload from stdin when present. session-start and
+    post-compact print a budgeted ritual (ritual v2); pre-compact, session-end
+    and stop save breadcrumbs in a detached process.
+
+    Examples:
+
+      skmemory hook session-start --harness generic     # preview the ritual
+      skmemory hook session-start --harness claude --budget 6000
+    """
+    from .hook_cli import run_hook
+
+    run_hook(
+        event,
+        harness=harness,
+        budget=budget,
+        agent=agent,
+        session_id=session_id,
+        transcript=transcript,
+        reason=reason,
+    )
+
+
+@cli.group("hooks")
+def hooks_group() -> None:
+    """Install, remove, or inspect skmemory hooks in coding harnesses."""
+
+
+_HARNESS_CHOICE = click.option(
+    "--harness",
+    default="auto",
+    show_default=True,
+    help="auto (detected), all, or a comma list of claude,codex,opencode,pi.",
+)
+
+
+def _print_hook_results(results: dict, as_json: bool) -> None:
+    if as_json:
+        click.echo(json.dumps(results, indent=2, default=str))
+        return
+    for name, res in results.items():
+        if not isinstance(res, dict):
+            click.echo(f"{name}: {res}")
+            continue
+        click.echo(f"{name}: {res.get('action', res.get('state', '?'))}  {res.get('path', '')}")
+        for key in ("backup", "warning"):
+            if res.get(key):
+                click.echo(f"  {key}: {res[key]}")
+        for old in res.get("replaced", []) or []:
+            click.echo(f"  replaced legacy: {old}")
+        trust = res.get("trust")
+        if isinstance(trust, dict):
+            click.echo(f"  codex trust: {trust.get('action')}  {trust.get('path', '')}")
+            if trust.get("diff"):
+                click.echo(trust["diff"].rstrip())
+            if trust.get("warning"):
+                click.echo(f"  warning: {trust['warning']}")
+        if res.get("diff"):
+            click.echo(res["diff"].rstrip())
+
+
+@hooks_group.command("install")
+@_HARNESS_CHOICE
+@click.option("--dry-run", is_flag=True, help="Show the diff without writing anything.")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def hooks_install(harness: str, dry_run: bool, as_json: bool) -> None:
+    """Wire `skmemory hook` into harness configs (idempotent, backs up first)."""
+    from .hook_install import install
+
+    _print_hook_results(install(harness, dry_run=dry_run), as_json)
+
+
+@hooks_group.command("uninstall")
+@_HARNESS_CHOICE
+@click.option("--dry-run", is_flag=True, help="Show the diff without writing anything.")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def hooks_uninstall(harness: str, dry_run: bool, as_json: bool) -> None:
+    """Remove skmemory (and legacy SK) hook entries; other hooks are kept."""
+    from .hook_install import uninstall
+
+    _print_hook_results(uninstall(harness, dry_run=dry_run), as_json)
+
+
+@hooks_group.command("status")
+@click.option("--harness", default="all", show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def hooks_status(harness: str, as_json: bool) -> None:
+    """Show which harnesses have skmemory hooks, legacy hooks, or none."""
+    from .hook_install import status
+
+    res = status(harness)
+    if as_json:
+        click.echo(json.dumps(res, indent=2))
+        return
+    click.echo(f"skmemory: {res.pop('skmemory')}")
+    for name, st in res.items():
+        click.echo(f"{name}: {st['state']}  {st['path']}")
+        for h in st.get("hooks", []):
+            click.echo(f"  hook: {h}")
+        for h in st.get("legacy", []):
+            click.echo(f"  legacy: {h}")
+
+
 # Register subcommand groups from sibling modules
 try:
     from .songs_cli import songs as _songs_group
@@ -3644,7 +3777,10 @@ def pg_roles(
 
 def main() -> None:
     """Entry point for the CLI."""
-    _auto_register_once()
+    # Harness hooks must stay fast and side-effect free: never auto-register
+    # (which writes configs) from inside a hook or the hook installer.
+    if sys.argv[1:2] not in (["hook"], ["hooks"]):
+        _auto_register_once()
     cli()
 
 

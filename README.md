@@ -246,6 +246,48 @@ flowchart TD
 
 ---
 
+## Harness hooks (Claude Code, Codex, OpenCode, Pi)
+
+One packaged entrypoint injects the agent ritual at session start and saves
+breadcrumbs at compaction, stop and session end, from any cwd, with no repo
+checkout:
+
+```bash
+skmemory hooks install --harness auto       # or all, or claude,codex,opencode,pi
+skmemory hooks install --harness all --dry-run   # show the diff, write nothing
+skmemory hooks status
+skmemory hooks uninstall --harness all
+skmemory hook session-start --harness generic    # preview the ritual
+```
+
+| Harness | Mechanism | Events |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` hooks | SessionStart (startup/clear, compact/resume), PreCompact, SessionEnd, Stop |
+| Codex | `~/.codex/hooks.json` + trust entries in `config.toml` | same as Claude |
+| OpenCode | plugin `~/.config/opencode/plugins/skmemory-context.js` | system transform (cached per session), compacting, idle, dispose |
+| Pi | extension `~/.pi/agent/extensions/skmemory-context.ts` | session_start + before_agent_start, session_before_compact, session_shutdown |
+
+Installing replaces legacy entries (`skmemory/hooks/*.sh`, `skwhisper-inject.sh`,
+`skwhisper-save.sh`, a bare `skcapstone`) and our own earlier entries, keeps
+every other hook, and writes a timestamped `*.bak-skmemory-*` backup first.
+Commands use the absolute path of the installed `skmemory` script.
+
+The ritual (v2) is budgeted: 8000 chars at session start, 3500 after
+compaction, sections dropped lowest priority first (identity, FEB, SKWhisper
+distilled, GTD, journal, strongest memories, seeds, vault). Override with
+`--budget`, `SKMEMORY_HOOK_BUDGET` / `SKMEMORY_HOOK_COMPACT_BUDGET`, or in the
+agent's `config/skmemory.yaml`:
+
+```yaml
+ritual:
+  budget: 6000
+  compact_budget: 3000
+  sections: {vault: false}          # turn a section off
+  exclude_tags: [content-chunk, chat-import, auto-save, seed, private]
+```
+
+`skmemory ritual --full` still prints the complete ritual for humans.
+
 ## Usage
 
 ### CLI

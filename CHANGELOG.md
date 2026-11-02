@@ -8,6 +8,11 @@
 
 ### Added
 
+- **Universal session hooks + ritual v2** (`skmemory hook <event>`, `skmemory hooks install|uninstall|status`).
+  One packaged entrypoint for Claude Code, Codex, OpenCode and Pi with no repo-path
+  dependency; a budgeted ritual (default 8000 chars, whisper deduped). Legacy
+  `hooks/*.sh` remain as thin wrappers. Supersedes #83.
+
 - **Evidence-grounded observations** (`skmemory/observations.py`, R3). A
   consolidated belief that carries its own proof: a statement plus evidence
   items of `{memory_id, quote, timestamp}`, from which `proof_count` and a
