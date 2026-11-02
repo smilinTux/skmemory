@@ -43,6 +43,11 @@ JSON_HARNESSES = ("claude", "codex")
 EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "write", "edit", "apply_patch"}
 
 
+def hooks_disabled() -> bool:
+    """Return whether every SKMemory lifecycle hook is disabled."""
+    return os.environ.get("SKMEMORY_HOOKS") == "off"
+
+
 # ── stdin ────────────────────────────────────────────────────────────────────
 
 
@@ -177,6 +182,8 @@ def summarize_transcript(tr: dict, n_user: int, n_asst: int, cap: int = 4000) ->
 
 def _spawn_persist(payload: dict) -> bool:
     """Write payload to a 0600 temp file and hand it to a detached child."""
+    if hooks_disabled():
+        return False
     try:
         fd, path = tempfile.mkstemp(prefix="skmemory-hook-", suffix=".json")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -202,6 +209,8 @@ def _spawn_persist(payload: dict) -> bool:
 
 def persist(path: str) -> int:
     """Child process: do the slow writes. Serialized per agent with a lock."""
+    if hooks_disabled():
+        return 0
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:
@@ -484,6 +493,8 @@ def run_hook(
     out=None,
 ) -> int:
     """Dispatch one hook event. Always returns 0."""
+    if hooks_disabled():
+        return 0
     out = out or sys.stdout
     harness = harness if harness in HARNESSES else "generic"
     args = {"session_id": session_id, "transcript": transcript, "reason": reason}
