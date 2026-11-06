@@ -213,7 +213,8 @@ class TestHealthGraphIntegration:
     def test_health_without_graph(self, store_no_graph: MemoryStore) -> None:
         """Health should not include graph key when no graph backend."""
         health = store_no_graph.health()
-        assert "graph" not in health
+        # Always present now: null means "not configured", never "missing".
+        assert health["graph"] == {"ok": None, "configured": False, "error": None}
 
     def test_health_reports_graph_failure(
         self, store_with_graph: MemoryStore, graph: FakeSKGraphBackend

@@ -63,6 +63,10 @@ class FileBackend(BaseBackend):
         seal_config: dict[str, Any] | None = None,
         strict_verify: bool = False,
     ) -> None:
+        if base_path == DEFAULT_BASE_PATH:
+            from .. import config as _config
+
+            _config.check_default_home_resolved()
         self.base_path = Path(base_path)
         self._seal_config = seal_config
         self._strict_verify = strict_verify

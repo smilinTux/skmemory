@@ -184,6 +184,10 @@ class SQLiteBackend(BaseBackend):
     """
 
     def __init__(self, base_path: str = DEFAULT_BASE_PATH) -> None:
+        if base_path == DEFAULT_BASE_PATH:
+            from .. import config as _config
+
+            _config.check_default_home_resolved()
         self.base_path = Path(base_path)
         self._ensure_dirs()
         self._db_path = self.base_path / "index.db"

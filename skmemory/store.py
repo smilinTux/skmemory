@@ -154,6 +154,11 @@ class MemoryStore:
             self.primary = FileBackend()
         self.vector = vector
         self.graph = graph
+        # Backends that were CONFIGURED but failed to construct, by role
+        # ("vector"/"graph") -> the real error text. health() reports these as
+        # ok:false with the message; without this a configured-and-broken
+        # backend and a never-configured one both read as `null`.
+        self.backend_errors: dict[str, str] = {}
         self.max_content_length = max_content_length
         self.content_overflow_strategy = content_overflow_strategy
         self.decompose_min_length = decompose_min_length
@@ -213,6 +218,59 @@ class MemoryStore:
                 / "write_log.jsonl"
             )
         self._wal = WriteAheadLog(wal_path)
+
+    def _probe_backend(self, role: str, backend: BaseBackend | None) -> dict:
+        """Probe one derived backend and return an always-populated block.
+
+        ``ok`` is True/False only when a probe actually ran or the backend is
+        known to be configured-but-broken; ``None`` means NOT CONFIGURED and
+        nothing else. A failed probe always carries the real error text.
+        """
+        if backend is None:
+            err = self.backend_errors.get(role)
+            if err:
+                return {"ok": False, "configured": True, "error": err}
+            return {"ok": None, "configured": False, "error": None}
+        try:
+            block = backend.health_check()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("store.py: %s health probe failed: %s", role, e)
+            return {"ok": False, "configured": True, "error": f"{type(e).__name__}: {e}"}
+        if not isinstance(block, dict):
+            return {
+                "ok": False,
+                "configured": True,
+                "error": f"health_check returned {type(block).__name__}, expected dict",
+            }
+        block = dict(block)
+        block.setdefault("configured", True)
+        if block.get("ok") is False and not block.get("error"):
+            block["error"] = "backend reported ok:false without detail"
+        return block
+
+    def _profile_info(self) -> dict:
+        """Describe the corpus this store is rooted in."""
+        from pathlib import Path as _Path
+
+        base = getattr(self.primary, "base_path", None)
+        try:
+            from . import config as _config
+
+            unresolved = _config.PROFILE_UNRESOLVED
+            placeholder = _config.UNRESOLVED_HOME_NAME
+        except Exception:  # noqa: BLE001
+            unresolved, placeholder = None, ""
+        # An explicit base_path elsewhere is the caller's own instruction.
+        if unresolved and base is not None and _Path(base).parent.name != placeholder:
+            unresolved = None
+        info: dict = {"resolved": not unresolved, "is_template": False, "agent": None}
+        if unresolved:
+            info["error"] = unresolved
+        if base is not None:
+            home = _Path(base).parent.name
+            info["agent"] = home
+            info["is_template"] = home.endswith("-template")
+        return info
 
     def _enrich_metadata(
         self,
@@ -2215,12 +2273,7 @@ class MemoryStore:
             missing_tiers = list(primary_sync.get("missing_tiers") or [])
             unloadable = primary_sync.get("unloadable")
 
-        if self.vector:
-            try:
-                status["vector"] = self.vector.health_check()
-            except Exception as e:
-                logger.warning("store.py: %s", e)
-                status["vector"] = {"ok": False, "error": str(e)}
+        status["vector"] = self._probe_backend("vector", self.vector)
 
         pg_only: int | None = None
         flat_id_set = getattr(self.primary, "flat_id_set", None)
@@ -2248,12 +2301,7 @@ class MemoryStore:
                 # misreported as "pg_only: 0" -- leave it None (undetectable).
                 logger.warning("store.py: pg drift check failed: %s", e)
 
-        if self.graph:
-            try:
-                status["graph"] = self.graph.health_check()
-            except Exception as e:
-                logger.warning("store.py: %s", e)
-                status["graph"] = {"ok": False, "error": str(e)}
+        status["graph"] = self._probe_backend("graph", self.graph)
 
         # The sync-failure table had NO readers. `snapshot()` records a row
         # every time vector/graph indexing fails on a write, which is exactly
@@ -2318,6 +2366,12 @@ class MemoryStore:
         vector_status = status.get("vector")
         embed_ok = vector_status.get("embed_ok") if isinstance(vector_status, dict) else None
         vector_ok = vector_status.get("ok") if isinstance(vector_status, dict) else None
+        # A configured vector backend that is broken cannot have a working
+        # embedder, and `None` here would read as "not probed". Say so.
+        if vector_ok is False and embed_ok is None:
+            embed_ok = False
+            vector_status["embed_ok"] = False
+            vector_status.setdefault("embed_error", "not probed: vector backend unavailable")
 
         overall = "ok"
         if (sqlite_only or 0) > 0 or (flat_only or 0) > 0:
@@ -2354,6 +2408,15 @@ class MemoryStore:
         if graph_ok is False:
             overall = "degraded"
         if (pg_only or 0) > 0:
+            overall = "red"
+
+        # Which corpus is this? A template is a scaffold, never a live store,
+        # and a primary that reports ok while rooted in one is the worst
+        # available answer (measured 2026-11-06: 367 template memories served
+        # while the real home held 51,270).
+        profile = self._profile_info()
+        status["profile"] = profile
+        if profile["is_template"] or not profile["resolved"]:
             overall = "red"
 
         status["status"] = overall

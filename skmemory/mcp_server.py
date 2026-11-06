@@ -36,13 +36,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
 from .models import MemoryLayer
 from .store import MemoryStore
 
@@ -62,11 +62,15 @@ def _get_store() -> MemoryStore:
     if _store is None:
         vector = None
         graph = None
-        # PGVector (Postgres) is the default sovereign vector store. It works OOTB on
-        # any host running the local skmem-pg container + mxbai embedder; if the DB is
-        # unreachable we health-gate and fall back to Chroma. Set
-        # SKMEMORY_VECTOR_BACKEND to anything other than "pgvector" to skip it.
-        if os.environ.get("SKMEMORY_VECTOR_BACKEND", "pgvector").lower() == "pgvector":
+        backend_errors: dict[str, str] = {}
+        # Contract (see backend_select): SKMEMORY_VECTOR_BACKEND names a backend
+        # explicitly -> that backend is used or this raises BackendInitError.
+        # Unset -> PGVector is the sovereign default; if it is unhealthy we run
+        # on the always-on SQLite/BM25 path and say so in health. ChromaDB is
+        # retired and is only ever built when explicitly requested.
+        requested = requested_vector_backend()
+        want = requested if requested is not None else "pgvector"
+        if want == "pgvector":
             try:
                 from .backends.pgvector_backend import PGVectorBackend
 
@@ -77,42 +81,41 @@ def _get_store() -> MemoryStore:
                     logger.info("mcp_server.py: vector backend = PGVectorBackend")
                     # Gap B (card dc8280a7): wire the live skmem-pg AGE graph into the
                     # graph role so forget() also cascades a DETACH DELETE to the AGE
-                    # <agent>_knowledge graph. Without this the MCP store built a
-                    # graph-less MemoryStore and a forgotten memory's AGE node was
-                    # orphaned. Construction is lazy (no connection here); an
-                    # unavailable graph degrades gracefully (remove_memory returns
-                    # False and never raises), so forget() still succeeds otherwise.
+                    # <agent>_knowledge graph. Construction is lazy (no connection
+                    # here); an unavailable graph degrades gracefully.
                     try:
                         from .backends.age_backend import AGEGraphBackend
 
-                        graph = AGEGraphBackend(dsn=os.environ.get("SKMEMORY_PG_DSN"))
+                        graph = AGEGraphBackend(dsn=resolve_pg_dsn())
                     except Exception as e:
                         logger.warning("mcp_server.py age: %s", e)
+                        backend_errors["graph"] = f"AGE: {e}"
                 else:
-                    logger.warning("mcp_server.py pgvector unhealthy, falling back: %s", health)
+                    raise RuntimeError(f"pgvector unhealthy: {health.get('error') or health}")
             except Exception as e:
                 logger.warning("mcp_server.py pgvector: %s", e)
-        # NOTE (prb-6f069c5e, local-per-node rebuild model): reconsider this Chroma
-        # fallback. Chroma is RETIRED, and skmem-pg is now a LOCAL, per-node, writable
-        # Postgres on localhost that any node rebuilds from its Syncthing-synced flat
-        # JSON via skmemory/reconcile.py (embeddings are a deterministic function of
-        # flat content + mxbai on .100). An unreachable local pg is an operational
-        # fault that should surface loudly (or degrade to the always-on SQLite/BM25
-        # recency read path), NOT silently init a retired, empty Chroma vector store
-        # that masks the outage and answers recall from nothing. Left in place for now
-        # to avoid a behavior change; slated to become fail-loud + SQLite-recency.
-        if vector is None:
+                if requested is not None:
+                    raise BackendInitError(f"pgvector backend failed to initialize: {e}") from e
+                backend_errors["vector"] = f"pgvector: {e}"
+        elif want == "chroma":
             try:
                 from .agents import get_agent_paths
                 from .backends.chroma_backend import SKChromaBackend
 
-                agent_paths = get_agent_paths()
-                persist_dir = str(agent_paths["memory"] / "chroma")
-                state_path = agent_paths["memory"] / "chroma-state.json"
-                vector = SKChromaBackend(persist_dir=persist_dir, state_path=state_path)
+                base = get_agent_paths()["base"]
+                vector = SKChromaBackend(
+                    persist_dir=str(base / "memory" / "chroma"),
+                    state_path=base / "memory" / "chroma-state.json",
+                )
             except Exception as e:
-                logger.warning("mcp_server.py: %s", e)
+                raise BackendInitError(f"ChromaDB backend failed to initialize: {e}") from e
+        elif want == "skvector":
+            raise BackendInitError(
+                "SKMEMORY_VECTOR_BACKEND=skvector is not supported by the MCP server; "
+                "use the CLI or pgvector."
+            )
         _store = MemoryStore(vector=vector, graph=graph)
+        _store.backend_errors.update(backend_errors)
     return _store
 
 
