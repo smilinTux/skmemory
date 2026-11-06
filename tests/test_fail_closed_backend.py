@@ -332,14 +332,25 @@ def test_real_profile_is_not_flagged(tmp_path):
 
 def test_cli_health_prints_structured_failure_when_store_cannot_open(monkeypatch):
     """The refusal must reach STDOUT JSON, not only stderr."""
+    import inspect
+
     from click.testing import CliRunner
+
+    # click >= 8.2 separates stdout and stderr unconditionally and REMOVED the
+    # mix_stderr argument, so passing it is a TypeError there; click < 8.2 mixes
+    # them by default and needs mix_stderr=False to keep stderr out of stdout.
+    # Either way this test needs them separated, because its whole point is that
+    # the JSON reaches stdout rather than only stderr.
+    kwargs = {}
+    if "mix_stderr" in inspect.signature(CliRunner.__init__).parameters:
+        kwargs["mix_stderr"] = False
 
     monkeypatch.setenv("SKMEMORY_VECTOR_BACKEND", "pgvector")
     with patch(
         "skmemory.backends.pgvector_backend.PGVectorBackend",
         side_effect=RuntimeError("dsn guard says no"),
     ):
-        res = CliRunner(mix_stderr=False).invoke(skcli.cli, ["health"])
+        res = CliRunner(**kwargs).invoke(skcli.cli, ["health"])
     assert res.exit_code != 0
     payload = json.loads(res.stdout)
     assert payload["status"] == "red"
