@@ -77,7 +77,7 @@ def test_unresolved_profile_does_not_become_the_template_home(tmp_path):
         """
         from skmemory import config
         print(config.SKMEMORY_HOME.name)
-        print(bool(config.PROFILE_UNRESOLVED))
+        print(bool(getattr(config, 'PROFILE_UNRESOLVED', None)))
         """,
     )
     assert out.returncode == 0, out.stderr
