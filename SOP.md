@@ -289,18 +289,30 @@ context ritual consume.
 environment variable only**, falling back to the node-local default
 `postgresql://postgres:<pw>@localhost:5432/skmemory`
 (`skmemory/backends/pgvector_backend.py:53`, `skmemory/backends/age_backend.py:73`).
-**skmemory reads no `pg.env` file.** An earlier revision of this SOP said the connection
-came from `~/.config/skmemory/pg.env`; that was wrong in two ways. That file is not read
-by any code in this repo (grep `skmemory/` for `pg.env` and you get nothing), and on the
-current fleet it no longer carries a DSN at all: it holds only
-`SKMEMORY_VECTOR_BACKEND` / `SKMEMORY_EMBED_URL` / `SKMEMORY_EMBED_MODEL`.
+skmemory itself reads no `pg.env` file; the environment is populated from files by the
+node, per [SKMEMORY_NODE_CONFIG_STANDARD](https://github.com/smilinTux/sk-standards/blob/main/standards/SKMEMORY_NODE_CONFIG_STANDARD.md):
 
-On fleet nodes `SKMEMORY_PG_DSN` is exported to every `systemd --user` service by
-`~/.config/environment.d/skmemory.conf`, which the systemd user manager imports at
-login. That file is **operator-managed host state, outside this repo**, and it is the
-single place to rotate the password (see the header comment in it, and KEDB
-`ke-leak-skmem-pg-pw`). For an interactive shell, export `SKMEMORY_PG_DSN` yourself or
-source that file; nothing in skmemory will do it for you.
+- `~/.config/skmemory/pg.env` (dir 700, file 600) is the **single owner** of the stack
+  config: `SKMEMORY_VECTOR_BACKEND`, `SKMEMORY_PG_DSN` (with the password),
+  `SKMEMORY_EMBED_URL`, `SKMEMORY_EMBED_URLS`, `SKMEMORY_EMBED_MODEL`.
+- `~/.config/environment.d/skmemory.conf` is a **symlink** to it, so `systemd --user`
+  services inherit it with no second copy of the secret. Verify with
+  `/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator | grep -c '^SKMEMORY_PG_DSN='` (expect 1).
+- Shells derive the same file with the `_sk_derive` block in `~/.bashrc`.
+- Rotating the password is one edit to `pg.env` **plus restarting every long-lived
+  consumer**: a running process keeps the environment it started with. A rotation that
+  skips the restart leaves processes on the old secret with `vector_ok: null` and
+  keyword-only search, with no error.
+
+An earlier revision of this SOP said skmemory "reads no `pg.env`, and the file carries no
+DSN". That described a node before the standard; on a conforming node `pg.env` is the
+owning file and carries the DSN.
+
+**Active agent.** Declared in `~/.config/environment.d/10-skagent.conf`
+(`SKAGENT`, `SKCAPSTONE_AGENT`, `SKMEMORY_AGENT`, `SK_DEFAULT_AGENT`). `get_active_agent()`
+returns `None` and refuses when several agents are installed and nothing is declared.
+Treat `base_path` ending in `-template`, or `vector_ok: null`, in `skmemory health` as a
+failure, not as healthy.
 
 Install the `pg` extra on skmem-pg clients: `pip install "skmemory[pg]"`. The
 flat-to-Postgres reconcile engine selects a psycopg transport whenever
