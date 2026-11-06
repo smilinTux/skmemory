@@ -2198,15 +2198,19 @@ class MemoryStore:
             )
         return -1
 
-    def export_orphans_to_flat(self, allow_preview_stubs: bool = True) -> dict:
+    def export_orphans_to_flat(self, allow_preview_stubs: bool = False) -> dict:
         """Write any SQLite-only memories out as flat JSON files.
 
         Useful before a destructive operation, or after an import that
         wrote into SQLite without producing flat files. For each orphan,
         the configured vector/pg backend (``self.vector``, e.g. a
         ``PGVectorBackend`` backing skmem-pg) is tried FIRST for its full
-        content before falling back to the lossy ~150-char SQLite preview
+        RECORD before falling back to the lossy ~150-char SQLite preview
         (card: skmemory sqlite-only-orphans recovery follow-up, 2026-10-16).
+        Recovering the record rather than only its text keeps the metadata
+        that the index has no column for; see ``_pg_fallback_record_lookup``.
+        ``allow_preview_stubs`` defaults to False: a truncated stub destroys
+        the real content, so it is opt-in.
         Returns ``{"exported", "skipped", "errors", "recovered_full",
         "orphan_ids"}``.
         """
@@ -2214,8 +2218,39 @@ class MemoryStore:
             return self.primary.export_orphans_to_flat(
                 full_content_lookup=self._pg_fallback_content_lookup(),
                 allow_preview_stubs=allow_preview_stubs,
+                full_record_lookup=self._pg_fallback_record_lookup(),
             )
         return {"exported": 0, "skipped": 0, "errors": 0, "recovered_full": 0, "orphan_ids": []}
+
+    def _pg_fallback_record_lookup(self) -> Callable[[str], Memory | None] | None:
+        """Build the ``full_record_lookup`` for ``export_orphans_to_flat()``.
+
+        Same backend and same failure handling as
+        ``_pg_fallback_content_lookup``, but hands back the whole ``Memory``
+        instead of just its text. ``PGVectorBackend.load()`` already parses
+        the full record out of its ``memory_json`` column, so the metadata
+        was always there; returning ``mem.content`` threw it away at this
+        boundary and the orphan export then wrote a two-key metadata dict.
+        A rescue that keeps id, title and content but silently drops
+        ``access_count``, ``soul_context`` and every caller-set key looks
+        like a success in every count and log line (noroc2027, 2026-11-06).
+        """
+        vector = self.vector
+        if vector is None:
+            return None
+
+        def _lookup(memory_id: str) -> Memory | None:
+            try:
+                return vector.load(memory_id)
+            except Exception as e:
+                logger.warning(
+                    "store.py: full-record fallback lookup failed for orphan %s: %s",
+                    memory_id,
+                    e,
+                )
+                return None
+
+        return _lookup
 
     def _pg_fallback_content_lookup(self) -> Callable[[str], str | None] | None:
         """Build the ``full_content_lookup`` for ``export_orphans_to_flat()``.
