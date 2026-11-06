@@ -778,6 +778,42 @@ class TestMaybeProbe:
 
         mock_conn.assert_called_once()
 
+    def test_probes_on_a_freshly_booted_host(self) -> None:
+        """The first probe happens even when the monotonic clock reads low.
+
+        Regression: ``_last_probe_time`` started at 0.0 and the gate was
+        ``now - last >= probe_interval_seconds``. ``time.monotonic()`` counts
+        from boot on Linux, so for the first ``probe_interval_seconds`` of
+        uptime that difference is below the interval and the very first probe
+        was skipped, leaving the selector routing on configured order with no
+        health data. A CI runner less than 30s past boot caught it.
+        """
+        ep = Endpoint(url="http://host:6333")
+        selector = EndpointSelector(
+            skvector_endpoints=[ep],
+            config=RoutingConfig(probe_interval_seconds=30),
+        )
+
+        mock_sock = MagicMock()
+        with (
+            patch("skmemory.endpoint_selector.time.monotonic", return_value=4.0),
+            patch(
+                "skmemory.endpoint_selector.socket.create_connection", return_value=mock_sock
+            ) as mock_conn,
+        ):
+            selector.select_skvector()
+
+        mock_conn.assert_called_once()
+
+    def test_status_reports_never_probed_as_minus_one(self) -> None:
+        """A selector that has not probed reports -1, not a boot-relative age."""
+        selector = EndpointSelector(
+            skvector_endpoints=[Endpoint(url="http://host:6333")],
+            config=RoutingConfig(probe_interval_seconds=30),
+        )
+
+        assert selector.status()["last_probe_age_seconds"] == -1
+
     def test_does_not_reprobe_if_fresh(self) -> None:
         """Second select within interval does not re-probe."""
         ep = Endpoint(url="http://host:6333")

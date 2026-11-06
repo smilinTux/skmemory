@@ -82,7 +82,12 @@ class EndpointSelector:
         self._config = config or RoutingConfig()
         self._skvector: list[Endpoint] = self._normalize(skvector_endpoints or [])
         self._skgraph: list[Endpoint] = self._normalize(skgraph_endpoints or [])
-        self._last_probe_time: float = 0.0
+        # None means "never probed". It cannot be 0.0: time.monotonic() counts
+        # from boot on Linux, so on a freshly booted host now - 0.0 is smaller
+        # than probe_interval_seconds and _maybe_probe would skip the FIRST
+        # probe entirely, routing with no health data for the first interval
+        # of uptime. Caught by CI on a fast-booting runner, 2026-11-06.
+        self._last_probe_time: float | None = None
 
     @staticmethod
     def _normalize(endpoints: list[dict | Endpoint]) -> list[Endpoint]:
@@ -197,6 +202,9 @@ class EndpointSelector:
 
     def _maybe_probe(self) -> None:
         """Probe if results are stale (older than probe_interval_seconds)."""
+        if self._last_probe_time is None:
+            self.probe_all()
+            return
         now = time.monotonic()
         if now - self._last_probe_time >= self._config.probe_interval_seconds:
             self.probe_all()
@@ -365,7 +373,7 @@ class EndpointSelector:
             Dict with strategy, endpoint lists, and probe staleness.
         """
         now = time.monotonic()
-        stale_seconds = now - self._last_probe_time if self._last_probe_time > 0 else -1
+        stale_seconds = now - self._last_probe_time if self._last_probe_time is not None else -1
 
         return {
             "strategy": self._config.strategy,
