@@ -232,27 +232,6 @@ def test_reconcile_force_overrides_empty_guard(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-class _FakePsqlCopyCapture(_FakePsql):
-    """``_FakePsql`` plus the COPY stdin payload, which is where the keep-set goes.
-
-    reconcile populates the keep table with ``psql -c "COPY flat_ids FROM STDIN;"``
-    and passes the ids via stdin, so the base fake (which only records the SQL
-    string) never sees them.
-    """
-
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self.copy_inputs: list[str] = []
-
-    def run(self, args, capture_output=False, text=False, input=None, timeout=None):
-        sql = args[args.index("-c") + 1] if "-c" in args else ""
-        if sql.lower().startswith("copy ") and input:
-            self.copy_inputs.append(input)
-        return super().run(
-            args, capture_output=capture_output, text=text, input=input, timeout=timeout
-        )
-
-
 def _write_archived(mem_dir, mem_id, subdir="archive"):
     """Simulate the promoter: the memory's file lives under archive/, not a tier."""
     d = mem_dir / subdir
@@ -324,17 +303,16 @@ class TestArchiveAwarePrune:
         assert stats["pruned"] == 1
         assert fake.delete_issued is True
 
-    def test_delete_keep_table_carries_the_archived_id(self, monkeypatch, tmp_path):
+    def test_delete_spares_the_archived_id(self, monkeypatch, tmp_path):
         """The SQL must agree with the count, or the spared row dies anyway.
 
-        The DELETE removes every pg row absent from the `flat_ids` table, so that
-        table has to carry the archived ids too. Populating it from flat alone
-        would delete exactly the rows the prune count just promised to spare.
+        The DELETE names the orphan ids explicitly (no keep table since the
+        flat_ids race fix), so the archived id must simply not be among them.
         """
         kept = [str(uuid.uuid4()) for _ in range(20)]
         archived_id = str(uuid.uuid4())
         orphan = str(uuid.uuid4())
-        fake = _FakePsqlCopyCapture(kept + [archived_id, orphan], delete_count=1)
+        fake = _FakePsql(kept + [archived_id, orphan], delete_count=1)
         monkeypatch.setattr(reconcile_mod.subprocess, "run", fake.run)
 
         mem = tmp_path / "memory"
@@ -344,10 +322,11 @@ class TestArchiveAwarePrune:
 
         reconcile_mod.reconcile("test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False)
 
-        payload = "\n".join(fake.copy_inputs)
-        assert payload, "no COPY payload captured"
-        assert archived_id in payload, "archived id missing from the keep table"
-        assert orphan not in payload, "a real orphan must not be added to the keep table"
+        deletes = [s for s in fake.statements if "delete from memories" in s.lower()]
+        assert len(deletes) == 1
+        assert orphan in deletes[0], "the real orphan must be deleted"
+        assert archived_id not in deletes[0], "archived cold storage must not be deleted"
+        assert not any(k in deletes[0] for k in kept), "flat-backed rows must not be deleted"
 
     def test_tombstone_beats_archive(self, monkeypatch, tmp_path):
         """A forgotten memory stays gone even if an archived copy exists.

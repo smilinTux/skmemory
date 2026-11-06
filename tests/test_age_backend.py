@@ -994,7 +994,7 @@ class TestSyncAll:
         (short_dir / f"{mem.id}.json").write_text(json.dumps(mem.model_dump(mode="json")))
 
         result = backend.sync_all(tmp_path, "test-agent")
-        assert result == {"indexed": 1, "errors": 0}
+        assert (result["indexed"], result["errors"]) == (1, 0)
         assert backend.get(mem.id) is not None
 
     def test_sync_all_counts_errors_for_bad_files(self, backend, tmp_path):
@@ -1008,7 +1008,7 @@ class TestSyncAll:
 
     def test_sync_all_missing_dir_is_safe(self, backend, tmp_path):
         result = backend.sync_all(tmp_path / "does-not-exist", "test-agent")
-        assert result == {"indexed": 0, "errors": 0}
+        assert (result["indexed"], result["errors"]) == (0, 0)
 
 
 def test_sync_all_ignores_file_removed_after_enumeration(monkeypatch, tmp_path):
@@ -1027,9 +1027,10 @@ def test_sync_all_ignores_file_removed_after_enumeration(monkeypatch, tmp_path):
     monkeypatch.setattr(Path, "glob", disappearing_glob)
     backend = object.__new__(AGEGraphBackend)
     backend.graph = "test_graph"
-    backend.index_memory = lambda memory: True
+    backend.index_memory = lambda memory, sync_hash=None: True
 
-    assert backend.sync_all(tmp_path, "test-agent") == {"indexed": 0, "errors": 0}
+    result = backend.sync_all(tmp_path, "test-agent")
+    assert (result["indexed"], result["errors"]) == (0, 0)
 
 
 # ═══════════════════════════════════════════════════════════

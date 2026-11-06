@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs: agent default and node configuration corrected.** README, SOP, CLAUDE.md and MISSION.md
+  no longer say the agent defaults to `lumina`; `get_active_agent()` resolves selectors, then
+  `SK_DEFAULT_AGENT`, then a sole installed agent, else `None` (no implicit default). The SOP's
+  `pg.env` paragraph is replaced: `~/.config/skmemory/pg.env` is the single owner of the stack
+  config and credential, `environment.d/skmemory.conf` is a symlink to it, and a password rotation
+  must restart long-lived consumers. See sk-standards `SKMEMORY_NODE_CONFIG_STANDARD`.
+
 ### Fixed
 
 - **Refused profile no longer degrades into the template store, and an explicit
@@ -24,6 +33,16 @@
   unresolved profile or a `-template` home into `status: red`.
 
 ### Added
+
+- **Lifecycle hook kill switch.** Set `SKMEMORY_HOOKS=off` to make every event
+  and harness return successfully and silently before input, context, transcript,
+  counter, persistence, journal, activity, or digest work. Legacy shipped hook
+  entrypoints honor the same setting. Unset and `on` preserve existing behavior.
+
+- **Universal session hooks + ritual v2** (`skmemory hook <event>`, `skmemory hooks install|uninstall|status`).
+  One packaged entrypoint for Claude Code, Codex, OpenCode and Pi with no repo-path
+  dependency; a budgeted ritual (default 8000 chars, whisper deduped). Legacy
+  `hooks/*.sh` remain as thin wrappers. Supersedes #83.
 
 - **Evidence-grounded observations** (`skmemory/observations.py`, R3). A
   consolidated belief that carries its own proof: a statement plus evidence
@@ -176,6 +195,14 @@
   existing callers.
 
 ### Fixed
+
+- **Sync / fortress units no longer die on a missing `logs/` dir.** A new
+  agent without `~/.skcapstone/agents/<agent>/logs/` failed `skmemory-sync@` and
+  `skmemory-fortress-verify@` instantly with "Failed to set up standard output",
+  because systemd opens the `append:` log before any Exec line (so an
+  `ExecStartPre=mkdir` cannot help). New `skmemory-logdir@.service` creates the
+  dir with journal stdio; both units `Requires=`/`After=` it. The installer
+  copies it.
 
 - **One malformed row no longer kills an entire search.** Every read path in
   `PGVectorBackend` parsed rows with an unguarded comprehension, and `Memory`

@@ -154,7 +154,7 @@ else
 $problems issue(s) found across ${#AGENTS_WITH_HOMES[@]} agent(s) with a memory home.
 
 $report
-Fix a drift/log issue: SKAGENT=<agent> skmemory sync
+Fix a drift/log issue: systemctl --user start skmemory-sync@<agent>.service (the managed unit: serialized with its timer, logged, stub-safe). Do not run export-flat or an ad-hoc sync on an old skmemory: they can write truncated previews into the flat source of truth.
 Fix a missing timer: systemctl --user enable --now skmemory-sync@<agent>.timer (or re-run scripts/install.sh)"
 fi
 

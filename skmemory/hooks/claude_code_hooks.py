@@ -106,6 +106,9 @@ def handle_stop() -> None:
     Reads the conversation from stdin (Claude Code pipes it),
     runs the general extractor, and saves extracted memories.
     """
+    if os.environ.get("SKMEMORY_HOOKS") == "off":
+        return
+
     from ..extractor import extract_memories
     from ..models import MemoryLayer
 
@@ -161,6 +164,9 @@ def handle_precompact() -> None:
 
     Emergency save — capture a session snapshot before context is lost.
     """
+    if os.environ.get("SKMEMORY_HOOKS") == "off":
+        return
+
     from ..models import MemoryLayer
 
     conversation = _read_stdin_if_available()

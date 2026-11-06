@@ -57,10 +57,11 @@ def test_age_sync_quarantines_dot_json_with_deterministic_report(tmp_path):
 
     backend = object.__new__(AGEGraphBackend)
     backend.graph = "test_graph"
-    backend.index_memory = lambda memory: True
+    backend.index_memory = lambda memory, sync_hash=None: True
     backend.probe_connection = lambda: None
 
-    assert backend.sync_all(tmp_path, "jarvis") == {"indexed": 0, "errors": 0}
+    result = backend.sync_all(tmp_path, "jarvis")
+    assert (result["indexed"], result["errors"]) == (0, 0)
     assert not source.exists()
     quarantine = tmp_path / "quarantine" / "invalid-memory-id"
     report = json.loads((quarantine / "report.json").read_text())

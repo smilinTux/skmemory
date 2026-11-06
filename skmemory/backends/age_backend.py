@@ -46,6 +46,7 @@ try/except to fire because of this backend.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -89,6 +90,69 @@ _AGTYPE_SUFFIX_RE = re.compile(r"::(vertex|edge|path)\s*$")
 #: guarded reconcile cleans them up (card c25e2513). Cleanup refuses any
 #: label outside this set.
 AUX_NODE_LABELS = ("Tag", "Source", "AI", "Entity", "Citation", "Claim", "Section")
+
+#: Labels whose nodes are looked up by a property on EVERY index_memory()
+#: (``Memory {id}``, ``Tag/Entity/Source {name}``). AGE compiles those
+#: patterns to ``properties @> {...}``, which is a sequential scan without a
+#: GIN index on ``properties``. On lumina (57k Memory nodes, ~10 lookups per
+#: memory) that made a full sync_all take far longer than its 3h unit
+#: timeout (measured 2026-10-27: 66-106 ms per Memory lookup, 0.4 ms with
+#: the index). ensure_property_indexes() creates them idempotently.
+PROPERTY_INDEXED_LABELS = ("Memory", "Tag", "Entity", "Source")
+
+#: Bump to make the next sync_all re-index every memory once (for example
+#: after changing which edges index_memory() writes). It is folded into each
+#: node's ``sync_hash``, so an old hash simply stops matching.
+GRAPH_SYNC_INDEX_VERSION = "1"
+
+
+#: Stamp the open bitemporal interval on an edge ONLY when it has none yet.
+#: This used to be an unconditional ``SET e.valid_from = coalesce(...)``:
+#: a no-op by value on every re-index, but AGE still rewrote every edge row,
+#: and that SET was ~97% of index_memory's time (measured 2026-10-27 on
+#: lumina: 45-75 ms for a 7-tag memory with it, ~1 ms without). Filtering
+#: first keeps the original stamps and writes nothing for existing edges.
+#: Expects the edge bound as ``e`` and the far node as ``n``.
+_STAMP_NEW_EDGE = (
+    "WITH n, e WHERE e.valid_from IS NULL "
+    "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
+)
+
+
+def _graph_sync_budget_s() -> float:
+    """Wall-clock budget for one sync_all() pass, seconds (0 = unbounded).
+
+    The graph is the last, slowest and least critical phase of
+    ``skmemory sync``. Without a budget a large backlog held the whole unit
+    until systemd killed it, so the cheap phases (SQLite reindex) only ran
+    once per timeout instead of once per timer tick. A pass that runs out of
+    budget stops between memories and reports the remainder as ``deferred``;
+    the next pass resumes, newest memories first.
+    """
+    raw = (os.environ.get("SKMEMORY_GRAPH_SYNC_BUDGET_S") or "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning(
+                "AGEGraphBackend: bad SKMEMORY_GRAPH_SYNC_BUDGET_S=%r, using default", raw
+            )
+    return 900.0
+
+
+def graph_sync_hash(payload: bytes) -> str:
+    """Fingerprint of one flat file as indexed into the graph.
+
+    Content-addressed rather than a timestamp watermark: Syncthing preserves
+    the SOURCE node's mtime, so a file that arrives late can carry an mtime
+    older than any watermark and would be skipped forever. A per-node hash
+    of the exact bytes that were indexed has no such blind spot.
+    """
+    digest = hashlib.sha256()
+    digest.update(GRAPH_SYNC_INDEX_VERSION.encode())
+    digest.update(b"\0")
+    digest.update(payload)
+    return digest.hexdigest()
 
 
 def _search_timeout_ms() -> int:
@@ -352,6 +416,82 @@ class AGEGraphBackend:
                 out.add(parsed)
         return out
 
+    def graph_sync_state(self) -> dict[str, str | None] | None:
+        """Map Memory id -> stored ``sync_hash`` (None when the node has none).
+
+        One scan of the Memory label. Lenient: returns None when the graph
+        could not answer, and :meth:`sync_all` then treats every memory as
+        needing an index, which is slow but never skips real work.
+        """
+        try:
+            rows = self._cypher_strict(
+                "MATCH (m:Memory) RETURN m.id, m.sync_hash",
+                cols="id agtype, h agtype",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AGEGraphBackend: could not read graph sync state: %s", exc)
+            return None
+        out: dict[str, str | None] = {}
+        for mid_raw, hash_raw in rows:
+            mid = self._agtype(mid_raw)
+            digest = self._agtype(hash_raw)
+            if isinstance(mid, str) and mid:
+                out[mid] = digest if isinstance(digest, str) else None
+        return out
+
+    def ensure_property_indexes(self) -> list[str]:
+        """Create the GIN ``properties`` indexes index_memory() depends on.
+
+        Idempotent. A label that does not exist yet is created first
+        (``create_vlabel``) so a brand-new graph gets its indexes before the
+        first backfill rather than after the slow one.
+
+        Returns:
+            list[str]: Names of indexes created by this call.
+
+        Raises:
+            GraphTransportError: Graph disabled or connection unavailable.
+        """
+        if self.graph is None:
+            raise GraphTransportError("AGE graph disabled: invalid graph name")
+        conn = self._conn()
+        if conn is None:
+            raise GraphTransportError(f"AGE connection unavailable ({self._safe_dsn()})")
+        created: list[str] = []
+        try:
+            with conn.cursor() as cur:
+                for label in PROPERTY_INDEXED_LABELS:
+                    cur.execute(
+                        "SELECT 1 FROM ag_catalog.ag_label l "
+                        "JOIN ag_catalog.ag_graph g ON l.graph = g.graphid "
+                        "WHERE g.name::text = %s AND l.name::text = %s",
+                        (self.graph, label),
+                    )
+                    if cur.fetchone() is None:
+                        cur.execute("SELECT ag_catalog.create_vlabel(%s, %s)", (self.graph, label))
+                    index_name = f"{label}_properties_gin"
+                    cur.execute(
+                        "SELECT 1 FROM pg_indexes WHERE schemaname = %s AND indexname = %s",
+                        (self.graph, index_name),
+                    )
+                    if cur.fetchone() is not None:
+                        continue
+                    # graph is validated by _VALID_GRAPH_NAME and label is an
+                    # internal constant, so interpolation is safe here.
+                    cur.execute(
+                        f'CREATE INDEX IF NOT EXISTS "{index_name}" '
+                        f'ON "{self.graph}"."{label}" USING gin (properties)'
+                    )
+                    created.append(index_name)
+        except Exception as exc:  # noqa: BLE001
+            self._rollback(conn)
+            raise GraphTransportError(
+                f"could not create property indexes on {self.graph!r}: {exc}"
+            ) from exc
+        if created:
+            logger.info("AGEGraphBackend: created %s on %s", ", ".join(created), self.graph)
+        return created
+
     def memory_node_strict(self, memory_id: str) -> dict | None:
         """Graph-stored fields for one memory, or None when absent. STRICT.
 
@@ -552,10 +692,7 @@ class AGEGraphBackend:
         query = (
             "MATCH (m:Memory {id: $mem_id}) "
             "MERGE (n:" + label + " {" + key + ": $value}) "
-            "MERGE (m)-[e:" + rel + "]->(n) "
-            "SET e.valid_from = coalesce(e.valid_from, $now), "
-            "e.recorded_at = coalesce(e.recorded_at, $now) "
-            "RETURN n"
+            "MERGE (m)-[e:" + rel + "]->(n) " + _STAMP_NEW_EDGE + "RETURN n"
         )
         rows = self._cypher(
             query,
@@ -563,6 +700,30 @@ class AGEGraphBackend:
             cols="n agtype",
         )
         return bool(rows)
+
+    def _merge_edges_to_named(
+        self, mem_id: str, label: str, key: str, values: list[str], rel: str
+    ) -> None:
+        """Batched :meth:`_merge_edge_to_named`: one round trip for N values.
+
+        Same MERGE semantics and edge properties, driven by UNWIND. A memory
+        with ten tags and ten entities was twenty sequential round trips; it
+        is now two.
+        """
+        values = _unique(values)
+        if not values:
+            return
+        query = (
+            "MATCH (m:Memory {id: $mem_id}) "
+            "UNWIND $values AS value "
+            "MERGE (n:" + label + " {" + key + ": value}) "
+            "MERGE (m)-[e:" + rel + "]->(n) " + _STAMP_NEW_EDGE + "RETURN n"
+        )
+        self._cypher(
+            query,
+            {"mem_id": mem_id, "values": values, "now": _now_iso()},
+            cols="n agtype",
+        )
 
     def _merge_related(self, a_id: str, b_id: str) -> bool:
         """MERGE a ``(a)-[:RELATED_TO]->(b)`` edge with an OPEN bitemporal
@@ -573,8 +734,8 @@ class AGEGraphBackend:
             "MATCH (a:Memory {id: $a_id}) "
             "MERGE (b:Memory {id: $b_id}) "
             "MERGE (a)-[e:RELATED_TO]->(b) "
-            "SET e.valid_from = coalesce(e.valid_from, $now), "
-            "e.recorded_at = coalesce(e.recorded_at, $now) "
+            "WITH b, e WHERE e.valid_from IS NULL "
+            "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
             "RETURN b"
         )
         rows = self._cypher(
@@ -582,6 +743,8 @@ class AGEGraphBackend:
             {"a_id": a_id, "b_id": b_id, "now": _now_iso()},
             cols="b agtype",
         )
+        # True only when this call stamped a NEW edge; an existing one is
+        # left untouched (see _STAMP_NEW_EDGE).
         return bool(rows)
 
     def _merge_supersedes(
@@ -631,7 +794,7 @@ class AGEGraphBackend:
         )
         return bool(rows)
 
-    def index_memory(self, memory: Memory) -> bool:
+    def index_memory(self, memory: Memory, sync_hash: str | None = None) -> bool:
         """MERGE a memory node and all its relationships into the graph.
 
         Idempotent: safe to call repeatedly for the same memory — node and
@@ -644,6 +807,11 @@ class AGEGraphBackend:
 
         Args:
             memory: The memory to index.
+            sync_hash: Fingerprint of the flat file this memory was read from
+                (:func:`graph_sync_hash`), stored on the node so the next
+                :meth:`sync_all` can skip it. Callers outside sync pass
+                nothing, which clears it: the next sync re-indexes that
+                memory once from its flat file, the source of truth.
 
         Returns:
             bool: True if the core Memory node was indexed successfully.
@@ -673,6 +841,7 @@ class AGEGraphBackend:
             "valence": memory.emotional.valence,
             "tags": list(memory.tags),
             "metadata_json": json.dumps(memory.metadata or {}, default=str),
+            "sync_hash": sync_hash,
         }
         query = (
             "MERGE (m:Memory {id: $id}) "
@@ -681,7 +850,8 @@ class AGEGraphBackend:
             "m.source_ref = $source_ref, m.context_tag = $context_tag, "
             "m.created_at = $created_at, m.updated_at = $updated_at, "
             "m.intensity = $intensity, m.valence = $valence, "
-            "m.tags = $tags, m.metadata_json = $metadata_json "
+            "m.tags = $tags, m.metadata_json = $metadata_json, "
+            "m.sync_hash = $sync_hash "
             "RETURN m"
         )
         rows = self._cypher(query, props, cols="m agtype")
@@ -694,8 +864,7 @@ class AGEGraphBackend:
                     memory.id, "Source", "name", memory.source, "FROM_SOURCE"
                 )
 
-            for tag in _unique(memory.tags):
-                self._merge_edge_to_named(memory.id, "Tag", "name", tag, "TAGGED_WITH")
+            self._merge_edges_to_named(memory.id, "Tag", "name", list(memory.tags), "TAGGED_WITH")
 
             for related_id in _unique(memory.related_ids):
                 if related_id != memory.id:
@@ -708,8 +877,9 @@ class AGEGraphBackend:
                     memory.id, memory.parent_id, child_recorded_at=memory.created_at
                 )
 
-            for entity in self._entities_for(memory):
-                self._merge_edge_to_named(memory.id, "Entity", "name", entity, "MENTIONS")
+            self._merge_edges_to_named(
+                memory.id, "Entity", "name", self._entities_for(memory), "MENTIONS"
+            )
         except Exception as exc:  # noqa: BLE001
             # The core node write already succeeded; a relationship failure
             # shouldn't fail the whole index — log and move on.
@@ -1567,26 +1737,49 @@ class AGEGraphBackend:
                 "error": str(exc),
             }
 
-    def sync_all(self, flat_files_dir, agent_name: str) -> dict:
-        """Backfill the graph from flat-file memories on disk.
+    def sync_all(
+        self,
+        flat_files_dir,
+        agent_name: str,
+        *,
+        budget_s: float | None = None,
+        full: bool | None = None,
+    ) -> dict:
+        """Backfill the graph from flat-file memories on disk, incrementally.
 
-        Walks ``<flat_files_dir>/{short,mid,long}-term/*.json`` and calls
-        :meth:`index_memory` for each. Idempotent (MERGE semantics) so
-        re-running is safe.
+        Walks ``<flat_files_dir>/{short,mid,long}-term/*.json``. A memory is
+        re-indexed only when the graph does not already hold it at the exact
+        bytes on disk (``Memory.sync_hash``, see :func:`graph_sync_hash`), so
+        a steady-state pass reads files and one graph scan and writes
+        nothing. Memories the graph has never seen go first, so a pass that
+        runs out of budget still lands the newest work.
+
+        Bounded by ``budget_s`` (default ``SKMEMORY_GRAPH_SYNC_BUDGET_S``,
+        900s; 0 = unbounded). It stops between memories and reports the rest
+        as ``deferred``. Every index commits on its own, so a stopped or
+        killed pass loses nothing and the next one resumes.
 
         Args:
             flat_files_dir: Path to the agent's memory directory.
             agent_name: Used only for log lines.
+            budget_s: Wall-clock budget override, seconds.
+            full: Ignore stored hashes and re-index everything (still
+                budgeted). Defaults to ``SKMEMORY_GRAPH_SYNC_FULL=1``.
 
         Returns:
-            dict: ``{"indexed": N, "errors": K}``.
+            dict: ``{"indexed", "errors", "skipped", "deferred"}``.
         """
         from pathlib import Path
 
-        stats = {"indexed": 0, "errors": 0}
+        stats = {"indexed": 0, "errors": 0, "skipped": 0, "deferred": 0}
         if self.graph is None:
             logger.warning("AGEGraphBackend sync_all: invalid graph name for %s", agent_name)
             return stats
+
+        budget = _graph_sync_budget_s() if budget_s is None else float(budget_s)
+        deadline = time.monotonic() + budget if budget > 0 else None
+        if full is None:
+            full = (os.environ.get("SKMEMORY_GRAPH_SYNC_FULL") or "").strip() == "1"
 
         base = Path(flat_files_dir)
         # Snapshot by file name before indexing. Syncthing and promotion can
@@ -1609,37 +1802,79 @@ class AGEGraphBackend:
                     )
                     continue
                 snapshot[json_file.name] = json_file
+        if not snapshot:
+            return stats
 
-        for name, original_path in snapshot.items():
+        # Indexes before the first lookup, or the first backfill is the slow one.
+        try:
+            self.ensure_property_indexes()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("AGEGraphBackend sync_all: property indexes unavailable: %s", exc)
+        state = None if full else self.graph_sync_state()
+        known = state or {}
+
+        def read_current(name: str, original_path: Path):
             candidates = [original_path]
             candidates.extend(base / tier / name for tier in tiers)
-            payload = None
             for candidate in dict.fromkeys(candidates):
                 try:
-                    payload = candidate.read_text(encoding="utf-8")
-                    break
+                    return candidate.read_bytes(), candidates
                 except FileNotFoundError:
                     continue
+            return None, candidates
+
+        def load_memory(name: str, payload: bytes, candidates: list[Path]) -> Memory | None:
+            data = json.loads(payload)
+            try:
+                payload_memory_id(data, Path(name).stem)
+            except ValueError as exc:
+                current = next(
+                    (c for c in dict.fromkeys(candidates) if c.exists()),
+                    None,
+                )
+                if current is not None:
+                    quarantine_invalid_flat_file(base, current, reason=str(exc))
+                return None
+            return Memory.model_validate(data)
+
+        # Pass 1: cheap. Hash bytes, skip what the graph already holds, and
+        # order the rest new-first. Only (priority, name, path, hash) is kept,
+        # not parsed memories, so a full backlog does not sit in RAM.
+        pending: list[tuple[int, str, Path, str]] = []
+        for name, original_path in snapshot.items():
+            payload, _ = read_current(name, original_path)
+            if payload is None:
+                continue
+            digest = graph_sync_hash(payload)
+            stem = Path(name).stem
+            if stem in known:
+                if known[stem] == digest:
+                    stats["skipped"] += 1
+                    continue
+                pending.append((1, name, original_path, digest))
+            else:
+                # Not in the graph by file stem. A shortform stem maps to a
+                # full id inside the payload; resolved in pass 2.
+                pending.append((0, name, original_path, digest))
+        pending.sort(key=lambda item: item[0])
+
+        # Pass 2: index, newest-unknown first, until the budget runs out.
+        for position, (_prio, name, original_path, digest) in enumerate(pending):
+            if deadline is not None and time.monotonic() >= deadline:
+                stats["deferred"] = len(pending) - position
+                break
+            payload, candidates = read_current(name, original_path)
             if payload is None:
                 continue
             try:
-                data = json.loads(payload)
-                try:
-                    payload_memory_id(data, Path(name).stem)
-                except ValueError as exc:
-                    current = next(
-                        (
-                            candidate
-                            for candidate in dict.fromkeys(candidates)
-                            if candidate.exists()
-                        ),
-                        None,
-                    )
-                    if current is not None:
-                        quarantine_invalid_flat_file(base, current, reason=str(exc))
+                digest = graph_sync_hash(payload)
+                memory = load_memory(name, payload, candidates)
+                if memory is None:
                     continue
-                memory = Memory.model_validate(data)
-                if self.index_memory(memory):
+                if known.get(memory.id) == digest:
+                    stats["skipped"] += 1
+                    continue
+                if self.index_memory(memory, sync_hash=digest):
                     stats["indexed"] += 1
                 else:
                     stats["errors"] += 1
@@ -1647,10 +1882,20 @@ class AGEGraphBackend:
                 logger.warning("AGEGraphBackend sync_all: failed on %s: %s", name, exc)
                 stats["errors"] += 1
 
+        if stats["deferred"]:
+            logger.warning(
+                "AGEGraphBackend sync_all for '%s': budget of %.0fs spent, "
+                "%d memory(ies) deferred to the next pass",
+                agent_name,
+                budget,
+                stats["deferred"],
+            )
         logger.info(
-            "AGEGraphBackend sync_all for '%s': indexed=%d errors=%d",
+            "AGEGraphBackend sync_all for '%s': indexed=%d skipped=%d deferred=%d errors=%d",
             agent_name,
             stats["indexed"],
+            stats["skipped"],
+            stats["deferred"],
             stats["errors"],
         )
         return stats

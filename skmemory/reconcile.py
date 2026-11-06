@@ -207,6 +207,40 @@ def _scratch_table_name(agent: str) -> str:
     return f"memories_bf_{slug}_{os.getpid()}"[:63]
 
 
+def prune_orphans_sql(agent: str, orphan_ids) -> str:
+    """The prune DELETE, naming exactly the ids the guard approved.
+
+    This used to be "delete every pg row for the agent that is NOT in table
+    `flat_ids`", with `flat_ids` a plain table in the public schema, created,
+    COPY-filled and dropped by separate psql invocations. Every
+    skmemory-sync@<agent> timer fires in the same second against the same
+    node-local skmem-pg, so concurrent runs shared that ONE table:
+
+    * one run's DROP landed between another's CREATE and DELETE, failing it
+      with `relation "flat_ids" does not exist` (354 failed syncs in 4 days on
+      .41, 2026-10-27), or two CREATEs raced (`Key (typname, typnamespace)=
+      (flat_ids, 2200) already exists`);
+    * worse, when the race did not error, run A's DELETE read run B's keep
+      set, so A deleted every one of its own rows that B did not happen to
+      share: the derived index for agent A wiped and backfilled again.
+
+    A TEMP table does not fix it here: each psql call is its own session (and
+    the DSN transport opens a fresh connection per call). The backfill table
+    solved the same race with a per-process name (`_scratch_table_name`), but a
+    keep table is the wrong shape anyway: "delete what is absent from a table"
+    turns an empty or foreign table into a wipe. Deleting the explicit
+    `orphan_ids` list cannot remove more than `would_prune` promised, needs no
+    shared state, and is idempotent under concurrent runs. Archived ids are
+    spared because they were never put in `orphan_ids`.
+    """
+    lit = pg_text_array(sorted(orphan_ids)).replace("'", "''")
+    safe_agent = (agent or "").replace("'", "''")
+    return (
+        f"WITH d AS (DELETE FROM memories m WHERE m.agent='{safe_agent}' "
+        f"AND m.id = ANY('{lit}'::text[]) RETURNING 1) SELECT count(*) FROM d;"
+    )
+
+
 def pg_text_array(values) -> str:
     """Render a Python iterable as a Postgres text[] array LITERAL.
 
@@ -1108,21 +1142,10 @@ def reconcile(
         log(f"[{agent}] DRY RUN: would prune ({reason})")
         pruned = str(would_prune)
     else:
-        psql("DROP TABLE IF EXISTS flat_ids; CREATE TABLE flat_ids (id text primary key);")
-        # The DELETE below removes every pg row absent from this table, so the
-        # table must carry the archived ids too. Populating it from flat alone
-        # would delete exactly the rows `would_prune` just promised to spare.
-        keep_ids = set(flat.keys()) | archived_pg_ids
-        run_psql(
-            PSQL + ["-c", "COPY flat_ids FROM STDIN;"],
-            input_text="\n".join(sorted(keep_ids)),
-        )
-        pruned = psql(
-            f"WITH d AS (DELETE FROM memories m WHERE m.agent='{agent}' AND NOT EXISTS "
-            "(SELECT 1 FROM flat_ids f WHERE f.id=m.id) RETURNING 1) SELECT count(*) FROM d;",
-            True,
-        ).strip()
-        psql("DROP TABLE IF EXISTS flat_ids;")
+        pruned = run_psql(
+            PSQL + ["-tAF\t", "-f", "-"],
+            input_text=prune_orphans_sql(agent, orphan_ids),
+        ).stdout.strip()
         try:
             if int(pruned) >= DEFAULT_PRUNE_ALERT_ROWS:
                 _alert(

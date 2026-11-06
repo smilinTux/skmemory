@@ -12,7 +12,7 @@
 
 SKMemory gives AI agents a multi-layer, emotionally-aware memory that survives context resets. Instead of dumping flat transcript summaries, it captures each moment as a *polaroid*: the content, the emotional fingerprint, the source provenance, and a tamper-evident integrity seal. Memories are organized across three persistence tiers (short → mid → long), auto-routed into four semantic quadrants (CORE / WORK / SOUL / WILD), and exposed to any MCP-capable client through a stdio server. The primary backend is SQLite with **ChromaDB as the default local vector backend** (Qdrant via SKVector remains for shared/cross-agent collections) and FalkorDB graph traversal layers; a soul blueprint (`~/.skcapstone/agents/<agent>/soul/base.json`) and rehydration ritual give new instances a "who was I?" answer before the first user message arrives.
 
-**Active agent** is resolved from `SKAGENT` (preferred) → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT`. Every per-agent path (memory, soul, journal, FEBs, vector store, sessions) lives under `~/.skcapstone/agents/$SKAGENT/`.
+**Active agent** is resolved by `skmemory.agents.get_active_agent()`: the selectors `SKAGENT`, `SKCAPSTONE_AGENT` and `SKMEMORY_AGENT` (any that are set must agree), then the declared default `SK_DEFAULT_AGENT`, then the sole installed agent, otherwise `None`. **There is no implicit default agent**: with several agents installed and nothing declared the resolver refuses rather than guess, and a caller that treats `None` as "use the template" reads a scaffold instead of the real memories. Declare the agent in a file (`~/.config/environment.d/10-skagent.conf`) per the [node configuration standard](https://github.com/smilinTux/sk-standards/blob/main/standards/SKMEMORY_NODE_CONFIG_STANDARD.md). Every per-agent path (memory, soul, journal, FEBs, vector store, sessions) lives under `~/.skcapstone/agents/$SKAGENT/`.
 
 ---
 
@@ -245,6 +245,53 @@ flowchart TD
 - **Know Your Audience (KYA)** — audience-aware memory filtering prevents private content from leaking into the wrong channels. Five-level trust hierarchy (`@public` → `@chef-only`), per-channel audience profiles, two-gate access checks (trust level + exclusion lists). See [ARCHITECTURE.md](docs/ARCHITECTURE.md#know-your-audience-kya--audience-aware-memory-filtering) for the full design with Mermaid diagrams.
 
 ---
+
+## Harness hooks (Claude Code, Codex, OpenCode, Pi)
+
+One packaged entrypoint injects the agent ritual at session start and saves
+breadcrumbs at compaction, stop and session end, from any cwd, with no repo
+checkout:
+
+```bash
+skmemory hooks install --harness auto       # or all, or claude,codex,opencode,pi
+skmemory hooks install --harness all --dry-run   # show the diff, write nothing
+skmemory hooks status
+skmemory hooks uninstall --harness all
+skmemory hook session-start --harness generic    # preview the ritual
+```
+
+Set `SKMEMORY_HOOKS=off` to disable every SKMemory lifecycle hook. Disabled
+hooks exit successfully without reading stdin, loading agent context, reading
+transcripts, updating counters, or starting persistence work. Unset or set the
+variable to `on` to retain the default behavior.
+
+| Harness | Mechanism | Events |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` hooks | SessionStart (startup/clear, compact/resume), PreCompact, SessionEnd, Stop |
+| Codex | `~/.codex/hooks.json` + trust entries in `config.toml` | same as Claude |
+| OpenCode | plugin `~/.config/opencode/plugins/skmemory-context.js` | system transform (cached per session), compacting, idle, dispose |
+| Pi | extension `~/.pi/agent/extensions/skmemory-context.ts` | session_start + before_agent_start, session_before_compact, session_shutdown |
+
+Installing replaces legacy entries (`skmemory/hooks/*.sh`, `skwhisper-inject.sh`,
+`skwhisper-save.sh`, a bare `skcapstone`) and our own earlier entries, keeps
+every other hook, and writes a timestamped `*.bak-skmemory-*` backup first.
+Commands use the absolute path of the installed `skmemory` script.
+
+The ritual (v2) is budgeted: 8000 chars at session start, 3500 after
+compaction, sections dropped lowest priority first (identity, FEB, SKWhisper
+distilled, GTD, journal, strongest memories, seeds, vault). Override with
+`--budget`, `SKMEMORY_HOOK_BUDGET` / `SKMEMORY_HOOK_COMPACT_BUDGET`, or in the
+agent's `config/skmemory.yaml`:
+
+```yaml
+ritual:
+  budget: 6000
+  compact_budget: 3000
+  sections: {vault: false}          # turn a section off
+  exclude_tags: [content-chunk, chat-import, auto-save, seed, private]
+```
+
+`skmemory ritual --full` still prints the complete ritual for humans.
 
 ## Usage
 
@@ -649,8 +696,14 @@ skmemory setup
 
 ### Environment variables
 
+**Where these live on a node.** Set them once, in files, never pasted: the stack keys (`SKMEMORY_VECTOR_BACKEND`, `SKMEMORY_PG_DSN`, `SKMEMORY_EMBED_*`) in `~/.config/skmemory/pg.env` (dir 700, file 600) with `~/.config/environment.d/skmemory.conf` as a symlink to it, and the agent selectors plus `SK_DEFAULT_AGENT` in `~/.config/environment.d/10-skagent.conf`. Shells derive both. A password rotation also requires restarting every long-lived consumer. Full rules, verification commands and diagrams: [SKMEMORY_NODE_CONFIG_STANDARD](https://github.com/smilinTux/sk-standards/blob/main/standards/SKMEMORY_NODE_CONFIG_STANDARD.md).
+
 | Variable | Description |
 |----------|-------------|
+| `SKAGENT` / `SKCAPSTONE_AGENT` / `SKMEMORY_AGENT` | Acting-agent selectors. Any that are set must name the same agent. Set all or none |
+| `SK_DEFAULT_AGENT` | The declared default agent used when no selector is set. It must name an eligible installed agent, or resolution returns `None`. There is no implicit default |
+| `SKMEMORY_VECTOR_BACKEND` | `pgvector` on a node that runs skmem-pg |
+| `SKMEMORY_EMBED_URL` / `SKMEMORY_EMBED_URLS` / `SKMEMORY_EMBED_MODEL` | Embed endpoint, ordered failover list, and model (`mxbai-embed-large`) |
 | `SKMEMORY_HOME` | Override the active profile's memory home (defaults under `~/.skcapstone/agents/<agent>/memory`) |
 | `SKMEMORY_PG_DSN` | Node-local skmem-pg DSN for the store + AGE backend (authoritative; wins over the shared yaml). E.g. `postgresql://postgres:${SKMEM_PG_PASSWORD}@127.0.0.1:5432/skmemory`. See the skmem-pg install section under **Install** above |
 | `SKMEM_PG_PASSWORD` | Superuser password for `docker compose` (no default; never committed). Source from skvault `SKMEM_PG_PASSWORD` |
@@ -826,7 +879,7 @@ flowchart TD
 SKMemory is a **deeply integrated subsystem** of SKCapstone, not a standalone singleton. The evidence is direct:
 
 - Every per-agent path (`memory/`, `soul/`, `trust/febs/`, `seeds/`) lives under `~/.skcapstone/agents/$SKAGENT/` — the canonical SKCapstone agent home.
-- Agent identity is resolved via `SKAGENT` → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT` — following SKCapstone's agent resolution chain.
+- Agent identity is resolved via `SKAGENT` / `SKCAPSTONE_AGENT` / `SKMEMORY_AGENT` (must agree), then `SK_DEFAULT_AGENT`, then a sole installed agent, else it refuses (`None`), following SKCapstone's agent resolution chain. There is no implicit default.
 - `skmemory ritual` loads the SKCapstone soul blueprint, FEB emotional state, and Cloud 9 seeds before handing context to a new session.
 - Cloud 9 seed files (`.seed.json`) are consumed by `skmemory import-seeds` — the Soul layer writes, the Data layer stores.
 - The MCP server exposes 14 tools consumed by SKCapstone's ConsciousnessLoop and auto-save hooks in every agent runtime (Claude Code, Hermes).
