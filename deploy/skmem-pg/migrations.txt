@@ -24,3 +24,4 @@
 # =====================================================================
 03-ops-namespace.sql | verify-ops.sql
 04-task-queue.sql | verify-task-queue.sql
+05-ops-graph-grants.sql | verify-ops-graph-grants.sql

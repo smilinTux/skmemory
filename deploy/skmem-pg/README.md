@@ -16,6 +16,7 @@ git repo (DR gap, coord card a4b414c9).
 | `02-enable-bm25-age.sql` | Historical migration: first enable of pg_search/AGE + original hybrid functions. Kept for provenance; superseded by `schema.sql` for fresh installs. NOT auto-applied (not in `migrations.txt`). |
 | `03-cutover-mxbai.sql` | Historical migration: bge to mxbai embedding-column cutover (bge kept as `emb_bge_legal`). Superseded by `schema.sql`; NOT idempotent (its `ALTER TABLE ... RENAME COLUMN` fails on a fresh snapshot), so it must never auto-run. Provenance only. |
 | `03-ops-namespace.sql` | **Additive migration (card SB0.3):** creates the `ops` schema + `ops_brain` AGE graph for the skbrain operations corpus. Auto-applied on a fresh compose boot (via `migrations.txt`); on a LIVE node apply with `skmemory pg migrate`. See "The ops namespace migration" below. |
+| `05-ops-graph-grants.sql` | **Additive migration:** creates the `ops_brain` labels as owner and grants the projector graph access. Live nodes: operator-initiated. |
 | `skbrain.conf.example` | Env drop-in TEMPLATE for the ops role passwords (card OPS1.3). Copy to `~/.config/environment.d/skbrain.conf`, fill from skvault; consumed by `skmemory pg roles`. No secrets committed. |
 | `skmem_reconcile.py` | Daily-cron reconciler that rebuilds the `memories` derived cache from the synced flat JSON source of truth. Prune step is guardrailed against cold-boot wipes (see below). |
 
