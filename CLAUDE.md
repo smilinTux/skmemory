@@ -12,7 +12,7 @@ backend, run LOCAL per node on `127.0.0.1:5432` (no replication, no SPOF); its
 `memories` table is a derived cache rebuilt from the flat store by
 `deploy/skmem-pg/skmem_reconcile.py`.
 
-Active agent resolves from `SKAGENT` -> `SKCAPSTONE_AGENT` -> `SKMEMORY_AGENT`.
+Active agent: `SKAGENT` / `SKCAPSTONE_AGENT` / `SKMEMORY_AGENT` (any set must agree), then `SK_DEFAULT_AGENT`, then the sole installed agent, else `None`. No implicit default: `get_active_agent()` refuses rather than guesses (`skmemory/agents.py`).
 
 ## Writing style (HARD RULE)
 

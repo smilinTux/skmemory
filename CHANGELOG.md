@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs: agent default and node configuration corrected.** README, SOP, CLAUDE.md and MISSION.md
+  no longer say the agent defaults to `lumina`; `get_active_agent()` resolves selectors, then
+  `SK_DEFAULT_AGENT`, then a sole installed agent, else `None` (no implicit default). The SOP's
+  `pg.env` paragraph is replaced: `~/.config/skmemory/pg.env` is the single owner of the stack
+  config and credential, `environment.d/skmemory.conf` is a symlink to it, and a password rotation
+  must restart long-lived consumers. See sk-standards `SKMEMORY_NODE_CONFIG_STANDARD`.
+
 ### Added
 
 - **Universal session hooks + ritual v2** (`skmemory hook <event>`, `skmemory hooks install|uninstall|status`).
