@@ -103,7 +103,9 @@ def test_default_backend_refuses_when_profile_unresolved(tmp_path):
     assert out.stdout.startswith("REFUSED"), out.stdout
     assert "No valid registered memory profile" in out.stdout
     # and nothing was created under the template or anywhere in the agents dir
-    assert not (tmp_path / "skhome" / "agents" / "lumina-template" / "memory" / "index.db").exists()
+    assert not (
+        tmp_path / "skhome" / "agents" / "lumina-template" / "memory" / "index.db"
+    ).exists()
 
 
 def test_explicit_base_path_still_works_when_profile_unresolved(tmp_path):
@@ -223,9 +225,9 @@ def test_mcp_explicit_pgvector_unhealthy_fails_closed(monkeypatch):
     with (
         patch("skmemory.backends.pgvector_backend.PGVectorBackend", return_value=pg),
         patch("skmemory.backends.chroma_backend.SKChromaBackend", chroma),
+        pytest.raises(BackendInitError, match="connection refused"),
     ):
-        with pytest.raises(BackendInitError, match="connection refused"):
-            mcp._get_store()
+        mcp._get_store()
     chroma.assert_not_called()
     mcp._store = None
 

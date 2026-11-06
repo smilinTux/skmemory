@@ -33,8 +33,8 @@ import click
 
 from . import __version__
 from .ai_client import AIClient
-from .models import EmotionalSnapshot, MemoryLayer, MemoryRole
 from .backend_select import BackendInitError, enabled_vector_backends, resolve_pg_dsn
+from .models import EmotionalSnapshot, MemoryLayer, MemoryRole
 from .store import MemoryStore
 
 logger = logging.getLogger("skmemory.cli")
@@ -458,7 +458,10 @@ def cli(
                         {
                             "status": "red",
                             "error": str(exc),
-                            "profile": {"resolved": not PROFILE_UNRESOLVED, "error": PROFILE_UNRESOLVED},
+                            "profile": {
+                                "resolved": not PROFILE_UNRESOLVED,
+                                "error": PROFILE_UNRESOLVED,
+                            },
                             "vector": {"ok": False, "configured": True, "error": str(exc)},
                             "graph": {"ok": None, "configured": False, "error": None},
                             "vector_ok": False,
@@ -1063,7 +1066,6 @@ def graph_reconcile(ctx: click.Context, do_apply: bool, force: bool, as_json: bo
 
       skmemory graph reconcile --apply
     """
-    import os
 
     from .agents import get_agent_paths
     from .backends.age_backend import AGEGraphBackend, GraphTransportError
@@ -1409,7 +1411,6 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
     Pass --quiet for cron use: no output unless something actually changed.
     Designed to be safe to run on a timer (see skmemory-sync@.service).
     """
-    import os
 
     from .agents import get_agent_paths
 

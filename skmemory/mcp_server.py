@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 from mcp.server import Server
@@ -92,9 +91,7 @@ def _get_store() -> MemoryStore:
                         logger.warning("mcp_server.py age: %s", e)
                         backend_errors["graph"] = f"AGE: {e}"
                 else:
-                    raise RuntimeError(
-                        f"pgvector unhealthy: {health.get('error') or health}"
-                    )
+                    raise RuntimeError(f"pgvector unhealthy: {health.get('error') or health}")
             except Exception as e:
                 logger.warning("mcp_server.py pgvector: %s", e)
                 if requested is not None:
