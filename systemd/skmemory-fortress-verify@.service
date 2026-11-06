@@ -7,6 +7,7 @@ Requires=skmemory-logdir@%i.service
 Type=oneshot
 Environment=SKAGENT=%i
 Environment=SKCAPSTONE_AGENT=%i
+Environment=SKMEMORY_AGENT=%i
 Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
 # Override alert hook here if you don't symlink to ~/.skenv/bin/skmemory-fortress-alert
 # Environment=SKMEMORY_FORTRESS_ALERT_CMD=%h/clawd/skcapstone-repos/skmemory/scripts/fortress-alert-telegram.sh

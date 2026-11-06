@@ -7,6 +7,7 @@ Requires=skmemory-logdir@%i.service
 Type=oneshot
 Environment=SKAGENT=%i
 Environment=SKCAPSTONE_AGENT=%i
+Environment=SKMEMORY_AGENT=%i
 Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.skenv/bin/skmemory sweep
 StandardOutput=append:%h/.skcapstone/agents/%i/logs/skmemory-sweep.log
