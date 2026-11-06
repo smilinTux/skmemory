@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field
 
-from .agents import AGENTS_BASE_DIR, get_agent_paths, get_default_template_agent
+from .agents import AGENTS_BASE_DIR, get_agent_paths
 
 logger = logging.getLogger("skmemory.config")
 
@@ -32,6 +32,15 @@ SKMEMORY_HOME = Path(os.environ["SKMEMORY_HOME"]) if os.environ.get("SKMEMORY_HO
 # Dynamic agent-aware paths
 # Uses ~/.skcapstone/agents/{active_agent}/ based on SKMEMORY_AGENT env var
 # Falls back to first non-template agent, or creates from template
+# Set when no registered profile could be resolved and SKMEMORY_HOME was not
+# given explicitly. Backends that would open the DEFAULT home refuse with this
+# message instead of silently serving something else.
+PROFILE_UNRESOLVED: str | None = None
+
+# Placeholder directory name for the unresolved case. It is deliberately NOT a
+# template and NOT an agent: nothing may be read from or written to it.
+UNRESOLVED_HOME_NAME = "__unresolved-profile__"
+
 try:
     default_paths = get_agent_paths()
     _agent_base = default_paths["base"]
@@ -45,14 +54,37 @@ try:
     else:
         CONFIG_DIR = SKMEMORY_HOME / "config"
         CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
-except ValueError:
-    # Fallback if no agents exist — use platform-aware AGENTS_BASE_DIR.
-    # Preserve SKMEMORY_HOME if it was set via env var.
+except ValueError as _profile_error:
+    # No profile resolved. This used to point SKMEMORY_HOME at the default
+    # TEMPLATE agent (lumina-template) and carry on. Measured on 192.168.0.41
+    # 2026-11-06: `skmemory health` reported the template's 367 memories while
+    # the real home held 51,270, with a primary backend reporting ok. A template
+    # is a scaffold, so serving it as the live store answers confidently from
+    # the wrong corpus. get_active_agent() returning None is deliberate (it
+    # refuses to guess); this module must not undo that refusal.
+    #
+    # An explicit SKMEMORY_HOME is still honoured: that is an operator
+    # instruction, not a guess.
     if SKMEMORY_HOME is None:
-        default_template = get_default_template_agent() or "template"
-        SKMEMORY_HOME = AGENTS_BASE_DIR / default_template
+        PROFILE_UNRESOLVED = str(_profile_error)
+        SKMEMORY_HOME = AGENTS_BASE_DIR / UNRESOLVED_HOME_NAME
     CONFIG_DIR = SKMEMORY_HOME / "config"
     CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
+
+
+def check_default_home_resolved() -> None:
+    """Raise if the default memory home is only a placeholder.
+
+    Called by backends before they open the DEFAULT base path.
+    """
+    if PROFILE_UNRESOLVED:
+        from .agents import list_agents
+
+        available = ", ".join(list_agents()) or "none registered"
+        raise ValueError(
+            f"{PROFILE_UNRESOLVED}. Refusing to open a default memory store. "
+            f"Set SKAGENT (or SK_DEFAULT_AGENT) to one of: {available}"
+        )
 
 
 logger = logging.getLogger("skmemory.config")

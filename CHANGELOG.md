@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Refused profile no longer degrades into the template store, and an explicit
+  vector backend no longer falls back to another one.** Measured on
+  192.168.0.41 2026-11-06 (no agent selector, `SKMEMORY_VECTOR_BACKEND=pgvector`):
+  `skmemory health` served `lumina-template` (367 memories, real home 51,270)
+  and tried ChromaDB then Qdrant, ignoring the variable. `config.py` now leaves
+  the default home unresolved (backends refuse with the fix named), the CLI and
+  MCP server honour `SKMEMORY_VECTOR_BACKEND` (used, or fail with the real
+  reason; no fallback), ChromaDB is never built unless explicitly enabled, and
+  the Postgres DSN lookup is centralised in `skmemory/backend_select.py`.
+- **`health` can now report this failure.** `vector` and `graph` blocks are
+  always present; a configured backend that is broken is `ok: false` with the
+  real error text (`null` now means "not configured" only), the top-level
+  `*_ok` flags reflect a probe that ran, and a new `profile` block turns an
+  unresolved profile or a `-template` home into `status: red`.
+
 ### Added
 
 - **Evidence-grounded observations** (`skmemory/observations.py`, R3). A

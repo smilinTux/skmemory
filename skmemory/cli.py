@@ -34,6 +34,7 @@ import click
 from . import __version__
 from .ai_client import AIClient
 from .models import EmotionalSnapshot, MemoryLayer, MemoryRole
+from .backend_select import BackendInitError, enabled_vector_backends, resolve_pg_dsn
 from .store import MemoryStore
 
 logger = logging.getLogger("skmemory.cli")
@@ -185,6 +186,7 @@ def _get_store(
 
     vector = None
     graph = None
+    backend_errors: dict[str, str] = {}
 
     if no_vector:
         # Flat JSON + SQLite only — skip the 1.8GB SentenceTransformer load.
@@ -192,34 +194,40 @@ def _get_store(
         chroma_enabled = False
         skvector_enabled = False
         pgvector_enabled = False
+        requested = None
     else:
-        enabled = list(cfg.backends_enabled) if cfg and cfg.backends_enabled else []
-        chroma_enabled = "chroma" in enabled
-        skvector_enabled = "skvector" in enabled
-        pgvector_enabled = "pgvector" in enabled
+        # SKMEMORY_VECTOR_BACKEND names a backend explicitly: that backend is
+        # used or this call fails with the real reason. No fallback to another
+        # store (a different vector store is a different set of answers).
+        # Otherwise only what the config declares is enabled, and ChromaDB is
+        # never a default: it needs an explicit opt-in.
+        pgvector_enabled, chroma_enabled, skvector_enabled, requested = enabled_vector_backends(
+            cfg, has_skvector_url=bool(final_skvector_url)
+        )
+        if requested == "skvector" and not final_skvector_url:
+            raise BackendInitError(
+                "SKMEMORY_VECTOR_BACKEND=skvector but no SKVector URL is configured "
+                "(--skvector-url, SKMEMORY_SKVECTOR_URL or skmemory.yaml)."
+            )
+        if requested is None and final_skvector_url:
+            skvector_enabled = True
 
-        # Only fall back to the embedded-ChromaDB default when the operator has
-        # NOT declared any vector backend. When backends_enabled is set (e.g.
-        # ``[pgvector]`` after the skmem-pg consolidation), respect it — do not
-        # force ChromaDB, which would false-report "chromadb not installed" /
-        # SKChromaBackend "Not initialized" in `skmemory health`.
-        if not enabled and not final_skvector_url:
-            chroma_enabled = True
+    def _fail(label: str, exc: Exception) -> None:
+        """Explicit request: raise. Declared in config: record and carry on."""
+        logger.warning("cli.py: %s: %s", label, exc)
+        if requested is not None:
+            raise BackendInitError(f"{label} backend failed to initialize: {exc}") from exc
+        backend_errors["vector"] = f"{label}: {exc}"
+        click.echo(f"Warning: Could not initialize {label} backend: {exc}", err=True)
 
     if pgvector_enabled:
         try:
-            import os
-
             from .backends.pgvector_backend import PGVectorBackend
 
             pg_kwargs = {}
-            # DSN precedence: SKMEMORY_PG_DSN env (node-local, authoritative) wins
-            # over cfg.pgvector_dsn (the yaml). The agent home is one Syncthing
-            # folder, so a yaml DSN is a SHARED value that cannot carry a node IP;
-            # the per-node env (~/.bashrc) is the only correct per-node lever.
-            pg_dsn = os.environ.get("SKMEMORY_PG_DSN") or (
-                cfg.pgvector_dsn if cfg and cfg.pgvector_dsn else None
-            )
+            # DSN precedence lives in backend_select.resolve_pg_dsn (env wins
+            # over the shared yaml).
+            pg_dsn = resolve_pg_dsn(cfg)
             if pg_dsn:
                 pg_kwargs["dsn"] = pg_dsn
             # Embed precedence mirrors the DSN above: the per-node env wins
@@ -234,11 +242,12 @@ def _get_store(
             # _connection()), so every CLI call stays fast; PG is only contacted
             # on an actual search or health_check().
             vector = PGVectorBackend(**pg_kwargs)
+        except BackendInitError:
+            raise
         except Exception as e:
-            logger.warning("cli.py: %s", e)
-            click.echo("Warning: Could not initialize pgvector backend", err=True)
+            _fail("pgvector", e)
 
-    if vector is None and chroma_enabled:
+    if vector is None and chroma_enabled and (requested in (None, "chroma")):
         try:
             from .agents import get_agent_paths
             from .backends.chroma_backend import SKChromaBackend
@@ -266,12 +275,14 @@ def _get_store(
                 chroma_kwargs["embedding_model"] = chroma_embedding
 
             vector = SKChromaBackend(**chroma_kwargs)
+        except BackendInitError:
+            raise
         except Exception as e:
-            logger.warning("cli.py: %s", e)
-            click.echo("Warning: Could not initialize ChromaDB backend, trying Qdrant", err=True)
+            _fail("ChromaDB", e)
 
-    # Fall back to Qdrant if ChromaDB failed or Qdrant is explicitly enabled
-    if vector is None and (final_skvector_url or skvector_enabled):
+    # Qdrant only when it was asked for (explicitly, via config, or by URL),
+    # never as a fallback for a failed Chroma/pgvector.
+    if vector is None and skvector_enabled and not backend_errors:
         try:
             from .backends.skvector_backend import SKVectorBackend
 
@@ -284,9 +295,10 @@ def _get_store(
             if final_skvector_vector_dim:
                 kwargs["vector_dim"] = final_skvector_vector_dim
             vector = SKVectorBackend(**kwargs)
+        except BackendInitError:
+            raise
         except Exception as e:
-            logger.warning("cli.py: %s", e)
-            click.echo("Warning: Could not initialize SKVector backend", err=True)
+            _fail("SKVector", e)
 
     # Fallback: if no URL set via env/CLI/skmemory.yaml, look for a
     # dedicated ~/.skcapstone/agents/<agent>/config/skgraph.yaml file.
@@ -328,7 +340,8 @@ def _get_store(
             graph = SKGraphBackend(url=final_skgraph_url, graph_name=graph_name)
         except Exception as e:
             logger.warning("cli.py: %s", e)
-            click.echo("Warning: Could not initialize SKGraph backend", err=True)
+            backend_errors["graph"] = f"SKGraph: {e}"
+            click.echo(f"Warning: Could not initialize SKGraph backend: {e}", err=True)
 
     # Gap B (card dc8280a7): on the default skmem-pg deployment there is no
     # FalkorDB SKGraph URL, so the graph role stays empty and forget() never
@@ -343,18 +356,16 @@ def _get_store(
     # SKMEMORY_PG_DSN wins over the (Syncthing-shared) yaml, else the AGE default.
     if graph is None and pgvector_enabled:
         try:
-            import os
-
             from .backends.age_backend import AGEGraphBackend
 
-            age_dsn = os.environ.get("SKMEMORY_PG_DSN") or (
-                cfg.pgvector_dsn if cfg and cfg.pgvector_dsn else None
-            )
-            graph = AGEGraphBackend(dsn=age_dsn)
+            graph = AGEGraphBackend(dsn=resolve_pg_dsn(cfg))
         except Exception as e:
             logger.warning("cli.py: %s", e)
+            backend_errors["graph"] = f"AGE: {e}"
 
-    return MemoryStore(primary=None, vector=vector, graph=graph, use_sqlite=not legacy_files)
+    store = MemoryStore(primary=None, vector=vector, graph=graph, use_sqlite=not legacy_files)
+    store.backend_errors.update(backend_errors)
+    return store
 
 
 @click.group()
@@ -427,13 +438,38 @@ def cli(
         ctx.obj["ai"] = None
         return
     if "store" not in ctx.obj:
-        ctx.obj["store"] = _get_store(
-            skvector_url,
-            skvector_key,
-            skvector_embedding_model,
-            skvector_vector_dim,
-            no_vector=no_vector,
-        )
+        try:
+            ctx.obj["store"] = _get_store(
+                skvector_url,
+                skvector_key,
+                skvector_embedding_model,
+                skvector_vector_dim,
+                no_vector=no_vector,
+            )
+        except (BackendInitError, ValueError) as exc:
+            # Fail closed, and say so on STDOUT as well as stderr: health is
+            # the instrument that is supposed to catch this, and a refusal that
+            # only reaches stderr reads as "nothing to report".
+            if ctx.invoked_subcommand == "health":
+                from .config import PROFILE_UNRESOLVED
+
+                click.echo(
+                    json.dumps(
+                        {
+                            "status": "red",
+                            "error": str(exc),
+                            "profile": {"resolved": not PROFILE_UNRESOLVED, "error": PROFILE_UNRESOLVED},
+                            "vector": {"ok": False, "configured": True, "error": str(exc)},
+                            "graph": {"ok": None, "configured": False, "error": None},
+                            "vector_ok": False,
+                            "embed_ok": False,
+                            "graph_ok": None,
+                        },
+                        indent=2,
+                    )
+                )
+                ctx.exit(1)
+            raise click.ClickException(str(exc)) from exc
 
     if use_ai:
         ai = AIClient(base_url=ai_url, model=ai_model)
@@ -1042,9 +1078,7 @@ def graph_reconcile(ctx: click.Context, do_apply: bool, force: bool, as_json: bo
         cfg = load_config()
     except Exception:  # config is optional; the backend has env defaults
         logger.warning("cli.py: config load failed", exc_info=True)
-    pg_dsn = os.environ.get("SKMEMORY_PG_DSN") or (
-        cfg.pgvector_dsn if cfg and getattr(cfg, "pgvector_dsn", None) else None
-    )
+    pg_dsn = resolve_pg_dsn(cfg)
     backend = AGEGraphBackend(dsn=pg_dsn, agent=agent)
     # Provision the agent's graph if nobody ever did. Idempotent, and only on
     # the apply path: a dry run must not create anything. Before this, adding
@@ -1447,9 +1481,7 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
 
             # DSN precedence mirrors the pgvector backend: node-local env wins
             # over the (Syncthing-shared) yaml, else the container default.
-            pg_dsn = os.environ.get("SKMEMORY_PG_DSN") or (
-                cfg.pgvector_dsn if cfg and getattr(cfg, "pgvector_dsn", None) else None
-            )
+            pg_dsn = resolve_pg_dsn(cfg)
             age = AGEGraphBackend(dsn=pg_dsn, agent=agent)
             # Provision first. `sync --graph` is what the per-agent timers run,
             # so this is the path that makes a NEW agent work without anyone
