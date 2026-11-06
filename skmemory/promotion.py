@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Iterator
 from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
@@ -259,21 +260,13 @@ class PromotionEngine:
             target_layer: Tier to promote into.
             result: PromotionResult to update in place.
         """
-        memories = self._store.list_memories(
-            layer=source_layer,
-            limit=self._criteria.max_promotions_per_sweep * 2,
-        )
-
-        if source_layer == MemoryLayer.SHORT:
-            result.short_evaluated = len(memories)
-        else:
-            result.mid_evaluated = len(memories)
-
         promoted_count = 0
-        for memory in memories:
+        evaluated = 0
+        for memory in self._iter_tier(source_layer):
             if promoted_count >= self._criteria.max_promotions_per_sweep:
                 break
 
+            evaluated += 1
             target = self.evaluate(memory)
             if target != target_layer:
                 result.skipped += 1
@@ -293,6 +286,40 @@ class PromotionEngine:
             except Exception as exc:
                 logger.warning("Promotion failed for %s: %s", memory.id[:8], exc)
                 result.errors += 1
+
+        if source_layer == MemoryLayer.SHORT:
+            result.short_evaluated = evaluated
+        else:
+            result.mid_evaluated = evaluated
+
+    def _iter_tier(self, layer: MemoryLayer) -> Iterator[Memory]:
+        """Yield every memory in a tier, newest first, one page at a time.
+
+        Pages backwards with a ``created_before`` cursor so the sweep reaches
+        the whole tier, not just the newest page. Listing only the newest
+        ``max_promotions_per_sweep * 2`` meant that on a large store every
+        older memory was never evaluated.
+
+        Args:
+            layer: Tier to walk.
+
+        Yields:
+            Memory: Each memory in the tier.
+        """
+        page_size = max(self._criteria.max_promotions_per_sweep * 2, 500)
+        cursor: str | None = None
+        seen: set[str] = set()
+        while True:
+            page = self._store.list_memories(layer=layer, limit=page_size, created_before=cursor)
+            fresh = [m for m in page if m.id not in seen]
+            if not fresh:
+                return
+            for memory in fresh:
+                seen.add(memory.id)
+                yield memory
+            if len(page) < page_size:
+                return
+            cursor = page[-1].created_at
 
     def _qualifies_short_to_mid(self, memory: Memory) -> bool:
         """Check if a short-term memory qualifies for mid-term.

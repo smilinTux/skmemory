@@ -1,0 +1,13 @@
+[Unit]
+Description=SKMemory promotion sweep (short -> mid -> long) for %i
+After=network.target skmemory-logdir@%i.service
+Requires=skmemory-logdir@%i.service
+
+[Service]
+Type=oneshot
+Environment=SKAGENT=%i
+Environment=SKCAPSTONE_AGENT=%i
+Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.skenv/bin/skmemory sweep
+StandardOutput=append:%h/.skcapstone/agents/%i/logs/skmemory-sweep.log
+StandardError=append:%h/.skcapstone/agents/%i/logs/skmemory-sweep.log

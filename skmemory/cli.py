@@ -765,30 +765,20 @@ def sweep_cmd(
 
     if dry_run:
         # Inspect without modifying anything
+        # Walk each whole tier like a real sweep does, stopping at the same
+        # per-tier cap, so the preview matches what a sweep would promote.
         engine = PromotionEngine(store, criteria)
-        short_mems = store.list_memories(
-            layer=MemoryLayer.SHORT, limit=criteria.max_promotions_per_sweep * 2
-        )
-        mid_mems = store.list_memories(
-            layer=MemoryLayer.MID, limit=criteria.max_promotions_per_sweep * 2
-        )
 
         would_promote: list[dict] = []
-        for mem in short_mems:
-            target = engine.evaluate(mem)
-            if target is not None:
-                would_promote.append(
-                    {
-                        "id": mem.id,
-                        "title": mem.title,
-                        "from": mem.layer.value,
-                        "to": target.value,
-                        "reason": engine._promotion_reason(mem),
-                    }
-                )
-        for mem in mid_mems:
-            target = engine.evaluate(mem)
-            if target is not None:
+        for layer in (MemoryLayer.SHORT, MemoryLayer.MID):
+            hits = 0
+            for mem in engine._iter_tier(layer):
+                if hits >= criteria.max_promotions_per_sweep:
+                    break
+                target = engine.evaluate(mem)
+                if target is None:
+                    continue
+                hits += 1
                 would_promote.append(
                     {
                         "id": mem.id,

@@ -7,6 +7,7 @@ memory-integrity state coherent without manual intervention.
 |---|---|---|
 | `skmemory-sync@.{service,timer}` | SQLite ↔ flat-file + skmem-pg (pgvector) + AGE graph reconciliation | every 6h |
 | `skmemory-fortress-verify@.{service,timer}` | SHA-256 integrity verify of all memories; alert on tamper | daily 03:00 |
+| `skmemory-sweep@.{service,timer}` | Promotion sweep (short -> mid -> long) via `skmemory sweep` | every 6h |
 
 ## Install (one-shot, recommended)
 
@@ -32,6 +33,7 @@ scripts/install-systemd.sh --uninstall --agents lumina       # remove all timers
 mkdir -p ~/.config/systemd/user
 cp skmemory-sync@.{service,timer}              ~/.config/systemd/user/
 cp skmemory-fortress-verify@.{service,timer}   ~/.config/systemd/user/
+cp skmemory-sweep@.{service,timer}             ~/.config/systemd/user/
 systemctl --user daemon-reload
 ```
 
@@ -44,6 +46,26 @@ systemctl --user enable --now skmemory-sync@lumina.timer
 # Fortress verify (daily 03:00 with ±5min jitter)
 systemctl --user enable --now skmemory-fortress-verify@lumina.timer
 ```
+
+## sweep timer details
+
+`skmemory sweep` promotes qualifying memories short-term -> mid-term ->
+long-term (emotional intensity, access count, age, key tags, Cloud 9).
+
+Enable it on **one host per agent only**: the host that runs that agent's
+`skcapstone@<agent>` daemon. Promotion writes new flat files that
+Syncthing replicates, so running it on two hosts for the same agent
+produces duplicate promoted copies.
+
+```bash
+systemctl --user enable --now skmemory-sweep@lumina.timer
+```
+
+Why this exists: the skcapstone daemon's hourly `memory_promotion_sweep`
+parses tier files as skcapstone `MemoryEntry` (`memory_id`, ...), but
+skmemory writes its own `Memory` schema (`id`, `title`, `emotional`, ...).
+Every file fails to load, so that sweep logs `scanned 0` forever and
+nothing is ever promoted. Found 2026-11-06 on lumina, opus and jarvis.
 
 ## sync timer details
 

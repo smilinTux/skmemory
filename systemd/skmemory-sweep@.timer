@@ -1,0 +1,12 @@
+[Unit]
+Description=Run skmemory promotion sweep for %i every 6h
+
+[Timer]
+# Offset from skmemory-sync@ (5min) so the sweep sees a freshly reindexed store
+OnBootSec=20min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=skmemory-sweep@%i.service
+
+[Install]
+WantedBy=timers.target
