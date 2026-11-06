@@ -115,6 +115,8 @@ class TestNoPreviewStubs:
 
     def test_explicit_export_flat_can_still_materialize(self, backend):
         mid = self._orphan(backend)
-        stats = backend.export_orphans_to_flat()  # default: stubs allowed
+        # Stubs are opt-in now, so export-flat (the one deliberately lossy
+        # rescue) asks for them by name instead of inheriting a default.
+        stats = backend.export_orphans_to_flat(allow_preview_stubs=True)
         assert stats["exported"] == 1
         assert len(_all_files(backend, mid)) == 1

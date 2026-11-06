@@ -58,7 +58,9 @@ class TestStoreWiresVectorBackendAsFallback:
         memory_id = _make_orphan(sqlite_backend, FULL_CONTENT)
 
         store = MemoryStore(primary=sqlite_backend, vector=None)
-        stats = store.export_orphans_to_flat()
+        # The old behavior being asserted here is the lossy preview write,
+        # which callers must now request explicitly.
+        stats = store.export_orphans_to_flat(allow_preview_stubs=True)
 
         assert stats["exported"] == 1
         assert stats["recovered_full"] == 0
@@ -71,7 +73,7 @@ class TestStoreWiresVectorBackendAsFallback:
         fake_vector.load.side_effect = ConnectionError("pg unreachable")
 
         store = MemoryStore(primary=sqlite_backend, vector=fake_vector)
-        stats = store.export_orphans_to_flat()
+        stats = store.export_orphans_to_flat(allow_preview_stubs=True)
 
         assert stats["errors"] == 0
         assert stats["exported"] == 1
