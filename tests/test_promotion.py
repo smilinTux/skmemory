@@ -186,6 +186,43 @@ class TestSweep:
 
         assert result.short_to_mid <= 1
 
+    def test_sweep_reaches_past_newest_window(self, tmp_path: Path) -> None:
+        """A qualifying memory older than the newest page still gets promoted.
+
+        Regression: the sweep used to list only the newest
+        ``max_promotions_per_sweep * 2`` memories per tier, so on a large store
+        every older memory was never evaluated.
+        """
+        from skmemory.backends.file_backend import FileBackend
+
+        s = MemoryStore(primary=FileBackend(base_path=tmp_path / "deep"))
+        base = datetime.now(timezone.utc) - timedelta(days=30)
+        old = Memory(
+            title="Old breakthrough",
+            content="deep in the backlog",
+            layer=MemoryLayer.SHORT,
+            created_at=base.isoformat(),
+            emotional=EmotionalSnapshot(intensity=9.0),
+        )
+        s.primary.save(old)
+        for i in range(25):
+            s.primary.save(
+                Memory(
+                    title=f"routine {i}",
+                    content="noise",
+                    layer=MemoryLayer.SHORT,
+                    created_at=(base + timedelta(hours=i + 1)).isoformat(),
+                    emotional=EmotionalSnapshot(intensity=1.0),
+                )
+            )
+
+        engine = PromotionEngine(store=s, criteria=PromotionCriteria(max_promotions_per_sweep=2))
+        result = engine.sweep()
+
+        assert result.short_to_mid == 1
+        assert result.short_evaluated == 26
+        assert s.recall(old.id).metadata.get("promoted_to") == MemoryLayer.MID.value
+
     def test_sweep_result_summary(self, engine: PromotionEngine) -> None:
         """Result summary is human-readable."""
         result = engine.sweep()
