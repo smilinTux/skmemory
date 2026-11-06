@@ -32,6 +32,9 @@ os.environ["SKCAPSTONE_AGENT"] = _TEST_AGENT_NAME
 # Ignore selectors inherited from the developer shell. Tests opt into them explicitly.
 os.environ.pop("SKAGENT", None)
 os.environ.pop("SKMEMORY_AGENT", None)
+# An explicit vector-backend request now changes which backend get_store builds;
+# do not let a developer shell decide which backends the suite exercises.
+os.environ.pop("SKMEMORY_VECTOR_BACKEND", None)
 
 _agent_base = Path(_tmp_skcapstone) / "agents" / _TEST_AGENT_NAME
 for _subdir in (

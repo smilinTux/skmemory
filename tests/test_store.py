@@ -369,4 +369,5 @@ class TestHealth:
     def test_health_no_vector(self, store: MemoryStore) -> None:
         """Health check omits vector when not configured."""
         status = store.health()
-        assert "vector" not in status
+        # Always present now: null means "not configured", never "missing".
+        assert status["vector"] == {"ok": None, "configured": False, "error": None}
