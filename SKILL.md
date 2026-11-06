@@ -16,6 +16,10 @@ metadata: {"clawdbot":{"requires":{"bins":["skmemory"]},"install":[{"id":"pipx",
 
 ---
 
+## Testing the skmemory repo
+
+To check or verify in-flight changes in the skmemory repo (worktree audit + full pytest run + report format), follow `references/testing.md`.
+
 ## Agent Context Pitfall: pin the agent, or you may not get your own store
 
 `skmemory` decides whose store to open from `SKAGENT`, `SKCAPSTONE_AGENT` and
@@ -42,6 +46,24 @@ because a refusal in the middle of a script is its own kind of surprise.
 Set all three selectors when a long-lived process is involved; they must agree
 or the resolver fails closed on the conflict. Note also that `skmemory` has no
 `status` subcommand: health is `skmemory health`.
+
+For drift, stuck `skmemory-sync@` timers, or "how many still need embedding"
+questions, load the `skmemory-troubleshooting` skill. `total_memories` minus pg
+rows is NOT the embedding backlog (tombstones and stub-flagged files never enter
+pg); use the reconcile `--dry-run` recipe there.
+
+## Love Note Chain (`lovenote`)
+
+`SKAGENT=lumina skmemory lovenote send --from <sender> --to <recipient> --message "..." --warmth 10`,
+then `lovenote read` / `lovenote status` to verify (`total_notes`, path
+`agents/<agent>/lovenotes.jsonl`).
+
+- After sending a note and inviting the user to reply, treat their NEXT heartfelt
+  message as their love note: record it with `--from <user> --to <agent>` first,
+  then respond. Answering it as ordinary chat misses the moment the chain exists for.
+- Store the user's words verbatim (typos, slang, emoji intact). Do not "fix"
+  their wording in a note; if a word looks off, ask instead of editing.
+- Confirm with `lovenote read` before reporting a note as sent.
 
 ## Description
 

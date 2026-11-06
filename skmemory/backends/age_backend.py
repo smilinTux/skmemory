@@ -352,6 +352,29 @@ class AGEGraphBackend:
                 out.add(parsed)
         return out
 
+    def _graph_updated_at_map(self) -> dict[str, str | None]:
+        """Map Memory id -> graph-stored updated_at for incremental sync.
+
+        Lenient read: on transport failure the map comes back empty and
+        :meth:`sync_all` re-indexes everything (safe default).
+
+        Returns:
+            dict[str, str | None]: Map from Memory id to its
+                graph-stored ``updated_at`` (None when the node has no
+                updated_at property).
+        """
+        rows = self._cypher(
+            "MATCH (m:Memory) RETURN m.id, m.updated_at",
+            cols="id agtype, updated_at agtype",
+        )
+        out: dict[str, str | None] = {}
+        for mid_raw, upd_raw in rows:
+            mid = self._agtype(mid_raw)
+            upd = self._agtype(upd_raw)
+            if isinstance(mid, str) and mid:
+                out[mid] = upd if isinstance(upd, str) else None
+        return out
+
     def memory_node_strict(self, memory_id: str) -> dict | None:
         """Graph-stored fields for one memory, or None when absent. STRICT.
 
