@@ -49,11 +49,23 @@ def test_python_engine_never_imports_rust(monkeypatch, tmp_path):
     assert store.recall(m.id).id == m.id
 
 
+def test_non_string_reader_is_public():
+    assert engine.rust_reader(None) is None
+    assert engine.rust_reader("@work:x") == "@work:x"
+    for bad in (123, 1.5, ["@chef"], {"a": 1}, b"@chef", True):
+        assert engine.rust_reader(bad) == "@public"
+
+
 def test_audience_config_defaults_and_is_not_overridden(monkeypatch):
     monkeypatch.delenv(engine.AUDIENCE_ENV, raising=False)
+    monkeypatch.setattr(engine, "_set_by_shim", None)
     engine.ensure_audience_config()
     assert os.environ[engine.AUDIENCE_ENV] == str(engine.packaged_audience_config())
     assert engine.packaged_audience_config().is_file()
+    # a path the shim set follows Python's default when it changes
+    monkeypatch.setattr("skmemory.audience._DEFAULT_CONFIG_PATH", "/other/aud.json")
+    engine.ensure_audience_config()
+    assert os.environ[engine.AUDIENCE_ENV] == "/other/aud.json"
     monkeypatch.setenv(engine.AUDIENCE_ENV, "/operator/choice.json")
     engine.ensure_audience_config()
     assert os.environ[engine.AUDIENCE_ENV] == "/operator/choice.json"

@@ -1194,7 +1194,7 @@ class MemoryStore:
         """
         eng = self._rust_engine()
         if eng is not None:
-            row = eng.recall(memory_id, reader)
+            row = eng.recall(memory_id, _engine.rust_reader(reader))
             return None if row is None else self._from_rust(row)
         memory = self.primary.load(memory_id)
         if memory is None:
@@ -1375,7 +1375,7 @@ class MemoryStore:
             source=source,
             context_tag=ctx,
             record_access=record_access,
-            reader=reader,
+            reader=_engine.rust_reader(reader),
             as_of=as_of,
         )
         report = out["report"]
@@ -2569,7 +2569,7 @@ class MemoryStore:
                 created_after=created_after,
                 created_before=created_before,
                 source=source,
-                reader=reader,
+                reader=_engine.rust_reader(reader),
             )
             return [self._from_rust(r) for r in rows]
         scope = resolve_reader(reader)
@@ -2617,7 +2617,7 @@ class MemoryStore:
         """
         eng = self._rust_engine()
         if eng is not None:
-            return eng.history(memory_id, reader)
+            return eng.history(memory_id, _engine.rust_reader(reader))
         scope = resolve_reader(reader)
 
         def visible(m: Memory | None) -> bool:
@@ -2772,7 +2772,7 @@ class MemoryStore:
         """Whether the reader may see this memory. An unknown id is not visible."""
         eng = self._rust_engine()
         if eng is not None:
-            return bool(eng.reader_can_see(memory_id, reader))
+            return bool(eng.reader_can_see(memory_id, _engine.rust_reader(reader)))
         scope = resolve_reader(reader)
         if scope.unrestricted:
             return True
@@ -3555,7 +3555,7 @@ class MemoryStore:
         report = self._health_report(reader)
         eng = self._rust_engine()
         if eng is not None and resolve_reader(reader).unrestricted:
-            report["engine"] = eng.health(reader)
+            report["engine"] = eng.health(_engine.rust_reader(reader))
         return report
 
     def _health_report(self, reader: str | None = None) -> dict:
