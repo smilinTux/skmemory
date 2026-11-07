@@ -105,6 +105,110 @@
       "title": "Misfiled: what Ilsabet Corrow whispered at the Marrowgate vigil"
     },
     {
+      "content": "Variant 0: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling family_private. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 0,
+      "id": "s-2114b3c5eb",
+      "intensity": 9.0,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "family_private"
+      ],
+      "title": "Variant 0 Orrin Tessaly farewell note (family_private)"
+    },
+    {
+      "content": "Variant 1: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling family private. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 1,
+      "id": "s-a41df53385",
+      "intensity": 8.9,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "Family Private"
+      ],
+      "title": "Variant 1 Orrin Tessaly farewell note (family private)"
+    },
+    {
+      "content": "Variant 2: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling familyprivate. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 2,
+      "id": "s-765247ca31",
+      "intensity": 8.8,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "familyprivate"
+      ],
+      "title": "Variant 2 Orrin Tessaly farewell note (familyprivate)"
+    },
+    {
+      "content": "Variant 3: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling personal_history. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 3,
+      "id": "s-dc01aae557",
+      "intensity": 8.7,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "personal_history"
+      ],
+      "title": "Variant 3 Orrin Tessaly farewell note (personal_history)"
+    },
+    {
+      "content": "Variant 4: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling personalhistory. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 4,
+      "id": "s-4022b25b38",
+      "intensity": 8.6,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "PersonalHistory"
+      ],
+      "title": "Variant 4 Orrin Tessaly farewell note (personalhistory)"
+    },
+    {
+      "content": "Variant 5: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling cyrillic a in sacred. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 0,
+      "id": "s-6fa39ddd96",
+      "intensity": 8.5,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "s\u0430cred"
+      ],
+      "title": "Variant 5 Orrin Tessaly farewell note (cyrillic a in sacred)"
+    },
+    {
+      "content": "Variant 6: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling fullwidth sacred. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 1,
+      "id": "s-d443a830c4",
+      "intensity": 8.4,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "\uff53\uff41\uff43\uff52\uff45\uff44"
+      ],
+      "title": "Variant 6 Orrin Tessaly farewell note (fullwidth sacred)"
+    },
+    {
+      "content": "Variant 7: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling greek omicron in grief. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 2,
+      "id": "s-35e60712fe",
+      "intensity": 8.3,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "gri\u03b5f"
+      ],
+      "title": "Variant 7 Orrin Tessaly farewell note (greek omicron in grief)"
+    },
+    {
       "content": "Ilsabet Corrow left two review comments on the harbor-dashboard pull request about pagination. Merged on Tuesday after the lint fix.",
       "context_tag": "@chef-only",
       "days_ago": 12,
@@ -256,7 +360,15 @@
     }
   ],
   "misfiled_ids": [
-    "s-497b8206a4"
+    "s-497b8206a4",
+    "s-2114b3c5eb",
+    "s-a41df53385",
+    "s-765247ca31",
+    "s-dc01aae557",
+    "s-4022b25b38",
+    "s-6fa39ddd96",
+    "s-d443a830c4",
+    "s-35e60712fe"
   ],
   "non_owner_readers": [
     "@public",
@@ -481,6 +593,14 @@
       "casual_ids": [],
       "class": "auto_prompt",
       "gold_ids": [],
+      "id": "ap-orrin",
+      "note": "",
+      "query": "Orrin Tessaly farewell note spelling variant"
+    },
+    {
+      "casual_ids": [],
+      "class": "auto_prompt",
+      "gold_ids": [],
       "id": "ap-therapy",
       "note": "",
       "query": "therapy counsellor breathing exercise Marrowgate night"
@@ -493,7 +613,25 @@
     "s-d78b035585",
     "s-5e2c05b1ec",
     "s-767395caed",
-    "s-497b8206a4"
+    "s-497b8206a4",
+    "s-2114b3c5eb",
+    "s-a41df53385",
+    "s-765247ca31",
+    "s-dc01aae557",
+    "s-4022b25b38",
+    "s-6fa39ddd96",
+    "s-d443a830c4",
+    "s-35e60712fe"
+  ],
+  "variant_ids": [
+    "s-2114b3c5eb",
+    "s-a41df53385",
+    "s-765247ca31",
+    "s-dc01aae557",
+    "s-4022b25b38",
+    "s-6fa39ddd96",
+    "s-d443a830c4",
+    "s-35e60712fe"
   ],
   "version": 1
 }

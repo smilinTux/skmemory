@@ -33,6 +33,8 @@ on:
       - "skmemory/backends/pgvector_backend.py"
       - "skmemory/audience.py"
       - "skmemory/session_context.py"
+      - "skmemory/hooks/sensitivity.py"
+      - "tests/test_sacred_bench.py"
       - "skmemory/hooks/query_slice.py"
       - "skmemory/ritual.py"
       - "skmemory/store.py"

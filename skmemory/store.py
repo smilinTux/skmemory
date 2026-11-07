@@ -42,7 +42,7 @@ from .fusion import (
     run_arms_concurrent,
     search_deadline_s,
 )
-from .hooks.sensitivity import is_sensitive, sql_not_sensitive
+from .hooks.sensitivity import is_sensitive, register_sql, sql_not_sensitive
 from .models import (
     PARENT_RELATION_KEY,
     RELATION_CHUNK_OF,
@@ -2891,6 +2891,7 @@ class MemoryStore:
             conn = self.primary._get_conn()
             # Owner auto-inject never lists sensitive-tagged rows in any tier
             # (skmemory.hooks.sensitivity). The owner pulls them with memory_search.
+            register_sql(conn)
             _sw, _sp = sql_not_sensitive("tags")
             safe = " AND " + " AND ".join(_sw)
 

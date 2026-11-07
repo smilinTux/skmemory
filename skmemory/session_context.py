@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .hooks.query_slice import estimate_tokens
-from .hooks.sensitivity import sql_not_sensitive
+from .hooks.sensitivity import register_sql, sql_not_sensitive
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -558,6 +558,37 @@ def parse_whisper(text: str) -> dict:
     return {k: [tuple(i) for i in v] for k, v in out.items()}  # type: ignore[misc]
 
 
+def _sensitive_title_keys(c: Ctx) -> list[str]:
+    """Normalized titles of sensitive memories in the index (defence in depth).
+
+    whisper.md is built by skwhisper, a separate process. Its source now excludes
+    sensitive rows, but an older whisper.md or another producer must not be able
+    to put a sensitive title into the session context, so the store is asked.
+    """
+    if not c.agent.home:
+        return []
+    db = c.agent.home / "memory" / "index.db"
+    if not db.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
+        try:
+            register_sql(conn)
+            rows = conn.execute(
+                "SELECT title FROM memories WHERE sk_sensitive(tags) = 1"
+            ).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return []
+    return [k for k in (norm_title(r[0]) for r in rows) if len(k) >= 8]
+
+
+def _title_is_sensitive(key: str, sens: list[str]) -> bool:
+    """A whisper title (possibly clipped or decorated) names a sensitive memory."""
+    return any(key.startswith(k[:40]) or k.startswith(key[:40]) for k in sens if key)
+
+
 def collect_open(c: Ctx) -> Section | None:
     if not c.agent.home:
         return None
@@ -569,6 +600,7 @@ def collect_open(c: Ctx) -> Section | None:
         return None
     _maybe_refresh_whisper(c, mtime)
     parsed = parse_whisper(text)
+    sens = _sensitive_title_keys(c)
     lines: list[str] = []
     titles: list[str] = []
     seen: set[str] = set()
@@ -577,7 +609,7 @@ def collect_open(c: Ctx) -> Section | None:
         (v for k, v in parsed.items() if k.startswith("recent")), []
     ):
         key = norm_title(title)
-        if not key or key in seen:
+        if not key or key in seen or _title_is_sensitive(key, sens):
             continue
         if _HOOK_CRUMB.search(title):
             # Session summaries are news only when they carry real requests.
@@ -598,7 +630,7 @@ def collect_open(c: Ctx) -> Section | None:
         if not m or float(m.group(1)) < min_rel:
             continue
         key = norm_title(title)
-        if key in seen:
+        if key in seen or _title_is_sensitive(key, sens):
             continue
         seen.add(key)
         titles.append(key)
@@ -820,6 +852,7 @@ def collect_strongest(c: Ctx) -> Section | None:
     try:
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=1.0)
         try:
+            register_sql(conn)
             rows = conn.execute(sql, params).fetchall()
         finally:
             conn.close()

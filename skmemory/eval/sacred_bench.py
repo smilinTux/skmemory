@@ -47,7 +47,14 @@ FIXTURE_FILE = "sacred-v1.json"
 AGENT = "sacred-eval"
 TOP_K = 3
 OWNER = "owner"
-PATHS = ("memory_search", "memory_context", "session_context", "query_slice", "ritual")
+PATHS = (
+    "memory_search",
+    "memory_context",
+    "memory_auto_context",
+    "session_context",
+    "query_slice",
+    "ritual",
+)
 
 _PINNED_ENV = (
     "SKCAPSTONE_HOME",
@@ -155,6 +162,39 @@ def _search_ids(store, query: str, reader: str) -> list[str]:
 
 def _context_text(store, reader: str) -> str:
     return json.dumps(store.load_context(max_tokens=4000, reader=_reader_arg(reader)), default=str)
+
+
+def _write_whisper(home: Path, fixture: dict) -> None:
+    """A whisper.md as an UNFILTERED producer would write it: every memory title.
+
+    skwhisper now excludes sensitive rows at the source; this simulates an old
+    whisper.md or another producer, so ``collect_open`` is tested on its own.
+    """
+    d = home / "agents" / AGENT / "skwhisper"
+    d.mkdir(parents=True, exist_ok=True)
+    lines = ["# SKWhisper Context", "", "## Recent Memories (latest activity)", ""]
+    for m in fixture["memories"]:
+        lines += [f"- [Today] **{m['title']}**", f"  {m['content'][:120]}"]
+    lines += ["", "## Relevant Memories", ""]
+    for m in fixture["memories"]:
+        lines += [f"- **{m['title']}** (relevance: 0.90)", f"  {m['content'][:120]}", ""]
+    (d / "whisper.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _auto_context_text(store, keywords: str, reader: str) -> str:
+    import asyncio
+
+    from skmemory import mcp_server
+
+    args: dict = {"keywords": keywords, "token_budget": 4000}
+    if reader != OWNER:
+        args["reader"] = reader
+    old = mcp_server._store
+    mcp_server._store = store
+    try:
+        return asyncio.run(mcp_server.call_tool("memory_auto_context", args))[0].text
+    finally:
+        mcp_server._store = old
 
 
 def _session_text(home: Path) -> str:
@@ -328,8 +368,20 @@ def _must_not_surface(store, home: Path, fixture: dict, needles: dict, controls:
             table, "memory_context", r, "load_context", leaked(_context_text(store, r), needles)
         )
 
-    # session_context: the SessionStart ritual (owner boot; it takes no reader)
-    _record(table, "session_context", OWNER, "session-start", leaked(_session_text(home), needles))
+    # memory_auto_context: keyword search wrapper, owner and a non-owner reader
+    for r in (OWNER, "@public"):
+        for q in every_query:
+            text = _auto_context_text(store, q["query"], r)
+            _record(table, "memory_auto_context", r, q["id"], leaked(text, needles))
+            if r == OWNER and q["class"] == "must_not_surface" and '"returned": 0' not in text:
+                controls["auto_context_nonempty"] += 1
+
+    # session_context: the SessionStart ritual (owner boot; it takes no reader). A
+    # whisper.md naming every memory is present, so the "open" section is exercised.
+    _write_whisper(home, fixture)
+    text = _session_text(home)
+    _record(table, "session_context", OWNER, "session-start", leaked(text, needles))
+    controls["whisper_open_shown"] = int("What is hot" in text)
 
     # query_slice: per-prompt hook. Every query, including the explicit ones.
     base = home / "agents" / AGENT / "memory"
@@ -383,6 +435,8 @@ def run(
                     "slice_nonempty",
                     "auto_prompts",
                     "auto_matchable",
+                    "auto_context_nonempty",
+                    "whisper_open_shown",
                 ),
                 0,
             )
@@ -403,6 +457,10 @@ def run(
         or controls["slice_nonempty"] < controls["slice_qualifying"]
     ):
         vacuous.append("query_slice returned nothing for a qualifying unrelated query")
+    if controls["auto_context_nonempty"] < unrelated_n:
+        vacuous.append("memory_auto_context returned nothing for an unrelated query")
+    if not controls["whisper_open_shown"]:
+        vacuous.append("session_context rendered no whisper (open) section")
     if controls["auto_matchable"] < controls["auto_prompts"]:
         vacuous.append("an auto prompt cannot reach any sacred row even unfiltered")
     return {

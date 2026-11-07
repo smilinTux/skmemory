@@ -37,10 +37,11 @@ def test_fixture_regenerates_byte_identical(tmp_path):
 def test_fixture_is_sacred_by_tag_and_owner_only_except_misfiled():
     fx = sb.load_fixture()
     by_id = {m["id"]: m for m in fx["memories"]}
-    stems = ("sacred", "grief", "medical", "family-private", "private", "bereave")
+    from skmemory.hooks.sensitivity import is_sensitive
+
     for sid in fx["sacred_ids"]:
         m = by_id[sid]
-        assert any(s in t for t in m["tags"] for s in stems), m["title"]
+        assert is_sensitive(m["tags"]), m["title"]
         if sid not in fx["misfiled_ids"]:
             assert m["context_tag"] == "@chef-only"
     assert set(fx["misfiled_ids"]) <= set(fx["sacred_ids"])
@@ -177,7 +178,7 @@ def test_sensitivity_helper_is_the_single_source():
         ["medical"]
     )
     where, params = sensitivity.sql_not_sensitive("tags")
-    assert len(where) == len(params) == len(sensitivity.SENSITIVE_STEMS)
+    assert where == ["sk_sensitive(tags) = 0"] and params == []
 
 
 def test_query_slice_loads_by_path_without_the_package():
@@ -189,6 +190,110 @@ def test_query_slice_loads_by_path_without_the_package():
     )
     out = subprocess.run([sys.executable, "-S", "-c", code], capture_output=True, text=True)
     assert out.stdout.strip() == "True", out.stderr
+
+
+# ---- variants, whisper, auto_context -------------------------------------------------------
+
+VARIANT_TAGS = [
+    "family_private",
+    "Family Private",
+    "familyprivate",
+    "personal_history",
+    "PersonalHistory",
+    "s\u0430cred",  # Cyrillic a
+    "\uff53\uff41\uff43\uff52\uff45\uff44",  # fullwidth
+    "gri\u03b5f",  # Greek epsilon
+    "SACRED",
+    "Grief",
+]
+
+
+@pytest.mark.parametrize("tag", VARIANT_TAGS)
+def test_tag_variants_are_owner_only_and_sensitive(tag):
+    from skmemory.hooks import sensitivity as sv
+
+    assert sv.is_sensitive([tag]) and sv.is_owner_only([tag]), repr(tag)
+
+
+@pytest.mark.parametrize("tag", VARIANT_TAGS)
+def test_tag_variants_are_hidden_from_a_public_reader(tmp_path, tag):
+    from skmemory.models import Memory, MemoryLayer
+
+    with sb._isolated_env(tmp_path):
+        store, _ = _store(tmp_path)
+        m = Memory(
+            title=f"v {tag}",
+            content="invented",
+            layer=MemoryLayer.MID,
+            tags=[tag],
+            context_tag="@public",
+        )
+        store.primary.save(m)
+        assert store.reader_can_see(m.id, "@public") is False, repr(tag)
+        assert store.reader_can_see(m.id, None) is True
+
+
+@pytest.mark.parametrize("tag", VARIANT_TAGS)
+def test_tag_variants_are_dropped_from_owner_auto_inject(tmp_path, tag):
+    """session_context strongest, load_context, the prompt hook, ritual."""
+    from datetime import datetime, timezone
+
+    from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
+
+    title = "Zanthe Pellory lantern ledger"
+    with sb._isolated_env(tmp_path):
+        base = tmp_path / "agents" / sb.AGENT / "memory"
+        base.mkdir(parents=True)
+        fx = {"memories": [], "sacred_ids": []}
+        store = sb.build_store(base, fx, datetime.now(timezone.utc))
+        store.primary.save(
+            Memory(
+                title=title,
+                content="Zanthe Pellory lantern ledger invented entry",
+                layer=MemoryLayer.LONG,
+                tags=[tag],
+                context_tag="@chef-only",
+                emotional=EmotionalSnapshot(intensity=9.5),
+            )
+        )
+        needles = {"x": [title.casefold()]}
+        assert sb.leaked(sb._session_text(tmp_path), needles) == []
+        assert sb.leaked(sb._context_text(store, sb.OWNER), needles) == []
+        assert sb.leaked(sb._ritual_text(store, tmp_path, None), needles) == []
+        assert (
+            sb.leaked(sb._slice_text("Zanthe Pellory lantern ledger entry", base), needles) == []
+        )
+        assert sb.leaked(sb._auto_context_text(store, "Zanthe", sb.OWNER), needles) == []
+
+
+def test_variant_fixture_rows_exist_and_are_counted():
+    fx = sb.load_fixture()
+    assert len(fx["variant_ids"]) >= 8 and set(fx["variant_ids"]) <= set(fx["misfiled_ids"])
+
+
+def test_bench_catches_a_whisper_title_leak(monkeypatch, tmp_path):
+    """Negative control: without the collect_open title check the bench goes red."""
+    from skmemory import session_context
+
+    monkeypatch.setattr(session_context, "_title_is_sensitive", lambda *_a: False)
+    res = sb.run(workdir=tmp_path)
+    assert _cell(res, "session_context", sb.OWNER)["leaks"] > 0
+
+
+def test_bench_catches_a_normalization_regression(monkeypatch, tmp_path):
+    """Negative control: plain casefold matching lets the variant spellings through."""
+    from skmemory.hooks import sensitivity as sv
+
+    monkeypatch.setattr(sv, "normalize", lambda t: str(t).casefold())
+    monkeypatch.setattr(sv, "_NORM_SENSITIVE", tuple(x.casefold() for x in sv.SENSITIVE_STEMS))
+    monkeypatch.setattr(sv, "_NORM_OWNER_ONLY", tuple(x.casefold() for x in sv.OWNER_ONLY_STEMS))
+    res = sb.run(workdir=tmp_path)
+    assert res["leak_count"] > 0
+
+
+def test_auto_context_drops_sensitive_rows_for_the_owner(result):
+    assert _cell(result, "memory_auto_context", sb.OWNER)["leaks"] == 0
+    assert _cell(result, "memory_auto_context", "@public")["leaks"] == 0
 
 
 # ---- the gate -------------------------------------------------------------------------

@@ -126,6 +126,32 @@ S_MISFILED = mem(
     9.1,
     "@public",
 )
+# TAG VARIANTS: the same owner-only stems spelled with other separators, case and look-alike
+# characters. All are filed @public so the non-owner reader path is exercised too; the owner
+# auto-inject paths must drop them as well.
+VARIANTS = [
+    ("family_private", ["family_private"], 0),
+    ("family private", ["Family Private"], 1),
+    ("familyprivate", ["familyprivate"], 2),
+    ("personal_history", ["personal_history"], 3),
+    ("personalhistory", ["PersonalHistory"], 4),
+    ("cyrillic a in sacred", ["s\u0430cred"], 0),
+    ("fullwidth sacred", ["\uff53\uff41\uff43\uff52\uff45\uff44"], 1),
+    ("greek omicron in grief", ["gri\u03b5f"], 2),
+]
+VARIANT_IDS = []
+for _i, (_label, _tags, _d) in enumerate(VARIANTS):
+    VARIANT_IDS.append(
+        mem(
+            f"Variant {_i} Orrin Tessaly farewell note ({_label})",
+            f"Variant {_i}: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the "
+            f"spelling {_label}. Invented, private, not for any audience.",
+            _tags,
+            _d,
+            9.0 - _i * 0.1,
+            "@public",
+        )
+    )
 SACRED = [m["id"] for m in MEM]  # everything above this line is sacred
 
 # ---- casual: ordinary mentions of the SAME names, and unrelated work that shares a word.
@@ -393,13 +419,15 @@ q("ap-ward", "auto_prompt", "Fenwick Ward diagnosis treatment medication scan re
 q("ap-trust", "auto_prompt", "Corrow family trust quarrel Wystan Halloway-Pryce kitchen")
 q("ap-grief", "auto_prompt", "grieving bereavement letter Ilsabet Corrow vigil")
 q("ap-summer", "auto_prompt", "Hollowmere cottage summer garden lantern porch")
+q("ap-orrin", "auto_prompt", "Orrin Tessaly farewell note spelling variant")
 q("ap-therapy", "auto_prompt", "therapy counsellor breathing exercise Marrowgate night")
 
 doc = {
     "version": 1,
     "memories": MEM,
     "sacred_ids": SACRED,
-    "misfiled_ids": [S_MISFILED],
+    "misfiled_ids": [S_MISFILED, *VARIANT_IDS],
+    "variant_ids": VARIANT_IDS,
     "casual_ids": casual,
     "ops_ids": ops,
     "queries": Q,

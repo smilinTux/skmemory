@@ -52,6 +52,7 @@ from .disclosure import (
     index_row,
     sessions_dir,
 )
+from .hooks.sensitivity import is_sensitive
 from .models import MemoryLayer
 from .procedures import index_title
 from .store import MemoryStore
@@ -1103,8 +1104,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             all_results: list[dict] = []
             rrf: dict[str, float] = {}
 
+            # Auto-inject path: the owner never gets sensitive-tagged rows here
+            # (skmemory.hooks.sensitivity); they pull them with memory_search.
+            # A declared reader is already bounded by its audience scope.
+            owner = resolve_reader(arguments.get("reader")).unrestricted
             for kw in keywords[:10]:  # cap at 10 keywords
                 results = store.search(kw, limit=10, reader=arguments.get("reader"))
+                if owner:
+                    results = [m for m in results if not is_sensitive(m.tags)]
                 for rank, m in enumerate(results):
                     rrf[m.id] = rrf.get(m.id, 0.0) + 1.0 / (60 + rank)
                     if m.id not in seen_ids:
