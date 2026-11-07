@@ -1,0 +1,1 @@
+skrsi target revision 2: per-class recall and rank plus candidate-minus-bm25 margins from the class bench, a minimum sample, a path filter covering store.py and the SQLite backend, and base-side flattening through a relative path. Advisory only, no gate added.

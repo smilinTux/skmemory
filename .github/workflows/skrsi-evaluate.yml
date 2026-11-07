@@ -5,13 +5,17 @@ name: skrsi-evaluate
 # synthetic class bench on the PR head and on the base, and comments the result.
 # evidence_class is synthetic, so SKRSI caps this at inconclusive by contract.
 #
-# Merge order: smilinTux/skrsi PR 5 (the reusable workflow and builder) first.
+# The path filter covers what the candidate arm runs: MemoryStore.search over the
+# SQLite backend. bench_command uses a relative path so the base side is measured
+# with the base copy of the flattener, which is what keeps the rules base-side.
 
 on:
   pull_request:
     branches: [main]
     paths:
       - "skmemory/backends/pgvector_backend.py"
+      - "skmemory/backends/sqlite_backend.py"
+      - "skmemory/store.py"
       - "skmemory/audience.py"
       - "skmemory/fusion.py"
       - "skmemory/rerank.py"
@@ -34,4 +38,4 @@ jobs:
       setup_command: python -m pip install -e .
       bench_command: >-
         python -m skmemory.eval.class_bench --json > "$RUNNER_TEMP/class_bench.json" &&
-        python "$GITHUB_WORKSPACE/skrsi/class_bench_metrics.py" "$RUNNER_TEMP/class_bench.json" "$SKRSI_METRICS_OUT"
+        python skrsi/class_bench_metrics.py "$RUNNER_TEMP/class_bench.json" "$SKRSI_METRICS_OUT"
