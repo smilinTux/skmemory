@@ -315,3 +315,41 @@ def test_resolve_budget_tokens_sources():
         r("session-start", 500, {"budget_tokens": 900}, {"SKMEMORY_HOOK_BUDGET_TOKENS": "700"})
         == 500
     )
+
+
+# -- installer (temp home only) ----------------------------------------------
+
+
+def test_installer_user_prompt_wiring_and_other_injector_report_on_temp_home(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setattr(hook_install, "skmemory_bin", lambda: "/opt/venv/bin/skmemory")
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    unrelated = "/home/x/hooks/shared-checkout-guard.sh"
+    settings.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": "/usr/bin/inject-context"}]},
+                        {"hooks": [{"type": "command", "command": unrelated}]},
+                    ],
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": "/x/whisper-prompt"}]}
+                    ],
+                }
+            }
+        )
+    )
+    hook_install.install("claude")
+    data = json.loads(settings.read_text())
+    cmds = [h["command"] for g in data["hooks"]["UserPromptSubmit"] for h in g["hooks"]]
+    assert any(c.endswith("user_prompt_fast.py --harness claude") for c in cmds)
+    assert "/x/whisper-prompt" in cmds  # a foreign hook is preserved, never edited
+    rep = hook_install.status("claude")["claude"]
+    assert any("inject-context" in c for c in rep["other_injectors"])
+    assert any("whisper-prompt" in c for c in rep["other_injectors"])
+    assert not any("shared-checkout-guard" in c for c in rep["other_injectors"])

@@ -360,12 +360,18 @@ def uninstall(harness: str | None = "all", dry_run: bool = False) -> dict:
     }
 
 
+# Other SessionStart/UserPromptSubmit commands that look like context injectors
+# (SKMEM-W-01). Read only: reported by `status`, never removed by the installer.
+_INJECTOR_EVENTS = ("SessionStart", "UserPromptSubmit")
+_INJECTOR_HINT = re.compile(r"whisper|ritual|inject|context|memory", re.I)
+
+
 def _json_status(path: Path) -> dict:
     try:
         data = json.loads(_read_text(path) or "{}")
     except json.JSONDecodeError:
         return {"path": str(path), "state": "invalid-json"}
-    ours, legacy = [], []
+    ours, legacy, others = [], [], []
     for event, groups in (data.get("hooks") or {}).items():
         for g in groups if isinstance(groups, list) else []:
             for hk in (g.get("hooks") or []) if isinstance(g, dict) else []:
@@ -374,8 +380,17 @@ def _json_status(path: Path) -> dict:
                     ours.append(f"{event}[{g.get('matcher', '')}]: {cmd}")
                 elif is_legacy_command(cmd):
                     legacy.append(f"{event}[{g.get('matcher', '')}]: {cmd}")
+                elif event in _INJECTOR_EVENTS and _INJECTOR_HINT.search(cmd):
+                    others.append(f"{event}[{g.get('matcher', '')}]: {cmd}")
     state = "installed" if ours else ("legacy" if legacy else "not-installed")
-    return {"path": str(path), "state": state, "hooks": ours, "legacy": legacy}
+    return {
+        "path": str(path),
+        "state": state,
+        "hooks": ours,
+        "legacy": legacy,
+        # not ours, but may inject context beside ritual v2: candidates for removal
+        "other_injectors": others,
+    }
 
 
 def status(harness: str | None = "all") -> dict:
