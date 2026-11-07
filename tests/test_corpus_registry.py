@@ -107,14 +107,12 @@ def test_build_corpus_registry_report_includes_local_and_shared(monkeypatch, tmp
     monkeypatch.setattr(
         "skmemory.corpus_registry.load_config",
         lambda path: SKMemoryConfig(
-            backends_enabled=["sqlite", "skvector", "skgraph"],
-            skvector_collection="jarvis-memory",
-            skgraph_graph_name="jarvis-memory",
-            chroma_collection="jarvis-memory",  # stale key: ignored
+            backends_enabled=["sqlite", "pgvector"],
+            skvector_collection="jarvis-memory",  # stale key: ignored
         ),
     )
     report = build_corpus_registry_report(agent="jarvis")
-    assert report["local"]["primary_vector_collection"] == "jarvis-memory"
+    assert report["local"]["backends_enabled"] == ["sqlite", "pgvector"]
     assert report["shared_corpora"][0]["name"] == "hammertime"
     assert report["shared_corpora"][0]["graph_name"] == "hammertime-v4"
     assert report["shared_corpora"][0]["inventory"]["cache_documents"] == 1

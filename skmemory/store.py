@@ -19,6 +19,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from . import decay as _decay
 from . import retrieval_log, write_triage
@@ -26,7 +27,6 @@ from .agents import get_agent_paths
 from .audience import ReaderScope, resolve_reader
 from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
-from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
 from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
 from .forget import ForgetReport, StorePurge, resolve_agent
@@ -227,8 +227,8 @@ class MemoryStore:
 
     Args:
         primary: The primary storage backend (default: FileBackend).
-        vector: Optional vector search backend (e.g., SKVectorBackend).
-        graph: Optional graph backend (e.g., SKGraphBackend) for relationship indexing.
+        vector: Optional vector search backend (PGVectorBackend).
+        graph: Optional graph backend (AGEGraphBackend) for relationship indexing.
         max_content_length: Max chars before overflow strategy applies (default: 10000).
         content_overflow_strategy: "truncate" or "split" (default: "split").
     """
@@ -237,7 +237,7 @@ class MemoryStore:
         self,
         primary: BaseBackend | None = None,
         vector: BaseBackend | None = None,
-        graph: SKGraphBackend | None = None,
+        graph: Any | None = None,
         use_sqlite: bool = True,
         max_content_length: int = MAX_CONTENT_LENGTH,
         content_overflow_strategy: str = CONTENT_OVERFLOW_STRATEGY,
@@ -636,22 +636,24 @@ class MemoryStore:
             try:
                 self.vector.save(memory)
                 if isinstance(self.primary, SQLiteBackend):
-                    self.primary.clear_sync_failure(memory.id, "skvector")
+                    self.primary.clear_sync_failure(memory.id, "vector")
+                    self.primary.clear_sync_failure(memory.id, "skvector")  # legacy key
             except Exception as e:
-                logger.warning("SKVector save failed for %s: %s", memory.id, e)
+                logger.warning("Vector save failed for %s: %s", memory.id, e)
                 if isinstance(self.primary, SQLiteBackend):
-                    self.primary.record_sync_failure(memory.id, "skvector", str(e))
+                    self.primary.record_sync_failure(memory.id, "vector", str(e))
 
         # Graph indexing (resilient)
         if self.graph:
             try:
                 self.graph.index_memory(memory)
                 if isinstance(self.primary, SQLiteBackend):
-                    self.primary.clear_sync_failure(memory.id, "skgraph")
+                    self.primary.clear_sync_failure(memory.id, "graph")
+                    self.primary.clear_sync_failure(memory.id, "skgraph")  # legacy key
             except Exception as e:
-                logger.warning("SKGraph index failed for %s: %s", memory.id, e)
+                logger.warning("Graph index failed for %s: %s", memory.id, e)
                 if isinstance(self.primary, SQLiteBackend):
-                    self.primary.record_sync_failure(memory.id, "skgraph", str(e))
+                    self.primary.record_sync_failure(memory.id, "graph", str(e))
 
         # Reweave backward pass (opt-in, bounded) — re-link older neighbours.
         if self.reweave:
@@ -2099,15 +2101,11 @@ class MemoryStore:
     def _vector_store_key(vector: BaseBackend) -> str:
         """Label a wired vector backend for the forget report.
 
-        ``PGVectorBackend`` is the skmem-pg store; the legacy Qdrant backend
-        is ``skvector``; anything else
-        is a generic ``vector`` leg.
+        ``PGVectorBackend`` is the skmem-pg store; anything else is a generic
+        ``vector`` leg.
         """
-        name = type(vector).__name__
-        if name == "PGVectorBackend":
+        if type(vector).__name__ == "PGVectorBackend":
             return "skmem_pg"
-        if "Vector" in name:
-            return "skvector"
         return "vector"
 
     def _pg_plan_only_purge(self, memory_id: str) -> StorePurge:
@@ -2270,7 +2268,7 @@ class MemoryStore:
                 graph_purge.found = graph_purge.removed = 1 if removed else 0
             except Exception as exc:  # best-effort: record, keep going
                 graph_purge.error = str(exc)
-                logger.warning("store.py: SKGraph remove failed: %s", exc)
+                logger.warning("store.py: graph remove failed: %s", exc)
             report.stores.append(graph_purge)
 
         return report

@@ -94,38 +94,6 @@ class _DummyGraph:
         return True
 
 
-class _DummyRecallBackend:
-    def __init__(self):
-        self._client = SimpleNamespace(scroll=self.scroll)
-
-    def _ensure_initialized(self):
-        return True
-
-    def _memory_from_payload(self, payload):
-        return SimpleNamespace(
-            id=payload["id"],
-            title=payload.get("title", payload["id"]),
-            content=payload.get("content", ""),
-            summary=payload.get("summary", ""),
-            tags=payload.get("tags", []),
-            layer=SimpleNamespace(value=payload.get("layer", "long-term")),
-            created_at=payload.get("created_at", ""),
-        )
-
-    def scroll(
-        self, collection_name, offset=None, limit=256, with_payload=True, with_vectors=False
-    ):
-        if offset is None:
-            return (
-                [
-                    SimpleNamespace(payload={"id": f"{collection_name}-1"}),
-                    SimpleNamespace(payload={"id": f"{collection_name}-2"}),
-                ],
-                "done",
-            )
-        return ([], None)
-
-
 def _make_loader(monkeypatch, tmp_path):
     base = tmp_path / "agent"
     config = base / "config"
@@ -214,18 +182,6 @@ def test_ensure_backends_loads_shared_corpora_from_structured_config(monkeypatch
     monkeypatch.setattr(
         "skmemory.context_loader.SQLiteBackend", lambda *_args, **_kwargs: _DummyDB()
     )
-    monkeypatch.setattr(
-        "skmemory.context_loader._load_skvector_config", lambda _config_dir: {"env": "prod"}
-    )
-    monkeypatch.setattr("skmemory.context_loader._build_skvector_backend", lambda cfg: None)
-    monkeypatch.setattr(
-        "skmemory.context_loader._load_skgraph_config",
-        lambda _config_dir: {"graph_name": "jarvis-memory"},
-    )
-    monkeypatch.setattr(
-        "skmemory.context_loader._build_skgraph_backend",
-        lambda cfg: _DummyGraph(cfg.get("graph_name", "graph")),
-    )
     loader = LazyMemoryLoader("jarvis")
     loader._ensure_backends()
     assert loader._shared_corpora == [
@@ -239,19 +195,16 @@ def test_ensure_backends_loads_shared_corpora_from_structured_config(monkeypatch
     ]
     assert loader._recall_collections == ["hammertime-v3"]
     assert loader._recall_graphs == ["hammertime-v4"]
-    assert "hammertime-v4" in loader._recall_graph_backends
 
 
-def test_deep_search_includes_recall_graph_results(monkeypatch, tmp_path):
+def test_deep_search_includes_graph_results(monkeypatch, tmp_path):
     loader = _make_loader(monkeypatch, tmp_path)
     loader._graph_backend = _DummyGraph("jarvis-memory")
-    loader._recall_graph_backends = {"hammertime-v3": _DummyGraph("hammertime-v3")}
     results = loader.deep_search("UCC 3-301 demand claim", max_results=20)
     sources = {row["source_backend"] for row in results}
     assert "skgraph:jarvis-memory" in sources
-    assert "skgraph:hammertime-v3" in sources
-    assert "skgraph_citation:hammertime-v3" in sources
-    assert "skgraph_claim:hammertime-v3" in sources
+    assert "skgraph_citation:jarvis-memory" in sources
+    assert "skgraph_claim:jarvis-memory" in sources
 
 
 def test_prune_recall_decomposition_caps_and_prioritizes_legal_signals():
@@ -324,17 +277,6 @@ def test_append_graph_result_set_merges_duplicates_and_promotes_citation(monkeyp
     assert row["graph_match_score"] > 0
 
 
-def test_sync_recall_graphs_indexes_shared_vector_payloads(monkeypatch, tmp_path):
-    loader = _make_loader(monkeypatch, tmp_path)
-    loader._recall_qdrant_backend = _DummyRecallBackend()
-    graph = _DummyGraph("hammertime-v3")
-    loader._recall_graph_backends = {"hammertime-v3": graph}
-    stats = loader.sync_recall_graphs(batch_size=2)
-    assert stats["hammertime-v3"]["indexed"] == 2
-    assert stats["hammertime-v3"]["errors"] == 0
-    assert graph.indexed == ["hammertime-v3-1", "hammertime-v3-2"]
-
-
 def test_fusion_score_prefers_citation_graph_hits(monkeypatch, tmp_path):
     loader = _make_loader(monkeypatch, tmp_path)
     base = {
@@ -355,19 +297,6 @@ def test_fusion_score_prefers_citation_graph_hits(monkeypatch, tmp_path):
         ["ucc", "3-301", "holder"],
     )
     assert citation > plain
-
-
-def test_sync_recall_graphs_skips_unchanged_sources(monkeypatch, tmp_path):
-    loader = _make_loader(monkeypatch, tmp_path)
-    loader._recall_qdrant_backend = _DummyRecallBackend()
-    graph = _DummyGraph("hammertime-v3")
-    loader._recall_graph_backends = {"hammertime-v3": graph}
-    first = loader.sync_recall_graphs(batch_size=2)
-    second = loader.sync_recall_graphs(batch_size=2)
-    assert first["hammertime-v3"]["indexed"] == 2
-    assert second["hammertime-v3"]["indexed"] == 0
-    assert second["hammertime-v3"]["skipped"] == 2
-    assert graph.indexed == ["hammertime-v3-1", "hammertime-v3-2"]
 
 
 # ---------------------------------------------------------------------------

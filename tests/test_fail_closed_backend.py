@@ -150,10 +150,7 @@ def _store_with(monkeypatch, spy, env, pg_fail=None):
         monkeypatch.delenv(key, raising=False)
     for key, val in env.items():
         monkeypatch.setenv(key, val)
-    with (
-        patch("skmemory.backends.pgvector_backend.PGVectorBackend", make("pgvector", pg_fail)),
-        patch("skmemory.backends.skvector_backend.SKVectorBackend", make("skvector")),
-    ):
+    with patch("skmemory.backends.pgvector_backend.PGVectorBackend", make("pgvector", pg_fail)):
         return skcli._get_store()
 
 
@@ -189,6 +186,120 @@ def test_retired_backend_env_fails_fast_with_message(monkeypatch, spy_backends, 
         _store_with(monkeypatch, spy_backends, {"SKMEMORY_VECTOR_BACKEND": name})
     assert "pgvector" in str(exc.value) and "FTS5" in str(exc.value)
     assert spy_backends[0] == [], "nothing may be built for a retired backend"
+
+
+_RETIRED_MESSAGES = {
+    "skvector": "Qdrant (skvector) has been retired",
+    "qdrant": "Qdrant (skvector) has been retired",
+    "SKVECTOR": "Qdrant (skvector) has been retired",
+    "skgraph": "FalkorDB (skgraph) has been retired",
+    "falkordb": "FalkorDB (skgraph) has been retired",
+    "falkor": "FalkorDB (skgraph) has been retired",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_RETIRED_MESSAGES))
+def test_retired_skvector_skgraph_env_fails_fast_with_message(monkeypatch, spy_backends, name):
+    with pytest.raises(BackendInitError, match="has been retired") as exc:
+        _store_with(monkeypatch, spy_backends, {"SKMEMORY_VECTOR_BACKEND": name})
+    assert _RETIRED_MESSAGES[name] in str(exc.value)
+    assert "pgvector" in str(exc.value)
+    assert spy_backends[0] == [], "nothing may be built for a retired backend"
+
+
+@pytest.mark.parametrize("name", ["skvector", "skgraph"])
+def test_retired_skvector_skgraph_env_exits_nonzero_on_cli_and_health(tmp_path, name):
+    out = _run_isolated(
+        tmp_path,
+        f"""
+        import os, sys
+        os.environ["SKCAPSTONE_AGENT"] = "lumina"
+        os.environ["SKMEMORY_VECTOR_BACKEND"] = "{name}"
+        from click.testing import CliRunner
+        from skmemory.cli import cli
+        for cmd in (["health"], ["list"]):
+            r = CliRunner().invoke(cli, cmd)
+            print(cmd[0], r.exit_code, "retired" in (r.output or ""))
+        """,
+    )
+    assert out.returncode == 0, out.stderr
+    lines = dict((ln.split()[0], ln.split()[1:]) for ln in out.stdout.strip().splitlines())
+    for cmd in ("health", "list"):
+        assert lines[cmd][0] != "0", out.stdout
+    assert lines["health"][1] == "True", "health must carry the message on stdout"
+
+
+def test_mcp_retired_skvector_env_fails_fast(monkeypatch):
+    import skmemory.mcp_server as mcp
+
+    mcp._store = None
+    monkeypatch.setenv("SKMEMORY_VECTOR_BACKEND", "skvector")
+    with pytest.raises(BackendInitError, match="Qdrant .* has been retired"):
+        mcp._get_store()
+    mcp._store = None
+
+
+def test_stale_skvector_skgraph_yaml_keys_are_ignored_with_one_warning(tmp_path, caplog):
+    import logging
+
+    from skmemory import config as skconfig
+
+    skconfig._retired_warned = False
+    yml = tmp_path / "skmemory.yaml"
+    yml.write_text(
+        "skvector_url: http://q:6333\nskvector_collection: c\n"
+        "skgraph_url: redis://f:6379\nskgraph_graph_name: g\n"
+        "routing_strategy: failover\nheartbeat_discovery: true\n"
+        "skvector_endpoints:\n  - url: http://q:6333\n"
+        "backends_enabled: [sqlite, skvector, skgraph, qdrant, falkordb, pgvector]\n"
+        "pgvector_dsn: postgresql://x/y\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="skmemory.config"):
+        cfg = skconfig.load_config(yml)
+        skconfig.load_config(yml)
+    assert cfg is not None, "a stale yaml must not fail config loading"
+    assert cfg.backends_enabled == ["sqlite", "pgvector"]
+    assert cfg.pgvector_dsn == "postgresql://x/y"
+    for gone in ("skvector_url", "skgraph_url", "skvector_endpoints", "routing_strategy"):
+        assert not hasattr(cfg, gone)
+    warnings = [r for r in caplog.records if "retired" in r.getMessage()]
+    assert len(warnings) == 1, "warn once per process, not per load"
+
+
+def test_stale_skvector_skgraph_env_urls_warn_once_and_never_fail(
+    monkeypatch, spy_backends, caplog
+):
+    import logging
+
+    from skmemory import backend_select
+
+    backend_select._retired_env_warned = False
+    monkeypatch.setenv("SKMEMORY_SKVECTOR_URL", "http://q:6333")
+    monkeypatch.setenv("SKMEMORY_SKGRAPH_URL", "redis://f:6379")
+    with caplog.at_level(logging.WARNING, logger="skmemory.backend_select"):
+        store = _store_with(
+            monkeypatch,
+            spy_backends,
+            {"SKMEMORY_SKVECTOR_URL": "http://q:6333", "SKMEMORY_SKGRAPH_URL": "redis://f:6379"},
+        )
+        _store_with(monkeypatch, spy_backends, {"SKMEMORY_SKVECTOR_URL": "http://q:6333"})
+    assert store.vector is None, "a stale URL must not enable a retired backend"
+    warnings = [r for r in caplog.records if "retired" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+def test_legacy_skvector_skgraph_sync_failure_rows_still_reconcile(tmp_path):
+    """Rows written before the rename keep routing: skgraph -> graph, skvector -> vector."""
+    graph, vector = MagicMock(), MagicMock()
+    graph.load.return_value = object()
+    vector.load.return_value = object()
+    store = _plain_store(tmp_path, vector=vector, graph=graph)
+    store.primary.record_sync_failure("g1", "skgraph", "boom")
+    store.primary.record_sync_failure("v1", "skvector", "boom")
+    report = store.reconcile_sync_failures()
+    assert report["checked"] == 2 and report["cleared"] == 2
+    graph.load.assert_called_once_with("g1")
+    vector.load.assert_called_once_with("v1")
 
 
 def test_retired_backend_env_exits_nonzero_on_cli_and_health(tmp_path):
@@ -351,7 +462,7 @@ def test_ok_false_without_detail_still_gets_an_error_string(tmp_path):
 def test_configured_but_failed_to_construct_is_broken_not_null(tmp_path):
     store = _plain_store(tmp_path)
     store.backend_errors["vector"] = "pgvector: dsn guard says no"
-    store.backend_errors["graph"] = "SKGraph: no module falkordb"
+    store.backend_errors["graph"] = "AGE: no module psycopg"
     h = store.health()
     assert h["vector"]["ok"] is False
     assert h["vector"]["configured"] is True
@@ -359,7 +470,7 @@ def test_configured_but_failed_to_construct_is_broken_not_null(tmp_path):
     assert h["vector_ok"] is False
     assert h["embed_ok"] is False, "a broken vector backend cannot report embeddings as unprobed"
     assert h["graph_ok"] is False
-    assert "falkordb" in h["graph"]["error"]
+    assert "psycopg" in h["graph"]["error"]
     assert h["status"] == "degraded"
 
 

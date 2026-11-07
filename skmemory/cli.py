@@ -41,8 +41,6 @@ from .store import MemoryStore
 
 logger = logging.getLogger("skmemory.cli")
 
-_active_selector = None  # Module-level reference for routing commands
-
 
 def _echo_import_skips(store) -> None:
     """Say out loud when a restore dropped records.
@@ -100,91 +98,24 @@ def _env_pins_embed_endpoint() -> bool:
 
 
 def _get_store(
-    skvector_url: str | None = None,
-    api_key: str | None = None,
-    skvector_embedding_model: str | None = None,
-    skvector_vector_dim: int | None = None,
     legacy_files: bool = False,
     no_vector: bool = False,
 ) -> MemoryStore:
     """Create a MemoryStore with configured backends.
 
-    Resolves backend URLs with precedence: CLI args > env vars > config file.
-    When multi-endpoint config is present, uses EndpointSelector to pick
-    the best URLs.  Falls back to single-URL behavior otherwise.
+    The vector tier is pgvector only and the graph is Apache AGE only (the
+    Qdrant/skvector and FalkorDB/skgraph backends are retired, SKMEM-P5-02).
 
     Args:
-        skvector_url: Optional SKVector server URL.
-        api_key: Optional SKVector API key.
         legacy_files: Use old FileBackend instead of SQLite index.
+        no_vector: Flat JSON + SQLite only.
 
     Returns:
         MemoryStore: Configured store instance.
     """
-    global _active_selector
+    from .config import load_config
 
-    from .config import build_endpoint_list, load_config, merge_env_and_config
-
-    merged = merge_env_and_config(
-        cli_skvector_url=skvector_url,
-        cli_skvector_key=api_key,
-        cli_skvector_embedding_model=skvector_embedding_model,
-        cli_skvector_vector_dim=skvector_vector_dim,
-    )
-    if len(merged) == 3:
-        (
-            final_skvector_url,
-            final_skvector_key,
-            final_skgraph_url,
-        ) = merged
-        final_skvector_embedding_model = None
-        final_skvector_vector_dim = None
-    else:
-        (
-            final_skvector_url,
-            final_skvector_key,
-            final_skgraph_url,
-            final_skvector_embedding_model,
-            final_skvector_vector_dim,
-        ) = merged
-
-    # Try endpoint selector when multi-endpoint config exists
     cfg = load_config()
-    skvector_eps = build_endpoint_list(
-        final_skvector_url,
-        cfg.skvector_endpoints if cfg else [],
-    )
-    skgraph_eps = build_endpoint_list(
-        final_skgraph_url,
-        cfg.skgraph_endpoints if cfg else [],
-    )
-
-    if len(skvector_eps) > 1 or len(skgraph_eps) > 1 or (cfg and cfg.heartbeat_discovery):
-        try:
-            from .endpoint_selector import EndpointSelector, RoutingConfig
-
-            routing_strategy = cfg.routing_strategy if cfg else "failover"
-            selector = EndpointSelector(
-                skvector_endpoints=skvector_eps,
-                skgraph_endpoints=skgraph_eps,
-                config=RoutingConfig(strategy=routing_strategy),
-            )
-
-            if cfg and cfg.heartbeat_discovery:
-                selector.discover_from_heartbeats()
-
-            _active_selector = selector
-
-            best_skvector = selector.select_skvector()
-            if best_skvector:
-                final_skvector_url = best_skvector.url
-
-            best_skgraph = selector.select_skgraph()
-            if best_skgraph:
-                final_skgraph_url = best_skgraph.url
-        except Exception as e:
-            logger.warning("cli.py: %s", e)
-            click.echo("Warning: EndpointSelector failed, using single URLs", err=True)
 
     vector = None
     graph = None
@@ -193,7 +124,6 @@ def _get_store(
     if no_vector:
         # Flat JSON + SQLite only — skip the 1.8GB SentenceTransformer load.
         # Used by session-end hooks where semantic search isn't needed.
-        skvector_enabled = False
         pgvector_enabled = False
         requested = None
     else:
@@ -201,16 +131,7 @@ def _get_store(
         # used or this call fails with the real reason. No fallback to another
         # store (a different vector store is a different set of answers).
         # Otherwise only what the config declares is enabled.
-        pgvector_enabled, skvector_enabled, requested = enabled_vector_backends(
-            cfg, has_skvector_url=bool(final_skvector_url)
-        )
-        if requested == "skvector" and not final_skvector_url:
-            raise BackendInitError(
-                "SKMEMORY_VECTOR_BACKEND=skvector but no SKVector URL is configured "
-                "(--skvector-url, SKMEMORY_SKVECTOR_URL or skmemory.yaml)."
-            )
-        if requested is None and final_skvector_url:
-            skvector_enabled = True
+        pgvector_enabled, requested = enabled_vector_backends(cfg)
 
     def _fail(label: str, exc: Exception) -> None:
         """Explicit request: raise. Declared in config: record and carry on."""
@@ -247,81 +168,15 @@ def _get_store(
         except Exception as e:
             _fail("pgvector", e)
 
-    # Qdrant only when it was asked for (explicitly, via config, or by URL),
-    # never as a fallback for a failed pgvector.
-    if vector is None and skvector_enabled and not backend_errors:
-        try:
-            from .backends.skvector_backend import SKVectorBackend
-
-            collection = cfg.skvector_collection if cfg and cfg.skvector_collection else None
-            kwargs = {"url": final_skvector_url, "api_key": final_skvector_key}
-            if collection:
-                kwargs["collection"] = collection
-            if final_skvector_embedding_model:
-                kwargs["embedding_model"] = final_skvector_embedding_model
-            if final_skvector_vector_dim:
-                kwargs["vector_dim"] = final_skvector_vector_dim
-            vector = SKVectorBackend(**kwargs)
-        except BackendInitError:
-            raise
-        except Exception as e:
-            _fail("SKVector", e)
-
-    # Fallback: if no URL set via env/CLI/skmemory.yaml, look for a
-    # dedicated ~/.skcapstone/agents/<agent>/config/skgraph.yaml file.
-    # Mirrors the SKWhisper context_loader convention.
-    if not final_skgraph_url:
-        try:
-            from .agents import get_agent_paths
-            from .context_loader import _load_skgraph_config
-
-            sg_cfg = _load_skgraph_config(get_agent_paths()["config"])
-            if sg_cfg:
-                if sg_cfg.get("url"):
-                    final_skgraph_url = sg_cfg["url"]
-                elif sg_cfg.get("host"):
-                    proto = "rediss" if sg_cfg.get("tls") else "redis"
-                    final_skgraph_url = f"{proto}://{sg_cfg['host']}:{sg_cfg.get('port', 6379)}"
-                if sg_cfg.get("graph_name") and (not cfg or not cfg.skgraph_graph_name):
-                    # tuck graph_name into a local var read below
-                    _autoloaded_graph_name = sg_cfg["graph_name"]
-                else:
-                    _autoloaded_graph_name = None
-            else:
-                _autoloaded_graph_name = None
-        except Exception as e:
-            logger.warning("cli.py: %s", e)
-            _autoloaded_graph_name = None
-    else:
-        _autoloaded_graph_name = None
-
-    if final_skgraph_url:
-        try:
-            from .backends.skgraph_backend import SKGraphBackend
-
-            graph_name = (
-                (cfg.skgraph_graph_name if cfg and cfg.skgraph_graph_name else None)
-                or _autoloaded_graph_name
-                or "skmemory"
-            )
-            graph = SKGraphBackend(url=final_skgraph_url, graph_name=graph_name)
-        except Exception as e:
-            logger.warning("cli.py: %s", e)
-            backend_errors["graph"] = f"SKGraph: {e}"
-            click.echo(f"Warning: Could not initialize SKGraph backend: {e}", err=True)
-
-    # Gap B (card dc8280a7): on the default skmem-pg deployment there is no
-    # FalkorDB SKGraph URL, so the graph role stays empty and forget() never
-    # deletes the memory's node in the live AGE ``<agent>_knowledge`` graph —
-    # a forgotten memory remains reachable by graph traversal. When pgvector
-    # (skmem-pg) is the vector backend and no FalkorDB graph was wired, wire the
-    # AGE graph into the graph role so forget() also cascades a DETACH DELETE
-    # there. Construction is lazy (no connection opened here), and an
+    # The graph is Apache AGE only. When pgvector (skmem-pg) is the vector
+    # backend, wire the AGE graph into the graph role so forget() cascades a
+    # DETACH DELETE into the live ``<agent>_knowledge`` graph.
+    # Construction is lazy (no connection opened here), and an
     # unavailable/absent skmem-pg degrades gracefully: AGEGraphBackend.remove_memory
     # returns False and never raises, so forget() still succeeds for the other
     # stores. DSN precedence mirrors the pgvector backend: node-local
     # SKMEMORY_PG_DSN wins over the (Syncthing-shared) yaml, else the AGE default.
-    if graph is None and pgvector_enabled:
+    if pgvector_enabled:
         try:
             from .backends.age_backend import AGEGraphBackend
 
@@ -337,25 +192,6 @@ def _get_store(
 
 @click.group()
 @click.version_option(__version__, prog_name="skmemory")
-@click.option(
-    "--skvector-url", envvar="SKMEMORY_SKVECTOR_URL", default=None, help="SKVector server URL"
-)
-@click.option(
-    "--skvector-key", envvar="SKMEMORY_SKVECTOR_KEY", default=None, help="SKVector API key"
-)
-@click.option(
-    "--skvector-embedding-model",
-    envvar="SKMEMORY_SKVECTOR_EMBEDDING_MODEL",
-    default=None,
-    help="SKVector embedding model (default: mxbai-embed-large, fallback: mixedbread-ai/mxbai-embed-large-v1)",
-)
-@click.option(
-    "--skvector-vector-dim",
-    envvar="SKMEMORY_SKVECTOR_VECTOR_DIM",
-    type=int,
-    default=None,
-    help="SKVector embedding dimension override",
-)
 @click.option(
     "--ai",
     "use_ai",
@@ -381,10 +217,6 @@ def _get_store(
 @click.pass_context
 def cli(
     ctx: click.Context,
-    skvector_url: str | None,
-    skvector_key: str | None,
-    skvector_embedding_model: str | None,
-    skvector_vector_dim: int | None,
     use_ai: bool,
     ai_model: str | None,
     ai_url: str | None,
@@ -406,13 +238,7 @@ def cli(
         return
     if "store" not in ctx.obj:
         try:
-            ctx.obj["store"] = _get_store(
-                skvector_url,
-                skvector_key,
-                skvector_embedding_model,
-                skvector_vector_dim,
-                no_vector=no_vector,
-            )
+            ctx.obj["store"] = _get_store(no_vector=no_vector)
         except (BackendInitError, ValueError) as exc:
             # Fail closed, and say so on STDOUT as well as stderr: health is
             # the instrument that is supposed to catch this, and a refusal that
@@ -953,7 +779,7 @@ def _reader_rows(store: MemoryStore, rows: list[dict]) -> list[dict]:
 
 def _require_graph_backend(store: MemoryStore) -> None:
     if not store.graph:
-        click.echo("SKGraph backend not configured.", err=True)
+        click.echo("Graph backend (AGE) not configured.", err=True)
         sys.exit(1)
 
 
@@ -1261,67 +1087,6 @@ def session_brief(ctx: click.Context, task: str, limit: int) -> None:
     store: MemoryStore = ctx.obj["store"]
     brief = store.build_session_brief(task, limit=limit)
     click.echo(json.dumps(brief, indent=2))
-
-
-# ═══════════════════════════════════════════════════════════
-# Routing commands (HA endpoint selection)
-# ═══════════════════════════════════════════════════════════
-
-
-@cli.group()
-def routing() -> None:
-    """Manage HA endpoint routing for SKVector and SKGraph backends."""
-
-
-@routing.command("status")
-def routing_status() -> None:
-    """Show endpoint rankings, latency, and health for each backend."""
-    if _active_selector is None:
-        click.echo("No endpoint selector active (single-URL mode).")
-        click.echo("Configure multiple endpoints in ~/.skcapstone/config.yaml to enable routing.")
-        return
-
-    info = _active_selector.status()
-    click.echo(f"Strategy: {info['strategy']}")
-    click.echo(f"Probe interval: {info['probe_interval_seconds']}s")
-    age = info["last_probe_age_seconds"]
-    click.echo(f"Last probe: {age}s ago" if age >= 0 else "Last probe: never")
-
-    for backend in ("skvector", "skgraph"):
-        eps = info.get(f"{backend}_endpoints", [])
-        if not eps:
-            continue
-        click.echo(f"\n{backend.upper()} endpoints:")
-        for ep in eps:
-            health_icon = "OK" if ep["healthy"] else "DOWN"
-            latency = f"{ep['latency_ms']:.1f}ms" if ep["latency_ms"] >= 0 else "n/a"
-            click.echo(
-                f"  [{health_icon}] {ep['url']}  "
-                f"role={ep['role']}  latency={latency}  "
-                f"fails={ep['fail_count']}"
-            )
-
-
-@routing.command("probe")
-def routing_probe() -> None:
-    """Force re-probe all endpoints and display results."""
-    if _active_selector is None:
-        click.echo("No endpoint selector active (single-URL mode).")
-        return
-
-    click.echo("Probing all endpoints...")
-    results = _active_selector.probe_all()
-
-    for backend, endpoints in results.items():
-        if not endpoints:
-            continue
-        click.echo(f"\n{backend.upper()}:")
-        for ep in endpoints:
-            health_icon = "OK" if ep.healthy else "DOWN"
-            latency = f"{ep.latency_ms:.1f}ms" if ep.latency_ms >= 0 else "timeout"
-            click.echo(f"  [{health_icon}] {ep.url}  latency={latency}  fails={ep.fail_count}")
-
-    click.echo("\nProbe complete.")
 
 
 @cli.command("fts-backfill")
@@ -2138,264 +1903,6 @@ def anchor_update(
     click.echo(f"Anchor updated (session #{a.sessions_recorded})")
     click.echo(f"  Glow: {a.glow_level()}")
     click.echo(f"  Warmth: {a.warmth} | Trust: {a.trust} | Connection: {a.connection_strength}")
-
-
-# ═══════════════════════════════════════════════════════════
-# Setup commands — Docker orchestration for backends
-# ═══════════════════════════════════════════════════════════
-
-
-@cli.group()
-def setup() -> None:
-    """Deploy and manage SKVector & SKGraph Docker containers."""
-
-
-@setup.command("wizard")
-@click.option("--skvector/--no-skvector", default=True, help="Enable SKVector (vector search)")
-@click.option("--skgraph/--no-skgraph", default=True, help="Enable SKGraph (graph)")
-@click.option("--skip-deps", is_flag=True, help="Skip Python dependency installation")
-@click.option("--yes", "-y", "non_interactive", is_flag=True, help="Non-interactive mode")
-@click.option(
-    "--local",
-    "deployment_mode",
-    flag_value="local",
-    default=None,
-    help="Run SKVector/SKGraph locally via Docker (skip local/remote prompt)",
-)
-@click.option(
-    "--remote",
-    "deployment_mode",
-    flag_value="remote",
-    help="Connect to a remote/SaaS URL (skip local/remote prompt)",
-)
-@click.option(
-    "--embedding-model",
-    default=None,
-    help="SKVector embedding model to persist in config (default: mxbai-embed-large)",
-)
-@click.option(
-    "--vector-dim",
-    type=int,
-    default=None,
-    help="SKVector embedding dimension to persist in config",
-)
-def setup_wizard(
-    skvector: bool,
-    skgraph: bool,
-    skip_deps: bool,
-    non_interactive: bool,
-    deployment_mode: str,
-    embedding_model: str | None,
-    vector_dim: int | None,
-) -> None:
-    """Interactive wizard — deploy Docker containers or configure remote URLs.
-
-    Without --local or --remote the wizard asks which deployment mode you want.
-    Use --local to go straight to Docker setup (checks Docker, offers to install
-    it if missing).  Use --remote to enter a Qdrant Cloud / self-hosted URL
-    without touching Docker at all.
-    """
-    from .setup_wizard import run_setup_wizard
-
-    result = run_setup_wizard(
-        enable_skvector=skvector,
-        enable_skgraph=skgraph,
-        skip_deps=skip_deps,
-        non_interactive=non_interactive,
-        deployment_mode=deployment_mode,
-        embedding_model=embedding_model,
-        vector_dim=vector_dim,
-        echo=click.echo,
-    )
-    if not result["success"]:
-        sys.exit(1)
-
-
-@setup.command("status")
-def setup_status() -> None:
-    """Show Docker container state and backend connectivity."""
-    from .config import load_config
-    from .setup_wizard import (
-        check_skgraph_health,
-        check_skvector_health,
-        compose_ps,
-        detect_platform,
-    )
-
-    cfg = load_config()
-    if cfg is None:
-        click.echo("No setup config found. Run: skmemory setup wizard")
-        return
-
-    click.echo("SKMemory Backend Status")
-    click.echo("=" * 40)
-
-    if cfg.setup_completed_at:
-        click.echo(f"Setup completed: {cfg.setup_completed_at}")
-    click.echo(f"Backends enabled: {', '.join(cfg.backends_enabled) or 'none'}")
-    click.echo("")
-
-    # Container status
-    plat = detect_platform()
-    if plat.compose_available:
-        compose_file = None
-        if cfg.docker_compose_file:
-            from pathlib import Path
-
-            compose_file = Path(cfg.docker_compose_file)
-        ps = compose_ps(compose_file=compose_file, use_legacy=plat.compose_legacy)
-        click.echo("Containers:")
-        if ps.stdout.strip():
-            click.echo(ps.stdout)
-        else:
-            click.echo("  No containers running")
-    click.echo("")
-
-    # Connectivity
-    click.echo("Connectivity:")
-    if cfg.skvector_url:
-        healthy = check_skvector_health(url=cfg.skvector_url, timeout=5)
-        status = "healthy" if healthy else "unreachable"
-        click.echo(f"  SKVector ({cfg.skvector_url}): {status}")
-
-    if cfg.skgraph_url:
-        healthy = check_skgraph_health(timeout=5)
-        status = "healthy" if healthy else "unreachable"
-        click.echo(f"  SKGraph ({cfg.skgraph_url}): {status}")
-
-
-@setup.command("start")
-@click.option(
-    "--service",
-    type=click.Choice(["skvector", "skgraph", "all"]),
-    default="all",
-    help="Which service to start",
-)
-def setup_start(service: str) -> None:
-    """Start previously configured containers."""
-    from .config import load_config
-    from .setup_wizard import compose_up, detect_platform
-
-    cfg = load_config()
-    plat = detect_platform()
-    if not plat.compose_available:
-        click.echo("Docker Compose not available.", err=True)
-        sys.exit(1)
-
-    compose_file = None
-    if cfg and cfg.docker_compose_file:
-        from pathlib import Path
-
-        compose_file = Path(cfg.docker_compose_file)
-
-    services = None
-    if service != "all":
-        services = [service]
-    elif cfg and cfg.backends_enabled:
-        services = cfg.backends_enabled
-
-    result = compose_up(
-        services=services,
-        compose_file=compose_file,
-        use_legacy=plat.compose_legacy,
-    )
-    if result.returncode == 0:
-        click.echo(f"Started: {service}")
-    else:
-        click.echo(f"Failed: {result.stderr.strip()}", err=True)
-        sys.exit(1)
-
-
-@setup.command("stop")
-@click.option(
-    "--service",
-    type=click.Choice(["skvector", "skgraph", "all"]),
-    default="all",
-    help="Which service to stop",
-)
-def setup_stop(service: str) -> None:
-    """Stop containers (preserves data)."""
-    import subprocess
-
-    from .config import load_config
-    from .setup_wizard import detect_platform
-
-    cfg = load_config()
-    plat = detect_platform()
-    if not plat.compose_available:
-        click.echo("Docker Compose not available.", err=True)
-        sys.exit(1)
-
-    if service == "all":
-        from .setup_wizard import compose_down
-
-        compose_file = None
-        if cfg and cfg.docker_compose_file:
-            from pathlib import Path
-
-            compose_file = Path(cfg.docker_compose_file)
-
-        result = compose_down(
-            compose_file=compose_file,
-            use_legacy=plat.compose_legacy,
-        )
-        if result.returncode == 0:
-            click.echo("All containers stopped.")
-        else:
-            click.echo(f"Failed: {result.stderr.strip()}", err=True)
-            sys.exit(1)
-    else:
-        # Stop individual container
-        container = f"skmemory-{service}"
-        result = subprocess.run(
-            ["docker", "stop", container],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            click.echo(f"Stopped: {container}")
-        else:
-            click.echo(f"Failed to stop {container}: {result.stderr.strip()}", err=True)
-            sys.exit(1)
-
-
-@setup.command("reset")
-@click.option("--remove-data", is_flag=True, help="Also delete data volumes")
-@click.confirmation_option(prompt="This will remove containers. Continue?")
-def setup_reset(remove_data: bool) -> None:
-    """Remove containers, optionally delete data volumes."""
-    from .config import CONFIG_PATH, load_config
-    from .setup_wizard import compose_down, detect_platform
-
-    cfg = load_config()
-    plat = detect_platform()
-    if not plat.compose_available:
-        click.echo("Docker Compose not available.", err=True)
-        sys.exit(1)
-
-    compose_file = None
-    if cfg and cfg.docker_compose_file:
-        from pathlib import Path
-
-        compose_file = Path(cfg.docker_compose_file)
-
-    result = compose_down(
-        compose_file=compose_file,
-        remove_volumes=remove_data,
-        use_legacy=plat.compose_legacy,
-    )
-    if result.returncode == 0:
-        vol_msg = " and data volumes" if remove_data else ""
-        click.echo(f"Containers{vol_msg} removed.")
-
-        # Remove config
-        if CONFIG_PATH.exists():
-            CONFIG_PATH.unlink()
-            click.echo(f"Config removed: {CONFIG_PATH}")
-    else:
-        click.echo(f"Failed: {result.stderr.strip()}", err=True)
-        sys.exit(1)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3403,7 +2910,7 @@ def show_context(ctx, agent: str | None):
 def search_deep(ctx, query: str, agent: str | None, limit: int):
     """Deep search all memory tiers (on demand).
 
-    Searches SQLite + SKVector + SKGraph for matches.
+    Searches SQLite + pgvector + AGE for matches.
     Returns full memory details (token-heavy).
 
     Examples:

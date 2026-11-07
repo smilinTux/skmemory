@@ -3,18 +3,15 @@ Storage backends for SKMemory.
 
 Level 0 (sqlite)   - SQLite index, zero infrastructure.
 Level 0.5 (vault)  - SQLite + transparent AES-256-GCM at-rest encryption.
-Level 1 (skvector) - Remote vector search for shared collections (powered by Qdrant).
 Level 1 (pgvector) - Postgres + pgvector: syncable, hybrid (vector+BM25), remote embedding.
-Level 2 (skgraph)  - Graph relationship traversal (powered by FalkorDB).
+Level 2 (age)      - Apache AGE graph relationship traversal (in skmem-pg).
 """
 
 from .base import BaseBackend
 from .file_backend import FileBackend
-from .skgraph_backend import SKGraphBackend
 
 __all__ = [
     "BaseBackend",
-    "SKGraphBackend",
     "FileBackend",
     "VaultedSQLiteBackend",
     "PGVectorBackend",

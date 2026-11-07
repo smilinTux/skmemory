@@ -12,21 +12,23 @@ Two silent-degradation defects lived in the absence of this module (measured on
 
 The contract implemented here:
 
-1. ``SKMEMORY_VECTOR_BACKEND`` names a backend explicitly (``pgvector``,
-   ``skvector``, or ``none``). That backend is used or the operation fails
-   with :class:`BackendInitError` carrying the real reason. There is no
-   fallback to another store.
+1. ``SKMEMORY_VECTOR_BACKEND`` names a backend explicitly (``pgvector`` or
+   ``none``). That backend is used or the operation fails with
+   :class:`BackendInitError` carrying the real reason. There is no fallback to
+   another store.
 2. With no explicit request, the config's ``backends_enabled`` list decides.
    Declaring nothing means no vector backend.
-3. ChromaDB is retired (SKMEM-P5-01). Naming it in ``SKMEMORY_VECTOR_BACKEND``
-   fails fast with :data:`CHROMA_RETIRED_MESSAGE` (non-zero exit on the CLI,
-   red health). A stale ``chroma`` entry in a yaml is NOT fatal: it is dropped
-   with a one-time warning in ``config.py`` so old node configs cannot take
-   down session hooks.
+3. ChromaDB (SKMEM-P5-01), Qdrant/skvector and FalkorDB/skgraph (SKMEM-P5-02)
+   are retired: the graph is AGE only and the vector tier is pgvector only.
+   Naming one in ``SKMEMORY_VECTOR_BACKEND`` fails fast with its retirement
+   message (non-zero exit on the CLI, red health). A stale entry in a yaml is
+   NOT fatal: it is dropped with a one-time warning in ``config.py`` so old
+   node configs cannot take down session hooks.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -40,13 +42,33 @@ CHROMA_RETIRED_MESSAGE = (
     "pgvector or none."
 )
 
+SKVECTOR_RETIRED_MESSAGE = (
+    "Qdrant (skvector) has been retired; the vector tier is pgvector only. "
+    "Unset SKMEMORY_VECTOR_BACKEND or set it to pgvector or none."
+)
+
+SKGRAPH_RETIRED_MESSAGE = (
+    "FalkorDB (skgraph) has been retired; the graph is Apache AGE only. "
+    "Unset SKMEMORY_VECTOR_BACKEND or set it to pgvector or none."
+)
+
+# retired alias -> message. Checked before the live aliases so a retired name
+# can never be mistaken for an unknown typo (which would read as "guessing").
+RETIRED_BACKENDS = {
+    "chroma": CHROMA_RETIRED_MESSAGE,
+    "chromadb": CHROMA_RETIRED_MESSAGE,
+    "skvector": SKVECTOR_RETIRED_MESSAGE,
+    "qdrant": SKVECTOR_RETIRED_MESSAGE,
+    "skgraph": SKGRAPH_RETIRED_MESSAGE,
+    "falkordb": SKGRAPH_RETIRED_MESSAGE,
+    "falkor": SKGRAPH_RETIRED_MESSAGE,
+}
+
 # alias -> canonical name. "none" means "explicitly no vector backend".
 _ALIASES = {
     "pgvector": "pgvector",
     "pg": "pgvector",
     "postgres": "pgvector",
-    "skvector": "skvector",
-    "qdrant": "skvector",
     "none": "none",
     "off": "none",
     "disabled": "none",
@@ -69,8 +91,8 @@ def requested_vector_backend(environment: Mapping[str, str] | None = None) -> st
     raw = (source.get(VECTOR_BACKEND_ENV) or "").strip().lower()
     if not raw:
         return None
-    if raw in ("chroma", "chromadb"):
-        raise BackendInitError(f"{VECTOR_BACKEND_ENV}={raw}: {CHROMA_RETIRED_MESSAGE}")
+    if raw in RETIRED_BACKENDS:
+        raise BackendInitError(f"{VECTOR_BACKEND_ENV}={raw}: {RETIRED_BACKENDS[raw]}")
     try:
         return _ALIASES[raw]
     except KeyError:
@@ -95,19 +117,46 @@ def resolve_pg_dsn(cfg: Any = None, environment: Mapping[str, str] | None = None
     return yaml_dsn or None
 
 
+_RETIRED_ENV_VARS = (
+    "SKMEMORY_SKVECTOR_URL",
+    "SKMEMORY_SKVECTOR_KEY",
+    "SKMEMORY_SKVECTOR_EMBEDDING_MODEL",
+    "SKMEMORY_SKVECTOR_VECTOR_DIM",
+    "SKMEMORY_SKGRAPH_URL",
+)
+_retired_env_warned = False
+
+
+def _warn_retired_env_once(source: Mapping[str, str]) -> None:
+    """A stale URL variable is ignored with one warning, never fatal (hooks)."""
+    global _retired_env_warned
+    if _retired_env_warned:
+        return
+    stale = [name for name in _RETIRED_ENV_VARS if source.get(name)]
+    if not stale:
+        return
+    _retired_env_warned = True
+    logging.getLogger("skmemory.backend_select").warning(
+        "%s is set but its backend is retired; ignoring it. %s %s",
+        ", ".join(stale),
+        SKVECTOR_RETIRED_MESSAGE,
+        SKGRAPH_RETIRED_MESSAGE,
+    )
+
+
 def enabled_vector_backends(
     cfg: Any = None,
     *,
-    has_skvector_url: bool = False,
     environment: Mapping[str, str] | None = None,
-) -> tuple[bool, bool, str | None]:
-    """Return ``(pgvector, skvector, requested)`` flags.
+) -> tuple[bool, str | None]:
+    """Return ``(pgvector, requested)``.
 
-    When ``requested`` is not None exactly one flag is set (or none for
-    ``"none"``) and the caller must NOT fall back if it fails to initialise.
+    When ``requested`` is not None the caller must NOT fall back if the named
+    backend fails to initialise. ``requested == "none"`` means no vector backend.
     """
+    _warn_retired_env_once(os.environ if environment is None else environment)
     requested = requested_vector_backend(environment)
     if requested is not None:
-        return (requested == "pgvector", requested == "skvector", requested)
+        return (requested == "pgvector", requested)
     enabled = list(getattr(cfg, "backends_enabled", None) or []) if cfg is not None else []
-    return ("pgvector" in enabled, "skvector" in enabled, None)
+    return ("pgvector" in enabled, None)

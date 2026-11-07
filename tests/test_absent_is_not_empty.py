@@ -216,7 +216,7 @@ class TestSyncFailuresAreRetired:
     def test_a_record_for_an_indexed_memory_is_cleared(self, tmp_path):
         backend = SQLiteBackend(base_path=str(tmp_path / "memories"))
         store = MemoryStore(primary=backend, vector=_VectorWith({"now-there"}))
-        backend.record_sync_failure("now-there", "skvector", "embedding unavailable")
+        backend.record_sync_failure("now-there", "vector", "embedding unavailable")
 
         assert store.health()["unindexed"] == 1
         report = store.reconcile_sync_failures()
@@ -229,7 +229,7 @@ class TestSyncFailuresAreRetired:
         the signal lying in the other direction."""
         backend = SQLiteBackend(base_path=str(tmp_path / "memories"))
         store = MemoryStore(primary=backend, vector=_VectorWith(set()))
-        backend.record_sync_failure("still-gone", "skvector", "embedding unavailable")
+        backend.record_sync_failure("still-gone", "vector", "embedding unavailable")
 
         report = store.reconcile_sync_failures()
 
@@ -241,7 +241,7 @@ class TestSyncFailuresAreRetired:
         backend = SQLiteBackend(base_path=str(tmp_path / "memories"))
         store = MemoryStore(primary=backend, vector=_VectorWith({"a", "c"}))
         for mid in ("a", "b", "c"):
-            backend.record_sync_failure(mid, "skvector", "boom")
+            backend.record_sync_failure(mid, "vector", "boom")
 
         report = store.reconcile_sync_failures()
 
@@ -264,8 +264,8 @@ class TestSyncFailuresAreRetired:
 
         backend = SQLiteBackend(base_path=str(tmp_path / "memories"))
         store = MemoryStore(primary=backend, vector=_VectorWith(set()), graph=_Graph())
-        backend.record_sync_failure("in-graph", "skgraph", "graph down")
-        backend.record_sync_failure("not-in-graph", "skgraph", "graph down")
+        backend.record_sync_failure("in-graph", "graph", "graph down")
+        backend.record_sync_failure("not-in-graph", "graph", "graph down")
 
         report = store.reconcile_sync_failures()
         assert report["cleared"] == 1
@@ -274,7 +274,7 @@ class TestSyncFailuresAreRetired:
     def test_no_backend_wired_is_a_noop_not_a_crash(self, tmp_path):
         backend = SQLiteBackend(base_path=str(tmp_path / "memories"))
         store = MemoryStore(primary=backend)
-        backend.record_sync_failure("x", "skvector", "boom")
+        backend.record_sync_failure("x", "vector", "boom")
 
         report = store.reconcile_sync_failures()
         assert report["cleared"] == 0

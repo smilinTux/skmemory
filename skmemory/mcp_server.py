@@ -99,11 +99,6 @@ def _get_store() -> MemoryStore:
                 if requested is not None:
                     raise BackendInitError(f"pgvector backend failed to initialize: {e}") from e
                 backend_errors["vector"] = f"pgvector: {e}"
-        elif want == "skvector":
-            raise BackendInitError(
-                "SKMEMORY_VECTOR_BACKEND=skvector is not supported by the MCP server; "
-                "use the CLI or pgvector."
-            )
         _store = MemoryStore(vector=vector, graph=graph)
         _store.backend_errors.update(backend_errors)
     return _store
@@ -404,7 +399,7 @@ async def list_tools() -> list[Tool]:
             description=(
                 "Graph operations: traverse connections, get lineage, find clusters, "
                 "and pivot through entities or citations to related claims. Requires "
-                "SKGraph backend (FalkorDB)."
+                "the AGE graph backend."
             ),
             inputSchema={
                 "type": "object",
@@ -894,8 +889,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             reader = arguments.get("reader")
             if store.graph is None:
                 return _error_response(
-                    "SKGraph backend not configured. "
-                    "Install falkordb and configure the graph backend."
+                    "Graph backend (AGE) not configured. "
+                    "Set SKMEMORY_VECTOR_BACKEND=pgvector with a reachable skmem-pg."
                 )
             if action in {"traverse", "around"}:
                 mid = arguments.get("memory_id")

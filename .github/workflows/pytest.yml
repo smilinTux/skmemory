@@ -5,13 +5,9 @@ name: Tests
 # Invocation mirrors the repo's known-passing command (see publish.yml's
 # pre-publish gate):
 #
-#     pytest tests/ --ignore=tests/integration -k "not test_sharing"
+#     pytest tests/ -k "not test_sharing"
 #
 # Honest scoping notes:
-#   * tests/integration/* require LIVE SKGraph (FalkorDB) + SKVector (Qdrant)
-#     backends and sentence-transformers. They auto-skip via skipif when those
-#     services are unreachable (tests/integration/conftest.py), but we exclude
-#     the directory outright so the run never depends on networked services.
 #   * test_sharing.py exercises PGP cross-agent sharing via `pgpy`, which is
 #     unstable across CPython versions (see commit 435e817 "guard pgpy import in
 #     test_sharing"). It is deselected here - the same exclusion publish.yml uses
@@ -19,7 +15,7 @@ name: Tests
 #
 # Dependency set: `.[dev]` (pytest, pytest-cov, pgpy, black, ruff) on top of the
 # core deps (pydantic, click, pyyaml, mcp). Sibling sk* packages (skseed,
-# qdrant-client, falkordb, telethon, sk_pgp) are NOT installed - every
+# telethon, sk_pgp) are NOT installed - every
 # test that needs one guards with pytest.importorskip / skipif and self-skips, so
 # no GitHub-source install or allow-failure shim is required for a green run.
 #
@@ -66,9 +62,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run unit test suite (integration + pgpy-sharing excluded)
+      - name: Run unit test suite (pgpy-sharing excluded)
         run: |
           python -m pytest tests/ \
-            --ignore=tests/integration \
             -k "not test_sharing" \
             -v --tb=short

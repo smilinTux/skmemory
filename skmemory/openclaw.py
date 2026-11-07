@@ -45,15 +45,11 @@ class SKMemoryPlugin:
 
     Args:
         base_path: Override the memory storage directory.
-        skvector_url: Optional SKVector server for semantic search.
-        skvector_key: Optional SKVector API key.
     """
 
     def __init__(
         self,
         base_path: str | None = None,
-        skvector_url: str | None = None,
-        skvector_key: str | None = None,
     ) -> None:
         vector = None
 
@@ -67,16 +63,6 @@ class SKMemoryPlugin:
                 logger.info("openclaw.py: vector backend = PGVectorBackend")
             except Exception as e:
                 logger.warning("openclaw.py pgvector: %s", e)
-
-        # Qdrant for shared collections
-        if vector is None and skvector_url:
-            try:
-                from .backends.skvector_backend import SKVectorBackend
-
-                vector = SKVectorBackend(url=skvector_url, api_key=skvector_key)
-            except Exception as e:
-                logger.warning("openclaw.py: %s", e)
-                pass
 
         primary = SQLiteBackend(base_path=base_path) if base_path else None
         self.store = MemoryStore(primary=primary, vector=vector)
