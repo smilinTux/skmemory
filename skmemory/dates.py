@@ -76,10 +76,9 @@ def _weekday_date(base, wd: int, mode: str, sentence: str):
     elif mode == "this":
         delta = wd - cur  # same Monday-Sunday week
     else:  # bare "on <weekday>": tense decides
-        if _FUTURE_RE.search(sentence):
-            delta = (wd - cur) % 7 or 7
-        else:
-            delta = -((cur - wd) % 7 or 7)
+        future = (wd - cur) % 7 or 7
+        past = -((cur - wd) % 7 or 7)
+        delta = future if _FUTURE_RE.search(sentence) else past
     return base + timedelta(days=delta)
 
 
