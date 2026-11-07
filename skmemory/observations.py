@@ -645,3 +645,180 @@ def load_all_observations(agent_name: str | None = None) -> list[Observation]:
     observations = [load_observation(p) for p in sorted(directory.glob("*.json"))]
     observations.sort(key=lambda o: o.statement)
     return observations
+
+
+# =============================================================================
+# PROMOTION SWEEP -- citation-gated observations written as memories
+# =============================================================================
+
+#: Env kill switch for the sweep step. ``0``/``off``/``false``/``no`` disables it.
+OBSERVATIONS_ENV = "SKMEMORY_OBSERVATIONS"
+#: Shortest quote the citation gate accepts (a one-word "quote" proves nothing).
+MIN_QUOTE_CHARS = 8
+#: Longest verbatim quote embedded per evidence item.
+MAX_QUOTE_CHARS = 160
+#: Evidence items quoted in one observation's text.
+MAX_EVIDENCE_PER_OBSERVATION = 5
+#: Cap on the intensity of an observation: a derived belief never outranks the
+#: raw memories it summarizes (source_tier self-generated is capped, never boosted).
+OBSERVATION_MAX_INTENSITY = 0.0
+#: Tags that group memories by bookkeeping, not by subject.
+_BOOKKEEPING_TAGS = frozenset({"auto-promoted", "promoted", "observation", "dream", "archived"})
+OBSERVATION_SOURCE = "observation"
+
+
+def observations_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """False when the operator has turned the observation step off."""
+    import os
+
+    value = (env if env is not None else os.environ).get(OBSERVATIONS_ENV, "")
+    return value.strip().lower() not in {"0", "off", "false", "no", "disabled"}
+
+
+def inherited_context_tag(tags: Iterable[str | None]) -> str:
+    """The most restrictive audience tag among *tags*.
+
+    Uses the audience level ordering. Two different tags at the top level (say
+    ``@work:a`` and ``@work:b``) are different audiences, so a belief that
+    merges them is not safe for either: it escalates to ``@chef-only``. No
+    tags at all also gives ``@chef-only``.
+    """
+    from .audience import AudienceLevel, tag_to_level
+
+    cleaned = [t or "" for t in tags]
+    if not cleaned:
+        return "@chef-only"
+    top = max(tag_to_level(t) for t in cleaned)
+    at_top = {t for t in cleaned if tag_to_level(t) == top}
+    if len(at_top) > 1 or top == AudienceLevel.CHEF_ONLY:
+        return "@chef-only"
+    return next(iter(at_top))
+
+
+def citation_gate(
+    text: str, evidence: Sequence[ObservationEvidence], content_lookup: ContentLookup
+) -> list[str]:
+    """Reasons *text* may not be written as an observation; empty means it passes.
+
+    Every evidence memory must exist and contain its quote, and *text* must
+    quote at least one source verbatim (a quote of at least
+    :data:`MIN_QUOTE_CHARS`). Pure code, no model.
+    """
+    reasons: list[str] = []
+    if not evidence:
+        return ["no evidence"]
+    for ev in evidence:
+        if _lookup_content(ev.memory_id, content_lookup) is None:
+            reasons.append(f"evidence memory missing: {ev.memory_id}")
+        elif not verify_evidence(ev, content_lookup):
+            reasons.append(f"quote not in memory: {ev.memory_id}")
+    if not any(len(ev.quote.strip()) >= MIN_QUOTE_CHARS and ev.quote in text for ev in evidence):
+        reasons.append("text quotes no source verbatim")
+    return reasons
+
+
+def render_observation_text(observation: Observation) -> str:
+    """Observation statement followed by verbatim quotes of its evidence."""
+    lines = [observation.statement, ""]
+    for ev in observation.sorted_evidence()[:MAX_EVIDENCE_PER_OBSERVATION]:
+        lines.append(f'"{ev.quote}" (memory {ev.memory_id})')
+    return "\n".join(lines)
+
+
+def write_observation(store: Any, observation: Observation, *, key: str = "") -> Memory | None:
+    """Write *observation* as a ``fact`` memory if it passes the citation gate.
+
+    Returns the new memory, or ``None`` when the gate refuses. Raw memories are
+    never modified. The new memory is ``source_tier="self-generated"`` at the
+    mid-term layer with zero intensity, and inherits the most restrictive
+    ``context_tag`` of its evidence.
+    """
+    text = render_observation_text(observation)
+    shown = observation.sorted_evidence()[:MAX_EVIDENCE_PER_OBSERVATION]
+    lookup = content_lookup_from_store(store)
+    if citation_gate(text, shown, lookup):
+        return None
+    sources = [store.recall(ev.memory_id) for ev in shown]
+    if any(m is None for m in sources):
+        return None
+    tag = inherited_context_tag(m.context_tag for m in sources if m is not None)
+    from .models import EmotionalSnapshot, MemoryLayer
+
+    # kind is set after the write: kind=fact on snapshot would run the
+    # supersession triage, and a derived belief must never close a raw memory.
+    memory = store.snapshot(
+        title=f"Observation: {observation.statement[:80]}",
+        content=text,
+        layer=MemoryLayer.MID,
+        tags=[OBSERVATION_SOURCE],
+        emotional=EmotionalSnapshot(intensity=OBSERVATION_MAX_INTENSITY),
+        source=OBSERVATION_SOURCE,
+        source_ref=f"{OBSERVATION_SOURCE}:{key}" if key else "",
+        metadata={
+            "observation": {
+                "proof_count": observation.proof_count,
+                "evidence_ids": [ev.memory_id for ev in observation.sorted_evidence()],
+                "key": key,
+            }
+        },
+    )
+    memory.kind = "fact"
+    memory.source_tier = "self-generated"
+    memory.context_tag = tag
+    store.primary.save(memory)
+    return memory
+
+
+def sweep_observations(store: Any, *, max_new: int = 5, scan_limit: int = 500) -> dict[str, int]:
+    """Derive and write up to *max_new* new observations from recent memories.
+
+    Groups by shared tag, skips groups that already have an observation
+    (``source_ref``), and never groups observations or bookkeeping tags.
+    Individual failures are counted, never raised.
+    """
+    out = {"written": 0, "refused": 0, "errors": 0}
+    if max_new < 1:
+        return out
+    existing = {
+        m.source_ref
+        for m in store.list_memories(tags=[OBSERVATION_SOURCE], limit=scan_limit)
+        if m.source_ref
+    }
+    candidates = [
+        m
+        for m in store.list_memories(limit=scan_limit)
+        if m.source != OBSERVATION_SOURCE and len(m.content.strip()) >= MIN_QUOTE_CHARS
+    ]
+    by_id = {m.id: m for m in candidates}
+    groups: dict[str, list[Memory]] = {}
+    for m in candidates:
+        for key in _memory_group_keys(m) - _BOOKKEEPING_TAGS:
+            groups.setdefault(key, []).append(m)
+    for key in sorted(groups):
+        if out["written"] >= max_new:
+            break
+        members = groups[key]
+        if len(members) < 2 or f"{OBSERVATION_SOURCE}:{key}" in existing:
+            continue
+        members = sorted(members, key=lambda m: (m.created_at, m.id))[
+            -MAX_EVIDENCE_PER_OBSERVATION:
+        ]
+        obs = Observation(
+            statement=f"A recurring pattern connects {len(members)} memories around '{key}'.",
+            evidence=[
+                ObservationEvidence(
+                    memory_id=m.id,
+                    quote=by_id[m.id].content.strip()[:MAX_QUOTE_CHARS],
+                    timestamp=_memory_timestamp(m),
+                    relevance=key,
+                )
+                for m in members
+            ],
+        )
+        try:
+            written = write_observation(store, obs, key=key)
+        except Exception:  # noqa: BLE001 - one bad group must not stop the rest
+            out["errors"] += 1
+            continue
+        out["written" if written else "refused"] += 1
+    return out
