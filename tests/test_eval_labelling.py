@@ -80,6 +80,8 @@ def test_sensitive_memory_by_tag_and_text():
     assert hv.is_sensitive_memory("t", "c", ["Sacred"])
     assert hv.is_sensitive_memory("Medical notes", "c", [])
     assert not hv.is_sensitive_memory("gateway", "pool sizes", ["infra"])
+    assert not hv.is_sensitive_memory("memory_health", "embed_ok vector_ok health check", [])
+    assert hv.is_sensitive_memory("t", "his health history is private", [])
 
 
 def test_private_dir_refuses_repo_and_git_tree(tmp_path):
@@ -246,7 +248,7 @@ def test_parse_error_unjudged(tmp_path):
         return 200, LOCAL, json.dumps({"choices": [{"message": {"content": body}}]})
 
     meta = _run(tmp_path, bad)
-    assert meta["unjudged_reasons"] == {"parse_error": 1}
+    assert meta["unjudged_reasons"] == {"parse_error:a_nojson_stop": 1}
 
 
 # ---- live_bench --labelled ------------------------------------------------

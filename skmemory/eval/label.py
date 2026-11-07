@@ -131,6 +131,7 @@ class Judge:
         self.transport = transport
         self.timeout = timeout
         self.routes: Counter = Counter()
+        self.last_finish = "none"
 
     def _chat(self, messages: list[dict], max_tokens: int = 1500) -> str:
         payload = {
@@ -145,7 +146,9 @@ class Judge:
         if status != 200:
             raise JudgeError(f"http {status}")
         try:
-            return json.loads(body)["choices"][0]["message"]["content"] or ""
+            choice = json.loads(body)["choices"][0]
+            self.last_finish = str(choice.get("finish_reason"))
+            return choice["message"]["content"] or ""
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise JudgeError("bad response shape") from exc
 
@@ -299,13 +302,20 @@ def judge_query(judge: Judge, query: str, pool: Sequence[PoolMemory]) -> dict:
         return {"status": "unjudged", "reason": "pool_empty"}
     try:
         a_raw = judge.ask(SYS_A, prompt_a(query, pool))
+        fin = {"a": judge.last_finish}
         rev = list(reversed(pool))
         b_raw = judge.ask(SYS_B, prompt_b(query, rev))
+        fin["b"] = judge.last_finish
     except JudgeError as exc:
         return {"status": "unjudged", "reason": f"judge_error:{exc}"}
     a_obj, b_obj = parse_json(a_raw), parse_json(b_raw)
-    if a_obj is None or b_obj is None or "gold" not in a_obj or "verdicts" not in b_obj:
-        return {"status": "unjudged", "reason": "parse_error"}
+    for tag, obj, key in (("a", a_obj, "gold"), ("b", b_obj, "verdicts")):
+        if obj is None or key not in obj:
+            why = "nojson" if obj is None else "nokey"
+            return {
+                "status": "unjudged",
+                "reason": f"parse_error:{tag}_{why}_{fin[tag]}",
+            }
     gold_a, rej_a = _gold_from(a_obj, "gold", pool)
     gold_b, rej_b = _gold_from(b_obj, "verdicts", rev)
     base = {
@@ -365,7 +375,7 @@ def label_run(
             )  # fmt: skip
         else:
             counts["unjudged"] += 1
-            reasons[rec["reason"].split(":")[0]] += 1
+            reasons[rec["reason"]] += 1
             unjudged_lines.append({"qid": c.qid, "source": c.source, "reason": rec["reason"]})
         if interval_s > 0:
             sleep(interval_s)

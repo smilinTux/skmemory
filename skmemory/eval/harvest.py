@@ -60,10 +60,10 @@ SENSITIVE_TAGS = frozenset(
     }
 )
 _SENSITIVE_RE = re.compile(
-    r"\b(sacred|medical|medic\w*|health\w*|diagnos\w*|transplant\w*|liver|cancer|chemo\w*|"
+    r"\b(sacred|medical|medic\w*|health (?:issue|condition|history|record|insurance|problem)\w*|diagnos\w*|transplant\w*|liver|cancer|chemo\w*|"
     r"surger\w+|hospital\w*|doctor|physician|prescri\w+|dosage|dose|nootropic\w*|bacopa|"
     r"therap\w+|psych\w+|depress\w*|suicid\w*|grief|griev\w*|funeral|widow\w*|sarah|"
-    r"symptom\w*|illness|disease|blood|clinic\w*|pharma\w*|cholesterol|insulin|"
+    r"symptom\w*|illness|disease|blood (?:pressure|test|work|sugar|clot)|clinic\w*|pharma\w*|cholesterol|insulin|"
     r"medication\w*|rehab|addict\w*)\b",
     re.I,
 )
