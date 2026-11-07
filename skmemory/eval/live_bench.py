@@ -818,11 +818,12 @@ def build_arms(pg, age, sqlite_backend, store, telemetry: dict) -> dict[str, Arm
     orig_fused = store.search_fused
 
     def spy(query, *a, **kw):
+        wanted = kw.get("return_report", False)
         kw["return_report"] = True
         mems, report = orig_fused(query, *a, **kw)
         for arm in report.arms:
             telemetry.setdefault(arm.name, Counter())[arm.status] += 1
-        return mems
+        return (mems, report) if wanted else mems
 
     store.search_fused = spy
 
