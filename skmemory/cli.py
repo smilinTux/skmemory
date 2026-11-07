@@ -1348,6 +1348,26 @@ def fts_backfill(ctx: click.Context, max_rows: int | None) -> None:
     )
 
 
+@cli.command("importance-backfill")
+@click.option("--batch", default=500, show_default=True, help="Rows per commit.")
+@click.pass_context
+def importance_backfill(ctx: click.Context, batch: int) -> None:
+    """Recompute legacy importance (0.5, never accessed) from layer and intensity.
+
+    Touches only the SQLite index, in small batches; flat files are never read
+    or written. Safe to re-run.
+    """
+    store: MemoryStore = ctx.obj["store"]
+    res = store.backfill_importance(batch)
+    if res is None:
+        click.echo("importance-backfill only works with the SQLite backend.", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Importance backfill: {res['total']} rows, {res['scanned']} legacy-shaped, "
+        f"{res['updated']} updated, {res['unchanged']} already correct."
+    )
+
+
 @cli.command()
 @click.option(
     "--vector", is_flag=True, help="Also sync flat-file memories into the ChromaDB vector index."

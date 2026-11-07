@@ -37,6 +37,7 @@ from pathlib import Path
 from .. import fts_local
 from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
+from ..decay import REINFORCE_IMPORTANCE_STEP, initial_importance
 from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_write_allowed
@@ -185,6 +186,15 @@ ORDER BY
 
 # Reason: 150 chars is enough for an agent to decide if it needs the full memory.
 CONTENT_PREVIEW_LENGTH = 150
+
+
+def _is_legacy_importance(importance, access_count) -> bool:
+    """A stored 0.5 with no reinforcement is the pre-P0-03 column default.
+
+    Recomputing it from layer and intensity is safe: a value that was truly
+    computed as 0.5 recomputes to 0.5.
+    """
+    return importance is not None and abs(float(importance) - 0.5) < 1e-9 and not access_count
 
 
 class SQLiteBackend(BaseBackend):
@@ -419,6 +429,8 @@ class SQLiteBackend(BaseBackend):
         Uses an UPSERT (SQLite >= 3.24) that rewrites only content columns.
         ``access_count``, ``last_accessed`` and ``importance`` are usage state
         that is not in the flat file, so a re-save must leave them untouched.
+        ``importance`` is only SET on first insert (layer + intensity); the
+        conflict branch never touches it.
 
         The flat JSON file is the source of truth and is written before this
         is called, so an index write failure is logged and swallowed rather
@@ -445,9 +457,9 @@ class SQLiteBackend(BaseBackend):
                     parent_id, related_ids, created_at, updated_at,
                     file_path, content_hash,
                     kind, outcome, event_at, valid_from, valid_to,
-                    supersedes_id, source_tier, schema_version
+                    supersedes_id, source_tier, schema_version, importance
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?, ?, ?, ?, ?, ?, ?, ?)
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     layer = excluded.layer,
@@ -504,6 +516,7 @@ class SQLiteBackend(BaseBackend):
                     memory.supersedes_id,
                     memory.source_tier,
                     memory.schema_version,
+                    initial_importance(memory.layer.value, memory.emotional.intensity),
                 ),
             )
             if self._fts_ok:
@@ -578,6 +591,7 @@ class SQLiteBackend(BaseBackend):
                 marks = ",".join("?" * len(chunk))
                 cur = conn.execute(
                     "UPDATE memories SET access_count = access_count + 1, "
+                    f"importance = importance + {REINFORCE_IMPORTANCE_STEP} * (1.0 - importance), "
                     f"last_accessed = ? WHERE id IN ({marks}){guard}",
                     [stamp, *chunk, *extra],
                 )
@@ -591,6 +605,50 @@ class SQLiteBackend(BaseBackend):
                 with contextlib.suppress(Exception):
                     conn.close()
         return updated
+
+    def backfill_importance(self, batch_size: int = 500) -> dict:
+        """Recompute legacy importance (exactly 0.5, access_count 0) in the index.
+
+        SQLite only; flat files are never read or written. Works in small
+        batches (own commit each) so a long run never holds the write lock.
+
+        Returns:
+            dict: ``scanned`` legacy-shaped rows, ``updated`` rows whose value
+            changed, ``unchanged`` rows that recompute to 0.5, ``total`` rows.
+        """
+        conn = self._get_conn()
+        total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        scanned = updated = 0
+        last = ""
+        while True:
+            rows = conn.execute(
+                "SELECT id, layer, emotional_intensity FROM memories "
+                "WHERE id > ? AND importance = 0.5 AND access_count = 0 ORDER BY id LIMIT ?",
+                (last, max(int(batch_size), 1)),
+            ).fetchall()
+            if not rows:
+                break
+            changes = []
+            for r in rows:
+                new = initial_importance(r["layer"], r["emotional_intensity"])
+                if abs(new - 0.5) > 1e-9:
+                    changes.append((new, r["id"]))
+            scanned += len(rows)
+            if changes:
+                conn.executemany(
+                    "UPDATE memories SET importance = ? WHERE id = ? "
+                    "AND importance = 0.5 AND access_count = 0",
+                    changes,
+                )
+                conn.commit()
+                updated += len(changes)
+            last = rows[-1]["id"]
+        return {
+            "total": total,
+            "scanned": scanned,
+            "updated": updated,
+            "unchanged": scanned - updated,
+        }
 
     def get_usage(self, memory_ids: Sequence[str]) -> dict[str, dict]:
         """Read ``access_count`` / ``last_accessed`` for ids, in one query per chunk.
@@ -665,8 +723,12 @@ class SQLiteBackend(BaseBackend):
             conn.executemany(
                 "UPDATE memories SET access_count = access_count + ?, "
                 "last_accessed = CASE WHEN last_accessed IS NULL OR last_accessed < ? "
-                "THEN ? ELSE last_accessed END, importance = ? WHERE id = ?",
-                [(c, la or "", la, imp, i) for (i, c, la, imp) in snapshot],
+                "THEN ? ELSE last_accessed END, importance = COALESCE(?, importance) "
+                "WHERE id = ?",
+                [
+                    (c, la or "", la, None if _is_legacy_importance(imp, c) else imp, i)
+                    for (i, c, la, imp) in snapshot
+                ],
             )
             conn.commit()
         except sqlite3.Error as e:
