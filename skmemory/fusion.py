@@ -129,7 +129,15 @@ IDENTIFIER_PIN_ARMS = ("lexical_local", "lexical")
 
 ROUTE_ENV = "SKMEMORY_FUSION_ROUTE"
 VECTOR_PIN_ENV = "SKMEMORY_FUSION_VECTOR_PIN"
-DEFAULT_VECTOR_PIN = 3
+#: Natural route head (SKMEM-P1-09, second change): vector top 4 pinned, then ONE
+#: slot for the best lexical hit the vector head does not already hold. Live
+#: paraphrase set (182 queries, 180 natural): vector alone recall@5 0.198, the
+#: depth-3 fused candidate 0.176, because the fill arms' champions took vector
+#: ranks 4 and 5. Depth 4 plus a lexical slot keeps vector@4 whole in the top 5
+#: and still lets lexical help where vector misses. Natural route only: the
+#: identifier route is untouched (depth 4-5 there breaks q-semantic-08).
+DEFAULT_VECTOR_PIN = 4
+NATURAL_LEXICAL_SLOT_ARMS = ("lexical_local", "lexical")
 #: A query token whose lexical-index document frequency is in ``1..RARE_DF_MAX``
 #: is rare enough that an exact lexical hit is likely the answer.
 RARE_DF_MAX = 3
@@ -147,7 +155,7 @@ def fusion_route_mode() -> str:
 
 
 def fusion_vector_pin() -> int:
-    """How many vector hits a natural-language route pins (default 2)."""
+    """How many vector hits a natural-language route pins (default 4)."""
     raw = os.environ.get(VECTOR_PIN_ENV, "").strip()
     try:
         return max(0, int(raw)) if raw else DEFAULT_VECTOR_PIN
@@ -507,6 +515,7 @@ def pinned_rrf(
     *,
     pin: int | None = None,
     pin_arms: Sequence[str] = LEXICAL_ARMS,
+    slot_arms: Sequence[str] = (),
 ) -> list[tuple[str, float, dict[str, int]]]:
     """Pin the lexical arm's top ``pin`` hits, then fill (interleave by default, RRF by env).
 
@@ -519,6 +528,10 @@ def pinned_rrf(
 
     The pinned arm is the first of ``pin_arms`` that contributed. When none did
     this is plain RRF.
+
+    ``slot_arms`` (natural route) reserves ONE slot straight after the pinned
+    head for the first hit of the first of those arms that contributed and is
+    not already in the head.
     """
     if pin is None:
         pin = fusion_pin()
@@ -534,6 +547,11 @@ def pinned_rrf(
         ids = arm_results.get(name)
         if ids:
             head = list(ids[:pin])
+            break
+    for name in slot_arms:
+        extra = next((d for d in arm_results.get(name) or () if d not in head), None)
+        if extra is not None:
+            head.append(extra)
             break
     pinned = set(head)
     ordered = head + [doc_id for doc_id, _, _ in fused if doc_id not in pinned]
@@ -698,6 +716,7 @@ def fuse(
         return FusionResult(ids=[], arms=list(arms), provenance={})
 
     pin: int | None = None
+    slot_arms: Sequence[str] = ()
     if (
         route is not None
         and route.cls == "identifier"
@@ -713,11 +732,12 @@ def fuse(
         # to the previous behaviour rather than to no pin.
         pin_arms = (VECTOR_ARM,)
         pin = fusion_vector_pin()
+        slot_arms = NATURAL_LEXICAL_SLOT_ARMS
 
     if strategy == "pinned_rrf":
 
         def merge(results, kk):
-            return pinned_rrf(results, kk, pin=pin, pin_arms=pin_arms)
+            return pinned_rrf(results, kk, pin=pin, pin_arms=pin_arms, slot_arms=slot_arms)
 
     elif strategy == "interleave":
         merge = rank_interleave

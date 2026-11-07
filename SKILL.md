@@ -229,8 +229,8 @@ arms, each capped before the merge:
 - **Query-shape routing.** A deterministic, no-LLM classifier calls a query
   identifier-ish (a digit, underscore, host-shaped token, or a token rare in the
   local FTS index): the lexical top 3 are pinned (`SKMEMORY_FUSION_PIN`).
-  Question-shaped and stopword-heavy queries pin the vector top 2
-  (`SKMEMORY_FUSION_VECTOR_PIN`). The rest is filled by rank-depth interleave
+  Question-shaped and stopword-heavy queries pin the vector top 4
+  (`SKMEMORY_FUSION_VECTOR_PIN`, default 4) plus one slot for the best lexical hit not already in it. The rest is filled by rank-depth interleave
   (`SKMEMORY_FUSION_FILL=rrf` selects RRF fill). `SKMEMORY_FUSION_ROUTE=auto|lexical|vector`
   forces a route.
 - **Deadlines and degraded.** Arms run concurrently under one deadline
