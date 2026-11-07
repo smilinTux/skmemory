@@ -272,6 +272,7 @@ def persist(path: str) -> int:
                 role=MemoryRole("general"),
                 tags=snap.get("tags", []),
                 source=snap.get("source", "hook"),
+                source_tier="self-generated",
             )
         except Exception:
             pass

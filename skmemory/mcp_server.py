@@ -47,6 +47,7 @@ from .audience import READER_ENV, resolve_reader
 from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
 from .models import MemoryLayer
 from .store import MemoryStore
+from .tiers import tier_for_explicit_store
 from .validity import superseded_by_map
 
 logger = logging.getLogger("skmemory.mcp")
@@ -742,6 +743,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 layer=layer,
                 tags=tags,
                 source=source,
+                source_tier=tier_for_explicit_store(
+                    source, owner=resolve_reader(arguments.get("reader")).unrestricted
+                ),
                 reader=arguments.get("reader"),
             )
             return _json_response({"memory_id": memory.id, "stored": True})
@@ -1093,6 +1097,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         layer=MemoryLayer.SHORT,
                         tags=["auto-extract", mem.type, f"session:{session_id}"],
                         source="mcp:memory_save_session",
+                        source_tier="self-generated",
                         source_ref=f"session:{session_id}",
                         reader=arguments.get("reader"),
                         metadata={
@@ -1148,6 +1153,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     layer=MemoryLayer.SHORT,
                     tags=["pre-compact", "auto-save", f"session:{session_id}"],
                     source="mcp:memory_pre_compact",
+                    source_tier="self-generated",
                     source_ref=f"session:{session_id}",
                     reader=arguments.get("reader"),
                     metadata={
