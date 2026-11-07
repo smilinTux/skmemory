@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 
@@ -384,3 +385,242 @@ def test_reindex_is_one_transaction(tmp_path):
     store.reindex()
     assert seen == [1]  # other connections still saw the old row mid-rebuild
     assert orig  # keep reference used
+
+
+# ---------------------------------------------------------------- prefilter (SKMEM-P2-02)
+from skmemory.intentions import prefilter_safe  # noqa: E402
+
+
+def _loaded_store(tmp_path):
+    store = IntentionStore(tmp_path)
+    for i in _fixture_intentions():
+        store.save(i)
+    for m in fx.load_corpus():
+        _write_origin(tmp_path, m.id, m.valid_to)
+    return store
+
+
+@pytest.mark.parametrize("p", fx.load_prompts(), ids=lambda p: p.id)
+def test_prefilter_prompt_vectors(tmp_path, p):
+    store = _loaded_store(tmp_path)
+    now = datetime.fromisoformat(p.now)
+    store.sweep_supersession(now=now)  # p-10 needs int-011 invalidated first
+    got = [i.id for i in store.prefilter(p.text, p.scope, now)]
+    if p.id == "p-17":
+        # time tick: due time intentions are the time path's job, not the prompt prefilter's
+        assert got == []
+    else:
+        assert sorted(got) == sorted(p.expected_fire), p.text
+
+
+def test_word_boundary_fusion_not_confusion(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="f", kind="event", title="t", state="armed", trigger_terms=["fusion"]))
+    assert store.prefilter("total confusion", {}, NOW) == []
+    assert store.prefilter("a defusion", {}, NOW) == []
+    assert [i.id for i in store.prefilter("rework the (fusion) weights", {}, NOW)] == ["f"]
+
+
+def test_nonword_edge_terms_match_without_boundary_guard(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="h", kind="event", title="t", state="armed", trigger_terms=["HOSTS="]))
+    assert [i.id for i in store.prefilter('HOSTS="a"', {}, NOW)] == ["h"]
+    assert store.prefilter("GHOSTS=1", {}, NOW) == []
+
+
+def test_blank_term_never_matches_everything(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="b", kind="event", title="t", state="armed", trigger_terms=["", " "]))
+    assert store.prefilter("anything", {}, NOW) == []
+
+
+def test_fire_updates_flat_and_index_and_state(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(
+        Intention(
+            id="a", kind="event", title="t", state="armed", trigger_terms=["x y"], max_fires=3
+        )
+    )
+    out = store.prefilter("do x y now", {}, NOW)
+    assert out[0].fires == 1 and out[0].state == "fired" and out[0].last_fired_at == NOW
+    flat = store.get("a")
+    assert (flat.fires, flat.state, flat.last_fired_at) == (1, "fired", NOW)
+    idx = IntentionStore(tmp_path).list()[0]
+    assert (idx.fires, idx.state, idx.last_fired_at) == (1, "fired", NOW)
+    # a fired intention under max_fires stays eligible (cooldown 0)
+    assert store.prefilter("x y again", {}, NOW)[0].fires == 2
+
+
+def test_max_fires_and_cooldown_are_enforced_on_flat_truth(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(
+        Intention(
+            id="a",
+            kind="event",
+            title="t",
+            state="armed",
+            trigger_terms=["zz"],
+            max_fires=2,
+            cooldown_s=60,
+        )
+    )
+    assert store.prefilter("zz", {}, NOW)
+    assert store.prefilter("zz", {}, NOW.replace(second=30)) == []  # cooling down
+    assert store.prefilter("zz", {}, NOW.replace(minute=5))  # second and last fire
+    assert store.prefilter("zz", {}, NOW.replace(minute=30)) == []  # max_fires reached
+
+
+def test_stale_index_cannot_double_fire(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(
+        Intention(
+            id="a", kind="event", title="t", state="armed", trigger_terms=["zz"], max_fires=1
+        )
+    )
+    # simulate a stale index row: flat already fired, index still says armed/0
+    flat = store.get("a").model_copy(update={"state": "fired", "fires": 1, "last_fired_at": NOW})
+    from skmemory.intentions import atomic_write_text
+
+    atomic_write_text(store._path("a"), flat.model_dump_json(indent=2))
+    assert store.prefilter("zz", {}, NOW) == []
+    assert store.get("a").fires == 1
+
+
+def test_expired_pending_scope_missing_key_skipped(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="p", kind="event", title="t", state="pending", trigger_terms=["q"]))
+    store.save(
+        Intention(
+            id="e",
+            kind="event",
+            title="t",
+            state="armed",
+            trigger_terms=["q"],
+            expires_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    store.save(
+        Intention(
+            id="s",
+            kind="event",
+            title="t",
+            state="armed",
+            trigger_terms=["q"],
+            scope={"repo": "r"},
+        )
+    )
+    assert store.prefilter("q", {}, NOW) == []  # scope key absent from the prompt scope
+    assert store.prefilter("q", None, NOW) == []
+    assert [i.id for i in store.prefilter("q", {"repo": "r", "other": "x"}, NOW)] == ["s"]
+
+
+def _fire_race(base, out):
+    got = IntentionStore(base).prefilter("zz", {}, NOW)
+    open(out, "w").write(str(len(got)))
+
+
+def test_concurrent_prompts_fire_once(tmp_path):
+    import multiprocessing as mp
+
+    ctx = mp.get_context("fork")
+    for n in range(8):
+        base = tmp_path / f"t{n}"
+        s = IntentionStore(base)
+        s.save(
+            Intention(
+                id="a", kind="event", title="t", state="armed", trigger_terms=["zz"], max_fires=1
+            )
+        )
+        s.close()
+        outs = [str(tmp_path / f"o{n}-{k}") for k in range(4)]
+        ps = [ctx.Process(target=_fire_race, args=(base, o)) for o in outs]
+        for p in ps:
+            p.start()
+        for p in ps:
+            p.join()
+        fin = IntentionStore(base)
+        assert fin.get("a").fires == 1
+        assert fin.list()[0].fires == 1
+        assert sum(int(open(o).read()) for o in outs if os.path.exists(o)) <= 1
+
+
+def test_locked_store_fails_silent_and_fast(tmp_path):
+    import fcntl
+    import time
+
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="a", kind="event", title="t", state="armed", trigger_terms=["zz"]))
+    store._lock_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(store._lock_dir / "a.lock", os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        t = time.perf_counter()
+        assert store.prefilter("zz", {}, NOW) == []
+        assert time.perf_counter() - t < 0.5
+    finally:
+        os.close(fd)
+    assert store.get("a").fires == 0
+
+
+def test_prefilter_safe_never_raises(tmp_path, monkeypatch):
+    assert prefilter_safe(tmp_path / "nope" / "x" / "\0bad", "zz", {}, NOW) == []
+    s = IntentionStore(tmp_path)
+    s.save(Intention(id="a", kind="event", title="t", state="armed", trigger_terms=["zz"]))
+    s.close()
+    assert [i.id for i in prefilter_safe(tmp_path, "zz", {}, NOW)] == ["a"]
+    import skmemory.intentions as mod
+
+    monkeypatch.setattr(mod.IntentionStore, "prefilter", lambda *a, **k: 1 / 0)
+    assert prefilter_safe(tmp_path, "zz", {}, NOW) == []
+    assert prefilter_safe(tmp_path, None, None, None) == []
+
+
+def test_old_index_schema_is_migrated_and_backfilled(tmp_path):
+    s = IntentionStore(tmp_path)
+    s.save(Intention(id="a", kind="event", title="t", state="armed", trigger_terms=["zz"]))
+    s.close()
+    db = sqlite3.connect(str(tmp_path / "index.db"))
+    db.execute("DROP TABLE intentions")
+    db.execute(
+        "CREATE TABLE intentions (id TEXT PRIMARY KEY, kind TEXT, state TEXT, due_at TEXT,"
+        " snooze_until TEXT, expires_at TEXT, origin_memory_id TEXT, channel TEXT,"
+        " data TEXT NOT NULL)"
+    )
+    body = (tmp_path / "intentions" / "a.json").read_text()
+    db.execute(
+        "INSERT INTO intentions VALUES ('a','event','armed',NULL,NULL,NULL,NULL,'inline',?)",
+        (body,),
+    )
+    db.commit()
+    db.close()
+    assert [i.id for i in IntentionStore(tmp_path).prefilter("zz", {}, NOW)] == ["a"]
+
+
+def test_prefilter_5ms_budget_at_1000_intentions(tmp_path):
+    import statistics
+    import time
+
+    store = IntentionStore(tmp_path)
+    for n in range(1000):
+        store.save(
+            Intention(
+                id=f"i{n}",
+                kind="event",
+                title="t",
+                state="armed",
+                trigger_terms=[f"term{n} alpha", f"beta{n}", f"gamma delta {n}"],
+                scope={"repo": "skmemory"} if n % 2 else {},
+                max_fires=5,
+            )
+        )
+    store.close()
+    fresh = IntentionStore(tmp_path)  # a hook is a fresh process: include nothing warm but sqlite
+    text = "please rework the retrieval fusion weights and review the rollout ring for skap08"
+    times = []
+    for _ in range(30):
+        t = time.perf_counter()
+        fresh.prefilter(text, {"repo": "skmemory"}, NOW)
+        times.append((time.perf_counter() - t) * 1000)
+    med = statistics.median(times)
+    print(f"prefilter 1000 intentions: median {med:.2f} ms, max {max(times):.2f} ms")
+    assert med < 5.0

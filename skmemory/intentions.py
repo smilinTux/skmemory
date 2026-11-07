@@ -20,7 +20,19 @@ follows ``intention-transitions-v1.jsonl``. Decision recorded here: ``fire``
 from ``pending`` goes to ``fired`` (a due time intention fires without ever
 being armed, as int-002 does; the fixture file gained a pending+fire row).
 Terminal states (done, cancelled, expired, invalidated) ignore every event.
-Cooldown, max_fires and scope gating belong to the prefilter (P2-02), not here.
+Cooldown, max_fires and scope gating belong to the prefilter, not here.
+
+Prefilter (SKMEM-P2-02)
+-----------------------
+:meth:`IntentionStore.prefilter` is the no-LLM event matcher run on every user
+prompt. Candidates come from lean columns of the ``intentions`` table (no JSON
+parse or pydantic per row), but the fire itself is decided on the *flat file*
+under the per-intention flock and goes through :func:`transition`, so one fire
+updates flat and index together and concurrent prompts cannot double-fire.
+Event intentions in state ``armed`` or ``fired`` are eligible (a fired
+intention stays live until max_fires, expiry or a terminal event); ``pending``
+is not armed and is skipped. :func:`prefilter_safe` is the hook entry point:
+it never raises and gives up quickly when the store is locked.
 """
 
 from __future__ import annotations
@@ -33,7 +45,9 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
 from collections.abc import Iterator
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -198,6 +212,71 @@ def merge_intentions(a: Intention, b: Intention) -> Intention:
     )
 
 
+_SEP = "\x1f"
+_BASE_COLS = (
+    "id", "kind", "state", "due_at", "snooze_until", "expires_at", "origin_memory_id",
+    "channel", "data",
+)  # fmt: skip
+_PREFILTER_COLS = (
+    ("terms", "TEXT"),
+    ("scope", "TEXT"),
+    ("cooldown_s", "INTEGER"),
+    ("max_fires", "INTEGER"),
+    ("fires", "INTEGER"),
+    ("last_fired_at", "TEXT"),
+)
+_ALL_COLS = _BASE_COLS + tuple(c for c, _ in _PREFILTER_COLS)
+_UPSERT_SQL = (
+    f"INSERT OR REPLACE INTO intentions ({','.join(_ALL_COLS)}) "
+    f"VALUES ({','.join('?' * len(_ALL_COLS))})"
+)
+
+
+class _LockBusy(Exception):
+    """A non-blocking intention lock could not be taken in time."""
+
+
+@lru_cache(maxsize=2048)
+def _term_re(term: str) -> re.Pattern[str]:
+    """Phrase regex with word boundaries only where the term edge is a word char.
+
+    ``fusion`` must not match inside ``confusion``; ``HOSTS=`` ends in a
+    non-word char so a following ``"`` or letter is fine and no guard is added there.
+    """
+    pre = r"(?<!\w)" if re.match(r"\w", term[0]) else ""
+    post = r"(?!\w)" if re.match(r"\w", term[-1]) else ""
+    return re.compile(pre + re.escape(term) + post)
+
+
+def _phrase_hit(terms: list[str], low: str) -> bool:
+    for t in terms:
+        if t and t in low and _term_re(t).search(low):  # substring first: cheap reject
+            return True
+    return False
+
+
+def _scope_ok(want: dict[str, str], have: dict[str, str]) -> bool:
+    return all(k in have and have[k] == v for k, v in want.items())
+
+
+def _gate_ok(
+    state: str,
+    fires: int,
+    max_fires: int | None,
+    cooldown_s: int,
+    last: datetime | None,
+    expires: datetime | None,
+    now: datetime,
+) -> bool:
+    if state not in ("armed", "fired"):
+        return False
+    if expires is not None and expires <= now:
+        return False
+    if max_fires is not None and fires >= max_fires:
+        return False
+    return not (last is not None and cooldown_s and (now - last).total_seconds() < cooldown_s)
+
+
 def _lock_root() -> Path:
     """Host-local, never-synced directory for lock files.
 
@@ -212,8 +291,9 @@ def _lock_root() -> Path:
 class IntentionStore:
     """Flat-file store (source of truth) with a derived ``intentions`` table in index.db."""
 
-    def __init__(self, base_path: str | Path) -> None:
+    def __init__(self, base_path: str | Path, *, busy_timeout_ms: int = 30000) -> None:
         self.base_path = Path(base_path)
+        self._busy_ms = int(busy_timeout_ms)
         self.dir = self.base_path / "intentions"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self.base_path / "index.db"
@@ -229,9 +309,11 @@ class IntentionStore:
     # -- index ---------------------------------------------------------
     def _db(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=30)
+            self._conn = sqlite3.connect(
+                str(self._db_path), check_same_thread=False, timeout=self._busy_ms / 1000
+            )
             self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA busy_timeout=30000")
+            self._conn.execute(f"PRAGMA busy_timeout={self._busy_ms}")
             self._conn.execute("PRAGMA journal_mode=WAL")
         return self._conn
 
@@ -242,8 +324,46 @@ class IntentionStore:
             "id TEXT PRIMARY KEY, kind TEXT, state TEXT, due_at TEXT, snooze_until TEXT,"
             " expires_at TEXT, origin_memory_id TEXT, channel TEXT, data TEXT NOT NULL)"
         )
+        have = {r[1] for r in db.execute("PRAGMA table_info(intentions)")}
+        added = False
+        for col, typ in _PREFILTER_COLS:
+            if col not in have:
+                db.execute(f"ALTER TABLE intentions ADD COLUMN {col} {typ}")
+                added = True
         db.execute("CREATE INDEX IF NOT EXISTS idx_intentions_state ON intentions(state)")
         db.commit()
+        if added:  # rows written before the prefilter columns existed: derive them from data
+            self._backfill_prefilter_cols()
+
+    def _backfill_prefilter_cols(self) -> None:
+        db = self._db()
+        with db:
+            for r in db.execute("SELECT id, data FROM intentions").fetchall():
+                try:
+                    i = Intention(**json.loads(r["data"]))
+                except Exception:  # noqa: BLE001 - unreadable rows are reported by list()
+                    continue
+                db.execute(
+                    "UPDATE intentions SET terms=?, scope=?, cooldown_s=?, max_fires=?, fires=?,"
+                    " last_fired_at=? WHERE id=?",
+                    (*self._prefilter_vals(i), i.id),
+                )
+
+    @staticmethod
+    def _prefilter_vals(i: Intention) -> tuple:
+        terms = [
+            t.replace(_SEP, " ").strip().lower()
+            for t in i.trigger_terms
+            if isinstance(t, str) and t.strip()
+        ]
+        return (
+            _SEP.join(terms),  # cheaper than JSON on the per-prompt scan
+            json.dumps(i.scope, sort_keys=True),
+            i.cooldown_s,
+            i.max_fires,
+            i.fires,
+            i.last_fired_at.isoformat() if i.last_fired_at else None,
+        )
 
     @staticmethod
     def _row(i: Intention, body: str) -> tuple:
@@ -253,14 +373,13 @@ class IntentionStore:
         return (
             i.id, i.kind, i.state, iso(i.due_at), iso(i.snooze_until),
             iso(i.expires_at), i.origin_memory_id, i.channel, body,
+            *IntentionStore._prefilter_vals(i),
         )  # fmt: skip
 
     def _index(self, i: Intention, body: str) -> None:
         db = self._db()
         with db:
-            db.execute(
-                "INSERT OR REPLACE INTO intentions VALUES (?,?,?,?,?,?,?,?,?)", self._row(i, body)
-            )
+            db.execute(_UPSERT_SQL, self._row(i, body))
 
     def close(self) -> None:
         if self._conn is not None:
@@ -291,14 +410,15 @@ class IntentionStore:
         return None
 
     @contextlib.contextmanager
-    def _lock(self, intention_id: str) -> Iterator[None]:
+    def _lock(self, intention_id: str, timeout: float | None = None) -> Iterator[None]:
         """Exclusive flock on a per-intention, host-local lock file.
 
         Held across read, transition and atomic write so two local processes
         cannot interleave. Cross-host races are not covered by a lock; they are
         resolved by :func:`merge_intentions` at reindex. If locking is
         unavailable (no fcntl, unwritable lock dir, flock error) this logs and
-        proceeds unlocked rather than blocking the write.
+        proceeds unlocked rather than blocking the write. With ``timeout`` the
+        lock is polled non-blocking and :class:`_LockBusy` is raised on expiry.
         """
         fd = None
         if fcntl is not None:
@@ -309,7 +429,22 @@ class IntentionStore:
                     os.O_CREAT | os.O_RDWR,
                     0o600,
                 )
-                fcntl.flock(fd, fcntl.LOCK_EX)
+                if timeout is None:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                else:
+                    deadline = time.monotonic() + timeout
+                    while True:
+                        try:
+                            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except BlockingIOError:
+                            if time.monotonic() >= deadline:
+                                os.close(fd)
+                                fd = None
+                                raise _LockBusy(intention_id) from None
+                            time.sleep(0.001)
+            except _LockBusy:
+                raise
             except OSError as e:
                 logger.warning(
                     "intention lock unavailable for %s, proceeding unlocked: %s", intention_id, e
@@ -424,7 +559,7 @@ class IntentionStore:
         db = self._db()
         with db:  # one transaction: readers never see an empty table
             db.execute("DELETE FROM intentions")
-            db.executemany("INSERT INTO intentions VALUES (?,?,?,?,?,?,?,?,?)", rows)
+            db.executemany(_UPSERT_SQL, rows)
         self.unreadable += len(bad)
         self.last_reindex_report = {
             "indexed": len(rows),
@@ -475,6 +610,97 @@ class IntentionStore:
                 p.unlink()
         return result
 
+    # -- prefilter (SKMEM-P2-02) ---------------------------------------
+    def prefilter(
+        self,
+        text: str,
+        scope: dict[str, str] | None = None,
+        now: datetime | None = None,
+        *,
+        lock_timeout: float = 0.05,
+    ) -> list[Intention]:
+        """Fire and return the event intentions this prompt triggers.
+
+        Case-insensitive, word-bounded phrase match of any trigger term (no
+        stemming); every key of the intention's scope must equal the prompt
+        scope; skipped when not armed/fired, expired, at max_fires, or inside
+        the cooldown. Candidates are chosen from the index, then each is
+        re-checked and fired on the flat file under its lock via
+        :func:`transition`, so a stale index cannot double-fire and flat and
+        index move together. An intention whose lock cannot be had within
+        ``lock_timeout`` is skipped (another prompt is firing it). Run
+        :meth:`sweep_supersession` first when invalidation must be honoured.
+        """
+        now = _aware(now) or datetime.now(timezone.utc)
+        low = (text or "").lower()
+        if not low.strip():
+            return []
+        have = scope or {}
+        cands: list[str] = []
+        db = self._db()
+        for iid, terms in db.execute(
+            "SELECT id, terms FROM intentions WHERE kind='event' AND state IN ('armed','fired')"
+        ).fetchall():
+            if not terms or not _phrase_hit(terms.split(_SEP), low):
+                continue
+            r = db.execute(
+                "SELECT scope, cooldown_s, max_fires, fires, last_fired_at, expires_at, state"
+                " FROM intentions WHERE id=?",
+                (iid,),
+            ).fetchone()
+            try:
+                if r is None or not _scope_ok(json.loads(r["scope"] or "{}"), have):
+                    continue
+                if not _gate_ok(
+                    r["state"], r["fires"] or 0, r["max_fires"], r["cooldown_s"] or 0,
+                    _parse_dt(r["last_fired_at"]), _parse_dt(r["expires_at"]), now,
+                ):  # fmt: skip
+                    continue
+            except (ValueError, TypeError):
+                continue
+            cands.append(iid)
+        fired: list[Intention] = []
+        for iid in cands:
+            got = self._fire_if_eligible(iid, low, have, now, lock_timeout)
+            if got is not None:
+                fired.append(got)
+        return fired
+
+    def _fire_if_eligible(
+        self, iid: str, low: str, have: dict[str, str], now: datetime, lock_timeout: float
+    ) -> Intention | None:
+        """Re-check on the flat file and fire under the lock. None if not fired."""
+        try:
+            with self._lock(iid, timeout=lock_timeout):
+                cur = self._read(iid)
+                if cur is None or cur.kind != "event":
+                    return None
+                terms = [t.strip().lower() for t in cur.trigger_terms if isinstance(t, str)]
+                if not (
+                    _phrase_hit(terms, low)
+                    and _scope_ok(cur.scope, have)
+                    and _gate_ok(
+                        cur.state,
+                        cur.fires,
+                        cur.max_fires,
+                        cur.cooldown_s,
+                        cur.last_fired_at,
+                        cur.expires_at,
+                        now,
+                    )  # fmt: skip
+                ):
+                    return None
+                new = transition(cur, "fire", now=now)  # transition() owns the state change
+                body = new.model_dump_json(indent=2)
+                atomic_write_text(self._path(iid), body)  # flat is truth: write it first
+                try:
+                    self._index(new, body)
+                except sqlite3.Error as e:  # flat is saved; reindex heals the derived row
+                    logger.warning("intention %s fired but index update failed: %s", iid, e)
+                return new
+        except _LockBusy:
+            return None
+
     # -- supersession sweep -------------------------------------------
     def _origin_valid_to(self, memory_id: str) -> datetime | None:
         """valid_to of the origin memory, read defensively from the raw flat JSON.
@@ -516,3 +742,28 @@ class IntentionStore:
                 self.apply(iid, "invalidate", now=now)
                 changed.append(iid)
         return changed
+
+
+def prefilter_safe(
+    base_path: str | Path,
+    text: str,
+    scope: dict[str, str] | None = None,
+    now: datetime | None = None,
+) -> list[Intention]:
+    """Hook entry point: :meth:`IntentionStore.prefilter` that can never raise.
+
+    Any failure (missing dir, locked or corrupt database, bad input) returns
+    ``[]`` and is logged at debug. SQLite waits at most 50 ms and each
+    intention lock at most 50 ms, so a locked store fails fast and silent.
+    """
+    store = None
+    try:
+        store = IntentionStore(base_path, busy_timeout_ms=50)
+        return store.prefilter(text, scope, now)
+    except Exception as e:  # noqa: BLE001 - runs on every prompt, must not raise into the hook
+        logger.debug("intention prefilter skipped: %s", e)
+        return []
+    finally:
+        if store is not None:
+            with contextlib.suppress(Exception):
+                store.close()

@@ -9,7 +9,7 @@ All content is synthetic (public repo): host names skap*/skwk*, agents marvin/as
 | queries-v1.jsonl | 53 | per-class gold sets: lexical, semantic, entity, temporal (as_of), conflict, multihop, absent, affect, procedural, privacy |
 | intentions-v1.jsonl | 12 | prospective store rows for time and event triggers, every lifecycle state |
 | intention-transitions-v1.jsonl | 15 | state machine vectors (state, event) -> expected |
-| prompts-v1.jsonl | 16 | no-LLM prefilter vectors: prompt + scope -> intention ids that must fire |
+| prompts-v1.jsonl | 17 | no-LLM prefilter vectors: prompt + scope -> intention ids that must fire |
 | outcomes-v1.jsonl + outcomes-expected-v1.json | 34 | skill outcome ledger events and the expected decayed scores, inversion, served-never-followed flag |
 | supersession-v1.json | 4 chains | as_of validity, PROMOTED_FROM / CHUNK_OF must not close parents, write-time conflict verdicts |
 | decay-v1.json | 5 items | expected rank order per decay channel, reinforcement write vectors |
