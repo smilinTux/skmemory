@@ -581,12 +581,19 @@ def _sensitive_title_keys(c: Ctx) -> list[str]:
             conn.close()
     except Exception:
         return []
-    return [k for k in (norm_title(r[0]) for r in rows) if len(k) >= 8]
+    return [k for k in (norm_title(r[0]) for r in rows) if len(k) >= 3]
 
 
 def _title_is_sensitive(key: str, sens: list[str]) -> bool:
     """A whisper title (possibly clipped or decorated) names a sensitive memory."""
-    return any(key.startswith(k[:40]) or k.startswith(key[:40]) for k in sens if key)
+    if not key:
+        return False
+    for k in sens:
+        # A short title can only match exactly (a prefix rule would catch ordinary
+        # titles); a longer one also matches when the whisper line is clipped.
+        if key == k or (len(k) >= 8 and (key.startswith(k[:40]) or k.startswith(key[:40]))):
+            return True
+    return False
 
 
 def collect_open(c: Ctx) -> Section | None:

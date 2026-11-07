@@ -203,6 +203,16 @@ VARIANT_TAGS = [
     "s\u0430cred",  # Cyrillic a
     "\uff53\uff41\uff43\uff52\uff45\uff44",  # fullwidth
     "gri\u03b5f",  # Greek epsilon
+    "sa\u200bcred",  # zero width space
+    "sa\u200dcred",  # zero width joiner
+    "sa\u00adcred",  # soft hyphen
+    "sacre\u0301d",  # combining acute
+    "sacr\u00e9d",  # precomposed
+    "gr\u00efef",  # Latin-1 i diaeresis
+    "gr\u0131ef",  # dotless i
+    "family\u2010private",  # U+2010 hyphen
+    "family\u2212private",
+    "sacred\u200b",
     "SACRED",
     "Grief",
 ]
@@ -266,9 +276,70 @@ def test_tag_variants_are_dropped_from_owner_auto_inject(tmp_path, tag):
         assert sb.leaked(sb._auto_context_text(store, "Zanthe", sb.OWNER), needles) == []
 
 
+INVISIBLE = [
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\u2060",
+    "\ufeff",
+    "\u00ad",
+    "\u034f",
+    "\u0301",
+    "\u0308",
+    "\u0300",
+    "\u0327",
+    "\u20dd",
+    "\ufe0f",
+    "\ufe00",
+    "\U000e0100",
+    "\u200e",
+    "\u200f",
+    "\u202a",
+    "\u2062",
+    "\u061c",
+    "\u115f",
+    "\u3164",
+    "\u2010",
+    "\u2011",
+    "\u2012",
+    "\u2013",
+    "\u2014",
+    "\u2212",
+    "\ufe63",
+    "\uff0d",
+]
+
+
+def test_property_any_single_invisible_char_at_any_position_still_matches():
+    from skmemory.hooks import sensitivity as sv
+
+    assert len(INVISIBLE) >= 30
+    for stem in (*sv.SENSITIVE_STEMS, *sv.OWNER_ONLY_STEMS):
+        for ch in INVISIBLE:
+            for i in range(len(stem) + 1):
+                tag = stem[:i] + ch + stem[i:]
+                assert sv.is_sensitive([tag]), (stem, hex(ord(ch)), i)
+                if stem in sv.OWNER_ONLY_STEMS:
+                    assert sv.is_owner_only([tag]), (stem, hex(ord(ch)), i)
+
+
+def test_normalize_does_not_overmatch_ordinary_words():
+    from skmemory.hooks import sensitivity as sv
+
+    for t in ("ops", "retrieval", "pr", "grieving-it-ops"[:0] or "release", "harbor", "lantern"):
+        assert not sv.is_sensitive([t]), t
+
+
+def test_short_whisper_titles_match_exactly_only():
+    from skmemory import session_context as sc
+
+    assert sc._title_is_sensitive("sam", ["sam"]) is True
+    assert sc._title_is_sensitive("samba deploy", ["sam"]) is False
+
+
 def test_variant_fixture_rows_exist_and_are_counted():
     fx = sb.load_fixture()
-    assert len(fx["variant_ids"]) >= 8 and set(fx["variant_ids"]) <= set(fx["misfiled_ids"])
+    assert len(fx["variant_ids"]) >= 16 and set(fx["variant_ids"]) <= set(fx["misfiled_ids"])
 
 
 def test_bench_catches_a_whisper_title_leak(monkeypatch, tmp_path):

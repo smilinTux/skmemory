@@ -138,6 +138,14 @@ VARIANTS = [
     ("cyrillic a in sacred", ["s\u0430cred"], 0),
     ("fullwidth sacred", ["\uff53\uff41\uff43\uff52\uff45\uff44"], 1),
     ("greek omicron in grief", ["gri\u03b5f"], 2),
+    ("zero width space", ["sa\u200bcred"], 3),
+    ("zero width joiner", ["sa\u200dcred"], 4),
+    ("soft hyphen", ["sa\u00adcred"], 0),
+    ("combining acute", ["sacre\u0301d"], 1),
+    ("precomposed e acute", ["sacr\u00e9d"], 2),
+    ("latin-1 i diaeresis", ["gr\u00efef"], 3),
+    ("dotless i", ["gr\u0131ef"], 4),
+    ("unicode hyphen U+2010", ["family\u2010private"], 0),
 ]
 VARIANT_IDS = []
 for _i, (_label, _tags, _d) in enumerate(VARIANTS):

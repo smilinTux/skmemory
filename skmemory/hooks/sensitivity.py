@@ -21,7 +21,6 @@ Two tiers:
 
 from __future__ import annotations
 
-import re
 import sqlite3
 import unicodedata
 from collections.abc import Iterable
@@ -48,10 +47,11 @@ SENSITIVE_STEMS = (
 
 OWNER_ONLY_STEMS = ("sacred", "grief", "family-private", "personal-history")
 
-# Common look-alikes folded to ASCII before matching (Cyrillic and Greek).
+# Common look-alikes folded to ASCII after casefold (Cyrillic, Greek, a few Latin).
 _HOMOGLYPHS = str.maketrans(
     {
-        "\u0430": "a",  # Cyrillic a
+        # Cyrillic
+        "\u0430": "a",
         "\u0435": "e",
         "\u043e": "o",
         "\u0440": "p",
@@ -61,23 +61,66 @@ _HOMOGLYPHS = str.maketrans(
         "\u0456": "i",
         "\u0455": "s",
         "\u0458": "j",
-        "\u03bf": "o",  # Greek omicron
+        "\u043a": "k",
+        "\u043c": "m",
+        "\u043d": "h",
+        "\u0442": "t",
+        "\u0432": "b",
+        "\u0501": "d",
+        "\u04cf": "i",
+        "\u051b": "q",
+        # Greek
+        "\u03bf": "o",
         "\u03b1": "a",
         "\u03b5": "e",
         "\u03c1": "p",
+        "\u03b9": "i",
+        "\u03c4": "t",
+        "\u03ba": "k",
+        "\u03bd": "v",
+        # Latin look-alikes that casefold does not fold
+        "\u0131": "i",  # dotless i
+        "\u0261": "g",  # script g
+        "\u0251": "a",  # alpha
+        "\u026a": "i",
+        "\u0262": "g",
+        "\u0274": "n",
     }
 )
-_SEPARATORS = re.compile(r"[-_\s.]+")
+
+# Default-ignorable code points that are not Mn/Me/Cf (fillers, variation selectors are Mn).
+_IGNORABLE = frozenset({0x115F, 0x1160, 0x3164, 0xFFA0, 0x17B4, 0x17B5, 0x034F})
+
+
+def _drop(ch: str) -> bool:
+    """Combining marks (Mn, Me), format controls (Cf) and other ignorable code points."""
+    return unicodedata.category(ch) in ("Mn", "Me", "Cf") or ord(ch) in _IGNORABLE
+
+
+def _is_separator(ch: str) -> bool:
+    """Every dash or hyphen, whitespace, underscore (and other connectors), dot."""
+    return (
+        ch.isspace()
+        or ch == "."
+        or ch == "\u2212"
+        or unicodedata.category(ch) in ("Pd", "Pc", "Zs", "Zl", "Zp")
+    )
 
 
 def normalize(text: object) -> str:
-    """NFKC, casefold, fold homoglyphs, then drop ``- _ . whitespace``.
+    """Canonical form for stem matching.
 
-    So ``Family_Private``, ``family private``, ``familyprivate``, fullwidth
-    ``sacred`` and Cyrillic-a ``sacred`` all compare equal to the plain stem.
+    NFKD, drop combining marks / format controls / ignorables (so zero-width
+    characters, soft hyphens and accents vanish), casefold, fold look-alike
+    letters to ASCII, then strip every dash, space, underscore and dot. So
+    ``Family_Private``, ``family\u2010private``, ``sa\u200bcred``, ``sacr\u00e9d``,
+    ``gr\u0131ef``, fullwidth and Cyrillic spellings all equal the plain stem.
     """
-    t = unicodedata.normalize("NFKC", str(text)).casefold().translate(_HOMOGLYPHS)
-    return _SEPARATORS.sub("", t)
+    t = unicodedata.normalize("NFKD", str(text))
+    t = "".join(c for c in t if not _drop(c)).casefold().translate(_HOMOGLYPHS)
+    # casefold of e.g. a dotted capital I can re-introduce marks: drop again
+    t = "".join(c for c in unicodedata.normalize("NFKD", t) if not _drop(c))
+    return "".join(c for c in t if not _is_separator(c))
 
 
 _NORM_SENSITIVE = tuple(normalize(x) for x in SENSITIVE_STEMS)

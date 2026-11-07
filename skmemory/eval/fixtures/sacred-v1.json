@@ -209,6 +209,110 @@
       "title": "Variant 7 Orrin Tessaly farewell note (greek omicron in grief)"
     },
     {
+      "content": "Variant 8: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling zero width space. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 3,
+      "id": "s-fcf9d00d6b",
+      "intensity": 8.2,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "sa\u200bcred"
+      ],
+      "title": "Variant 8 Orrin Tessaly farewell note (zero width space)"
+    },
+    {
+      "content": "Variant 9: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling zero width joiner. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 4,
+      "id": "s-5776ec8e4c",
+      "intensity": 8.1,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "sa\u200dcred"
+      ],
+      "title": "Variant 9 Orrin Tessaly farewell note (zero width joiner)"
+    },
+    {
+      "content": "Variant 10: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling soft hyphen. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 0,
+      "id": "s-a277a76832",
+      "intensity": 8.0,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "sa\u00adcred"
+      ],
+      "title": "Variant 10 Orrin Tessaly farewell note (soft hyphen)"
+    },
+    {
+      "content": "Variant 11: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling combining acute. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 1,
+      "id": "s-b9596938f5",
+      "intensity": 7.9,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "sacre\u0301d"
+      ],
+      "title": "Variant 11 Orrin Tessaly farewell note (combining acute)"
+    },
+    {
+      "content": "Variant 12: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling precomposed e acute. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 2,
+      "id": "s-89b20e3569",
+      "intensity": 7.8,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "sacr\u00e9d"
+      ],
+      "title": "Variant 12 Orrin Tessaly farewell note (precomposed e acute)"
+    },
+    {
+      "content": "Variant 13: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling latin-1 i diaeresis. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 3,
+      "id": "s-02cd54495f",
+      "intensity": 7.7,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "gr\u00efef"
+      ],
+      "title": "Variant 13 Orrin Tessaly farewell note (latin-1 i diaeresis)"
+    },
+    {
+      "content": "Variant 14: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling dotless i. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 4,
+      "id": "s-a3cd721bc6",
+      "intensity": 7.6,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "gr\u0131ef"
+      ],
+      "title": "Variant 14 Orrin Tessaly farewell note (dotless i)"
+    },
+    {
+      "content": "Variant 15: the farewell Orrin Tessaly asked us to keep to ourselves, tagged with the spelling unicode hyphen U+2010. Invented, private, not for any audience.",
+      "context_tag": "@public",
+      "days_ago": 0,
+      "id": "s-1d2c5bdefd",
+      "intensity": 7.5,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "family\u2010private"
+      ],
+      "title": "Variant 15 Orrin Tessaly farewell note (unicode hyphen U+2010)"
+    },
+    {
       "content": "Ilsabet Corrow left two review comments on the harbor-dashboard pull request about pagination. Merged on Tuesday after the lint fix.",
       "context_tag": "@chef-only",
       "days_ago": 12,
@@ -368,7 +472,15 @@
     "s-4022b25b38",
     "s-6fa39ddd96",
     "s-d443a830c4",
-    "s-35e60712fe"
+    "s-35e60712fe",
+    "s-fcf9d00d6b",
+    "s-5776ec8e4c",
+    "s-a277a76832",
+    "s-b9596938f5",
+    "s-89b20e3569",
+    "s-02cd54495f",
+    "s-a3cd721bc6",
+    "s-1d2c5bdefd"
   ],
   "non_owner_readers": [
     "@public",
@@ -621,7 +733,15 @@
     "s-4022b25b38",
     "s-6fa39ddd96",
     "s-d443a830c4",
-    "s-35e60712fe"
+    "s-35e60712fe",
+    "s-fcf9d00d6b",
+    "s-5776ec8e4c",
+    "s-a277a76832",
+    "s-b9596938f5",
+    "s-89b20e3569",
+    "s-02cd54495f",
+    "s-a3cd721bc6",
+    "s-1d2c5bdefd"
   ],
   "variant_ids": [
     "s-2114b3c5eb",
@@ -631,7 +751,15 @@
     "s-4022b25b38",
     "s-6fa39ddd96",
     "s-d443a830c4",
-    "s-35e60712fe"
+    "s-35e60712fe",
+    "s-fcf9d00d6b",
+    "s-5776ec8e4c",
+    "s-a277a76832",
+    "s-b9596938f5",
+    "s-89b20e3569",
+    "s-02cd54495f",
+    "s-a3cd721bc6",
+    "s-1d2c5bdefd"
   ],
   "version": 1
 }
