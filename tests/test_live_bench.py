@@ -116,7 +116,7 @@ def test_table_has_bias_label_and_no_memory_text():
     table = lb.format_table(lb.run_live(_arms(), qs, alive=ALIVE, embed_interval_s=0))
     assert "SELF-RETRIEVAL" in table and "p95" in table
     assert "Decision about gateway" not in table and "zebra" not in table
-    assert "—" not in table and "–" not in table
+    assert "\u2014" not in table and "\u2013" not in table
 
 
 def test_outputs_mode_600_and_no_text(tmp_path):
