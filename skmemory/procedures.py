@@ -61,6 +61,6 @@ def order_procedures(memories: list, query: str) -> list:
         m for m in procs if is_failure_procedure(m)
     ]
     out = list(memories)
-    for i, m in zip(slots, ordered):
+    for i, m in zip(slots, ordered, strict=True):
         out[i] = m
     return out
