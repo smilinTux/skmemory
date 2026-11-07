@@ -1,0 +1,14 @@
+{"state": "pending", "event": "arm", "expected": "armed"}
+{"state": "armed", "event": "fire", "expected": "fired"}
+{"state": "fired", "event": "fire", "expected": "fired"}
+{"state": "fired", "event": "done", "expected": "done"}
+{"state": "armed", "event": "cancel", "expected": "cancelled"}
+{"state": "pending", "event": "cancel", "expected": "cancelled"}
+{"state": "armed", "event": "expire", "expected": "expired"}
+{"state": "armed", "event": "invalidate", "expected": "invalidated"}
+{"state": "done", "event": "fire", "expected": "done"}
+{"state": "cancelled", "event": "fire", "expected": "cancelled"}
+{"state": "expired", "event": "fire", "expected": "expired"}
+{"state": "invalidated", "event": "fire", "expected": "invalidated"}
+{"state": "armed", "event": "snooze", "expected": "armed"}
+{"state": "fired", "event": "snooze", "expected": "armed"}

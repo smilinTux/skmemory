@@ -1,0 +1,32 @@
+{
+ "half_life_days": 90,
+ "harm_weight": 4.0,
+ "as_of": "2026-11-01T12:00:00+00:00",
+ "expected": {
+  "recover-schema@1.2": {
+   "follow_rate": 1.0,
+   "net_effect_sign": "+",
+   "anti_pattern": false,
+   "rank": 1
+  },
+  "sync-to-clear-red@2.0": {
+   "follow_rate": 1.0,
+   "net_effect_sign": "+",
+   "anti_pattern": false,
+   "rank": 2
+  },
+  "tile-icon-masks@0.3": {
+   "follow_rate": 0.0,
+   "net_effect_sign": "0",
+   "anti_pattern": false,
+   "rank": 3,
+   "flag": "served-never-followed"
+  },
+  "sync-to-clear-red@1.0": {
+   "follow_rate": 1.0,
+   "net_effect_sign": "-",
+   "anti_pattern": true,
+   "rank": 4
+  }
+ }
+}

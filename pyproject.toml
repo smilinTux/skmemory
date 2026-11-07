@@ -97,7 +97,7 @@ Issues = "https://github.com/smilinTux/skmemory/issues"
 include = ["skmemory*"]
 
 [tool.setuptools.package-data]
-skmemory = ["data/*.json", "SKILL.md", "hooks/*.sh", "harness/*.js", "harness/*.ts"]
+skmemory = ["data/*.json", "eval/fixtures/*", "SKILL.md", "hooks/*.sh", "harness/*.js", "harness/*.ts"]
 
 [tool.black]
 line-length = 99
@@ -106,6 +106,7 @@ target-version = ["py310"]
 [tool.ruff]
 line-length = 99
 target-version = "py310"
+extend-exclude = ["skmemory/eval/fixtures/gen_fixtures.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
