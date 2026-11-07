@@ -776,12 +776,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 for k, v in superseded_by_map(memories).items()
                 if store.reader_can_see(v, reader)
             }
-            return _json_response(
-                [
-                    {**_memory_dict(m), "superseded": m.id in sup, "superseded_by": sup.get(m.id)}
-                    for m in memories
-                ]
-            )
+            rows = [
+                {**_memory_dict(m), "superseded": m.id in sup, "superseded_by": sup.get(m.id)}
+                for m in memories
+            ]
+            degraded = getattr(store, "last_search_degraded", lambda: None)()
+            if isinstance(degraded, str) and degraded:
+                # Not a plain list: an empty list here would read as a true miss.
+                return _json_response({"results": rows, "degraded": degraded})
+            return _json_response(rows)
 
         elif name == "memory_history":
             chain = store.history(arguments["memory_id"], reader=arguments.get("reader"))

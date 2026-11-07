@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
 from .forget import ForgetReport, StorePurge, resolve_agent
 from .fusion import (
     DEFAULT_ARM_CAP,
+    ArmGuard,
     FusionResult,
     arm_executor,
     fuse,
@@ -67,6 +69,9 @@ from .wal import WriteAheadLog
 SEARCH_HIT_DEBOUNCE_S = 3600.0
 
 logger = logging.getLogger("skmemory.store")
+
+#: ``MemoryStore.last_search_degraded()`` value: an arm missed the deadline.
+DEGRADED_ARMS_TIMED_OUT = "arms timed out"
 
 MAX_CONTENT_LENGTH = 10000
 CONTENT_OVERFLOW_STRATEGY = "split"  # "truncate" or "split"
@@ -255,6 +260,10 @@ class MemoryStore:
         # AGE keeps one psycopg connection and wraps statement_timeout in a
         # transaction on it, so concurrent graph calls are serialised too.
         self._graph_lock = threading.Lock()
+        # Caps in-flight calls per arm and cools a timed-out arm down, so one hung
+        # backend cannot eat the shared worker pool (see fusion.ArmGuard).
+        self._arm_guard = ArmGuard()
+        self._search_tls = threading.local()
         # Backends that were CONFIGURED but failed to construct, by role
         # ("vector"/"graph") -> the real error text. health() reports these as
         # ok:false with the message; without this a configured-and-broken
@@ -1193,9 +1202,10 @@ class MemoryStore:
         self, query, limit, *, tags, layer, source, context_tag, record_access=False, as_of=None
     ) -> list[Memory]:
         query = sanitize_query(query)
+        self._search_tls.degraded = None
 
         if self._fusion_enabled():
-            fused = self.search_fused(
+            fused, report = self.search_fused(
                 query,
                 limit=limit,
                 tags=tags,
@@ -1204,9 +1214,32 @@ class MemoryStore:
                 context_tag=context_tag,
                 record_access=record_access,
                 as_of=as_of,
+                return_report=True,
             )
+            if report.timed_out_arms:
+                self._search_tls.degraded = DEGRADED_ARMS_TIMED_OUT
             if fused is not None:
                 return _demote_list(self._apply_decay(fused))
+            if report.timed_out_arms:
+                # Nothing answered in time. The legacy path below would call the
+                # same hung backends SYNCHRONOUSLY with no bound, so it is never
+                # taken here: only the local SQLite lexical index, within what
+                # is left of the deadline. An empty result is flagged degraded,
+                # it is not a miss.
+                results = self._local_only_search(
+                    query,
+                    limit,
+                    tags=tags,
+                    layer=layer,
+                    source=source,
+                    context_tag=context_tag,
+                    remaining_s=report.deadline_s - report.elapsed_s,
+                    as_of=as_of,
+                )
+                if record_access:
+                    self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
+                # Same tail as every other path: decay, then supersession demotion last.
+                return _demote_list(self._apply_decay(results))
 
         # The legacy path cannot push context_tag down, so overfetch and filter.
         fetch = limit * 3 if (context_tag is not None or as_of) else limit
@@ -1252,6 +1285,50 @@ class MemoryStore:
         if record_access:
             self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         return _demote_list(self._apply_decay(results))
+
+    def last_search_degraded(self) -> str | None:
+        """Why the last ``search()`` on THIS thread was degraded, else ``None``.
+
+        ``DEGRADED_ARMS_TIMED_OUT`` means at least one arm missed the deadline,
+        so the result may be missing hits: an empty list then is not a true miss.
+        The per-arm detail is on the ``FusionResult`` from ``search_fused``.
+        """
+        return getattr(self._search_tls, "degraded", None)
+
+    def _local_only_search(
+        self, query, limit, *, tags, layer, source, context_tag, remaining_s, as_of=None
+    ) -> list[Memory]:
+        """Local SQLite lexical search, bounded by ``remaining_s`` (floor 0.1s).
+
+        ``as_of`` is pushed to the FTS query when it takes it and always
+        re-checked on the rows, like every arm.
+        """
+        local = getattr(self.primary, "search_lexical_local", None)
+        fetch = limit * 3 if (context_tag is not None or as_of) else limit
+
+        def run() -> list[Memory]:
+            if local is not None:
+                rows = local(
+                    query,
+                    limit=limit,
+                    layer=layer,
+                    tags=tags,
+                    source=source,
+                    context_tag=context_tag,
+                    **({"as_of": as_of} if as_of and _accepts(local, "as_of") else {}),
+                )
+                return [m for m in rows if _passes_filters(m, None, None, None, None, as_of)]
+            rows = self.primary.search_text(query, limit=fetch)
+            return [
+                m for m in rows if _passes_filters(m, layer, tags, context_tag, source, as_of)
+            ][:limit]
+
+        fut = arm_executor().submit(run)
+        try:
+            return fut.result(timeout=max(remaining_s, 0.1))
+        except Exception as exc:  # noqa: BLE001 - timeout or a local failure: degraded, empty
+            logger.warning("local-only search after arm timeouts gave nothing: %s", exc)
+            return []
 
     def _apply_decay(self, results: list[Memory]) -> list[Memory]:
         """Bend a relevance-ordered result list by the SKMEMORY_DECAY channel.
@@ -1424,6 +1501,7 @@ class MemoryStore:
         ``return_report=True`` returns ``(memories, FusionResult)`` so a caller
         can see which arm produced which hit.
         """
+        started_at = time.monotonic()
         found: dict[str, Memory] = {}
         # Arms run on worker threads: `found` is shared, so guard its writes.
         found_lock = threading.Lock()
@@ -1622,6 +1700,7 @@ class MemoryStore:
             ],
             deadline_s=search_deadline_s(),
             executor=arm_executor(),
+            guard=self._arm_guard,
         )
         # Fuse the WHOLE pool, then rerank, then truncate. Reranking a list
         # already cut to `limit` could never promote the candidate it exists to
@@ -1638,6 +1717,8 @@ class MemoryStore:
             strategy=fusion_strategy(),
             pin_arms=("lexical", "lexical_local") if has_pg_bm25 else ("lexical_local", "lexical"),
         )
+        report.elapsed_s = time.monotonic() - started_at
+        report.deadline_s = search_deadline_s()
 
         if report.ids:
             pool_texts = [

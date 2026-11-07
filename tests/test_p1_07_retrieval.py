@@ -524,3 +524,47 @@ def test_more_real_time_phrasings_fire(query):
 @pytest.mark.parametrize("query", ["June notes", "March outage", "Q3 2026 roadmap"])
 def test_titles_still_do_not_fire(query):
     assert not has_time_intent(query)
+
+
+# ------------------------------------------------ degraded path keeps as_of and demotion
+
+
+def _chain_store(tmp_path, monkeypatch):
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+    from skmemory.models import Memory as M
+    from skmemory.models import MemoryLayer
+
+    def mem(mid, content, created, **kw):
+        return M(
+            id=mid, title=mid, content=content, layer=MemoryLayer.MID,
+            created_at=created, updated_at=created, **kw,
+        )  # fmt: skip
+
+    primary = SQLiteBackend(str(tmp_path))
+    # "old" ranks first lexically (more query terms), but is closed and superseded
+    primary.save(
+        mem("old", "gateway port gateway port is 8000", "2026-01-01T00:00:00+00:00",
+            valid_to="2026-06-01T00:00:00+00:00")
+    )  # fmt: skip
+    primary.save(
+        mem("new", "gateway port is 9000", "2026-06-01T00:00:00+00:00", supersedes_id="old")
+    )
+    monkeypatch.setenv("SKMEMORY_SEARCH_DEADLINE_S", "0.4")
+    s = MemoryStore(primary=primary, vector=_Hung())
+    return s
+
+
+def test_degraded_local_path_applies_as_of(tmp_path, monkeypatch):
+    s = _chain_store(tmp_path, monkeypatch)
+    got = s.search("gateway port", as_of="2026-03-01T00:00:00+00:00")
+    assert s.last_search_degraded() == "arms timed out"
+    assert [m.id for m in got] == ["old"]
+    got = s.search("gateway port", as_of="2026-07-01T00:00:00+00:00")
+    assert [m.id for m in got] == ["new"]
+
+
+def test_degraded_local_path_demotes_superseded_last(tmp_path, monkeypatch):
+    s = _chain_store(tmp_path, monkeypatch)
+    got = [m.id for m in s.search("gateway port")]
+    assert s.last_search_degraded() == "arms timed out"
+    assert got.index("new") < got.index("old"), "closed record must sit below its head"
