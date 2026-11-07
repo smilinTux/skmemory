@@ -880,11 +880,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     "memory_expand is owner-only for declared readers: raw episodes are unlabeled"
                 )
             try:
-                out = expand_episode(
-                    memory.source_ref,
-                    sessions_dir(),
-                    max_chars=int(arguments.get("max_chars", EXPAND_DEFAULT_CHARS)),
-                )
+                try:
+                    max_chars = int(arguments.get("max_chars", EXPAND_DEFAULT_CHARS))
+                except (TypeError, ValueError):
+                    return _error_response("max_chars must be an integer")
+                out = expand_episode(memory.source_ref, sessions_dir(), max_chars=max_chars)
             except ExpandError as exc:
                 return _error_response(str(exc))
             return _json_response({"memory_id": memory_id, **out})
@@ -1175,7 +1175,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         tags=["auto-extract", mem.type, f"session:{session_id}"],
                         source="mcp:memory_save_session",
                         source_tier="self-generated",
-                        source_ref=f"session:{session_id}@L{mem.source_line + 1}",
+                        source_ref=f"session:{session_id}",
                         reader=arguments.get("reader"),
                         metadata={
                             "extraction_confidence": mem.confidence,

@@ -138,7 +138,7 @@ def test_save_session_writes_offset_ref(env, monkeypatch):
     )
     assert out["saved"] >= 1
     m = store.recall(out["memories"][0]["id"])
-    assert m.source_ref == "session:s9@L2"
+    assert m.source_ref == "session:s9" and "@L" not in m.source_ref
 
 
 def test_parse_source_ref():
@@ -146,3 +146,44 @@ def test_parse_source_ref():
     assert p("session:abc@5-9").end == 9 and p("session:abc@L4").line == 4
     assert p("session:abc").session_id == "abc"
     assert p("skwhisper-daemon") is None and p("session:../x") is None
+
+
+def test_line_mode_past_eof_and_bound(env, monkeypatch, tmp_path):
+    store, sess, _ = env
+    store.primary.save(
+        Memory(
+            id="z",
+            title="z",
+            content="z",
+            layer=MemoryLayer.MID,
+            context_tag="@public",
+            source_ref="session:s1@L500",
+        )
+    )
+    out = json.loads(call(store, monkeypatch, "memory_expand", memory_id="z"))
+    assert out["text"] == "" and out["range"]["to_line"] is None
+    (sess / "big.jsonl").write_text(("y" * 5000 + "\n") * 30)
+    store.primary.save(
+        Memory(
+            id="y",
+            title="y",
+            content="y",
+            layer=MemoryLayer.MID,
+            context_tag="@public",
+            source_ref="session:big@L15",
+        )
+    )
+    out = json.loads(call(store, monkeypatch, "memory_expand", memory_id="y", max_chars=100))
+    assert len(out["text"]) <= 100
+
+
+def test_bad_max_chars_clean_error(env, monkeypatch):
+    out = call(env[0], monkeypatch, "memory_expand", memory_id="d", max_chars="lots")
+    assert "max_chars" in out and "error" in out
+
+
+def test_index_row_states_estimate_basis(env, monkeypatch):
+    out = json.loads(
+        call(env[0], monkeypatch, "memory_search", query="gateway port", detail="index")
+    )
+    assert out[0]["est_basis"] == "chars/4"

@@ -67,6 +67,7 @@ def index_row(
         "layer": getattr(getattr(memory, "layer", ""), "value", getattr(memory, "layer", "")),
         "score": round(1.0 / rank, 4),
         "score_kind": "rank",
+        "est_basis": "chars/4",
         "snippet": snippet(memory),
         "source_ref": ref,
         "expandable": parse_source_ref(ref) is not None,
@@ -142,13 +143,19 @@ def expand_episode(source_ref: str, root: Path, *, max_chars: int = EXPAND_DEFAU
             lo = max(1, ref.line - EXPAND_LINE_WINDOW)
             hi = ref.line + EXPAND_LINE_WINDOW
             lines = []
+            used = 0
             for n, ln in enumerate(fh, 1):
-                if n > hi:
+                if n > hi or used >= cap * 4:
                     break
                 if n >= lo:
                     lines.append(ln)
-            raw = b"".join(lines)
-            where = {"line": ref.line, "from_line": lo, "to_line": min(hi, lo + len(lines) - 1)}
+                    used += len(ln)
+            raw = b"".join(lines)[: cap * 4]
+            where = {
+                "line": ref.line,
+                "from_line": lo if lines else None,
+                "to_line": lo + len(lines) - 1 if lines else None,
+            }
         else:
             raw = fh.read(cap * 4)
             where = {"start": 0, "end": min(size, cap * 4)}
