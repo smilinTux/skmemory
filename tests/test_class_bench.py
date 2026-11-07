@@ -54,7 +54,6 @@ def test_absent_scored_by_abstain(res):
 def test_as_of_queries_marked_expected_fail_not_skipped(res):
     asof = [r for r in res["rows"] if r["as_of"] and r["class"] in ("temporal", "conflict")]
     assert asof and all(r["expected_fail"] for r in asof)
-    assert all(r["per"][class_bench.CANDIDATE]["top5"] is not None or True for r in asof)
     for f in res["failures"]:
         if f["id"] in {r["id"] for r in asof}:
             assert f["expected_fail"]
