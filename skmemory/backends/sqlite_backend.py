@@ -366,6 +366,10 @@ class SQLiteBackend(BaseBackend):
     def _index_memory(self, memory: Memory, file_path: Path) -> bool:
         """Insert or update the index entry for a memory.
 
+        Uses an UPSERT (SQLite >= 3.24) that rewrites only content columns.
+        ``access_count``, ``last_accessed`` and ``importance`` are usage state
+        that is not in the flat file, so a re-save must leave them untouched.
+
         The flat JSON file is the source of truth and is written before this
         is called, so an index write failure is logged and swallowed rather
         than propagated — the memory is still persisted and recoverable via
@@ -383,13 +387,32 @@ class SQLiteBackend(BaseBackend):
             conn = self._get_conn()
             conn.execute(
                 """
-                INSERT OR REPLACE INTO memories (
+                INSERT INTO memories (
                     id, title, layer, role, tags, source, source_ref,
                     summary, content_preview, emotional_intensity,
                     emotional_valence, emotional_labels, cloud9_achieved,
                     parent_id, related_ids, created_at, updated_at,
                     file_path, content_hash
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    layer = excluded.layer,
+                    role = excluded.role,
+                    tags = excluded.tags,
+                    source = excluded.source,
+                    source_ref = excluded.source_ref,
+                    summary = excluded.summary,
+                    content_preview = excluded.content_preview,
+                    emotional_intensity = excluded.emotional_intensity,
+                    emotional_valence = excluded.emotional_valence,
+                    emotional_labels = excluded.emotional_labels,
+                    cloud9_achieved = excluded.cloud9_achieved,
+                    parent_id = excluded.parent_id,
+                    related_ids = excluded.related_ids,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at,
+                    file_path = excluded.file_path,
+                    content_hash = excluded.content_hash
                 """,
                 (
                     memory.id,

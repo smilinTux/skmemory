@@ -380,3 +380,53 @@ class TestErrorHandling:
         assert summary["id"] == "xyz"
         assert summary["title"] is None
         assert summary["tags"] == []
+
+
+class TestReindexPreservesCounters:
+    """Re-saving a memory must not zero access_count, importance, last_accessed."""
+
+    def _counters(self, backend, mid):
+        row = (
+            backend._get_conn()
+            .execute(
+                "SELECT access_count, importance, last_accessed FROM memories WHERE id = ?",
+                (mid,),
+            )
+            .fetchone()
+        )
+        return row["access_count"], row["importance"], row["last_accessed"]
+
+    def test_resave_keeps_counters(self, backend, sample_memory):
+        backend.save(sample_memory)
+        conn = backend._get_conn()
+        conn.execute(
+            "UPDATE memories SET access_count = 4, importance = 0.7, "
+            "last_accessed = '2026-01-01T00:00:00+00:00' WHERE id = ?",
+            (sample_memory.id,),
+        )
+        conn.commit()
+
+        sample_memory.title = "Retitled"
+        backend.save(sample_memory)
+
+        assert self._counters(backend, sample_memory.id) == (
+            4,
+            0.7,
+            "2026-01-01T00:00:00+00:00",
+        )
+        row = conn.execute(
+            "SELECT title FROM memories WHERE id = ?", (sample_memory.id,)
+        ).fetchone()
+        assert row["title"] == "Retitled"
+
+    def test_resave_updates_layer_and_path(self, backend, sample_memory):
+        backend.save(sample_memory)
+        sample_memory.layer = MemoryLayer.MID
+        backend.save(sample_memory)
+        row = (
+            backend._get_conn()
+            .execute("SELECT layer, file_path FROM memories WHERE id = ?", (sample_memory.id,))
+            .fetchone()
+        )
+        assert row["layer"] == "mid-term"
+        assert "mid-term" in row["file_path"]
