@@ -3,25 +3,66 @@
 
 usage: class_bench_metrics.py RAW_BENCH_JSON OUT_METRICS_JSON
 
-Stdlib only. Emits the two metrics of target `skmemory-retrieval` that an offline,
-synthetic bench can honestly produce. Everything else (the live_* metrics) is left out
-so SKRSI reports it as missing, never as zero.
+Stdlib only. Emits what an offline, synthetic bench can honestly produce. The live_* metrics
+are left out so SKRSI reports them as missing, never as zero.
+
+One metric per class, recall and rank both: a worst-class scalar alone read flat on PR 120 while
+mean reciprocal rank moved in five classes. The margins measure the target's objective, candidate
+against bm25_only per class. They carry no bound and no stop rule here: fusion-below-bm25 is
+decided on live evidence, and this offline margin is already negative, so a bound would blame
+every PR. They still show when a PR makes the gap worse.
 """
 
 import json
 import sys
 
 BASELINES = ["bm25_only", "grep_substring", "vector_only", "fallback_chain"]
+CANDIDATE = "candidate"
+REFERENCE = "bm25_only"
+
+
+def _metric(value, unit="ratio"):
+    return {"value": value, "unit": unit, "direction": "higher"}
+
+
+def _worst(values):
+    """None when any value is None: a dead class is never dropped from a minimum."""
+    return None if not values or None in values else min(values)
+
+
+def _margin(classes, key):
+    gaps = []
+    for entry in classes.values():
+        cand, ref = entry["strategies"][CANDIDATE], entry["strategies"].get(REFERENCE, {})
+        if "abstain_correct" in cand:  # abstain classes have no recall or rank by design
+            continue
+        both = cand.get(key) is not None and ref.get(key) is not None
+        gaps.append(cand[key] - ref[key] if both else None)
+    return _worst(gaps)
 
 
 def flatten(raw: dict) -> dict:
     classes = raw["by_class"]
-    # worst class for the production candidate: a mean would hide a collapsed class. A class that should score
-    # recall but reports null (dead arm) makes the whole metric missing; it is never dropped from the minimum.
-    # Abstain-scored classes (abstain_correct present) have no recall by design.
-    cand = [c["strategies"]["candidate"] for c in classes.values()]
-    dead = any(c.get("recall@5") is None and "abstain_correct" not in c for c in cand)
-    recalls = [c["recall@5"] for c in cand if c.get("recall@5") is not None]
+    metrics = {}
+    recalls = []
+    for name, entry in sorted(classes.items()):
+        cand = entry["strategies"][CANDIDATE]
+        if "abstain_correct" in cand:
+            metrics[f"class_abstain_correct.{name}"] = _metric(cand["abstain_correct"])
+            continue
+        recalls.append(cand.get("recall@5"))
+        metrics[f"class_recall_at_5.{name}"] = _metric(cand.get("recall@5"))
+        metrics[f"class_mrr.{name}"] = _metric(cand.get("mrr"))
+    metrics["class_recall_at_5_per_class"] = _metric(_worst(recalls))
+    metrics["class_recall_margin_vs_bm25"] = _metric(_margin(classes, "recall@5"))
+    metrics["class_mrr_margin_vs_bm25"] = _metric(_margin(classes, "mrr"))
+    metrics["leak_count"] = {
+        "value": raw["leak_count"],
+        "unit": "items",
+        "direction": "lower",
+        "max": 0,
+        "stop_rule": "privacy-regression",
+    }
     return {
         "cohort": {
             "id": "class-bench-v1",
@@ -40,20 +81,7 @@ def flatten(raw: dict) -> dict:
         "invariants": {
             "leak_count stays 0 for a declared non-owner reader": raw["leak_count"] == 0
         },
-        "metrics": {
-            "class_recall_at_5_per_class": {
-                "value": None if dead or not recalls else min(recalls),
-                "unit": "ratio",
-                "direction": "higher",
-            },
-            "leak_count": {
-                "value": raw["leak_count"],
-                "unit": "items",
-                "direction": "lower",
-                "max": 0,
-                "stop_rule": "privacy-regression",
-            },
-        },
+        "metrics": metrics,
     }
 
 
