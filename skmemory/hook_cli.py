@@ -10,6 +10,8 @@ Events:
     pre-compact    save recent transcript content before compaction
     session-end    save session summary + journal, activity log, skwhisper digest
     stop           cheap breadcrumb checkpoint every 5th stop
+    user-prompt    standing intentions whose trigger fired on this prompt
+                   (no output when nothing fires; SKMEMORY_HOOKS=off silences it)
 
 Output contract per harness:
     claude, codex  context events print {"hookSpecificOutput": {...additionalContext}}
@@ -38,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HARNESSES = ("claude", "codex", "opencode", "pi", "generic")
-EVENTS = ("session-start", "post-compact", "pre-compact", "session-end", "stop")
+EVENTS = ("session-start", "post-compact", "pre-compact", "session-end", "stop", "user-prompt")
 JSON_HARNESSES = ("claude", "codex")
 EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "write", "edit", "apply_patch"}
 
@@ -312,13 +314,22 @@ def _context_event(
     return res.text
 
 
-def _emit_context(text: str, harness: str, out) -> None:
+def _prompt_event(harness: str, payload: dict, out) -> None:
+    """UserPromptSubmit: print standing-intent lines only when an intention fired."""
+    from .intention_inject import prompt_context
+
+    text = prompt_context(payload)
+    if text:
+        _emit_context(text, harness, out, hook_event="UserPromptSubmit")
+
+
+def _emit_context(text: str, harness: str, out, hook_event: str = "SessionStart") -> None:
     if harness in JSON_HARNESSES:
         out.write(
             json.dumps(
                 {
                     "hookSpecificOutput": {
-                        "hookEventName": "SessionStart",
+                        "hookEventName": hook_event,
                         "additionalContext": text,
                     }
                 }
@@ -510,6 +521,8 @@ def run_hook(
             _save_event(event, harness, agent, payload, args)
         elif event == "stop":
             _stop_event(harness, agent, payload, args)
+        elif event == "user-prompt":
+            _prompt_event(harness, payload, out)
         if harness == "codex" and event == "stop":
             out.write("{}\n")
     except Exception as exc:  # never break the host

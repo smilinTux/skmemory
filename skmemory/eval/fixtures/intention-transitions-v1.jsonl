@@ -1,6 +1,7 @@
 {"state": "pending", "event": "arm", "expected": "armed"}
 {"state": "armed", "event": "fire", "expected": "fired"}
 {"state": "pending", "event": "fire", "expected": "fired"}
+{"state": "pending", "event": "done", "expected": "done"}
 {"state": "fired", "event": "fire", "expected": "fired"}
 {"state": "fired", "event": "done", "expected": "done"}
 {"state": "armed", "event": "cancel", "expected": "cancelled"}

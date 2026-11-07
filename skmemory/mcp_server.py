@@ -1,26 +1,27 @@
 """
-SKMemory MCP Server — memory tools for AI agents via Model Context Protocol.
+SKMemory MCP Server - memory tools for AI agents via Model Context Protocol.
 
 Tool-agnostic: works with Cursor, Claude Code CLI, Claude Desktop,
 Windsurf, Aider, Cline, or any MCP client that speaks stdio.
 
 Tools:
-    memory_store       — Store a new memory (snapshot with title + content)
-    memory_search      — Full-text search across memories
-    memory_check_duplicate — Advisory semantic dedup check before writing
-    memory_recall      — Recall a specific memory by ID
-    memory_list        — List memories with optional layer/tag filters
-    memory_forget      — Delete a memory by ID
-    memory_promote     — Promote a memory to a higher persistence tier
-    memory_consolidate — Compress a session's memories into one mid-term memory
-    memory_context     — Load token-efficient context for agent injection
-    memory_export      — Export all memories to a JSON backup
-    memory_import      — Restore memories from a JSON backup
-    memory_health      — Full health check across all backends
-    memory_graph       — Graph traversal, lineage, and cluster discovery
-    memory_extract     — Extract decisions/preferences/milestones from text (no storage)
-    memory_save_session — Auto-extract + save memories from a conversation transcript
-    memory_pre_compact — Emergency snapshot of current context before compression
+    memory_store       - Store a new memory (snapshot with title + content)
+    memory_search      - Full-text search across memories
+    memory_check_duplicate - Advisory semantic dedup check before writing
+    memory_recall      - Recall a specific memory by ID
+    memory_list        - List memories with optional layer/tag filters
+    memory_forget      - Delete a memory by ID
+    memory_promote     - Promote a memory to a higher persistence tier
+    memory_consolidate - Compress a session's memories into one mid-term memory
+    memory_context     - Load token-efficient context for agent injection
+    memory_export      - Export all memories to a JSON backup
+    memory_import      - Restore memories from a JSON backup
+    memory_health      - Full health check across all backends
+    memory_graph       - Graph traversal, lineage, and cluster discovery
+    memory_extract     - Extract decisions/preferences/milestones from text (no storage)
+    memory_save_session - Auto-extract + save memories from a conversation transcript
+    memory_pre_compact - Emergency snapshot of current context before compression
+    memory_remind, memory_intentions, memory_intention_done - prospective memory (owner only)
 
 Invocation:
     python -m skmemory.mcp_server
@@ -587,6 +588,46 @@ async def list_tools() -> list[Tool]:
                 "required": ["context"],
             },
         ),
+        Tool(
+            name="memory_remind",
+            description=(
+                "Create a time intention: remember to do something at a later time. "
+                "It is delivered through sk-alert by the intentions tick. Owner only."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "What to remember."},
+                    "due_at": {
+                        "type": "string",
+                        "description": "ISO 8601 time, or 'in N days' / 'in N hours'.",
+                    },
+                    "channel": {"type": "string", "description": "Delivery channel hint."},
+                    "origin_memory_id": {
+                        "type": "string",
+                        "description": "Memory this reminder came from (optional).",
+                    },
+                },
+                "required": ["title", "due_at"],
+            },
+        ),
+        Tool(
+            name="memory_intentions",
+            description="List intentions, optionally by state (pending, armed, fired, done...). Owner only.",
+            inputSchema={
+                "type": "object",
+                "properties": {"state": {"type": "string", "description": "Filter by state."}},
+            },
+        ),
+        Tool(
+            name="memory_intention_done",
+            description="Mark an intention done. Owner only.",
+            inputSchema={
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "Intention id."}},
+                "required": ["id"],
+            },
+        ),
     ]
     for tool in tools:
         if tool.name in _READER_TOOLS:
@@ -637,6 +678,9 @@ TOOL_READER_POLICY: dict[str, tuple[str, str]] = {
     "memory_audit": (_OWNER_ONLY, ""),
     "memory_synthesize_daily": (_OWNER_ONLY, ""),
     "memory_synthesize_dreams": (_OWNER_ONLY, ""),
+    "memory_remind": (_OWNER_ONLY, "creates standing intentions that fire into hooks and alerts"),
+    "memory_intentions": (_OWNER_ONLY, "intention titles are unclassified private text"),
+    "memory_intention_done": (_OWNER_ONLY, "resolves intentions"),
     "memory_extract": (_EXEMPT, "pure text-in, text-out; reads no stored memory"),
 }
 
@@ -1057,12 +1101,66 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 }
             )
 
+        elif name in ("memory_remind", "memory_intentions", "memory_intention_done"):
+            if (refused := _owner_only(arguments, name)) is not None:
+                return refused
+            return _intention_tool(store, name, arguments)
+
         else:
             return _error_response(f"Unknown tool: {name}")
 
     except Exception as exc:
         logger.exception("Tool %s failed", name)
         return _error_response(str(exc))
+
+
+def _intention_tool(store: Any, name: str, arguments: dict) -> list[TextContent]:
+    """Owner-only intention tools. Bad input is a clear error, never a guess."""
+    import uuid
+
+    from .intentions import Intention, IntentionStore, _check_id, parse_due_at
+
+    base = getattr(getattr(store, "primary", None), "base_path", None)
+    if base is None:
+        from .backends.sqlite_backend import DEFAULT_BASE_PATH as base
+    ist = IntentionStore(base)
+    try:
+        if name == "memory_remind":
+            title = " ".join(str(arguments.get("title") or "").split())
+            if not title:
+                return _error_response("title is required")
+            if len(title) > 500:
+                return _error_response("title is too long (500 characters max)")
+            try:
+                due = parse_due_at(arguments.get("due_at"))
+                origin = arguments.get("origin_memory_id") or None
+                if origin:
+                    _check_id(str(origin))
+            except ValueError as e:
+                return _error_response(str(e))
+            i = Intention(
+                id=uuid.uuid4().hex[:16],
+                kind="time",
+                title=title,
+                due_at=due,
+                channel=str(arguments.get("channel") or "inline"),
+                origin_memory_id=origin,
+            )
+            ist.save(i)
+            return _json_response({"id": i.id, "state": i.state, "due_at": due.isoformat()})
+        if name == "memory_intentions":
+            state = arguments.get("state") or None
+            return _json_response([json.loads(i.model_dump_json()) for i in ist.list(state=state)])
+        iid = str(arguments.get("id") or "")
+        try:
+            res = ist.apply(iid, "done")
+        except ValueError as e:
+            return _error_response(str(e))
+        if res is None:
+            return _error_response(f"Intention not found: {iid}")
+        return _json_response({"id": iid, "state": res.state})
+    finally:
+        ist.close()
 
 
 # ---------------------------------------------------------------------------
