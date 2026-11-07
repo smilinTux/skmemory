@@ -1,0 +1,16 @@
+{"id": "p-01", "text": "I'm editing the HOSTS= line in skfleet-auto-rollout now", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-004"]}
+{"id": "p-02", "text": "let's add skap10 to the rollout ring", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-004"]}
+{"id": "p-03", "text": "same edit but in the wrong repo", "scope": {"repo": "skmemory"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-04", "text": "should I just run skmemory sync to clear the red?", "scope": {"repo": "skmemory"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-005"]}
+{"id": "p-05", "text": "the sqlite_only count is 16904 on skap08", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-005"]}
+{"id": "p-06", "text": "talk about old topic", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-07", "text": "dashboard tiles again", "scope": {"repo": "skdashboard"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-08", "text": "rework the fusion weights", "scope": {"repo": "skmemory"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-008"]}
+{"id": "p-09", "text": "rework the fusion weights", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-10", "text": "what is the default agent", "scope": {"repo": "skmemory"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-11", "text": "skap08 is rebooting", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-12", "text": "unrelated chatter about lunch", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-13", "text": "HOSTS=\"skap08 skap03\"", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-004"]}
+{"id": "p-14", "text": "Rollout Ring", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-004"]}
+{"id": "p-15", "text": "rollouts rings", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-16", "text": "time tick at T0: which time intentions are due", "scope": {}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-002"]}

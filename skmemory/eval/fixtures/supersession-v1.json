@@ -1,0 +1,110 @@
+{
+ "chains": [
+  {
+   "ids": [
+    "m-06159e9b16",
+    "m-794ef9bd00"
+   ],
+   "as_of_checks": [
+    {
+     "as_of": "2026-06-24T12:00:00+00:00",
+     "valid": [
+      "m-06159e9b16"
+     ]
+    },
+    {
+     "as_of": "2026-11-01T12:00:00+00:00",
+     "valid": [
+      "m-794ef9bd00"
+     ]
+    }
+   ]
+  },
+  {
+   "ids": [
+    "m-d26e6c752c",
+    "m-ab47e0650a"
+   ],
+   "as_of_checks": [
+    {
+     "as_of": "2026-07-24T12:00:00+00:00",
+     "valid": [
+      "m-d26e6c752c"
+     ]
+    },
+    {
+     "as_of": "2026-11-01T12:00:00+00:00",
+     "valid": [
+      "m-ab47e0650a"
+     ]
+    }
+   ]
+  },
+  {
+   "ids": [
+    "m-20e7b54b06",
+    "m-e56f225692"
+   ],
+   "as_of_checks": [
+    {
+     "as_of": "2026-11-01T12:00:00+00:00",
+     "valid": [
+      "m-e56f225692"
+     ]
+    }
+   ]
+  },
+  {
+   "ids": [
+    "m-0ac0af922e",
+    "m-5fd4308ff1"
+   ],
+   "as_of_checks": [
+    {
+     "as_of": "2026-09-02T12:00:00+00:00",
+     "valid": [
+      "m-0ac0af922e"
+     ]
+    },
+    {
+     "as_of": "2026-11-01T12:00:00+00:00",
+     "valid": [
+      "m-5fd4308ff1"
+     ]
+    }
+   ]
+  }
+ ],
+ "non_supersession_edges": [
+  {
+   "child_kind": "promoted_copy",
+   "edge": "PROMOTED_FROM",
+   "must_not_close_parent": true
+  },
+  {
+   "child_kind": "chunk",
+   "edge": "CHUNK_OF",
+   "must_not_close_parent": true
+  }
+ ],
+ "write_time_conflict_cases": [
+  {
+   "new_fact": "skwk12 listens on port 22",
+   "existing": "m-20e7b54b06",
+   "expected_verdict": "changes",
+   "expected_edge": "SUPERSEDES"
+  },
+  {
+   "new_fact": "skap08 runs the rollout timer every two minutes",
+   "existing": "m-3c059f37b4",
+   "expected_verdict": "unchanged",
+   "expected_edge": null
+  },
+  {
+   "new_fact": "skap08 also hosts the review panes",
+   "existing": "m-3c059f37b4",
+   "expected_verdict": "extends",
+   "expected_edge": "EXTENDS"
+  }
+ ]
+}
