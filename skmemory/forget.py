@@ -40,7 +40,7 @@ class StorePurge:
 
     Args:
         store: Store key (``flat`` | ``index_db`` | ``skmem_pg`` |
-            ``graph`` | ``vector`` | ``skvector``).
+            ``graph`` | ``vector``).
         attached: Whether the store was wired/reachable for this cascade. A
             plan-only skmem-pg leg (no live pgvector wired) reports ``False``.
         found: Rows/files found for the id before deletion (best-effort; some

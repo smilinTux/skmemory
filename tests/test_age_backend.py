@@ -1207,7 +1207,6 @@ def _make_context_loader(monkeypatch, tmp_path, skmemory_yaml: str = ""):
     monkeypatch.setattr(
         "skmemory.context_loader.SQLiteBackend", lambda *_a, **_kw: _DummyLoaderDB()
     )
-    monkeypatch.setattr("skmemory.context_loader._load_skvector_config", lambda _cd: None)
     return LazyMemoryLoader("wiretest")
 
 
@@ -1244,19 +1243,14 @@ class TestAgeConfigWireIn:
             "skmemory.context_loader._build_age_backend",
             lambda cfg: _DummyLoaderGraph("age-backend"),
         )
-        monkeypatch.setattr(
-            "skmemory.context_loader._build_skgraph_backend",
-            lambda cfg: _DummyLoaderGraph("skgraph-backend"),
-        )
 
         loader._ensure_backends()
 
         assert isinstance(loader._graph_backend, _DummyLoaderGraph)
         assert loader._graph_backend.graph_name == "age-backend"
 
-    def test_ensure_backends_falls_back_to_skgraph_when_age_not_configured(
-        self, monkeypatch, tmp_path
-    ):
+    def test_retired_skgraph_config_builds_no_graph_backend(self, monkeypatch, tmp_path):
+        """A stale FalkorDB config is ignored: AGE is the only graph (SKMEM-P5-02)."""
         loader = _make_context_loader(
             monkeypatch,
             tmp_path,
@@ -1269,15 +1263,10 @@ class TestAgeConfigWireIn:
             raise AssertionError("AGE backend must not be built when unconfigured")
 
         monkeypatch.setattr("skmemory.context_loader._build_age_backend", _fail_if_built)
-        monkeypatch.setattr(
-            "skmemory.context_loader._build_skgraph_backend",
-            lambda cfg: _DummyLoaderGraph("skgraph-backend"),
-        )
 
         loader._ensure_backends()
 
-        assert isinstance(loader._graph_backend, _DummyLoaderGraph)
-        assert loader._graph_backend.graph_name == "skgraph-backend"
+        assert loader._graph_backend is None
 
     def test_ensure_backends_no_graph_backend_when_neither_configured(self, monkeypatch, tmp_path):
         loader = _make_context_loader(monkeypatch, tmp_path, "")

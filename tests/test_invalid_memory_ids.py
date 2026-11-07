@@ -10,7 +10,6 @@ import pytest
 from skmemory.backends.age_backend import AGEGraphBackend
 from skmemory.backends.file_backend import FileBackend
 from skmemory.backends.pgvector_backend import PGVectorBackend
-from skmemory.backends.skgraph_backend import SKGraphBackend
 from skmemory.backends.sqlite_backend import SQLiteBackend
 from skmemory.backends.vaulted_backend import VaultedSQLiteBackend
 from skmemory.models import Memory, MemoryLayer
@@ -44,9 +43,6 @@ def test_graph_backends_reject_empty_id_before_connection():
     age = object.__new__(AGEGraphBackend)
     age.graph = "test_graph"
     assert age.index_memory(_malformed()) is False
-
-    falkor = object.__new__(SKGraphBackend)
-    assert falkor.index_memory(_malformed()) is False
 
 
 def test_age_sync_quarantines_dot_json_with_deterministic_report(tmp_path):

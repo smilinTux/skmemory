@@ -11,8 +11,7 @@ MemPalace did for its "is this already a real word" check.
 
 The other half of MemPalace's design — *never* correct a token that matches
 a known proper name/entity — is preserved and rewired to skmemory's own
-Entity graph (see ``skmemory/graph_queries.py``: ``UPSERT_ENTITY`` /
-``SEARCH_BY_ENTITY``, nodes created as ``(:Entity {name: ...})`` and linked
+Entity graph (nodes created as ``(:Entity {name: ...})`` and linked
 ``(:Memory)-[:MENTIONS]->(:Entity)``) instead of MemPalace's separate
 ``EntityRegistry`` file. There is no registry file in skmemory, so the
 allow-list is passed in by the caller (``protected_terms``) rather than
@@ -342,8 +341,7 @@ def protected_terms_from_store(store) -> set[str]:
     Pull known entity names from ``store``'s graph backend (if any) to use
     as the protected-terms allow-list for ``correct_text()``.
 
-    skmemory's graph backend (``SKGraphBackend``, see graph_queries.py)
-    indexes ``(:Entity {name: ...})`` nodes extracted during decomposition
+    skmemory's graph backend (AGE) indexes ``(:Entity {name: ...})`` nodes extracted during decomposition
     and linked to memories via ``MENTIONS``. This walks that graph directly
     to list every known entity name.
 

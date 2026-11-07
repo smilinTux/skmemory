@@ -48,7 +48,7 @@ or the resolver fails closed on the conflict. Note also that `skmemory` has no
 Universal AI memory system with emotional context, multi-layer persistence, token-optimized loading, sovereign embeddings, decomposition-aware document ingestion, and graph retrieval. SKMemory gives any AI agent persistent memory across session resets — snapshots, journals, soul blueprints, warmth anchors, full rehydration rituals, structured long-form document storage, and decomposition-aware recall across entities, citations, claims, and section structure.
 
 **Memory Layers:** short-term, mid-term, long-term
-**Storage:** SQLite index + JSON files (zero-infrastructure), optional SKVector & SKGraph
+**Storage:** SQLite index + JSON files (zero-infrastructure), pgvector + AGE via skmem-pg (optional)
 **Decomposition:** chunks + citations + entities + claims + section titles
 **Emotion:** Every memory carries emotional metadata (intensity, valence, labels)
 
@@ -65,7 +65,7 @@ pipx install skmemory
 # With Telegram API import
 pipx install 'skmemory[telegram]'
 
-# Everything (Telegram + SKVector + SKGraph + seeds)
+# Everything (Telegram + pg + seeds)
 pipx install 'skmemory[all]'
 
 # Add Telegram support to an existing install
@@ -246,10 +246,10 @@ path = plugin.export()
 | `skmemory ingest-file <path>` | Ingest a document into parent + chunk memories |
 | `skmemory recall <id>` | Retrieve by ID |
 | `skmemory search "query"` | Full-text search |
-| `skmemory graph entity "query"` | Query SKGraph for extracted entities |
-| `skmemory graph citation "query"` | Query SKGraph for citations |
-| `skmemory graph claim "query"` | Query SKGraph for claims |
-| `skmemory graph section "query"` | Query SKGraph for section titles |
+| `skmemory graph entity "query"` | Query the graph for extracted entities |
+| `skmemory graph citation "query"` | Query the graph for citations |
+| `skmemory graph claim "query"` | Query the graph for claims |
+| `skmemory graph section "query"` | Query the graph for section titles |
 | `skmemory graph around <memory-id>` | Traverse the graph neighborhood around a memory |
 | `skmemory graph related-claims --entity/--citation ...` | Pivot through an entity or citation to discover connected claims |
 | `skmemory novelty "query"` | Surface under-linked memories and rare signals |
@@ -291,7 +291,7 @@ path = plugin.export()
 | `memory_export` | Export all memories to a JSON backup |
 | `memory_import` | Restore memories from a JSON backup |
 | `memory_health` | Full health check across all backends |
-| `memory_graph` | Graph traversal, lineage, and cluster discovery (requires SKGraph) |
+| `memory_graph` | Graph traversal, lineage, and cluster discovery (requires the AGE graph) |
 | `memory_stats` | Alias for memory_health (backwards-compatible) |
 
 ### Global Flags
@@ -301,10 +301,7 @@ path = plugin.export()
 | `--ai` | `SKMEMORY_AI` | Enable AI features (Ollama) |
 | `--ai-model` | `SKMEMORY_AI_MODEL` | Model name (default: llama3.2) |
 | `--ai-url` | `SKMEMORY_AI_URL` | Ollama server URL |
-| `--skvector-url` | `SKMEMORY_SKVECTOR_URL` | SKVector server URL |
-| `--skvector-embedding-model` | `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Embedding model override (default: `mxbai-embed-large`, fallback: `mixedbread-ai/mxbai-embed-large-v1`) |
-| `--skvector-vector-dim` | `SKMEMORY_SKVECTOR_VECTOR_DIM` | Embedding dimension override |
-| `--skgraph-url` | `SKMEMORY_SKGRAPH_URL` | SKGraph / FalkorDB server URL |
+| `--no-vector` | `SKMEMORY_NO_VECTOR` | Skip the vector backend (flat JSON + SQLite only) |
 
 ---
 
@@ -452,8 +449,8 @@ stats = import_telegram_api(
 
 **Three-tier storage:**
 1. **SQLite** (default primary) — fast indexed queries, zero-config
-2. **SKVector** (optional) — semantic vector search with `mxbai-embed-large` by default and `mixedbread-ai/mxbai-embed-large-v1` as fallback
-3. **SKGraph** (optional) — graph relationship traversal over decomposition-aware structure nodes
+2. **pgvector** (optional, skmem-pg) — hybrid vector + BM25 search with `mxbai-embed-large`
+3. **AGE graph** (optional, skmem-pg) — graph relationship traversal over decomposition-aware structure nodes
 
 ---
 
@@ -477,14 +474,11 @@ export SKMEMORY_AI=1                           # Enable AI features
 export SKMEMORY_AI_MODEL=llama3.2              # Ollama model
 export SKMEMORY_AI_URL=http://localhost:11434   # Ollama URL
 
-# SKVector (optional — semantic search)
-export SKMEMORY_SKVECTOR_URL=http://localhost:6333
-export SKMEMORY_SKVECTOR_KEY=your-api-key
-export SKMEMORY_SKVECTOR_EMBEDDING_MODEL=mxbai-embed-large
-export SKMEMORY_SKVECTOR_VECTOR_DIM=1024
-
-# SKGraph (optional — graph retrieval)
-export SKMEMORY_SKGRAPH_URL=redis://localhost:6379
+# Vector + graph (optional): skmem-pg (pgvector + Apache AGE)
+export SKMEMORY_VECTOR_BACKEND=pgvector
+export SKMEMORY_PG_DSN=postgresql://postgres:...@127.0.0.1:5432/skmemory
+export SKMEMORY_EMBED_URL=http://127.0.0.1:11434/api/embed
+# Qdrant (skvector) and FalkorDB (skgraph) are retired; naming them fails fast.
 
 # Telegram API import (optional — for import-telegram-api command)
 export TELEGRAM_API_ID=12345678                # From https://my.telegram.org
@@ -494,7 +488,7 @@ export TELEGRAM_API_HASH=your_api_hash_here    # From https://my.telegram.org
 If you change the embedding model or vector dimension, rebuild or reindex the
 vector-backed store before trusting semantic search output.
 
-### Docker (optional, for SKVector + SKGraph)
+### Docker (optional, for skmem-pg)
 
 ```bash
 cd skmemory && docker compose up -d

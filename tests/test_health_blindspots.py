@@ -154,11 +154,11 @@ class TestUnindexedIsSurfaced:
 
         backend.record_sync_failure("a", "pgvector", "boom")
         backend.record_sync_failure("b", "pgvector", "boom")
-        backend.record_sync_failure("c", "skgraph", "boom")
+        backend.record_sync_failure("c", "graph", "boom")
 
         detail = store.health()["unindexed_detail"]
         assert detail["count"] == 3
-        assert detail["by_backend"] == {"pgvector": 2, "skgraph": 1}
+        assert detail["by_backend"] == {"pgvector": 2, "graph": 1}
 
     def test_a_cleared_failure_stops_counting(self, tmp_path):
         backend = SQLiteBackend(base_path=str(tmp_path / "memories"))

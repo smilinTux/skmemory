@@ -66,11 +66,10 @@ flowchart TD
 
     subgraph L1["Level 1 - Vector"]
         PG["pgvector backend\nskmem-pg · docs+memories · BM25+HNSW"]
-        Qdrant["SKVectorBackend\nremote shared collections"]
     end
 
     subgraph L2["Level 2 - Graph (optional)"]
-        Graph["SKGraphBackend\nFalkorDB / AGE lineage"]
+        Graph["AGEGraphBackend\nApache AGE lineage"]
     end
 
     Store --> Flat
@@ -78,7 +77,6 @@ flowchart TD
     Store --> SQLite
     Store --> Vaulted
     Store --> PG
-    Store --> Qdrant
     Store --> Graph
 
     Store --> Fortress["FortifiedMemoryStore\ntamper detection + audit log"]
@@ -136,7 +134,7 @@ Community cannot serve `pg_search` reads in recovery, prb-6f069c5e).
 git clone https://github.com/smilinTux/skmemory.git
 cd skmemory
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,all]"      # all = skvector, skgraph, telegram extras
+pip install -e ".[dev,all]"      # all = pg, telegram, seed extras
 ```
 
 **Package layout:** the importable package is the top-level `skmemory/` directory.
@@ -324,7 +322,7 @@ current tier and indexes it once. A record deleted after enumeration is no
 longer canonical source truth and is skipped without a false graph error.
 
 **Invalid memory IDs.** A memory ID must be a non-empty string. Model creation,
-promotion, primary storage, pgvector, AGE, and Falkor all reject empty or null
+promotion, primary storage, pgvector, and AGE all reject empty or null
 IDs before issuing a write. Reconcile and AGE projection quarantine an existing
 active-tier `.json` file, or a payload carrying an explicit empty ID, under
 `memory/quarantine/invalid-memory-id/<sha256>.json`. The adjacent `report.json`

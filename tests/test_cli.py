@@ -58,15 +58,11 @@ class TestCLIHelp:
 class TestCLIGlobalOptions:
     """Global option tests."""
 
-    def test_skvector_url_option_exists(self, runner):
-        """--skvector-url option is accepted."""
+    def test_retired_backend_options_are_gone(self, runner):
+        """The Qdrant/FalkorDB options and groups were removed (SKMEM-P5-02)."""
         result = runner.invoke(cli, ["--help"])
-        assert "--skvector-url" in result.output
-
-    def test_skvector_key_option_exists(self, runner):
-        """--skvector-key option is accepted."""
-        result = runner.invoke(cli, ["--help"])
-        assert "--skvector-key" in result.output
+        assert "--skvector" not in result.output and "--skgraph" not in result.output
+        assert "routing" not in cli.commands and "setup" not in cli.commands
 
     def test_ingest_file_command_exists(self, runner):
         """The document ingest command is exposed."""
@@ -171,7 +167,7 @@ class TestCLICorpora:
     def test_corpora_status_emits_registry_report(self, runner):
         report = {
             "agent": "jarvis",
-            "local": {"primary_vector_collection": "jarvis-memory"},
+            "local": {"agent": "jarvis"},
             "shared_corpora": [
                 {
                     "name": "hammertime",
@@ -195,36 +191,11 @@ class TestCLICorpora:
 
 
 class TestBackendConfigRouting:
-    """Backend configuration should propagate collection and graph names."""
+    """Backend configuration: pgvector + AGE only."""
 
-    def test_get_store_passes_graph_name_from_config(self):
-        """Configured SKGraph graph_name should be forwarded to the backend."""
-        cfg = SKMemoryConfig(
-            skgraph_url="redis://graph.example:6379",
-            skgraph_graph_name="aster-memory",
-        )
-
-        with (
-            patch("skmemory.config.load_config", return_value=cfg),
-            patch(
-                "skmemory.config.merge_env_and_config", return_value=(None, None, cfg.skgraph_url)
-            ),
-            patch(
-                "skmemory.config.build_endpoint_list",
-                side_effect=lambda single_url, endpoints, default_role="primary": [],
-            ),
-            patch("skmemory.backends.skgraph_backend.SKGraphBackend") as mock_graph_backend,
-        ):
-            _get_store()
-
-        mock_graph_backend.assert_called_once_with(
-            url="redis://graph.example:6379",
-            graph_name="aster-memory",
-        )
-
-    def test_get_store_wires_age_graph_when_pgvector_and_no_skgraph(self, monkeypatch):
+    def test_get_store_wires_age_graph_when_pgvector(self, monkeypatch):
         """Gap B (card dc8280a7): on the default skmem-pg deployment (pgvector
-        enabled, no FalkorDB SKGraph URL), _get_store() must wire the AGE graph
+        enabled), _get_store() must wire the AGE graph
         into the graph role so forget() cascades a DETACH DELETE to the AGE
         <agent>_knowledge graph.
 
@@ -238,11 +209,6 @@ class TestBackendConfigRouting:
         )
         with (
             patch("skmemory.config.load_config", return_value=cfg),
-            patch("skmemory.config.merge_env_and_config", return_value=(None, None, None)),
-            patch(
-                "skmemory.config.build_endpoint_list",
-                side_effect=lambda single_url, endpoints, default_role="primary": [],
-            ),
             patch("skmemory.backends.pgvector_backend.PGVectorBackend"),
         ):
             store = _get_store()
@@ -262,43 +228,11 @@ class TestBackendConfigRouting:
         )
         with (
             patch("skmemory.config.load_config", return_value=cfg),
-            patch("skmemory.config.merge_env_and_config", return_value=(None, None, None)),
-            patch(
-                "skmemory.config.build_endpoint_list",
-                side_effect=lambda single_url, endpoints, default_role="primary": [],
-            ),
             patch("skmemory.backends.pgvector_backend.PGVectorBackend"),
         ):
             store = _get_store()
 
         assert store.graph.dsn == "postgresql://cfg-host/skmemory"
-
-    def test_get_store_falkordb_skgraph_not_clobbered_by_age(self, monkeypatch):
-        """A configured FalkorDB SKGraph keeps the graph role; AGE does not
-        displace it (AGE only fills an otherwise-empty graph role)."""
-        monkeypatch.setenv("SKMEMORY_PG_DSN", "postgresql://u:p@node/skmemory")
-        cfg = SKMemoryConfig(
-            backends_enabled=["pgvector"],
-            skgraph_url="redis://graph.example:6379",
-            skgraph_graph_name="aster-memory",
-        )
-        with (
-            patch("skmemory.config.load_config", return_value=cfg),
-            patch(
-                "skmemory.config.merge_env_and_config",
-                return_value=(None, None, cfg.skgraph_url),
-            ),
-            patch(
-                "skmemory.config.build_endpoint_list",
-                side_effect=lambda single_url, endpoints, default_role="primary": [],
-            ),
-            patch("skmemory.backends.pgvector_backend.PGVectorBackend"),
-            patch("skmemory.backends.skgraph_backend.SKGraphBackend") as mock_skgraph,
-        ):
-            store = _get_store()
-
-        # graph role holds the FalkorDB SKGraph mock, not an AGEGraphBackend.
-        assert store.graph is mock_skgraph.return_value
 
     def test_get_store_age_wiring_degrades_when_construction_fails(self, monkeypatch):
         """If AGE construction raises, the graph role stays None and _get_store
@@ -307,11 +241,6 @@ class TestBackendConfigRouting:
         cfg = SKMemoryConfig(backends_enabled=["pgvector"])
         with (
             patch("skmemory.config.load_config", return_value=cfg),
-            patch("skmemory.config.merge_env_and_config", return_value=(None, None, None)),
-            patch(
-                "skmemory.config.build_endpoint_list",
-                side_effect=lambda single_url, endpoints, default_role="primary": [],
-            ),
             patch("skmemory.backends.pgvector_backend.PGVectorBackend"),
             patch(
                 "skmemory.backends.age_backend.AGEGraphBackend",
@@ -321,64 +250,6 @@ class TestBackendConfigRouting:
             store = _get_store()
 
         assert store.graph is None
-
-    def test_get_store_passes_vector_collection_from_config(self):
-        """Configured SKVector collection should be forwarded to the backend."""
-        cfg = SKMemoryConfig(
-            skvector_url="https://vector.example",
-            skvector_collection="aster-memory",
-        )
-
-        with (
-            patch("skmemory.config.load_config", return_value=cfg),
-            patch(
-                "skmemory.config.merge_env_and_config", return_value=(cfg.skvector_url, None, None)
-            ),
-            patch(
-                "skmemory.config.build_endpoint_list",
-                side_effect=lambda single_url, endpoints, default_role="primary": [],
-            ),
-            patch("skmemory.backends.skvector_backend.SKVectorBackend") as mock_vector_backend,
-        ):
-            _get_store()
-
-        mock_vector_backend.assert_called_once()
-        _, kwargs = mock_vector_backend.call_args
-        assert kwargs["url"] == "https://vector.example"
-        assert kwargs["collection"] == "aster-memory"
-
-    def test_get_store_passes_embedding_model_from_config(self):
-        """Configured SKVector embedding settings should be forwarded."""
-        cfg = SKMemoryConfig(
-            skvector_url="https://vector.example",
-            skvector_collection="aster-memory",
-            skvector_embedding_model="mxbai-embed-large",
-            skvector_vector_dim=1024,
-        )
-
-        with (
-            patch("skmemory.config.load_config", return_value=cfg),
-            patch(
-                "skmemory.config.merge_env_and_config",
-                return_value=(
-                    cfg.skvector_url,
-                    None,
-                    None,
-                    cfg.skvector_embedding_model,
-                    cfg.skvector_vector_dim,
-                ),
-            ),
-            patch(
-                "skmemory.config.build_endpoint_list",
-                side_effect=lambda single_url, endpoints, default_role="primary": [],
-            ),
-            patch("skmemory.backends.skvector_backend.SKVectorBackend") as mock_vector_backend,
-        ):
-            _get_store()
-
-        _, kwargs = mock_vector_backend.call_args
-        assert kwargs["embedding_model"] == "mxbai-embed-large"
-        assert kwargs["vector_dim"] == 1024
 
 
 class TestCLINoveltyAndBriefing:

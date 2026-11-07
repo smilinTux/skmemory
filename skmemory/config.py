@@ -90,14 +90,6 @@ def check_default_home_resolved() -> None:
 logger = logging.getLogger("skmemory.config")
 
 
-class EndpointConfig(BaseModel):
-    """A single backend endpoint with role and optional Tailscale IP."""
-
-    url: str
-    role: str = "primary"  # primary | replica
-    tailscale_ip: str = ""  # optional, for display
-
-
 class SharedCorpusConfig(BaseModel):
     """A shared recall corpus with its own vector/graph identities and source roots."""
 
@@ -122,24 +114,33 @@ class SKSeedConfig(BaseModel):
     auto_validate: bool = False
 
 
-_RETIRED_NAME = "chroma"
-_RETIRED_PREFIX = _RETIRED_NAME + "_"
+# Retired backends (chroma SKMEM-P5-01; skvector/skgraph SKMEM-P5-02). Their
+# config keys are dropped on load with one warning, never an error.
+_RETIRED_PREFIXES = ("chroma_", "skvector_", "skgraph_")
+_RETIRED_KEYS = frozenset({"routing_strategy", "heartbeat_discovery", "docker_compose_file"})
+_RETIRED_NAMES = frozenset({"chroma", "chromadb", "skvector", "qdrant", "skgraph", "falkordb"})
 _retired_warned = False
 
 
 def _warn_retired_once(keys: list[str], listed: bool) -> None:
-    """Log the retired-backend notice once per process (SKMEM-P5-01)."""
+    """Log the retired-backend notice once per process."""
     global _retired_warned
     if _retired_warned:
         return
     _retired_warned = True
-    from .backend_select import CHROMA_RETIRED_MESSAGE
+    from .backend_select import (
+        CHROMA_RETIRED_MESSAGE,
+        SKGRAPH_RETIRED_MESSAGE,
+        SKVECTOR_RETIRED_MESSAGE,
+    )
 
     what = ", ".join(keys) if keys else "backends_enabled"
     logger.warning(
-        "skmemory.yaml still names the retired backend (%s); ignoring it. %s",
+        "skmemory.yaml still names a retired backend (%s); ignoring it. %s %s %s",
         what + (" + backends_enabled" if keys and listed else ""),
         CHROMA_RETIRED_MESSAGE,
+        SKVECTOR_RETIRED_MESSAGE,
+        SKGRAPH_RETIRED_MESSAGE,
     )
 
 
@@ -151,19 +152,22 @@ class SKMemoryConfig(BaseModel):
     def _drop_retired_vector_keys(cls, data):
         """Ignore stale retired-backend keys in old node configs (never fatal).
 
-        A yaml that still carries the retired backend's ``*_persist_dir`` /
-        ``*_collection`` / ``*_embedding_model`` keys, or lists it under
-        ``backends_enabled``, must not take down session hooks. The keys are
-        dropped and one warning is logged per process.
+        A yaml that still carries a retired backend's ``chroma_*`` /
+        ``skvector_*`` / ``skgraph_*`` keys (or the HA routing keys that only
+        served them), or lists one under ``backends_enabled``, must not take
+        down session hooks. The keys are dropped and one warning is logged
+        per process.
         """
         if not isinstance(data, dict):
             return data
-        prefix = _RETIRED_PREFIX
-        stale = [k for k in data if isinstance(k, str) and k.startswith(prefix)]
+        stale = [
+            k
+            for k in data
+            if isinstance(k, str) and (k.startswith(_RETIRED_PREFIXES) or k in _RETIRED_KEYS)
+        ]
         enabled = data.get("backends_enabled")
         listed = isinstance(enabled, list) and any(
-            isinstance(v, str) and v.strip().lower() in (_RETIRED_NAME, _RETIRED_NAME + "db")
-            for v in enabled
+            isinstance(v, str) and v.strip().lower() in _RETIRED_NAMES for v in enabled
         )
         if not stale and not listed:
             return data
@@ -172,10 +176,7 @@ class SKMemoryConfig(BaseModel):
             data["backends_enabled"] = [
                 v
                 for v in enabled
-                if not (
-                    isinstance(v, str)
-                    and v.strip().lower() in (_RETIRED_NAME, _RETIRED_NAME + "db")
-                )
+                if not (isinstance(v, str) and v.strip().lower() in _RETIRED_NAMES)
             ]
         _warn_retired_once(stale, listed)
         return data
@@ -187,16 +188,7 @@ class SKMemoryConfig(BaseModel):
     embed_model: str | None = None
     vector_dim: int | None = None
 
-    # Qdrant (for shared/remote collections like hammertime)
-    skvector_url: str | None = None
-    skvector_key: str | None = None
-    skvector_collection: str | None = None
-    skvector_embedding_model: str | None = None
-    skvector_vector_dim: int | None = None
-    skgraph_url: str | None = None
-    skgraph_graph_name: str | None = None
     backends_enabled: list[str] = Field(default_factory=list)
-    docker_compose_file: str | None = None
     setup_completed_at: str | None = None
 
     # Additional shared recall corpora (cross-agent/cross-project search)
@@ -210,12 +202,6 @@ class SKMemoryConfig(BaseModel):
     # SKSeed write-time truth-check (card 9b72c6c2). Nested so YAML reads as
     # ``skseed.auto_validate``.
     skseed: SKSeedConfig = Field(default_factory=SKSeedConfig)
-
-    # Multi-endpoint HA support
-    skvector_endpoints: list[EndpointConfig] = Field(default_factory=list)
-    skgraph_endpoints: list[EndpointConfig] = Field(default_factory=list)
-    routing_strategy: str = "failover"
-    heartbeat_discovery: bool = False
 
 
 def load_config(path: Path = CONFIG_PATH) -> SKMemoryConfig | None:
@@ -260,91 +246,3 @@ def save_config(config: SKMemoryConfig, path: Path = CONFIG_PATH) -> Path:
             sort_keys=False,
         )
     return path
-
-
-def merge_env_and_config(
-    cli_skvector_url: str | None = None,
-    cli_skvector_key: str | None = None,
-    cli_skgraph_url: str | None = None,
-    cli_skvector_embedding_model: str | None = None,
-    cli_skvector_vector_dim: int | None = None,
-) -> tuple[str | None, str | None, str | None, str | None, int | None]:
-    """Resolve backend URLs with precedence: CLI > env > config > None.
-
-    Args:
-        cli_skvector_url: URL passed via ``--skvector-url``.
-        cli_skvector_key: Key passed via ``--skvector-key``.
-        cli_skgraph_url: URL passed via ``--skgraph-url`` (future).
-
-    Returns:
-        Tuple of (skvector_url, skvector_key, skgraph_url,
-        skvector_embedding_model, skvector_vector_dim).
-    """
-    cfg = load_config()
-
-    skvector_url = (
-        cli_skvector_url
-        or os.environ.get("SKMEMORY_SKVECTOR_URL")
-        or (cfg.skvector_url if cfg else None)
-    )
-    skvector_key = (
-        cli_skvector_key
-        or os.environ.get("SKMEMORY_SKVECTOR_KEY")
-        or (cfg.skvector_key if cfg else None)
-    )
-    skgraph_url = (
-        cli_skgraph_url
-        or os.environ.get("SKMEMORY_SKGRAPH_URL")
-        or (cfg.skgraph_url if cfg else None)
-    )
-    skvector_embedding_model = (
-        cli_skvector_embedding_model
-        or os.environ.get("SKMEMORY_SKVECTOR_EMBEDDING_MODEL")
-        or (cfg.skvector_embedding_model if cfg else None)
-    )
-    env_vector_dim = os.environ.get("SKMEMORY_SKVECTOR_VECTOR_DIM")
-    skvector_vector_dim = (
-        cli_skvector_vector_dim
-        or (int(env_vector_dim) if env_vector_dim else None)
-        or (cfg.skvector_vector_dim if cfg else None)
-    )
-
-    return (
-        skvector_url,
-        skvector_key,
-        skgraph_url,
-        skvector_embedding_model,
-        skvector_vector_dim,
-    )
-
-
-def build_endpoint_list(
-    single_url: str | None,
-    endpoints: list[EndpointConfig],
-    default_role: str = "primary",
-) -> list[EndpointConfig]:
-    """Merge a single URL and an endpoints list into a unified list.
-
-    Backward compatibility bridge: if no endpoints are configured but a
-    single URL exists, it becomes the sole endpoint.  If both exist, the
-    endpoints list takes precedence and the single URL is prepended only
-    if it isn't already present.
-
-    Args:
-        single_url: Legacy single-URL field (skvector_url / skgraph_url).
-        endpoints: Explicit endpoint list from config.
-        default_role: Role to assign when promoting a single URL.
-
-    Returns:
-        Unified list of EndpointConfig (may be empty).
-    """
-    if endpoints:
-        urls = {ep.url for ep in endpoints}
-        if single_url and single_url not in urls:
-            return [EndpointConfig(url=single_url, role=default_role)] + list(endpoints)
-        return list(endpoints)
-
-    if single_url:
-        return [EndpointConfig(url=single_url, role=default_role)]
-
-    return []

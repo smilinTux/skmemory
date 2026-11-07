@@ -76,8 +76,6 @@ def build_corpus_registry_report(
     local = {
         "agent": agent,
         "backends_enabled": list(cfg.backends_enabled if cfg else []),
-        "primary_vector_collection": cfg.skvector_collection if cfg else None,
-        "primary_graph_name": cfg.skgraph_graph_name if cfg else None,
     }
 
     shared_corpora: list[dict[str, Any]] = []

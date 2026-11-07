@@ -1,7 +1,7 @@
 """
 PGVector: semantic + hybrid memory search backend (Postgres + pgvector).
 
-Sovereign, syncable alternative to the Qdrant skvector backend. The embedding
+Sovereign, syncable vector backend (the only one; Qdrant skvector is retired). The embedding
 store is a DERIVED, per-node rebuildable cache (same class as the SQLite
 index.db), NOT a replicated system of record:
   - Source of truth = the Syncthing-synced flat JSON memory files. `memories`
@@ -349,8 +349,8 @@ class PGVectorBackend(BaseBackend):
         """Build the agent-scoped delete plan for a forget.
 
         Two statements, mirroring :meth:`remove`: the memory's own row, then any
-        child/chunk rows whose ``memory_json.parent_id`` points at it (the
-        pgvector analogue of Qdrant deleting chunk points by parent_id).
+        child/chunk rows whose ``memory_json.parent_id`` points at it (chunk
+        rows are keyed by parent_id).
 
         Args:
             memory_id: The memory to forget.
@@ -822,12 +822,9 @@ class PGVectorBackend(BaseBackend):
     def remove(self, memory_id: str) -> bool:
         """Remove a memory AND its child/chunk rows (cascade).
 
-        This mirrors the chunk-cascade ``remove()`` of the other vector
-        backends (``SKVectorBackend``): delete the
-        memory's own row and any child rows that reference it via
-        ``parent_id``. Those backends delete chunk *points* keyed by a
-        ``parent_id`` payload; the pgvector analogue is a child ``Memory``
-        row whose ``memory_json.parent_id`` points at this id.
+        Deletes the memory's own row and any child rows that reference it via
+        ``parent_id``: a child ``Memory`` row whose ``memory_json.parent_id``
+        points at this id.
 
         ``MemoryStore.forget()`` calls ``self.vector.remove(memory_id)``.
         Before this method existed, ``PGVectorBackend`` exposed only

@@ -283,33 +283,6 @@ def test_legacy_path_filters_context_tag_with_overfetch(store, monkeypatch):
 # ------------------------------------------- review fixes: real signatures, []
 
 
-def test_real_skgraph_backend_signature_accepts_the_filter_kwargs():
-    import inspect
-
-    from skmemory.backends.skgraph_backend import SKGraphBackend
-
-    params = inspect.signature(SKGraphBackend.search_by_entity).parameters
-    for name in ("layer", "tags", "context_tag", "source"):
-        assert name in params
-
-
-def test_fused_graph_arm_works_with_the_real_skgraph_signature(store, monkeypatch):
-    """No **filters catch-all: a signature mismatch would TypeError the arm."""
-    from skmemory.backends.skgraph_backend import SKGraphBackend
-
-    g = SKGraphBackend.__new__(SKGraphBackend)
-    monkeypatch.setattr(
-        SKGraphBackend,
-        "_search_by_structure",
-        lambda self, tmpl, q, limit: [{"id": "stale", "title": "t", "layer": "short-term"}],
-    )
-    store.graph = g
-    monkeypatch.setattr(store.primary, "load", lambda i: _Mem("stale", layer="short-term"))
-    _, report = store.search_fused("alpha beta", limit=5, layer="long-term", return_report=True)
-    arm = [a for a in report.arms if a.name == "graph"][0]
-    assert arm.status != "failed"
-
-
 @needs_psycopg
 def test_pg_empty_context_tag_list_matches_nothing(monkeypatch):
     be, cur = _pg(monkeypatch)

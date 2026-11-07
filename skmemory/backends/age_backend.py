@@ -3,9 +3,8 @@ AGE — graph relationship backend (Level 2), powered by Apache AGE.
 
 Apache AGE is a Postgres extension providing a Cypher-queryable property
 graph on top of the same `skmem-pg` Postgres instance that already hosts
-`PGVectorBackend`. Unlike the (deprecated) FalkorDB-backed
-:class:`~skmemory.backends.skgraph_backend.SKGraphBackend`, this backend
-targets the **live, populated per-agent graphs** (``lumina_knowledge``,
+`PGVectorBackend`. It is the only graph backend (the FalkorDB skgraph backend
+was retired, SKMEM-P5-02) and targets the **live, populated per-agent graphs** (``lumina_knowledge``,
 ``opus_knowledge``, ``personal_history``, ...) that already exist in
 skmem-pg with the shared ontology described in
 ``docs/superpowers/specs/2026-07-03-age-graph-backend-design.md``.
@@ -223,7 +222,7 @@ class GraphTransportError(RuntimeError):
 
 
 # Lightweight entity extraction for memories without decomposition metadata,
-# mirroring SKGraphBackend._extract_and_index_entities.
+# of the retired FalkorDB backend's entity extraction.
 _ENTITY_PATTERN = re.compile(r"\b([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,}){0,3})\b")
 _ENTITY_SKIP_WORDS = {"The", "This", "That", "These", "Those", "When", "Where", "What"}
 
@@ -248,7 +247,7 @@ def _now_iso() -> str:
 
 def _unique(values: Any) -> list[str]:
     """Case-insensitive de-duplicate while preserving order, stringifying and
-    dropping blanks. Mirrors SKGraphBackend._ordered_unique."""
+    dropping blanks."""
     seen: set[str] = set()
     out: list[str] = []
     for value in values or []:
@@ -682,7 +681,7 @@ class AGEGraphBackend:
     @staticmethod
     def _entities_for(memory: Memory) -> list[str]:
         """Entities to MENTIONS-link: prefer decomposition metadata, else
-        regex-extract from content (mirrors SKGraphBackend)."""
+        regex-extract from content."""
         metadata = memory.metadata if isinstance(memory.metadata, dict) else {}
         decomposition = metadata.get("decomposition") or {}
         entities = decomposition.get("entities") if isinstance(decomposition, dict) else None
@@ -1143,7 +1142,7 @@ class AGEGraphBackend:
         return results[:50]
 
     def traverse(self, memory_id: str, depth: int = 2) -> list[dict]:
-        """Alias for :meth:`get_related` (matches SKGraphBackend's convention)."""
+        """Alias for :meth:`get_related` (kept for callers of the old graph API)."""
         return self.get_related(memory_id, depth=depth)
 
     def get_lineage(self, memory_id: str) -> list[dict]:

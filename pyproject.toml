@@ -36,13 +36,6 @@ dependencies = [
 seed = [
     "skseed>=0.1.0",
 ]
-skvector = [
-    "qdrant-client>=1.7.0",
-    "sentence-transformers>=2.2.0",
-]
-skgraph = [
-    "falkordb>=1.0.0",
-]
 pg = [
     "psycopg[binary]>=3.1,<4.0",
 ]
@@ -63,9 +56,6 @@ skcapstone = [
 ]
 all = [
     "skseed>=0.1.0",
-    "qdrant-client>=1.7.0",
-    "sentence-transformers>=2.2.0",
-    "falkordb>=1.0.0",
     "psycopg[binary]>=3.1,<4.0",
     "telethon>=1.36",
     "skcapstone>=0.6.8",

@@ -24,20 +24,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
 
 import yaml
 
 from .agents import get_agent_paths
 from .backends.sqlite_backend import SQLiteBackend
 from .invalid_records import require_memory_id
-from .recall_cache import (
-    build_cache_document,
-    compute_source_fingerprint,
-    load_cache_document,
-    memory_from_cache_document,
-    write_cache_document,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -267,93 +259,11 @@ def _read_yaml_file(path: Path) -> dict | None:
         return None
 
 
-def _load_skvector_config(config_dir: Path) -> dict | None:
-    """Load skvector config: try skvector.yaml first, then skmemory.yaml inline,
-    then skmemory.yaml flat keys (legacy migration path)."""
-    # 1. Dedicated skvector.yaml
-    path = config_dir / "skvector.yaml"
-    if path.exists():
-        cfg = _read_yaml_file(path)
-        if cfg and cfg.get("enabled", False):
-            return cfg
-
-    skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
-
-    # 2. Fallback: inline backends.skvector section in skmemory.yaml
-    inline = skmem.get("backends", {}).get("skvector", {})
-    if inline and inline.get("enabled", False):
-        ext_cfg_path = inline.get("config")
-        if ext_cfg_path:
-            resolved = Path(ext_cfg_path).expanduser()
-            if resolved.exists():
-                ext = _read_yaml_file(resolved)
-                if ext and ext.get("enabled", False):
-                    return ext
-        if inline.get("host") or inline.get("url"):
-            return inline
-
-    # 3. Legacy flat keys: skvector_url / skvector_key / ... in skmemory.yaml
-    #    Enabled when backends_enabled list includes 'skvector' (or key is present).
-    backends_enabled = skmem.get("backends_enabled", [])
-    url = skmem.get("skvector_url")
-    if url and ("skvector" in backends_enabled or skmem.get("skvector_key")):
-        return {
-            "enabled": True,
-            "url": url,
-            "api_key": skmem.get("skvector_key"),
-            "collection": skmem.get("skvector_collection", "skmemory"),
-            "embedding": {
-                "provider": "sentence_transformers",
-                "model": skmem.get("skvector_embedding_model", "all-MiniLM-L6-v2"),
-            },
-        }
-
-    return None
-
-
-def _load_skgraph_config(config_dir: Path) -> dict | None:
-    """Load skgraph config: try skgraph.yaml first, then skmemory.yaml inline,
-    then skmemory.yaml flat keys (legacy migration path)."""
-    # 1. Dedicated skgraph.yaml
-    path = config_dir / "skgraph.yaml"
-    if path.exists():
-        cfg = _read_yaml_file(path)
-        if cfg and cfg.get("enabled", False):
-            return cfg
-
-    skmem = _read_yaml_file(config_dir / "skmemory.yaml") or {}
-
-    # 2. Fallback: inline backends.skgraph section in skmemory.yaml
-    inline = skmem.get("backends", {}).get("skgraph", {})
-    if inline and inline.get("enabled", False):
-        ext_cfg_path = inline.get("config")
-        if ext_cfg_path:
-            resolved = Path(ext_cfg_path).expanduser()
-            if resolved.exists():
-                ext = _read_yaml_file(resolved)
-                if ext and ext.get("enabled", False):
-                    return ext
-        if inline.get("host") or inline.get("url"):
-            return inline
-
-    # 3. Legacy flat keys: skgraph_url / skgraph_graph_name / ... in skmemory.yaml
-    backends_enabled = skmem.get("backends_enabled", [])
-    url = skmem.get("skgraph_url")
-    if url and ("skgraph" in backends_enabled or skmem.get("skgraph_graph_name")):
-        return {
-            "enabled": True,
-            "url": url,
-            "graph_name": skmem.get("skgraph_graph_name", "skmemory"),
-        }
-
-    return None
-
-
 def _load_age_config(config_dir: Path) -> dict | None:
     """Load AGE (Apache AGE, Postgres-backed) graph config: try age.yaml
     first, then skmemory.yaml inline, then the ``backends_enabled: [age]``
     opt-in flag. Purely additive — returns None (age backend not used)
-    unless explicitly configured, so existing skgraph-based configs are
+    unless explicitly configured, so existing configs are
     unaffected.
     """
     path = config_dir / "age.yaml"
@@ -721,119 +631,6 @@ def _load_shared_corpora(config_dir: Path) -> list[dict[str, Any]]:
     return normalized
 
 
-def _make_ollama_embed_fn(model: str, base_url: str):
-    """Return an embedding function that calls the Ollama /api/embeddings endpoint."""
-    import urllib.request
-
-    def embed(text: str) -> list[float]:
-        body = json.dumps({"model": model, "prompt": text}).encode()
-        req = urllib.request.Request(
-            f"{base_url.rstrip('/')}/api/embeddings",
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read())
-            return data.get("embedding", [])
-        except Exception as e:
-            logger.warning("Ollama embedding failed: %s", e)
-            return []
-
-    return embed
-
-
-def _skvector_url(cfg: dict) -> str:
-    """Resolve the Qdrant URL from config dict.  Accepts either a top-level
-    ``url`` field or the ``host`` / ``port`` / ``https`` combination."""
-    if "url" in cfg:
-        return cfg["url"]
-    host = cfg.get("host", "localhost")
-    port = cfg.get("port", 6333)
-    scheme = "https" if cfg.get("https", False) else "http"
-    return f"{scheme}://{host}:{port}"
-
-
-def _skgraph_url(cfg: dict) -> str:
-    """Resolve the FalkorDB/Redis URL from config dict.
-
-    Accepts:
-    - Top-level ``url`` field (used as-is)
-    - ``host`` / ``port`` / ``password`` combination (password is
-      URL-decoded so YAML authors don't need to double-encode)
-    """
-    if "url" in cfg:
-        return cfg["url"]
-    host = cfg.get("host", "localhost")
-    port = cfg.get("port", 6379)
-    raw_password = cfg.get("password") or cfg.get("passwd")
-    if raw_password:
-        # Decode URL-encoded chars (e.g. %2B → +, %2F → /, %3D → =)
-        password = unquote(str(raw_password))
-        # Re-encode only the characters that break URL parsing
-        safe_password = password.replace("@", "%40").replace(":", "%3A")
-        return f"redis://:{safe_password}@{host}:{port}"
-    return f"redis://{host}:{port}"
-
-
-def _build_skvector_backend(skvector_cfg: dict) -> Any | None:
-    """Instantiate SKVectorBackend from config dict.
-
-    Accepts both ``url`` and ``host``/``port``/``https`` styles.
-    Embedding provider ``ollama`` injects an Ollama embed_fn so
-    sentence-transformers is not required.
-    """
-    try:
-        from .backends.skvector_backend import SKVectorBackend
-
-        url = _skvector_url(skvector_cfg)
-        api_key = (
-            skvector_cfg.get("api_key")
-            or skvector_cfg.get("api-key")
-            or skvector_cfg.get("apiKey")
-        )
-        collection = skvector_cfg.get("collection_name") or skvector_cfg.get(
-            "collection", "skmemory"
-        )
-        embed_cfg = skvector_cfg.get("embedding", {})
-        provider = embed_cfg.get("provider", "sentence_transformers")
-        model = embed_cfg.get("model", "all-MiniLM-L6-v2")
-        embed_fn = None
-
-        if provider == "ollama":
-            ollama_url = embed_cfg.get("url", "http://localhost:11434")
-            embed_fn = _make_ollama_embed_fn(model, ollama_url)
-
-        return SKVectorBackend(
-            url=url,
-            api_key=api_key,
-            collection=collection,
-            embed_fn=embed_fn,
-        )
-    except Exception as e:
-        logger.warning("Could not build SKVectorBackend: %s", e)
-        return None
-
-
-def _build_skgraph_backend(skgraph_cfg: dict) -> Any | None:
-    """Instantiate SKGraphBackend from config dict.
-
-    Accepts both ``url`` and ``host``/``port``/``password`` styles.
-    URL-encoded passwords (e.g. ``eiCn%2BMz0%3D``) are decoded before
-    being embedded in the connection URL.
-    """
-    try:
-        from .backends.skgraph_backend import SKGraphBackend
-
-        url = _skgraph_url(skgraph_cfg)
-        graph_name = skgraph_cfg.get("graph_name") or skgraph_cfg.get("graph", "skmemory")
-        return SKGraphBackend(url=url, graph_name=graph_name)
-    except Exception as e:
-        logger.warning("Could not build SKGraphBackend: %s", e)
-        return None
-
-
 def _build_age_backend(age_cfg: dict) -> Any | None:
     """Instantiate AGEGraphBackend from config dict.
 
@@ -861,13 +658,10 @@ class LazyMemoryLoader:
         self.paths = get_agent_paths(agent_name)
         self.today = datetime.now().date()
         self.db = SQLiteBackend(str(self.paths["base"] / "memory"))
-        self._vector_backend = None
-        self._recall_qdrant_backend = None
         self._graph_backend = None
         self._recall_collections: list[str] = []
         self._recall_graphs: list[str] = []
         self._shared_corpora: list[dict[str, Any]] = []
-        self._recall_graph_backends: dict[str, Any] = {}
         self._recall_source_roots: dict[str, list[Path]] = {}
         self._backends_loaded = False
 
@@ -968,48 +762,21 @@ class LazyMemoryLoader:
         return " ".join(words) + "..." if len(words) >= 30 else content
 
     def _ensure_backends(self) -> None:
-        """Lazy-load vector and graph backends from agent config (once).
+        """Lazy-load the graph backend and shared-corpus config (once).
 
-        Qdrant (skvector) is the only vector backend loaded here, and only when
-        configured; shared recall_collections use it too.
+        The graph is Apache AGE only, and only when configured. The Qdrant
+        (skvector) and FalkorDB (skgraph) backends are retired (SKMEM-P5-02).
         """
         if self._backends_loaded:
             return
         self._backends_loaded = True
         config_dir = self.paths["config"]
 
-        skvector_cfg = _load_skvector_config(config_dir)
-        if skvector_cfg:
-            self._vector_backend = _build_skvector_backend(skvector_cfg)
-
-        # AGE (Postgres-backed, live per-agent knowledge graphs) is opt-in and
-        # takes priority when configured; falls back to skgraph (FalkorDB,
-        # deprecated legacy) otherwise. Purely additive — no config means no
-        # behavior change from before AGE existed.
         age_cfg = _load_age_config(config_dir)
-        skgraph_cfg = _load_skgraph_config(config_dir)
         if age_cfg:
             self._graph_backend = _build_age_backend(age_cfg)
-        elif skgraph_cfg:
-            self._graph_backend = _build_skgraph_backend(skgraph_cfg)
 
         shared_corpora = _load_shared_corpora(config_dir)
-
-        # Resolve shared corpus names through env aliasing
-        env = (skvector_cfg or {}).get("env", "prod")
-        if env != "prod":
-            for corpus in shared_corpora:
-                vector_collection = corpus["vector_collection"]
-                graph_name = corpus["graph_name"]
-                corpus["vector_collection"] = (
-                    f"{vector_collection}-{env}"
-                    if not vector_collection.endswith(f"-{env}")
-                    else vector_collection
-                )
-                corpus["graph_name"] = (
-                    f"{graph_name}-{env}" if not graph_name.endswith(f"-{env}") else graph_name
-                )
-
         self._shared_corpora = shared_corpora
         self._recall_collections = [corpus["vector_collection"] for corpus in shared_corpora]
         self._recall_graphs = [corpus["graph_name"] for corpus in shared_corpora]
@@ -1021,49 +788,6 @@ class LazyMemoryLoader:
             self._recall_source_roots[graph_name] = roots or _default_recall_source_roots(
                 graph_name
             )
-
-        if skgraph_cfg:
-            primary_graph_name = skgraph_cfg.get("graph_name") or skgraph_cfg.get(
-                "graph", "skmemory"
-            )
-            for corpus in shared_corpora:
-                graph_name = corpus["graph_name"]
-                if graph_name == primary_graph_name:
-                    continue
-                recall_graph_cfg = dict(skgraph_cfg)
-                recall_graph_cfg["graph_name"] = graph_name
-                backend = _build_skgraph_backend(recall_graph_cfg)
-                if backend is not None:
-                    self._recall_graph_backends[graph_name] = backend
-
-    def _append_memory_result(
-        self,
-        results: list[dict],
-        seen_ids: set[str],
-        mem: Any,
-        source_backend: str,
-        score: float | None = None,
-    ) -> None:
-        if mem.id in seen_ids:
-            return
-        seen_ids.add(mem.id)
-        metadata = getattr(mem, "metadata", {}) or {}
-        results.append(
-            {
-                "id": mem.id,
-                "title": mem.title,
-                "content": mem.content,
-                "summary": getattr(mem, "summary", None),
-                "tags": mem.tags,
-                "layer": mem.layer.value if hasattr(mem.layer, "value") else str(mem.layer),
-                "created_at": mem.created_at,
-                "source_backend": source_backend,
-                "source_ref": getattr(mem, "source_ref", ""),
-                "metadata": metadata,
-                "authority_tier": metadata.get("authority_tier"),
-                "vector_score": score,
-            }
-        )
 
     def _append_graph_result_set(
         self, results: list[dict], seen_ids: set[str], hits: list[dict], source_backend: str
@@ -1188,168 +912,8 @@ class LazyMemoryLoader:
                         f"skgraph_{label}:{graph_name}",
                     )
 
-    def _collapse_recall_points(self, scored_points: list[Any]) -> list[Any]:
-        collapsed: dict[str, Any] = {}
-        for scored_point in scored_points:
-            payload = scored_point.payload or {}
-            key = str(
-                payload.get("parent_doc")
-                or payload.get("file_path")
-                or payload.get("filename")
-                or payload.get("id")
-                or getattr(scored_point, "id", "")
-            )
-            current = collapsed.get(key)
-            if current is None or float(getattr(scored_point, "score", 0.0) or 0.0) > float(
-                getattr(current, "score", 0.0) or 0.0
-            ):
-                collapsed[key] = scored_point
-        return sorted(
-            collapsed.values(),
-            key=lambda item: float(getattr(item, "score", 0.0) or 0.0),
-            reverse=True,
-        )
-
-    def _resolve_recall_source_path(self, graph_name: str, payload: dict) -> Path | None:
-        source_ref = payload.get("parent_doc") or payload.get("file_path")
-        if not source_ref:
-            return None
-        candidate = Path(str(source_ref)).expanduser()
-        if candidate.is_absolute() and candidate.exists():
-            return candidate
-        for root in self._recall_source_roots.get(graph_name, []):
-            path = root / str(source_ref)
-            if path.exists():
-                return path
-        return None
-
-    def _build_recall_graph_memory(self, graph_name: str, payload: dict, source_path: Path):
-        source_ref = str(payload.get("parent_doc") or payload.get("file_path") or source_path.name)
-        memory_dir = self.paths["base"] / "memory"
-        fingerprint = compute_source_fingerprint(source_path, payload)
-        cache_doc = load_cache_document(memory_dir, graph_name, source_ref)
-        if cache_doc and cache_doc.get("fingerprint") == fingerprint:
-            return memory_from_cache_document(cache_doc, target_graph_name=graph_name)
-        cache_doc = build_cache_document(
-            graph_name=graph_name,
-            source_ref=source_ref,
-            source_path=source_path,
-            payload=payload,
-        )
-        write_cache_document(memory_dir, graph_name, source_ref, cache_doc)
-        return memory_from_cache_document(cache_doc, target_graph_name=graph_name)
-
-    def _recall_graph_state_path(self) -> Path:
-        return self.paths["base"] / "memory" / "recall-graph-state.json"
-
-    def _load_recall_graph_state(self) -> dict[str, dict[str, str]]:
-        path = self._recall_graph_state_path()
-        if not path.exists():
-            return {}
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    def _save_recall_graph_state(self, state: dict[str, dict[str, str]]) -> None:
-        path = self._recall_graph_state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, indent=2, sort_keys=True))
-
-    def _fingerprint_recall_source(self, payload: dict, source_path: Path | None) -> str:
-        return compute_source_fingerprint(source_path, payload)
-
-    def sync_recall_graphs(self, batch_size: int = 256) -> dict[str, dict]:
-        self._ensure_backends()
-        stats: dict[str, dict] = {}
-        recall_backend = self._recall_qdrant_backend or (
-            self._vector_backend
-            if self._vector_backend is not None
-            and hasattr(getattr(self._vector_backend, "_client", None), "scroll")
-            else None
-        )
-        if recall_backend is None or not self._recall_graph_backends:
-            return stats
-        if not recall_backend._ensure_initialized():
-            return stats
-        state = self._load_recall_graph_state()
-        dirty = False
-        for graph_name, graph_backend in self._recall_graph_backends.items():
-            graph_stats = {
-                "source_collection": graph_name,
-                "graph": graph_name,
-                "indexed": 0,
-                "errors": 0,
-                "rehydrated": 0,
-                "collapsed": 0,
-                "skipped": 0,
-            }
-            stats[graph_name] = graph_stats
-            if not graph_backend._ensure_initialized():
-                graph_stats["errors"] += 1
-                continue
-            next_offset = None
-            seen_sources: set[str] = set()
-            graph_state = state.setdefault(graph_name, {})
-            while True:
-                try:
-                    points, next_offset = recall_backend._client.scroll(
-                        collection_name=graph_name,
-                        offset=next_offset,
-                        limit=batch_size,
-                        with_payload=True,
-                        with_vectors=False,
-                    )
-                except Exception as e:
-                    logger.warning("Recall graph scroll failed for %s: %s", graph_name, e)
-                    graph_stats["errors"] += 1
-                    break
-                if not points:
-                    break
-                for point in points:
-                    payload = point.payload or {}
-                    source_key = str(
-                        payload.get("parent_doc")
-                        or payload.get("file_path")
-                        or payload.get("filename")
-                        or payload.get("id")
-                        or getattr(point, "id", "")
-                    )
-                    if source_key in seen_sources:
-                        graph_stats["collapsed"] += 1
-                        continue
-                    seen_sources.add(source_key)
-                    try:
-                        source_path = self._resolve_recall_source_path(graph_name, payload)
-                        fingerprint = self._fingerprint_recall_source(payload, source_path)
-                        if graph_state.get(source_key) == fingerprint:
-                            graph_stats["skipped"] += 1
-                            continue
-                        if source_path is not None:
-                            memory = self._build_recall_graph_memory(
-                                graph_name, payload, source_path
-                            )
-                            graph_stats["rehydrated"] += 1
-                        else:
-                            memory = recall_backend._memory_from_payload(payload)
-                        if graph_backend.index_memory(memory):
-                            graph_stats["indexed"] += 1
-                            graph_state[source_key] = fingerprint
-                            dirty = True
-                        else:
-                            graph_stats["errors"] += 1
-                    except Exception as e:
-                        logger.warning("Recall graph index failed for %s: %s", graph_name, e)
-                        graph_stats["errors"] += 1
-                if next_offset is None:
-                    break
-        if dirty:
-            self._save_recall_graph_state(state)
-        return stats
-
     def deep_search(self, query: str, max_results: int = 10) -> list[dict]:
-        """Search ALL memory tiers including vector and graph backends.
+        """Search SQLite and the graph backend (pgvector search lives in MemoryStore).
 
         Args:
             query: Search query
@@ -1369,53 +933,7 @@ class LazyMemoryLoader:
                 r.setdefault("source_backend", "sqlite")
                 results.append(r)
 
-        # 2. SKVector semantic search (primary collection + recall_collections)
-        if self._vector_backend is not None:
-            try:
-                vector_hits = self._vector_backend.search_text(query, limit=max_results)
-                for mem in vector_hits:
-                    self._append_memory_result(results, seen_ids, mem, "skvector")
-            except Exception as e:
-                logger.warning("SKVector deep_search failed: %s", e)
-
-            # Also search recall_collections (cross-agent/cross-project indexes)
-            # Uses the Qdrant backend (shared collections like hammertime-v3, opus-memory).
-            _recall_backend = self._recall_qdrant_backend or (
-                self._vector_backend
-                if self._vector_backend is not None
-                and hasattr(self._vector_backend, "_client")
-                and hasattr(getattr(self._vector_backend, "_client", None), "query_points")
-                else None
-            )
-            if (
-                self._recall_collections
-                and _recall_backend is not None
-                and _recall_backend._ensure_initialized()
-            ):
-                embedding = _recall_backend._embed(query)
-                if embedding:
-                    for recall_col in self._recall_collections:
-                        try:
-                            scored_points = _recall_backend._client.query_points(
-                                collection_name=recall_col,
-                                query=embedding,
-                                limit=max_results * 4,
-                            ).points
-                            for sp in self._collapse_recall_points(scored_points)[:max_results]:
-                                mem = _recall_backend._memory_from_payload(sp.payload or {})
-                                self._append_memory_result(
-                                    results,
-                                    seen_ids,
-                                    mem,
-                                    f"skvector:{recall_col}",
-                                    score=float(getattr(sp, "score", 0.0) or 0.0),
-                                )
-                        except Exception as e:
-                            logger.warning(
-                                "SKVector recall_collection '%s' failed: %s", recall_col, e
-                            )
-
-        # 3. SKGraph retrieval (primary graph + recall graphs)
+        # 2. Graph retrieval (AGE, when configured)
         if self._graph_backend is not None:
             try:
                 graph_name = getattr(self._graph_backend, "graph_name", "skmemory")
@@ -1423,15 +941,7 @@ class LazyMemoryLoader:
                     results, seen_ids, self._graph_backend, graph_name, query, max_results
                 )
             except Exception as e:
-                logger.warning("SKGraph deep_search failed: %s", e)
-
-        for graph_name, graph_backend in self._recall_graph_backends.items():
-            try:
-                self._append_graph_hits(
-                    results, seen_ids, graph_backend, graph_name, query, max_results
-                )
-            except Exception as e:
-                logger.warning("Recall SKGraph deep_search failed for %s: %s", graph_name, e)
+                logger.warning("Graph deep_search failed: %s", e)
 
         # Compute fusion scores and sort
         query_terms = [w.lower() for w in query.split() if len(w) > 2]
@@ -1495,9 +1005,7 @@ class LazyMemoryLoader:
 
         # 4. Backend bonus (vector results carry semantic signal)
         backend = result.get("source_backend", "sqlite").split(":")[0]
-        if backend.startswith("skvector"):
-            backend_bonus = 0.15
-        elif backend == "skgraph_citation":
+        if backend == "skgraph_citation":
             backend_bonus = 0.14
         elif backend == "skgraph_claim":
             backend_bonus = 0.12
@@ -1541,24 +1049,17 @@ class LazyMemoryLoader:
         return memories
 
     def sync_backends(self) -> dict:
-        """Sync all flat-file memories to vector and graph backends.
+        """Sync all flat-file memories to the graph backend.
 
-        Returns dict with stats: indexed, skipped, removed, errors per backend.
+        Returns dict with stats per backend. The vector tier is synced by
+        ``skmemory sync --vector`` (skmem-pg), not here.
         """
         self._ensure_backends()
         stats = {}
 
         mem_dir = self.paths["base"] / "memory"
-        if self._vector_backend is not None:
-            result = self._vector_backend.sync_all(mem_dir, self.agent_name or "default")
-            stats["skvector"] = result
-
         if self._graph_backend is not None:
-            stats["skgraph"] = self._graph_backend.sync_all(mem_dir, self.agent_name or "default")
-
-        recall_graph_stats = self.sync_recall_graphs()
-        if recall_graph_stats:
-            stats["recall_graphs"] = recall_graph_stats
+            stats["graph"] = self._graph_backend.sync_all(mem_dir, self.agent_name or "default")
 
         return stats
 
