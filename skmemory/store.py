@@ -51,6 +51,7 @@ from .models import (
     Memory,
     MemoryKind,
     MemoryLayer,
+    MemoryOutcome,
     MemoryRole,
     SeedMemory,
     SourceTier,
@@ -442,6 +443,7 @@ class MemoryStore:
         reader: str | None = None,
         supersedes_id: str | None = None,
         source_tier: SourceTier | None = None,
+        outcome: MemoryOutcome | None = None,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -470,6 +472,8 @@ class MemoryStore:
             source_tier: Provenance tier. None derives it from ``source`` with
                 :func:`skmemory.models.tier_for_source` (unknown labels are
                 ``self-generated``, the capped, conservative choice).
+            outcome: Schema v2 outcome (success, failure, lesson). None leaves it
+                unset. Not carried through the decompose and split paths.
             supersedes_id: Explicit supersession: always honoured (after the reader
                 check), whatever the kind. The open head of that record's chain is
                 closed at this memory's valid_from.
@@ -546,6 +550,7 @@ class MemoryStore:
             related_ids=related_ids or [],
             metadata=metadata,
             **({"kind": kind} if kind else {}),
+            **({"outcome": outcome} if outcome else {}),
         )
 
         # Write-time conflict verdict (card SKMEM-P3-02): fact/rule/preference only.
