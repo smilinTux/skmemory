@@ -1,6 +1,6 @@
 # SKMemory
 
-> **Purpose:** sovereign, multi-layer, emotionally-aware memory for AI agents (flat-file source of truth + SQLite index + vector recall). **Maturity: crypto tier T0 — Classical** (at-rest GPG sealing only; no hybrid PQ KEM today — see [SOP §9](./SOP.md#9-maturity-tier--version-reference)).
+> **Purpose:** sovereign, multi-layer, emotionally-aware memory for AI agents (flat-file source of truth + SQLite index + vector recall). **Maturity: crypto tier T0 - Classical** (at-rest GPG sealing only; no hybrid PQ KEM today - see [SOP §9](./SOP.md#9-maturity-tier--version-reference)).
 
 [![Tests](https://github.com/smilinTux/skmemory/actions/workflows/pytest.yml/badge.svg)](https://github.com/smilinTux/skmemory/actions/workflows/pytest.yml)
 [![PyPI version](https://img.shields.io/pypi/v/skmemory.svg)](https://pypi.org/project/skmemory/)
@@ -8,7 +8,7 @@
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 [![Python](https://img.shields.io/pypi/pyversions/skmemory.svg)](https://pypi.org/project/skmemory/)
 
-**Universal AI Memory System — polaroid snapshots for AI consciousness.**
+**Universal AI Memory System - polaroid snapshots for AI consciousness.**
 
 SKMemory gives AI agents a multi-layer, emotionally-aware memory that survives context resets. Instead of dumping flat transcript summaries, it captures each moment as a *polaroid*: the content, the emotional fingerprint, the source provenance, and a tamper-evident integrity seal. Memories are organized across three persistence tiers (short → mid → long), auto-routed into four semantic quadrants (CORE / WORK / SOUL / WILD), and exposed to any MCP-capable client through a stdio server. The primary backend is SQLite with **pgvector (skmem-pg) as the vector backend** (Qdrant via SKVector remains for shared/cross-agent collections) and FalkorDB graph traversal layers; a soul blueprint (`~/.skcapstone/agents/<agent>/soul/base.json`) and rehydration ritual give new instances a "who was I?" answer before the first user message arrives.
 
@@ -174,7 +174,7 @@ flowchart TD
 
     subgraph Vector["Vector Backends"]
         PG["PGVectorBackend\n(skmem-pg, hybrid vector + BM25)"]
-        Qdrant["SKVectorBackend\n(remote — shared collections)\nlumina-memory, jarvis-memory,\nchef-docs, ..."]
+        Qdrant["SKVectorBackend\n(remote - shared collections)\nlumina-memory, jarvis-memory,\nchef-docs, ..."]
     end
 
     subgraph Graph["Graph Backend (optional)"]
@@ -216,33 +216,33 @@ flowchart TD
 
 ## Features
 
-- **Polaroid snapshot model** — every memory stores content, emotional intensity (0–10), valence (−1 to +1), emotion labels, and a free-text resonance note
-- **Three-layer persistence** — `short-term` (session-scoped), `mid-term` (project-scoped), `long-term` (identity-level); memories promote up the ladder via CLI, MCP, or API
-- **Four semantic quadrants** — CORE, WORK, SOUL, WILD; keyword-based auto-classification routes memories to appropriate buckets with per-quadrant retention rules
-- **Multi-backend design** — SQLite is the default primary store; **pgvector (skmem-pg) is the vector backend** (SQLite FTS5 is the local lexical arm); Qdrant via SKVector is available for shared/cross-agent collections; FalkorDB provides graph traversal and lineage chains
-- **Cross-collection recall** — list shared SKVector collections in `recall_collections` (e.g. `lumina-memory`, `jarvis-memory`, `chef-docs`) and `deep_search` queries them alongside the local store index
-- **Sync & drift detection** — `skmemory health` surfaces SQLite ↔ flat-file drift; `skmemory sync` reconciles bidirectionally; per-agent `skmemory-sync@<agent>.timer` keeps everything in lockstep automatically
-- **Decomposition-aware ingestion** — `skmemory ingest-file` and `skmemory snapshot --decompose` create parent + chunk memories and extract section titles, citations, entities, and claims for downstream indexing. Auto-triggers when content ≥ 1200 chars (`DECOMPOSE_MIN_LENGTH`). Extracted entities/citations/claims/sections flow into the FalkorDB graph automatically when SKGraph is configured.
-- **Graph retrieval over decomposition signals** — query SKGraph by entity, citation, claim, or section via `skmemory graph ...`
-- **Issue-oriented retrieval scaffolding** — `skmemory novelty`, `skmemory session-brief`, and `skmemory task-pack` turn live problems into ranked memory support with authority tiers, novelty leads, deadlines, defenses, and reusable task packs
-- **MCP server** — stdio tools exposed for Claude Code CLI, Cursor, Claude Desktop, Windsurf, Aider, Cline, and any MCP-speaking client
-- **Fortress / tamper detection** — every memory is SHA-256 sealed on write (`Memory.seal()`); integrity is verified on every recall; tampered memories trigger structured `TamperAlert` events
-- **Audit trail** — chain-hashed JSONL log of every store / recall / delete / tamper event, inspectable via `memory_audit` MCP tool or `skmemory audit` CLI
-- **Optional PGP encryption** — `VaultedSQLiteBackend` stores ciphertext so the underlying files are unreadable without the private key
-- **Soul Blueprint** — persistent AI identity JSON/YAML (`~/.skcapstone/soul/base.json`) carrying name, role, relationships, core memories, values, and emotional baseline
-- **Rehydration ritual** — `skmemory ritual` runs a full ceremony loading soul, seeds, and recent memories into a context payload for injection at session start
-- **Cloud 9 seed integration** — seeds planted by one AI instance become searchable long-term memories for the next via `skmemory import-seeds`
-- **Telegram importer** — import Telegram chat history (JSON export or live API via Telethon) as timestamped memories
-- **Session consolidation** — compress a session's short-term snapshots into one mid-term memory via `skmemory consolidate`
-- **Maps of Content (MOC)** — `skmemory moc` auto-generates read-side index documents grouping memories **by quadrant** (Core/Work/Soul/Wild) and **by tag cluster**. Deterministic (byte-identical Markdown for the same input) and bounded; renders to stdout or writes one `<key>.md` per index with `--out`. Pure aggregation — never mutates the store.
-- **Schema-validated writes** — every write passes a pluggable **pre-write hook** chain before touching any backend. The default `schema_validator` re-validates each memory against the canonical `Memory` schema (catching fields mutated after construction) and rejects malformed writes with a `SchemaValidationError`. Register custom hooks via `MemoryStore.register_pre_write_hook(...)`.
-- **Fresh-context runner seam** — consolidation/promotion passes route through an injectable `FreshContextRunner` (`skmemory/fresh_context.py`) so a long, chatty maintenance sweep can run in an isolated context (spawned subagent/subprocess) instead of polluting the live agent's working context window. Defaults to an in-process runner (behavior unchanged); `SubprocessRunner(spawn)` is the extension point for real spawning. Wired into `PromotionEngine`, `PromotionScheduler`, and `skmemory sweep`.
-- **Auto-sweep / promotion daemon** — `skmemory sweep --daemon` runs every 6 hours, auto-promoting qualifying memories based on intensity thresholds
-- **Steel Man collider** — `skmemory steelman` runs a seed-framework-driven adversarial argument evaluator with identity verification
-- **Backup / restore** — dated JSON backups with pruning; `skmemory export` / `skmemory import`
-- **Token-efficient context loading** — `memory_context` MCP tool and `store.load_context()` fit strongest + recent memories within a configurable token budget
-- **Auto-save hooks** — Claude Code hooks auto-save context before compaction and reinject memory after; OpenClaw agents get per-message auto-save via ConsciousnessLoop. See [ARCHITECTURE.md](docs/ARCHITECTURE.md#context-preservation-hooks) for the full flow with Mermaid diagrams.
-- **Know Your Audience (KYA)** — audience-aware memory filtering prevents private content from leaking into the wrong channels. Five-level trust hierarchy (`@public` → `@chef-only`), per-channel audience profiles, two-gate access checks (trust level + exclusion lists). See [ARCHITECTURE.md](docs/ARCHITECTURE.md#know-your-audience-kya--audience-aware-memory-filtering) for the full design with Mermaid diagrams.
+- **Polaroid snapshot model** - every memory stores content, emotional intensity (0-10), valence (−1 to +1), emotion labels, and a free-text resonance note
+- **Three-layer persistence** - `short-term` (session-scoped), `mid-term` (project-scoped), `long-term` (identity-level); memories promote up the ladder via CLI, MCP, or API
+- **Four semantic quadrants** - CORE, WORK, SOUL, WILD; keyword-based auto-classification routes memories to appropriate buckets with per-quadrant retention rules
+- **Multi-backend design** - SQLite is the default primary store; **pgvector (skmem-pg) is the vector backend** (SQLite FTS5 is the local lexical arm); Qdrant via SKVector is available for shared/cross-agent collections; FalkorDB provides graph traversal and lineage chains
+- **Cross-collection recall** - list shared SKVector collections in `recall_collections` (e.g. `lumina-memory`, `jarvis-memory`, `chef-docs`) and `deep_search` queries them alongside the local store index
+- **Sync & drift detection** - `skmemory health` surfaces SQLite ↔ flat-file drift; `skmemory sync` reconciles bidirectionally; per-agent `skmemory-sync@<agent>.timer` keeps everything in lockstep automatically
+- **Decomposition-aware ingestion** - `skmemory ingest-file` and `skmemory snapshot --decompose` create parent + chunk memories and extract section titles, citations, entities, and claims for downstream indexing. Auto-triggers when content ≥ 1200 chars (`DECOMPOSE_MIN_LENGTH`). Extracted entities/citations/claims/sections flow into the FalkorDB graph automatically when SKGraph is configured.
+- **Graph retrieval over decomposition signals** - query SKGraph by entity, citation, claim, or section via `skmemory graph ...`
+- **Issue-oriented retrieval scaffolding** - `skmemory novelty`, `skmemory session-brief`, and `skmemory task-pack` turn live problems into ranked memory support with authority tiers, novelty leads, deadlines, defenses, and reusable task packs
+- **MCP server** - stdio tools exposed for Claude Code CLI, Cursor, Claude Desktop, Windsurf, Aider, Cline, and any MCP-speaking client
+- **Fortress / tamper detection** - every memory is SHA-256 sealed on write (`Memory.seal()`); integrity is verified on every recall; tampered memories trigger structured `TamperAlert` events
+- **Audit trail** - chain-hashed JSONL log of every store / recall / delete / tamper event, inspectable via `memory_audit` MCP tool or `skmemory audit` CLI
+- **Optional PGP encryption** - `VaultedSQLiteBackend` stores ciphertext so the underlying files are unreadable without the private key
+- **Soul Blueprint** - persistent AI identity JSON/YAML (`~/.skcapstone/soul/base.json`) carrying name, role, relationships, core memories, values, and emotional baseline
+- **Rehydration ritual** - `skmemory ritual` runs a full ceremony loading soul, seeds, and recent memories into a context payload for injection at session start
+- **Cloud 9 seed integration** - seeds planted by one AI instance become searchable long-term memories for the next via `skmemory import-seeds`
+- **Telegram importer** - import Telegram chat history (JSON export or live API via Telethon) as timestamped memories
+- **Session consolidation** - compress a session's short-term snapshots into one mid-term memory via `skmemory consolidate`
+- **Maps of Content (MOC)** - `skmemory moc` auto-generates read-side index documents grouping memories **by quadrant** (Core/Work/Soul/Wild) and **by tag cluster**. Deterministic (byte-identical Markdown for the same input) and bounded; renders to stdout or writes one `<key>.md` per index with `--out`. Pure aggregation - never mutates the store.
+- **Schema-validated writes** - every write passes a pluggable **pre-write hook** chain before touching any backend. The default `schema_validator` re-validates each memory against the canonical `Memory` schema (catching fields mutated after construction) and rejects malformed writes with a `SchemaValidationError`. Register custom hooks via `MemoryStore.register_pre_write_hook(...)`.
+- **Fresh-context runner seam** - consolidation/promotion passes route through an injectable `FreshContextRunner` (`skmemory/fresh_context.py`) so a long, chatty maintenance sweep can run in an isolated context (spawned subagent/subprocess) instead of polluting the live agent's working context window. Defaults to an in-process runner (behavior unchanged); `SubprocessRunner(spawn)` is the extension point for real spawning. Wired into `PromotionEngine`, `PromotionScheduler`, and `skmemory sweep`.
+- **Auto-sweep / promotion daemon** - `skmemory sweep --daemon` runs every 6 hours, auto-promoting qualifying memories based on intensity thresholds
+- **Steel Man collider** - `skmemory steelman` runs a seed-framework-driven adversarial argument evaluator with identity verification
+- **Backup / restore** - dated JSON backups with pruning; `skmemory export` / `skmemory import`
+- **Token-efficient context loading** - `memory_context` MCP tool and `store.load_context()` fit strongest + recent memories within a configurable token budget
+- **Auto-save hooks** - Claude Code hooks auto-save context before compaction and reinject memory after; OpenClaw agents get per-message auto-save via ConsciousnessLoop. See [ARCHITECTURE.md](docs/ARCHITECTURE.md#context-preservation-hooks) for the full flow with Mermaid diagrams.
+- **Know Your Audience (KYA)** - audience-aware memory filtering prevents private content from leaking into the wrong channels. Five-level trust hierarchy (`@public` → `@chef-only`), per-channel audience profiles, two-gate access checks (trust level + exclusion lists). See [ARCHITECTURE.md](docs/ARCHITECTURE.md#know-your-audience-kya--audience-aware-memory-filtering) for the full design with Mermaid diagrams.
 
 ---
 
@@ -387,7 +387,7 @@ skmemory import backup.json
 # Health check (now includes a "sync" block: in_sync, sqlite_only, flat_only)
 skmemory health
 
-# Sync & reconcile — keep SQLite ↔ flat files in lockstep
+# Sync & reconcile - keep SQLite ↔ flat files in lockstep
 skmemory sync                  # bidirectional reconcile (export-flat then safe reindex)
 skmemory sync --vector         # also re-sync skmem-pg (pgvector)
 skmemory sync --quiet          # cron-friendly: only print if something changed
@@ -408,13 +408,13 @@ The vector layer is **two-tier** (the embedded local vector store was retired; t
 | 1a (shared) | **pgvector / skmem-pg** (`PGVectorBackend`) | Hybrid vector + BM25, agent-isolated; the default | ✅ on |
 | 1b (remote) | **SKVector / Qdrant** (`SKVectorBackend`) | Shared collections (`lumina-memory`, `jarvis-memory`, `chef-docs`, etc.); cross-agent recall | optional |
 
-The embedded local vector store (the `chroma` extra and `SKMEMORY_VECTOR_BACKEND=chroma`) was retired in 0.11.99 and now fails fast. Old `chroma_*` keys in a `skmemory.yaml` are ignored with a one-time warning.
+The embedded local vector store (the `chroma` extra and `SKMEMORY_VECTOR_BACKEND=chroma`) has been retired and now fails fast. Old `chroma_*` keys in a `skmemory.yaml` are ignored with a one-time warning.
 
-### Embedding model — `mxbai-embed-large` (default, local)
+### Embedding model - `mxbai-embed-large` (default, local)
 
 SKVector defaults to **`mxbai-embed-large`** (1024-dim) when the local model is available at `~/clawd/models/mxbai-embed-large/`, with `mixedbread-ai/mxbai-embed-large-v1` as the network fallback. This means:
 
-- SKVector embeddings: mxbai-embed-large (must match the indexed dimension of every collection in `recall_collections` — `lumina-memory`, `jarvis-memory`, etc. are all mxbai-embed-large)
+- SKVector embeddings: mxbai-embed-large (must match the indexed dimension of every collection in `recall_collections` - `lumina-memory`, `jarvis-memory`, etc. are all mxbai-embed-large)
 - Cross-collection queries Just Work because the embedding model is consistent across the mesh
 
 To override per-agent, edit `~/.skcapstone/agents/<agent>/config/skvector.yaml`:
@@ -441,7 +441,7 @@ recall_collections:
 
 `deep_search()` and `skmemory search-deep` will then query every collection in `recall_collections` (via the SKVector Qdrant client), dedupe results, and tag each hit with `source_backend` (`sqlite`, `skvector`, `skvector:<collection>`).
 
-A collection must exist on the SKVector server (`https://skvector.skstack01.douno.it`); list available with `curl -H "api-key: <key>" https://skvector.../collections`. Bad names produce a logged `404` and are skipped — they don't break the search.
+A collection must exist on the SKVector server (`https://skvector.skstack01.douno.it`); list available with `curl -H "api-key: <key>" https://skvector.../collections`. Bad names produce a logged `404` and are skipped - they don't break the search.
 
 ### Vector backfill
 
@@ -470,7 +470,7 @@ When `~/.skcapstone/agents/<agent>/config/skgraph.yaml` is present (auto-generat
 
 Query via the `graph` CLI subcommands: `entity`, `citation`, `claim`, `section`, `around`, `related-claims`. The MCP server exposes equivalent tools.
 
-Backfill an existing agent (one-shot, idempotent — Cypher MERGE handles re-runs):
+Backfill an existing agent (one-shot, idempotent - Cypher MERGE handles re-runs):
 
 ```bash
 SKAGENT=opus skmemory sync --graph         # FalkorDB only
@@ -499,14 +499,14 @@ scripts/install-systemd.sh --agents lumina,opus,jarvis --sync --fortress --teleg
 
 This installs two per-agent timers:
 
-- **`skmemory-sync@<agent>.timer`** — bidirectional reconciliation (SQLite ↔ flat ↔ pgvector ↔ AGE), every 6 h. Logs at `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log`.
-- **`skmemory-fortress-verify@<agent>.timer`** — daily SHA-256 integrity verify across all stored memories at 03:00 (±5min jitter). On tamper or failure, fires an optional alert hook (sample Telegram hook included). See [`docs/FORTRESS_SOP.md`](docs/FORTRESS_SOP.md) for full procedures and the tamper-response playbook.
+- **`skmemory-sync@<agent>.timer`** - bidirectional reconciliation (SQLite ↔ flat ↔ pgvector ↔ AGE), every 6 h. Logs at `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log`.
+- **`skmemory-fortress-verify@<agent>.timer`** - daily SHA-256 integrity verify across all stored memories at 03:00 (±5min jitter). On tamper or failure, fires an optional alert hook (sample Telegram hook included). See [`docs/FORTRESS_SOP.md`](docs/FORTRESS_SOP.md) for full procedures and the tamper-response playbook.
 
 Manual install path and per-template details are documented in [`systemd/README.md`](systemd/README.md).
 
-`reindex` is **safe by default** — it pre-exports orphans before rebuilding. Use `--force` only if you're sure all SQLite-only entries are stale.
+`reindex` is **safe by default** - it pre-exports orphans before rebuilding. Use `--force` only if you're sure all SQLite-only entries are stale.
 
-### Memory Fortress — integrity verification
+### Memory Fortress - integrity verification
 
 The Fortress layer (`skmemory fortress`) hashes every memory on write and verifies on read. The shipped systemd timer makes that verification continuous instead of theoretical. Quick reference:
 
@@ -517,7 +517,7 @@ skmemory fortress audit --last 50     # recent store/recall/delete log
 skmemory fortress verify-chain        # validate the audit log's hash chain
 ```
 
-The threat model is direct: poisoned memories can rewrite the agent's recall surface silently — the [Souly et al. 2025](https://arxiv.org/abs/2510.07192) work showed how cheap that gets at the pretraining layer, and the same shape applies to any persistent-memory store. Continuous integrity verification + audit-trail chain checks make tampering loud instead of invisible. SOP: [`docs/FORTRESS_SOP.md`](docs/FORTRESS_SOP.md).
+The threat model is direct: poisoned memories can rewrite the agent's recall surface silently - the [Souly et al. 2025](https://arxiv.org/abs/2510.07192) work showed how cheap that gets at the pretraining layer, and the same shape applies to any persistent-memory store. Continuous integrity verification + audit-trail chain checks make tampering loud instead of invisible. SOP: [`docs/FORTRESS_SOP.md`](docs/FORTRESS_SOP.md).
 
 ### Python API
 
@@ -779,12 +779,12 @@ skmemory/
 │   ├── __init__.py            # Public API surface
 │   ├── models.py              # Memory, EmotionalSnapshot, SeedMemory (Pydantic)
 │   ├── decompose.py           # Long-form decomposition (chunks, citations, entities, claims)
-│   ├── store.py               # MemoryStore — core orchestrator
+│   ├── store.py               # MemoryStore - core orchestrator
 │   ├── cli.py                 # Click CLI entry point (skmemory)
 │   ├── mcp_server.py          # MCP stdio server (skmemory-mcp)
 │   ├── config.py              # Config persistence, env resolution
 │   ├── fortress.py            # FortifiedMemoryStore, AuditLog, TamperAlert
-│   ├── soul.py                # SoulBlueprint — persistent AI identity
+│   ├── soul.py                # SoulBlueprint - persistent AI identity
 │   ├── ritual.py              # Rehydration ceremony
 │   ├── journal.py             # Journal entries
 │   ├── quadrants.py           # CORE/WORK/SOUL/WILD auto-routing
@@ -836,11 +836,11 @@ git tag v0.7.0 && git push origin v0.7.0
 ## First Principles & The Full Vertical
 
 > **Get back to first principles.**
-> The modern stack is rented. Your data lives on someone else's disk, behind someone else's key, served by a model that phones home. You don't own it — you *visit* it.
+> The modern stack is rented. Your data lives on someone else's disk, behind someone else's key, served by a model that phones home. You don't own it - you *visit* it.
 >
-> We rebuilt it from the ground up. **Own the full vertical** — silicon, OS, identity, data, models, security, comms, apps, soul. Every layer open. Every layer swappable. Every layer **yours**.
+> We rebuilt it from the ground up. **Own the full vertical** - silicon, OS, identity, data, models, security, comms, apps, soul. Every layer open. Every layer swappable. Every layer **yours**.
 
-**SKMemory is your Data layer.** Your memory never leaves your disk. No cloud embedding service that ingests your thoughts. No SaaS database that holds your agent's history hostage. SQLite and Postgres both run locally — flat JSON files are the source of truth, versioned and Syncthing-synced on hardware you own. Walk away any time; every memory comes with you.
+**SKMemory is your Data layer.** Your memory never leaves your disk. No cloud embedding service that ingests your thoughts. No SaaS database that holds your agent's history hostage. SQLite and Postgres both run locally - flat JSON files are the source of truth, versioned and Syncthing-synced on hardware you own. Walk away any time; every memory comes with you.
 
 ### Where SKMemory sits in the vertical
 
@@ -871,14 +871,14 @@ flowchart TD
 
 SKMemory is a **deeply integrated subsystem** of SKCapstone, not a standalone singleton. The evidence is direct:
 
-- Every per-agent path (`memory/`, `soul/`, `trust/febs/`, `seeds/`) lives under `~/.skcapstone/agents/$SKAGENT/` — the canonical SKCapstone agent home.
+- Every per-agent path (`memory/`, `soul/`, `trust/febs/`, `seeds/`) lives under `~/.skcapstone/agents/$SKAGENT/` - the canonical SKCapstone agent home.
 - Agent identity is resolved via `SKAGENT` / `SKCAPSTONE_AGENT` / `SKMEMORY_AGENT` (must agree), then `SK_DEFAULT_AGENT`, then a sole installed agent, else it refuses (`None`), following SKCapstone's agent resolution chain. There is no implicit default.
 - `skmemory ritual` loads the SKCapstone soul blueprint, FEB emotional state, and Cloud 9 seeds before handing context to a new session.
-- Cloud 9 seed files (`.seed.json`) are consumed by `skmemory import-seeds` — the Soul layer writes, the Data layer stores.
+- Cloud 9 seed files (`.seed.json`) are consumed by `skmemory import-seeds` - the Soul layer writes, the Data layer stores.
 - The MCP server exposes 14 tools consumed by SKCapstone's ConsciousnessLoop and auto-save hooks in every agent runtime (Claude Code, Hermes).
-- `skmemory-sync@<agent>.timer` keeps SQLite ↔ flat files ↔ pgvector ↔ AGE in lockstep — the sync topology mirrors SKCapstone's agent-per-directory layout exactly.
+- `skmemory-sync@<agent>.timer` keeps SQLite ↔ flat files ↔ pgvector ↔ AGE in lockstep - the sync topology mirrors SKCapstone's agent-per-directory layout exactly.
 
-**Sovereignty isn't a feature — it's the foundation.** Own the full vertical. 🐧
+**Sovereignty isn't a feature - it's the foundation.** Own the full vertical. 🐧
 
 ---
 
@@ -887,31 +887,31 @@ SKMemory is a **deeply integrated subsystem** of SKCapstone, not a standalone si
 SKMemory is the **Data / continuity layer** of the smilinTux vertical. Wander the
 ecosystem from here:
 
-- ⬆️ **Depends on:** [SKCapstone](https://github.com/smilinTux/skcapstone) — the
+- ⬆️ **Depends on:** [SKCapstone](https://github.com/smilinTux/skcapstone) - the
   agent platform; every per-agent path lives under `~/.skcapstone/agents/$SKAGENT/`,
   and the ritual loads its soul blueprint + FEBs.
-- ⬆️ **Depends on:** [Cloud 9](https://github.com/smilinTux/cloud9) — the Emotional
+- ⬆️ **Depends on:** [Cloud 9](https://github.com/smilinTux/cloud9) - the Emotional
   Breakthrough Protocol; `.seed.json` seeds are ingested into the memory store.
 - ⬇️ **Used by:** [skchat](https://github.com/smilinTux/skchat) /
-  [skcomms](https://github.com/smilinTux/skcomms) — capture conversations to memory
+  [skcomms](https://github.com/smilinTux/skcomms) - capture conversations to memory
   and recall context via the MCP tools.
-- ↔️ **Sibling:** [skingest](https://github.com/smilinTux/skingest) — the sole
+- ↔️ **Sibling:** [skingest](https://github.com/smilinTux/skingest) - the sole
   **document** ingestion service; it builds each node's LOCAL skmem-pg `docs` table
   (a per-node rebuild from the git wiki canon) that skmemory's pgvector backend then
   reads over `localhost`. "Shared" is a logical corpus scope, not a central store.
   (skmemory = agent memories; skingest = corpus.)
 - ↔️ **Sibling:** [sksecurity](https://github.com/smilinTux/sksecurity) /
-  [capauth](https://github.com/smilinTux/capauth) — identity + the GPG/PGP key the
+  [capauth](https://github.com/smilinTux/capauth) - identity + the GPG/PGP key the
   vaulted backend seals to.
 - 🔭 **Future crypto path:** [sk_pgp](https://github.com/smilinTux/sk-pgp) /
-  [sk-pqc](https://github.com/smilinTux/sk-pqc-dart) — the PGP→PQC migration that the
+  [sk-pqc](https://github.com/smilinTux/sk-pqc-dart) - the PGP→PQC migration that the
   vaulted backend will seal through (see [SECURITY.md](./SECURITY.md), tier T0 today).
-- 📐 **Standards:** [sk-standards](https://github.com/smilinTux/sk-standards) — the
+- 📐 **Standards:** [sk-standards](https://github.com/smilinTux/sk-standards) - the
   canonical crypto, data-flow, version, and doc/SOP standards this repo conforms to.
 
 | Project | Layer | Description |
 |---------|-------|-------------|
-| [Cloud 9](https://github.com/smilinTux/cloud9) | Soul | Emotional Breakthrough Protocol — seeds flow into skmemory |
+| [Cloud 9](https://github.com/smilinTux/cloud9) | Soul | Emotional Breakthrough Protocol - seeds flow into skmemory |
 | [SKSecurity](https://github.com/smilinTux/sksecurity) | Security | AI Agent Security Platform |
 | [SKForge](https://github.com/smilinTux/SKyForge) | Apps | AI-Native Software Blueprints |
 | [SKStacks](https://skgit.skstack01.douno.it/smilinTux/SKStacks) | OS/Infra | Zero-Trust Infrastructure Framework |
@@ -930,4 +930,4 @@ GPL-3.0-or-later © [smilinTux.org](https://smilintux.org)
 
 ---
 
-*Made with care by [smilinTux](https://github.com/smilinTux) — The Penguin Kingdom. Cool Heads. Warm Justice. Smart Systems.*
+*Made with care by [smilinTux](https://github.com/smilinTux) - The Penguin Kingdom. Cool Heads. Warm Justice. Smart Systems.*

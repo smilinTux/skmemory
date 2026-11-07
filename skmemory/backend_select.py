@@ -34,10 +34,8 @@ from typing import Any
 VECTOR_BACKEND_ENV = "SKMEMORY_VECTOR_BACKEND"
 PG_DSN_ENV = "SKMEMORY_PG_DSN"
 
-# The release that removed ChromaDB. Quoted in the fail-fast message.
-CHROMA_RETIRED_IN = "0.11.99"
 CHROMA_RETIRED_MESSAGE = (
-    f"ChromaDB was retired in skmemory {CHROMA_RETIRED_IN}; use pgvector (shared) "
+    "ChromaDB has been retired; use pgvector (shared) "
     "or the SQLite FTS5 local arm. Unset SKMEMORY_VECTOR_BACKEND or set it to "
     "pgvector or none."
 )

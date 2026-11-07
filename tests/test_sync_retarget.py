@@ -2,7 +2,7 @@
 
 `sync --vector` must reconcile flat files into skmem-pg (pgvector) via the
 vendored `skmemory.reconcile` engine, and `sync --graph` must backfill the
-Apache AGE knowledge graph — NOT the retired embedded-vector / FalkorDB backends.
+Apache AGE knowledge graph - NOT the retired embedded-vector / FalkorDB backends.
 
 These are unit-level integration tests: the Postgres-touching engines
 (`skmemory.reconcile.reconcile` and `AGEGraphBackend.sync_all`) are mocked so

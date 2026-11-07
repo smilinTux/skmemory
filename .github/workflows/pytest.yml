@@ -1,6 +1,6 @@
 name: Tests
 
-# Dedicated pytest workflow — green-by-construction.
+# Dedicated pytest workflow - green-by-construction.
 #
 # Invocation mirrors the repo's known-passing command (see publish.yml's
 # pre-publish gate):
@@ -14,12 +14,12 @@ name: Tests
 #     the directory outright so the run never depends on networked services.
 #   * test_sharing.py exercises PGP cross-agent sharing via `pgpy`, which is
 #     unstable across CPython versions (see commit 435e817 "guard pgpy import in
-#     test_sharing"). It is deselected here — the same exclusion publish.yml uses
-#     for its release gate — rather than relying on an import-time skip.
+#     test_sharing"). It is deselected here - the same exclusion publish.yml uses
+#     for its release gate - rather than relying on an import-time skip.
 #
 # Dependency set: `.[dev]` (pytest, pytest-cov, pgpy, black, ruff) on top of the
 # core deps (pydantic, click, pyyaml, mcp). Sibling sk* packages (skseed,
-# qdrant-client, falkordb, telethon, sk_pgp) are NOT installed — every
+# qdrant-client, falkordb, telethon, sk_pgp) are NOT installed - every
 # test that needs one guards with pytest.importorskip / skipif and self-skips, so
 # no GitHub-source install or allow-failure shim is required for a green run.
 #

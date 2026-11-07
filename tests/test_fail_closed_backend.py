@@ -185,7 +185,7 @@ def test_no_declaration_builds_no_vector_backend(monkeypatch, spy_backends):
 
 @pytest.mark.parametrize("name", ["chroma", "chromadb", "CHROMA"])
 def test_retired_backend_env_fails_fast_with_message(monkeypatch, spy_backends, name):
-    with pytest.raises(BackendInitError, match="ChromaDB was retired in skmemory") as exc:
+    with pytest.raises(BackendInitError, match="ChromaDB has been retired") as exc:
         _store_with(monkeypatch, spy_backends, {"SKMEMORY_VECTOR_BACKEND": name})
     assert "pgvector" in str(exc.value) and "FTS5" in str(exc.value)
     assert spy_backends[0] == [], "nothing may be built for a retired backend"
