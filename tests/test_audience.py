@@ -142,9 +142,9 @@ class TestAudienceResolver:
         assert profile.min_trust == AudienceLevel.WORK_CIRCLE
         assert "revenue" in profile.exclusions  # Casey's never_share
 
-    def test_unknown_channel_defaults_chef_only(self, resolver: AudienceResolver):
+    def test_unknown_channel_defaults_public(self, resolver: AudienceResolver):
         profile = resolver.resolve_audience("unknown-channel-123")
-        assert profile.min_trust == AudienceLevel.CHEF_ONLY
+        assert profile.min_trust == AudienceLevel.PUBLIC
         assert profile.name == "[unknown]"
 
     def test_get_person_trust(self, resolver: AudienceResolver):
@@ -230,11 +230,11 @@ class TestMissingConfig:
         resolver = AudienceResolver(config_path=tmp_path / "nonexistent.json")
         # Should not crash, just return conservative defaults
         profile = resolver.resolve_audience("anything")
-        assert profile.min_trust == AudienceLevel.CHEF_ONLY
+        assert profile.min_trust == AudienceLevel.PUBLIC
 
     def test_empty_config(self, tmp_path: Path):
         p = tmp_path / "empty.json"
         p.write_text("{}")
         resolver = AudienceResolver(config_path=p)
         profile = resolver.resolve_audience("anything")
-        assert profile.min_trust == AudienceLevel.CHEF_ONLY
+        assert profile.min_trust == AudienceLevel.PUBLIC

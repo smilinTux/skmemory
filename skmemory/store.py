@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
 from .agents import get_agent_paths
-from .audience import resolve_reader
+from .audience import ReaderScope, resolve_reader
 from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
 from .backends.skgraph_backend import SKGraphBackend
@@ -904,8 +904,12 @@ class MemoryStore:
 
         return parent
 
-    def recall(self, memory_id: str) -> Memory | None:
+    def recall(self, memory_id: str, reader: str | None = None) -> Memory | None:
         """Retrieve a specific memory by ID with integrity verification.
+
+        A declared reader (or a ``SKMEMORY_READER`` process ceiling) that may
+        not see the memory gets ``None``, exactly as for an id that does not
+        exist: not-found, never forbidden, so existence is not an oracle.
 
         Automatically checks the integrity hash on recall. If the
         memory has been tampered with, a warning is logged and the
@@ -919,6 +923,9 @@ class MemoryStore:
         """
         memory = self.primary.load(memory_id)
         if memory is None:
+            return None
+        scope = resolve_reader(reader)
+        if not scope.allows(memory.context_tag, memory.tags):
             return None
 
         if memory.integrity_hash and not memory.verify_integrity():
@@ -1361,6 +1368,7 @@ class MemoryStore:
         content: str,
         threshold: float = 0.73,
         k: int = 5,
+        reader: str | None = None,
     ) -> list[dict]:
         """Advisory pre-write duplicate check — does NOT write or merge anything.
 
@@ -1403,7 +1411,10 @@ class MemoryStore:
             logger.warning("check_duplicate: backend find_similar failed: %s", exc)
             return []
 
-        return [c for c in candidates if c.get("similarity", 0.0) >= threshold]
+        hits = [c for c in candidates if c.get("similarity", 0.0) >= threshold]
+        if not resolve_reader(reader).unrestricted:
+            hits = [c for c in hits if self.reader_can_see(str(c.get("id", "")), reader)]
+        return hits
 
     def novelty_search(self, query: str, limit: int = 10) -> list[dict]:
         """Surface potentially novel or under-linked memories for a query."""
@@ -1866,6 +1877,7 @@ class MemoryStore:
         created_after: str | None = None,
         created_before: str | None = None,
         source: str | None = None,
+        reader: str | None = None,
     ) -> list[Memory]:
         """List memories with optional filtering.
 
@@ -1885,10 +1897,25 @@ class MemoryStore:
                 memories (card: skmemory
                 synthesis-silent-empty-on-historical-dates, 2026-10-17).
             created_before: ISO 8601 timestamp upper bound (exclusive).
+            reader: Who is asking (see ``audience.resolve_reader``). A
+                non-owner reader only receives memories it may see, and the
+                page is filled from further down the list rather than
+                shortened by the filter.
 
         Returns:
             list[Memory]: Matching memories sorted newest first.
         """
+        scope = resolve_reader(reader)
+        if not scope.unrestricted:
+            return self._list_as_reader(
+                scope,
+                layer=layer,
+                tags=tags,
+                limit=limit,
+                created_after=created_after,
+                created_before=created_before,
+                source=source,
+            )
         return self.primary.list_memories(
             layer=layer,
             tags=tags,
@@ -1897,6 +1924,129 @@ class MemoryStore:
             created_before=created_before,
             source=source,
         )
+
+    def _list_as_reader(self, scope: ReaderScope, *, limit: int, **kw) -> list[Memory]:
+        """Page through the primary until ``limit`` visible rows or exhaustion."""
+        fetch = max(limit * 3, 50)
+        while True:
+            rows = self.primary.list_memories(limit=fetch, **kw)
+            kept = [m for m in rows if scope.allows(m.context_tag, m.tags)]
+            if len(kept) >= limit or len(rows) < fetch:
+                return kept[:limit]
+            fetch *= 4
+
+    def reader_can_see(self, memory_id: str, reader: str | None = None) -> bool:
+        """Whether the reader may see this memory. An unknown id is not visible."""
+        scope = resolve_reader(reader)
+        if scope.unrestricted:
+            return True
+        memory = self.primary.load(memory_id)
+        return memory is not None and scope.allows(memory.context_tag, memory.tags)
+
+    # ── Reader-filtered graph reads ──────────────────────────────────────
+    #
+    # Graph nodes carry no context_tag, so visibility is decided against the
+    # primary store. A hidden node is never expanded: a neighbour reachable
+    # only THROUGH a private node is not shown, because its edge would reveal
+    # the private node's existence.
+
+    def graph_related(
+        self, memory_id: str, depth: int = 2, reader: str | None = None
+    ) -> list[dict]:
+        """Related memories around ``memory_id`` as seen by ``reader``."""
+        if self.graph is None:
+            return []
+        scope = resolve_reader(reader)
+        if scope.unrestricted:
+            return self.graph.get_related(memory_id, depth=depth)
+        if not self.reader_can_see(memory_id, reader):
+            return []
+        depth = max(1, min(int(depth), 5))
+        seen = {memory_id}
+        frontier = [memory_id]
+        out: list[dict] = []
+        for level in range(1, depth + 1):
+            nxt: list[str] = []
+            for node in frontier:
+                for row in self.graph.get_related(node, depth=1):
+                    rid = row.get("id")
+                    if not rid or rid in seen:
+                        continue
+                    seen.add(rid)
+                    if not self._graph_row_visible(row, reader):
+                        continue
+                    out.append({**row, "distance": level})
+                    nxt.append(rid)
+            frontier = nxt
+        out.sort(key=lambda r: (r["distance"], -(r.get("intensity") or 0), r.get("title") or ""))
+        return out
+
+    def graph_lineage(self, memory_id: str, reader: str | None = None) -> list[dict]:
+        """Promotion lineage, cut at the first ancestor the reader may not see."""
+        if self.graph is None:
+            return []
+        chain = self.graph.get_lineage(memory_id)
+        if resolve_reader(reader).unrestricted:
+            return chain
+        if not self.reader_can_see(memory_id, reader):
+            return []
+        kept: list[dict] = []
+        for row in chain:
+            if not self.reader_can_see(row.get("id", ""), reader):
+                break
+            kept.append(row)
+        return kept
+
+    def graph_clusters(self, min_size: int = 3, reader: str | None = None) -> list[dict]:
+        """Cluster hubs the reader may see, counting only visible neighbours."""
+        if self.graph is None:
+            return []
+        hubs = self.graph.find_clusters(min_size=min_size)
+        if resolve_reader(reader).unrestricted:
+            return hubs
+        out = []
+        for hub in hubs:
+            if not self.reader_can_see(hub.get("id", ""), reader):
+                continue
+            n = len(self.graph_related(hub["id"], depth=1, reader=reader))
+            if n >= min_size:
+                out.append({**hub, "connections": n})
+        out.sort(key=lambda h: -h["connections"])
+        return out
+
+    def _graph_row_visible(self, row: dict, reader: str | None) -> bool:
+        ids = {row.get("id"), row.get("canonical_id")} - {None, ""}
+        return bool(ids) and all(self.reader_can_see(i, reader) for i in ids)
+
+    def filter_graph_rows(self, rows: list[dict], reader: str | None = None) -> list[dict]:
+        """Drop graph search hits the reader may not see (fail closed).
+
+        Rows keyed by ``id`` are kept only when visible. Related-claim rows
+        (``memory_ids``) keep only their visible memories, and are dropped
+        when none remain, so a claim asserted solely by private memories is
+        not revealed.
+        """
+        if resolve_reader(reader).unrestricted:
+            return rows
+        out: list[dict] = []
+        for row in rows:
+            if "memory_ids" in row:
+                ids = list(row.get("memory_ids") or [])
+                titles = list(row.get("memory_titles") or [])
+                keep = [i for i, mid in enumerate(ids) if self.reader_can_see(mid, reader)]
+                if not keep:
+                    continue
+                out.append(
+                    {
+                        **row,
+                        "memory_ids": [ids[i] for i in keep],
+                        "memory_titles": [titles[i] for i in keep if i < len(titles)],
+                        "support_count": len(keep),
+                    }
+                )
+            elif self._graph_row_visible(row, reader):
+                out.append(row)
+        return out
 
     def promote(
         self,
@@ -2075,6 +2225,7 @@ class MemoryStore:
         strongest_count: int = 5,
         recent_count: int = 5,
         include_seeds: bool = True,
+        reader: str | None = None,
     ) -> dict:
         """Load tiered memory context for agent injection (lazy loading).
 
@@ -2089,10 +2240,16 @@ class MemoryStore:
             strongest_count: How many top-intensity memories to include.
             recent_count: How many recent memories to include.
             include_seeds: Whether to include seed memories.
+            reader: Who is asking. A non-owner reader gets the same tiers
+                built only from memories it may see; its counts and stats
+                cover only those memories, so totals do not leak either.
 
         Returns:
             dict: Token-efficient tiered context with metadata.
         """
+        scope = resolve_reader(reader)
+        if not scope.unrestricted:
+            return self._load_context_as_reader(scope, max_tokens, include_seeds)
         context: dict = {
             "today": [],
             "yesterday": [],
@@ -2223,7 +2380,80 @@ class MemoryStore:
         context["token_budget"] = max_tokens
         return context
 
-    def export_backup(self, output_path: str | None = None) -> str:
+    def _load_context_as_reader(
+        self, scope: ReaderScope, max_tokens: int, include_seeds: bool
+    ) -> dict:
+        """Tiered context for a non-owner reader, built from visible rows only."""
+        from datetime import timedelta
+
+        visible = self._list_as_reader(scope, limit=2000)
+        today = datetime.now(timezone.utc).date()
+        context: dict = {
+            "today": [],
+            "yesterday": [],
+            "older_summary": {},
+            "seeds": [],
+            "stats": {"total_memories": len(visible)},
+        }
+        used = 0
+        counts = {"mid-term": 0, "long-term": 0, "short-term": 0}
+        shown: set[str] = set()
+        for mem in visible:
+            try:
+                day = datetime.fromisoformat(str(mem.created_at).replace("Z", "+00:00")).date()
+            except ValueError:
+                day = None
+            text = mem.summary or mem.content[:CONTENT_PREVIEW_LENGTH]
+            if day == today:
+                entry = {
+                    "id": mem.id,
+                    "title": mem.title,
+                    "content": text,
+                    "tags": mem.tags,
+                    "layer": mem.layer.value,
+                    "emotional_intensity": mem.emotional.intensity,
+                }
+                bucket, body = "today", text
+            elif day == today - timedelta(days=1):
+                body = _first_n_sentences(text, 2)
+                entry = {"id": mem.id, "title": mem.title, "summary": body}
+                bucket = "yesterday"
+            else:
+                counts[mem.layer.value] = counts.get(mem.layer.value, 0) + 1
+                continue
+            cost = _estimate_tokens(mem.title + " " + body)
+            if used + cost > max_tokens:
+                continue
+            used += cost
+            context[bucket].append(entry)
+            shown.add(mem.id)
+        total = sum(counts.values())
+        hint = (
+            f"{counts['mid-term']} mid-term memories, {counts['long-term']} long-term "
+            "memories available via memory_search"
+        )
+        context["older_summary"] = {
+            "mid_term_count": counts["mid-term"],
+            "long_term_count": counts["long-term"],
+            "short_term_count": counts["short-term"],
+            "total": total,
+            "hint": hint,
+        }
+        used += _estimate_tokens(hint)
+        if include_seeds:
+            seeds = [m for m in visible if "seed" in m.tags and m.id not in shown]
+            seeds.sort(key=lambda m: m.emotional.intensity, reverse=True)
+            for seed in seeds[:10]:
+                cost = _estimate_tokens(seed.title)
+                if used + cost > max_tokens:
+                    break
+                used += cost
+                context["seeds"].append({"id": seed.id, "title": seed.title})
+        context["token_estimate"] = used
+        context["token_budget"] = max_tokens
+        return context
+
+    def export_backup(self, output_path: str | None = None, reader: str | None = None) -> str:
         """Export all memories to a dated JSON backup.
 
         Args:
@@ -2235,7 +2465,10 @@ class MemoryStore:
 
         Raises:
             RuntimeError: If the primary backend doesn't support export.
+            PermissionError: A non-owner reader asked for a whole-store dump.
         """
+        if not resolve_reader(reader).unrestricted:
+            raise PermissionError("export is owner-only: a declared reader may not dump the store")
         if isinstance(self.primary, SQLiteBackend):
             return self.primary.export_all(output_path)
         if isinstance(self.primary, FileBackend):
@@ -2454,7 +2687,7 @@ class MemoryStore:
                 report["still_missing"] += 1
         return report
 
-    def health(self) -> dict:
+    def health(self, reader: str | None = None) -> dict:
         """Check health of all backends.
 
         Surfaces flat-vs-index drift as an explicit top-level ``status``
@@ -2475,6 +2708,10 @@ class MemoryStore:
         returned dict (``None`` when not applicable/detectable, e.g. no
         SQLite index or no pgvector backend wired) so a caller never has to
         dig into nested backend-specific shapes to check for drift.
+
+        A declared non-owner reader gets only the verdict flags: the full
+        report carries store-wide counts, sync-failure and WAL detail that
+        describe memories the reader may not see.
 
         Returns:
             dict: Combined health status.
@@ -2652,6 +2889,9 @@ class MemoryStore:
         status["unindexed"] = unindexed
         status["unloadable"] = unloadable
         status["interrupted_writes"] = interrupted
+        if not resolve_reader(reader).unrestricted:
+            keep = ("status", "embed_ok", "vector_ok", "graph_ok")
+            return {k: status[k] for k in keep}
         return status
 
 

@@ -29,7 +29,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .agents import get_agent_paths
-from .audience import AudienceResolver
+from .audience import AudienceResolver, resolve_reader
 from .febs import feb_to_context, load_strongest_feb
 from .journal import Journal
 from .seeds import DEFAULT_SEED_DIR, get_germination_prompts, import_seeds
@@ -256,6 +256,13 @@ def perform_ritual(
 
     # --- KYA: Resolve audience for filtering ---
     _audience = None
+    if channel_id is None and not resolve_reader(None).unrestricted:
+        # The channel-less ritual is the owner's boot: soul, FEB, seeds and
+        # the strongest memories, unfiltered. A process declared as a
+        # non-owner via SKMEMORY_READER must name its channel instead.
+        raise PermissionError(
+            "ritual without a channel is owner-only: SKMEMORY_READER declares a non-owner"
+        )
     if channel_id is not None:
         resolver = audience_resolver or AudienceResolver()
         _audience = resolver.resolve_audience(channel_id)

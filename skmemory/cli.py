@@ -34,6 +34,7 @@ import click
 
 from . import __version__
 from .ai_client import AIClient
+from .audience import resolve_reader
 from .backend_select import BackendInitError, enabled_vector_backends, resolve_pg_dsn
 from .models import EmotionalSnapshot, MemoryLayer, MemoryRole
 from .store import MemoryStore
@@ -959,7 +960,7 @@ def graph_entity(ctx: click.Context, query: str, limit: int) -> None:
     """Find memories mentioning an extracted entity."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.graph.search_by_entity(query, limit=limit))
+    _emit_graph_results(store.filter_graph_rows(store.graph.search_by_entity(query, limit=limit)))
 
 
 @graph.command("citation")
@@ -970,7 +971,9 @@ def graph_citation(ctx: click.Context, query: str, limit: int) -> None:
     """Find memories citing a decomposed citation."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.graph.search_by_citation(query, limit=limit))
+    _emit_graph_results(
+        store.filter_graph_rows(store.graph.search_by_citation(query, limit=limit))
+    )
 
 
 @graph.command("claim")
@@ -981,7 +984,7 @@ def graph_claim(ctx: click.Context, query: str, limit: int) -> None:
     """Find memories asserting a decomposed claim."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.graph.search_by_claim(query, limit=limit))
+    _emit_graph_results(store.filter_graph_rows(store.graph.search_by_claim(query, limit=limit)))
 
 
 @graph.command("section")
@@ -992,7 +995,7 @@ def graph_section(ctx: click.Context, query: str, limit: int) -> None:
     """Find memories associated with a decomposed section title."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.graph.search_by_section(query, limit=limit))
+    _emit_graph_results(store.filter_graph_rows(store.graph.search_by_section(query, limit=limit)))
 
 
 @graph.command("around")
@@ -1003,7 +1006,7 @@ def graph_around(ctx: click.Context, memory_id: str, depth: int) -> None:
     """Traverse graph neighbourhood around a memory."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.graph.get_related(memory_id, depth=depth))
+    _emit_graph_results(store.graph_related(memory_id, depth=depth))
 
 
 @graph.command("related-claims")
@@ -1027,7 +1030,7 @@ def graph_related_claims(
         results = store.graph.related_claims_by_entity(entity_query, limit=limit)
     else:
         results = store.graph.related_claims_by_citation(citation_query or "", limit=limit)
-    _emit_graph_results(results)
+    _emit_graph_results(store.filter_graph_rows(results))
 
 
 @graph.command("reconcile")
@@ -1651,7 +1654,7 @@ def export_backup(ctx: click.Context, output: str | None) -> None:
     try:
         path = store.export_backup(output)
         click.echo(f"Exported to: {path}")
-    except RuntimeError as e:
+    except (RuntimeError, PermissionError) as e:
         click.echo(str(e), err=True)
         sys.exit(1)
 
@@ -2031,7 +2034,11 @@ def ritual(ctx: click.Context, show_full: bool) -> None:
     from .ritual import perform_ritual
 
     store: MemoryStore = ctx.obj["store"]
-    result = perform_ritual(store=store)
+    try:
+        result = perform_ritual(store=store)
+    except PermissionError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
 
     click.echo(result.summary())
 
@@ -3358,6 +3365,9 @@ def show_context(ctx, agent: str | None):
         skmemory context
         skmemory context --agent lumina
     """
+    if not resolve_reader(None).unrestricted:
+        click.echo("owner-only: unavailable while SKMEMORY_READER declares a non-owner.", err=True)
+        sys.exit(1)
     from .context_loader import get_context_for_session
 
     try:
@@ -3384,6 +3394,9 @@ def search_deep(ctx, query: str, agent: str | None, limit: int):
         skmemory search-deep "project gentis"
         skmemory search-deep "architecture decisions" --limit 20
     """
+    if not resolve_reader(None).unrestricted:
+        click.echo("owner-only: unavailable while SKMEMORY_READER declares a non-owner.", err=True)
+        sys.exit(1)
     from .context_loader import LazyMemoryLoader
 
     try:

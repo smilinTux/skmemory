@@ -13,7 +13,8 @@ The five-level trust hierarchy:
     @inner-circle (3)  — Close friends / family (personal trust)
     @chef-only (4)     — Intimate, private, full-trust (Chef ONLY)
 
-Conservative default: unknown channel = CHEF_ONLY, unknown tag = CHEF_ONLY.
+Conservative default: unknown channel = PUBLIC audience (sees only @public),
+unknown tag = CHEF_ONLY (needs the owner to read it).
 """
 
 from __future__ import annotations
@@ -109,9 +110,9 @@ class AudienceProfile:
     channel_id: str
     name: str = ""
     members: list[str] = field(default_factory=list)
-    min_trust: AudienceLevel = AudienceLevel.CHEF_ONLY
+    min_trust: AudienceLevel = AudienceLevel.PUBLIC
     exclusions: set[str] = field(default_factory=set)
-    context_tag: str = "@chef-only"
+    context_tag: str = "@public"
 
 
 class AudienceResolver:
@@ -122,7 +123,8 @@ class AudienceResolver:
     a memory is allowed for a given audience.
 
     Conservative defaults:
-    - Unknown channel → CHEF_ONLY audience (nothing shown)
+    - Unknown channel, or one with no members → PUBLIC audience (only @public
+      content shown; CHEF_ONLY as an AUDIENCE ceiling would show everything)
     - Unknown person → trust level 0 / PUBLIC access (treated as untrusted)
     - Memory with no context_tag → treat as @chef-only
 
@@ -159,7 +161,9 @@ class AudienceResolver:
     def resolve_audience(self, channel_id: str) -> AudienceProfile:
         """Resolve the audience profile for a channel.
 
-        Returns a conservative (CHEF_ONLY) profile if the channel is unknown.
+        An unknown channel, or a known one with no members, resolves to a PUBLIC
+        audience: the lowest ceiling, so only @public content is shown. (The old
+        CHEF_ONLY fallback was the HIGHEST ceiling and blocked nothing.)
 
         Args:
             channel_id: The channel identifier.
@@ -171,24 +175,25 @@ class AudienceResolver:
         chan = channels.get(channel_id)
 
         if chan is None:
-            # Unknown channel → maximum restriction
-            logger.debug("Unknown channel '%s', defaulting to CHEF_ONLY", channel_id)
+            # Unknown channel → maximum restriction = the LOWEST ceiling
+            logger.debug("Unknown channel '%s', defaulting to PUBLIC", channel_id)
             return AudienceProfile(
                 channel_id=channel_id,
                 name="[unknown]",
                 members=[],
-                min_trust=AudienceLevel.CHEF_ONLY,
+                min_trust=AudienceLevel.PUBLIC,
                 exclusions=set(),
-                context_tag="@chef-only",
+                context_tag="@public",
             )
 
         members: list[str] = chan.get("members", [])
         context_tag: str = chan.get("context_tag", "@chef-only")
 
         # Compute effective trust = MIN(member trust levels)
-        # If no members are listed, treat as chef-only
+        # If no members are listed, nobody vouches for the room: public only
         if not members:
-            min_trust = AudienceLevel.CHEF_ONLY
+            min_trust = AudienceLevel.PUBLIC
+            context_tag = "@public"
             exclusions: set[str] = set()
         else:
             trust_levels: list[AudienceLevel] = []
@@ -298,8 +303,8 @@ class AudienceResolver:
 #   channel:<id>             a configured channel: its members' MIN trust, its
 #                            own context_tag, and its members' never_share tags.
 #                            An unknown channel or one with no members is
-#                            @public (NOT the ritual's @chef-only fallback,
-#                            which for a reader means "sees everything").
+#                            @public (the ritual resolver agrees since SKMEM-P0-20;
+#                            as an audience ceiling @chef-only meant "sees everything").
 #   anything else            @public, with a warning. A declared reader that
 #                            cannot be parsed never widens access.
 #
