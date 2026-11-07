@@ -16,13 +16,13 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
+from . import decay as _decay
 from .agents import get_agent_paths
 from .audience import resolve_reader
 from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
 from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
-from . import decay as _decay
 from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
 from .forget import ForgetReport, StorePurge, resolve_agent
 from .fusion import (
