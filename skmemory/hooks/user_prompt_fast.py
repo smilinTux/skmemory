@@ -1,17 +1,27 @@
-"""Stdlib-only UserPromptSubmit fast path for standing intentions (SKMEM-P2-04).
+"""Stdlib-only UserPromptSubmit fast path (SKMEM-P2-04, SKMEM-W-01).
 
 Run as ``python -S user_prompt_fast.py --harness <h>``: no site import, no
 skmemory import. It exits at once (empty output, status 0) when the kill switch
-is on, a reader is declared, or the memory index has no armed/fired event
-intention. Only when something might fire does it hand the saved stdin to
-``python -m skmemory.hook_cli user-prompt`` for the real prefilter. If it cannot
-tell (no resolvable memory dir, unexpected error) it also hands over: a slow
-correct answer beats a silent miss. It never raises and never prints a traceback.
+is on or a reader is declared. Standing intentions: when the memory index has
+no armed/fired event intention there is nothing to fire; only when something
+might fire does it hand the saved stdin to ``python -m skmemory.hook_cli
+user-prompt`` for the real prefilter. If it cannot tell (no resolvable memory
+dir, unexpected error) it also hands over: a slow correct answer beats a
+silent miss.
+
+Query slice: when nothing is armed and the prompt has a noun phrase longer
+than 3 words, it runs the stdlib-only ``query_slice`` (a read-only FTS lookup,
+at most 1200 tokens, under a 1 s total deadline) in this process. Anything
+else is a no-op: a short prompt costs one stdin read. It never raises and
+never prints a traceback.
 """
 
 import contextlib
 import os
 import sys
+import time
+
+_T0 = time.time()
 
 
 def _base():
@@ -60,6 +70,33 @@ def _maybe_armed(base):
                 con.close()
 
 
+def _prefilter_words(prompt):
+    """Cheapest possible gate before loading the qualifier: 4 or more words."""
+    return isinstance(prompt, str) and len(prompt.split()) >= 4
+
+
+def _prompt_of(raw):
+    if b'"prompt"' not in raw:
+        return None
+    import json  # lazy: only for prompts
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    return data.get("prompt") if isinstance(data, dict) else None
+
+
+def _slice(base, prompt, harness):
+    """Slice text for the harness, or "" (loaded lazily from the sibling file)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import query_slice  # stdlib only
+
+    os.environ["SKMEMORY_HOOK_T0"] = repr(_T0)
+    text = query_slice.build_slice(prompt, base)
+    return query_slice.emit(text, harness) if text else ""
+
+
 def main(argv):
     if os.environ.get("SKMEMORY_HOOKS") == "off":
         return 0
@@ -69,15 +106,22 @@ def main(argv):
     if "--harness" in argv and argv.index("--harness") + 1 < len(argv):
         harness = argv[argv.index("--harness") + 1]
     base = _base()
-    if base is not None and _maybe_armed(base) is False:
-        return 0
     try:
         raw = sys.stdin.buffer.read() if not sys.stdin.isatty() else b""
     except Exception:
         raw = b""
+    if base is not None and _maybe_armed(base) is False:
+        prompt = _prompt_of(raw) if raw else None
+        if _prefilter_words(prompt):
+            out = _slice(base, prompt, harness)
+            if out:
+                sys.stdout.write(out)
+                sys.stdout.flush()
+        return 0
     import subprocess  # lazy: costs ~8 ms, only needed on handover
 
     exe = sys.executable
+    os.environ["SKMEMORY_HOOK_T0"] = repr(_T0)  # the slice shares one 1 s deadline
     proc = subprocess.run(
         [exe, "-m", "skmemory.hook_cli", "user-prompt", "--harness", harness],
         input=raw,
