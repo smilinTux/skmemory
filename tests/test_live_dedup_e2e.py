@@ -124,7 +124,7 @@ def _allow_live_store_writes(monkeypatch):
     scoped to this module, and visible in the diff, which is the entire point
     of having an escape hatch rather than a silent exception. Pointing
     ``SKMEMORY_PG_DSN`` at a throwaway database is still the better pattern
-    (see ``skmemory/eval/queue_bench.py``) and is what a new live test should
+    and is what a new live test should
     do; this module predates the guard and cleans up after itself by source
     marker instead.
     """
