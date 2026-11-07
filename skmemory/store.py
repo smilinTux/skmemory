@@ -21,8 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import decay as _decay
-from . import retrieval_log
-from . import write_triage
+from . import retrieval_log, write_triage
 from .agents import get_agent_paths
 from .audience import ReaderScope, resolve_reader
 from .backends.base import BaseBackend
