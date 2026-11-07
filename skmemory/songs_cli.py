@@ -139,9 +139,33 @@ def show_cmd(anchor_id: str, agent: str | None, section: str | None) -> None:
 @click.argument("query")
 @click.option("--agent", default=None, help="Agent name (default: active agent)")
 @click.option("--limit", type=int, default=10, help="Max results")
-def search_cmd(query: str, agent: str | None, limit: int) -> None:
-    """Full-text search across anchor meta + moment + resonance."""
-    results = search_anchors(query, agent=agent, limit=limit)
+@click.option(
+    "--substring",
+    is_flag=True,
+    help="Legacy exact-substring match instead of ranked search",
+)
+@click.option(
+    "--semantic",
+    is_flag=True,
+    help="Also use the embed endpoint (SKMEMORY_EMBED_URL); falls back offline",
+)
+def search_cmd(query: str, agent: str | None, limit: int, substring: bool, semantic: bool) -> None:
+    """Ranked search across anchor meta + moment + resonance.
+
+    Felt queries ("sounds like coming home") work: token overlap plus emotion
+    synonyms. --substring restores the old verbatim-substring behaviour.
+    """
+    if substring:
+        results = search_anchors(query, agent=agent, limit=limit)
+    else:
+        from .song_search import endpoint_embedder, search_anchors_ranked
+
+        results = search_anchors_ranked(
+            query,
+            agent=agent,
+            limit=limit,
+            embed_fn=endpoint_embedder() if semantic else None,
+        )
     if not results:
         click.echo(f"No anchors matching '{query}'")
         return

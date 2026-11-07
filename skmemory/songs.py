@@ -253,14 +253,40 @@ def match_anchors_for_feb(
     agent: str | None = None,
     top_k: int = 3,
     min_score: float = 0.3,
+    *,
+    anchors: list[SongAnchor] | None = None,
+    synonyms: bool = False,
 ) -> list[tuple[SongAnchor, float]]:
     """Return top-K anchors whose emotional shape matches the current FEB.
 
     Returns list of (anchor, score) sorted by score descending. Pass this
     straight to the ritual.
+
+    ``anchors`` scores a given pool instead of scanning the agent's store.
+    ``synonyms`` (opt-in, default off so the ritual is unchanged) folds the
+    FEB topology and each anchor's emotion labels onto shared emotion
+    concepts first, so "yearning" in a FEB meets "nostalgia" on a song.
     """
-    anchors = scan_song_anchors(agent)
-    scored = [(a, score_anchor_for_feb(a, feb)) for a in anchors]
+    if anchors is None:
+        anchors = scan_song_anchors(agent)
+    if synonyms and feb is not None:
+        from .song_search import canonical_weights
+
+        topo = (feb.get("emotional_payload") or {}).get("emotional_topology") or {}
+        feb = {
+            **feb,
+            "emotional_payload": {
+                **feb["emotional_payload"],
+                "emotional_topology": canonical_weights(topo),
+            },
+        }
+        scored = []
+        for a in anchors:
+            w = a.emotion_weights or {e: 0.7 for e in a.emotions}
+            canon = a.model_copy(update={"emotion_weights": canonical_weights(w)})
+            scored.append((a, score_anchor_for_feb(canon, feb)))
+    else:
+        scored = [(a, score_anchor_for_feb(a, feb)) for a in anchors]
     scored = [(a, s) for a, s in scored if s >= min_score]
     scored.sort(key=lambda x: x[1], reverse=True)
     return scored[:top_k]
@@ -270,9 +296,16 @@ def search_anchors(
     query: str,
     agent: str | None = None,
     limit: int = 10,
+    *,
+    anchors: list[SongAnchor] | None = None,
 ) -> list[SongAnchor]:
-    """Simple full-text search across anchor meta + moment + resonance."""
-    anchors = scan_song_anchors(agent)
+    """Simple full-text search across anchor meta + moment + resonance.
+
+    A lowercase substring match of the whole query: a felt query matches only
+    if it sits verbatim inside one field. See ``song_search`` for ranked search.
+    """
+    if anchors is None:
+        anchors = scan_song_anchors(agent)
     q = query.lower().strip()
     if not q:
         return anchors[:limit]
