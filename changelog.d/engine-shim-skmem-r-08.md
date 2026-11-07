@@ -1,0 +1,1 @@
+Added `skmemory/engine.py` and the `SKMEMORY_ENGINE` switch (`python` default, byte-identical; `rust` routes MemoryStore reads and the plain write path through the `skmem_core` wheel, keeping every delegated side effect in Python, failing fast on an unknown value or a missing wheel). CI runs the full suite on both engines (SKMEM-R-08).
