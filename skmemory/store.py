@@ -42,6 +42,7 @@ from .fusion import (
     run_arms_concurrent,
     search_deadline_s,
 )
+from .hooks.sensitivity import is_sensitive, sql_not_sensitive
 from .models import (
     PARENT_RELATION_KEY,
     RELATION_CHUNK_OF,
@@ -2888,11 +2889,16 @@ class MemoryStore:
 
         if isinstance(self.primary, SQLiteBackend):
             conn = self.primary._get_conn()
+            # Owner auto-inject never lists sensitive-tagged rows in any tier
+            # (skmemory.hooks.sensitivity). The owner pulls them with memory_search.
+            _sw, _sp = sql_not_sensitive("tags")
+            safe = " AND " + " AND ".join(_sw)
 
             # --- Tier 1: Today's memories (full content) ---
             today_rows = conn.execute(
-                "SELECT * FROM memories WHERE DATE(created_at) = DATE('now') "
-                "ORDER BY importance DESC, created_at DESC LIMIT 20"
+                "SELECT * FROM memories WHERE DATE(created_at) = DATE('now')" + safe + " "
+                "ORDER BY importance DESC, created_at DESC LIMIT 20",
+                _sp,
             ).fetchall()
 
             for row in today_rows:
@@ -2915,8 +2921,11 @@ class MemoryStore:
 
             # --- Tier 2: Yesterday's memories (summary only: title + first 2 sentences) ---
             yesterday_rows = conn.execute(
-                "SELECT * FROM memories WHERE DATE(created_at) = DATE('now', '-1 day') "
-                "ORDER BY importance DESC, created_at DESC LIMIT 20"
+                "SELECT * FROM memories WHERE DATE(created_at) = DATE('now', '-1 day')"
+                + safe
+                + " "
+                "ORDER BY importance DESC, created_at DESC LIMIT 20",
+                _sp,
             ).fetchall()
 
             for row in yesterday_rows:
@@ -2937,15 +2946,18 @@ class MemoryStore:
             # --- Tier 3: Older memories (reference count only) ---
             mid_count = conn.execute(
                 "SELECT COUNT(*) FROM memories WHERE DATE(created_at) < DATE('now', '-1 day') "
-                "AND layer = 'mid-term'"
+                "AND layer = 'mid-term'" + safe,
+                _sp,
             ).fetchone()[0]
             long_count = conn.execute(
                 "SELECT COUNT(*) FROM memories WHERE DATE(created_at) < DATE('now', '-1 day') "
-                "AND layer = 'long-term'"
+                "AND layer = 'long-term'" + safe,
+                _sp,
             ).fetchone()[0]
             short_old_count = conn.execute(
                 "SELECT COUNT(*) FROM memories WHERE DATE(created_at) < DATE('now', '-1 day') "
-                "AND layer = 'short-term'"
+                "AND layer = 'short-term'" + safe,
+                _sp,
             ).fetchone()[0]
 
             context["older_summary"] = {
@@ -2971,7 +2983,7 @@ class MemoryStore:
                 seen_ids.update(m["id"] for m in context["yesterday"])
 
                 for seed in seed_rows:
-                    if seed["id"] in seen_ids:
+                    if seed["id"] in seen_ids or is_sensitive(seed.get("tags")):
                         continue
                     entry = {
                         "id": seed["id"],
@@ -2987,7 +2999,11 @@ class MemoryStore:
             context["stats"] = stats
         else:
             # Fallback for non-SQLite backends: simple recent list
-            all_mems = self.primary.list_memories(limit=strongest_count + recent_count)
+            all_mems = [
+                m
+                for m in self.primary.list_memories(limit=(strongest_count + recent_count) * 4)
+                if not is_sensitive(m.tags)
+            ][: strongest_count + recent_count]
             for mem in all_mems:
                 content_text = mem.summary or mem.content[:CONTENT_PREVIEW_LENGTH]
                 entry = {

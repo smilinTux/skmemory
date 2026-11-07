@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .hooks.query_slice import estimate_tokens
+from .hooks.sensitivity import sql_not_sensitive
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -77,16 +78,14 @@ EVENT_SECTIONS = {
 # content-chunk: fragments of a decomposed document (the parent still shows).
 # chat-import: bulk transcript imports (telegram etc), not curated memories.
 # auto-save: hook breadcrumbs. seed: has its own section.
-# personal-history / private / sacred / no-ritual: opt-out tags so sensitive
-# long-form narratives are not auto-injected into every coding session.
+# no-ritual: opt-out tag. Sensitive stems (sacred, private, personal-history,
+# grief, medical, ...) are NOT listed here: skmemory.sensitivity matches them by
+# substring and is always applied, whatever ``exclude_tags`` is configured.
 DEFAULT_EXCLUDE_TAGS = (
     "content-chunk",
     "chat-import",
     "auto-save",
     "seed",
-    "personal-history",
-    "private",
-    "sacred",
     "no-ritual",
 )
 DEFAULT_EXCLUDE_SOURCES = ("hook:%",)
@@ -807,6 +806,9 @@ def collect_strongest(c: Ctx) -> Section | None:
     for s in sources:
         where.append("source NOT LIKE ?")
         params.append(s)
+    s_where, s_params = sql_not_sensitive("tags")
+    where.extend(s_where)
+    params.extend(s_params)
     sql = (
         "SELECT title, summary, content_preview, emotional_intensity, cloud9_achieved, layer, created_at "
         f"FROM memories WHERE {' AND '.join(where)} ORDER BY (emotional_intensity + "
