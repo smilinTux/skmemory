@@ -765,6 +765,8 @@ def redact_observation_text(
     new = fix("\n".join([head, "", *kept]) if kept else head)
     if any(h in new for h in hidden):
         new = fix(head)
+    if any(h in new for h in hidden):
+        new = "Observation"
     new_title = fix(title)
     if any(h in new_title for h in hidden):
         new_title = "Observation"

@@ -754,7 +754,7 @@ TOOL_READER_POLICY: dict[str, tuple[str, str]] = {
     "memory_save_session": (_FILTERED, "dedup only matches memories the reader can see"),
     "memory_pre_compact": (_FILTERED, "dedup only matches memories the reader can see"),
     "memory_promote": (_OWNER_ONLY, "a write: a declared reader, per-call or env, is refused"),
-    "memory_forget": (_FILTERED, "hidden id is not-found"),
+    "memory_forget": (_OWNER_ONLY, "a delete: a declared reader, per-call or env, is refused"),
     "memory_export": (_OWNER_ONLY, ""),
     "memory_import": (_OWNER_ONLY, ""),
     "memory_consolidate": (_OWNER_ONLY, ""),
@@ -919,9 +919,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return _json_response([_reader_memory_dict(store, m, reader) for m in memories])
 
         elif name == "memory_forget":
+            if (refused := _owner_only(arguments, "memory_forget")) is not None:
+                return refused
             memory_id = arguments["memory_id"]
-            if not store.reader_can_see(memory_id, arguments.get("reader")):
-                return _error_response(f"Memory not found: {memory_id}")
             # Full forget/redaction cascade across every store, returning a
             # per-store verification report (flat, index.db, skmem-pg,
             # graph). ``deleted`` stays top-level for backward compatibility.

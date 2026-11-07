@@ -192,7 +192,7 @@ def test_health_is_minimal_for_reader(store, monkeypatch):
 
 def test_promote_and_forget_hidden_are_not_found(store, monkeypatch):
     monkeypatch.setenv(READER_ENV, "@public")
-    assert "not found" in call(store, monkeypatch, "memory_forget", memory_id="priv").lower()
+    assert "owner-only" in call(store, monkeypatch, "memory_forget", memory_id="priv").lower()
     # promote is owner-only (SKMEM-P0-22): refused alike for hidden and visible ids
     assert (
         "owner-only"

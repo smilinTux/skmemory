@@ -2210,7 +2210,7 @@ class MemoryStore:
         except Exception:
             return False
 
-    def forget_cascade(self, memory_id: str) -> ForgetReport:
+    def forget_cascade(self, memory_id: str, reader: str | None = None) -> ForgetReport:
         """Delete a memory from EVERY store and return a verification report.
 
         Cascades the removal across the flat JSON files (source of truth), the
@@ -2226,10 +2226,14 @@ class MemoryStore:
 
         Args:
             memory_id: The memory to forget.
+            reader: A per-call reader. Deletion is owner-only: any declared
+                reader (this one or the ``SKMEMORY_READER`` ceiling) is refused.
 
         Returns:
             ForgetReport: One :class:`~skmemory.forget.StorePurge` per store.
         """
+        if not resolve_reader(reader).unrestricted:
+            raise PermissionError("forget is owner-only: a declared reader may not delete")
         report = ForgetReport(memory_id=memory_id)
 
         # --- 1 + 2: primary (flat JSON + index.db) -------------------------

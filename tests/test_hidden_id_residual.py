@@ -228,3 +228,57 @@ def test_openclaw_recall_owner_unchanged(tmp_path, monkeypatch):
     _put(plugin.store, "hid", "@chef-only", "hidden body")
     _put(plugin.store, "pub1", "@public", "open", related_ids=["hid"])
     assert plugin.recall("pub1")["related_ids"] == ["hid"]
+
+
+# 5. delete paths ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mid", ["pubx", "hidx"])
+@pytest.mark.parametrize("mode", ["env", "call"])
+def test_mcp_forget_refused_for_declared_reader(store, monkeypatch, mid, mode):
+    _put(store, "pubx", "@public")
+    _put(store, "hidx", "@chef-only")
+    args = {"memory_id": mid}
+    if mode == "env":
+        monkeypatch.setenv(READER_ENV, "@public")
+    else:
+        args["reader"] = "@public"
+    out = _call(store, monkeypatch, "memory_forget", **args)
+    assert "owner-only" in out and "deleted" not in out
+    assert store.primary.load(mid) is not None
+
+
+def test_mcp_forget_owner_still_works(store, monkeypatch):
+    _put(store, "pubx", "@public")
+    assert '"deleted": true' in _call(store, monkeypatch, "memory_forget", memory_id="pubx")
+    assert store.primary.load("pubx") is None
+
+
+@pytest.mark.parametrize("mode", ["env", "call"])
+def test_store_forget_refused_for_declared_reader(store, monkeypatch, mode):
+    _put(store, "pubx", "@public")
+    kw = {}
+    if mode == "env":
+        monkeypatch.setenv(READER_ENV, "@public")
+    else:
+        kw["reader"] = "@public"
+    with pytest.raises(PermissionError):
+        store.forget_cascade("pubx", **kw)
+    with pytest.raises(PermissionError):
+        if mode == "env":
+            store.forget("pubx")
+        else:
+            monkeypatch.setenv(READER_ENV, "@public")
+            store.forget("pubx")
+    assert store.primary.load("pubx") is not None
+
+
+def test_observation_statement_hidden_id_is_stripped(store):
+    obs, srcs = _observation(store)
+    hid = srcs[0]
+    obs.content = f"Pattern about {hid.id} here\n\n" + obs.content.partition("\n\n")[2]
+    store.primary.save(obs)
+    hid.context_tag = "@chef-only"
+    store.primary.save(hid)
+    out = store.redact_links(store.recall(obs.id), "@public")
+    assert hid.id not in out.content
