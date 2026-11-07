@@ -38,7 +38,7 @@ def env(tmp_path):
     for rel in ("short-term", "tombstones", "archive"):
         d = agent / "memory" / rel
         d.mkdir(parents=True)
-        (d / f"{rel}-1.json").write_text('{"id": "%s-1"}' % rel)
+        (d / f"{rel}-1.json").write_text(f'{{"id": "{rel}-1"}}')
     (agent / "seeds").mkdir()
     (agent / "seeds" / "s.json").write_text("{}")
     e.update(
@@ -67,7 +67,8 @@ def test_encrypted_and_contains_tombstones_and_archive(env):
     plain = subprocess.run(
         ["gpg", "--batch", "-d", str(files[0])], env=env, capture_output=True, check=True
     ).stdout
-    names = tarfile.open(fileobj=io.BytesIO(plain), mode="r:gz").getnames()
+    with tarfile.open(fileobj=io.BytesIO(plain), mode="r:gz") as tf:
+        names = tf.getnames()
     assert "memory/tombstones/tombstones-1.json" in names
     assert "memory/archive/archive-1.json" in names
     assert "memory/short-term/short-term-1.json" in names
