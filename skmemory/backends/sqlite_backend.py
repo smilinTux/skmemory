@@ -37,6 +37,7 @@ from pathlib import Path
 from .. import fts_local
 from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
+from ..decay import REINFORCE_IMPORTANCE_STEP, initial_importance
 from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_write_allowed
@@ -419,6 +420,8 @@ class SQLiteBackend(BaseBackend):
         Uses an UPSERT (SQLite >= 3.24) that rewrites only content columns.
         ``access_count``, ``last_accessed`` and ``importance`` are usage state
         that is not in the flat file, so a re-save must leave them untouched.
+        ``importance`` is only SET on first insert (layer + intensity); the
+        conflict branch never touches it.
 
         The flat JSON file is the source of truth and is written before this
         is called, so an index write failure is logged and swallowed rather
@@ -445,9 +448,9 @@ class SQLiteBackend(BaseBackend):
                     parent_id, related_ids, created_at, updated_at,
                     file_path, content_hash,
                     kind, outcome, event_at, valid_from, valid_to,
-                    supersedes_id, source_tier, schema_version
+                    supersedes_id, source_tier, schema_version, importance
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                          ?, ?, ?, ?, ?, ?, ?, ?)
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     layer = excluded.layer,
@@ -504,6 +507,7 @@ class SQLiteBackend(BaseBackend):
                     memory.supersedes_id,
                     memory.source_tier,
                     memory.schema_version,
+                    initial_importance(memory.layer.value, memory.emotional.intensity),
                 ),
             )
             if self._fts_ok:
@@ -578,6 +582,7 @@ class SQLiteBackend(BaseBackend):
                 marks = ",".join("?" * len(chunk))
                 cur = conn.execute(
                     "UPDATE memories SET access_count = access_count + 1, "
+                    f"importance = MIN(1.0, importance + {REINFORCE_IMPORTANCE_STEP}), "
                     f"last_accessed = ? WHERE id IN ({marks}){guard}",
                     [stamp, *chunk, *extra],
                 )

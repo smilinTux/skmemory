@@ -8,6 +8,7 @@
  "items": [
   {
    "id": "d1",
+   "kind": "fact",
    "created_at": "2026-08-03T12:00:00+00:00",
    "access_count": 0,
    "last_accessed": null,
@@ -15,6 +16,7 @@
   },
   {
    "id": "d2",
+   "kind": "fact",
    "created_at": "2026-08-03T12:00:00+00:00",
    "access_count": 12,
    "last_accessed": "2026-10-31T12:00:00+00:00",
@@ -22,6 +24,7 @@
   },
   {
    "id": "d3",
+   "kind": "fact",
    "created_at": "2026-08-03T12:00:00+00:00",
    "access_count": 0,
    "last_accessed": null,
@@ -29,6 +32,7 @@
   },
   {
    "id": "d4",
+   "kind": "fact",
    "created_at": "2026-10-30T12:00:00+00:00",
    "access_count": 0,
    "last_accessed": null,
@@ -36,14 +40,63 @@
   },
   {
    "id": "d5",
+   "kind": "gist",
    "created_at": "2025-09-27T12:00:00+00:00",
    "access_count": 30,
    "last_accessed": "2026-04-15T12:00:00+00:00",
    "intensity": 0.5
   }
  ],
+ "formulas": {
+  "half_life": "30 days for kind fact, 120 days for kind gist",
+  "touch": "later of created_at and last_accessed (created_at when never accessed)",
+  "f": "0.5 ** (days(touch) / half_life)",
+  "boost": "1 + ln(1 + access_count)",
+  "none": "score = 1",
+  "recency": "score = 0.5 ** (days(created_at) / half_life)",
+  "reinforcement": "score = f * boost",
+  "affect_weighted": "score = max(f, affect_floor if intensity >= 0.5 else 0) * boost * (1 + intensity)",
+  "tie_break": "score desc (rounded to 12 places), then access_count desc, then id asc"
+ },
+ "expected_scores": {
+  "none": {
+   "d1": 1.0,
+   "d2": 1.0,
+   "d3": 1.0,
+   "d4": 1.0,
+   "d5": 1.0
+  },
+  "recency": {
+   "d1": 0.125,
+   "d2": 0.125,
+   "d3": 0.125,
+   "d4": 0.954842,
+   "d5": 0.099213
+  },
+  "reinforcement": {
+   "d1": 0.125,
+   "d2": 3.483526,
+   "d3": 0.125,
+   "d4": 0.954842,
+   "d5": 1.396618
+  },
+  "affect_weighted": {
+   "d1": 0.1375,
+   "d2": 3.831878,
+   "d3": 0.2925,
+   "d4": 1.050326,
+   "d5": 2.094928
+  }
+ },
  "expected_order": {
-  "recency_only": [
+  "none": [
+   "d5",
+   "d2",
+   "d1",
+   "d3",
+   "d4"
+  ],
+  "recency": [
    "d4",
    "d2",
    "d1",
@@ -59,15 +112,17 @@
   ],
   "affect_weighted": [
    "d2",
-   "d3",
-   "d4",
    "d5",
+   "d4",
+   "d3",
    "d1"
   ],
   "invariants": [
-   "d2 > d1 under every channel (same age, reinforced)",
-   "d3 never decays below affect_floor",
-   "d1 is the first prune candidate under every channel"
+   "d2 ranks above d1 under every channel (same age; d2 is reinforced, and on a tie access_count breaks it)",
+   "d3 decay factor is floored at affect_floor 0.15 under affect_weighted (raw f = 0.125 after 90 days at half-life 30)",
+   "d1 and d3 tie on score under none, recency and reinforcement (same age, same count), so id order breaks the tie",
+   "d3 ranks above d1 under affect_weighted (the floor and intensity lift it)",
+   "last place (first prune candidate): none d4, recency d5, reinforcement d3, affect_weighted d1"
   ]
  },
  "reinforcement_write_vectors": [

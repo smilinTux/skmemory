@@ -158,6 +158,7 @@ class DecayChannels(_Strict):
 
 class DecayItem(_Strict):
     id: str
+    kind: str
     created_at: str
     access_count: int
     last_accessed: str | None
@@ -165,7 +166,8 @@ class DecayItem(_Strict):
 
 
 class DecayExpectedOrder(_Strict):
-    recency_only: list[str]
+    none: list[str]
+    recency: list[str]
     reinforcement: list[str]
     affect_weighted: list[str]
     invariants: list[str]
@@ -182,6 +184,8 @@ class Decay(_Strict):
     as_of: str
     channels: DecayChannels
     items: list[DecayItem]
+    formulas: dict[str, str]
+    expected_scores: dict[str, dict[str, float]]
     expected_order: DecayExpectedOrder
     reinforcement_write_vectors: list[ReinforcementVector]
 

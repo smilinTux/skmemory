@@ -366,23 +366,79 @@ S = {
 json.dump(S, open(f"{OUT}/supersession-v1.json","w"), indent=1)
 
 # ---------------------------------------------------------------- decay / reinforcement vectors
+import math
+CH = {"fact_half_life_days": 30, "gist_half_life_days": 120, "affect_floor": 0.15}
+ITEMS = [
+   {"id":"d1","kind":"fact","created_at":ts(-90),"access_count":0,"last_accessed":None,"intensity":0.1},
+   {"id":"d2","kind":"fact","created_at":ts(-90),"access_count":12,"last_accessed":ts(-1),"intensity":0.1},
+   {"id":"d3","kind":"fact","created_at":ts(-90),"access_count":0,"last_accessed":None,"intensity":0.95},
+   {"id":"d4","kind":"fact","created_at":ts(-2),"access_count":0,"last_accessed":None,"intensity":0.1},
+   {"id":"d5","kind":"gist","created_at":ts(-400),"access_count":30,"last_accessed":ts(-200),"intensity":0.5},
+]
+
+# Channel formulas (days = fractional days from created_at / last touch to as_of):
+#   H     = 30 for kind fact, 120 for kind gist
+#   touch = later of created_at and last_accessed
+#   f     = 0.5 ** (days(touch) / H)
+#   boost = 1 + ln(1 + access_count)
+#   none            score = 1
+#   recency         score = 0.5 ** (days(created_at) / H)
+#   reinforcement   score = f * boost
+#   affect_weighted score = max(f, 0.15 if intensity >= 0.5 else 0) * boost * (1 + intensity)
+# Rank = score desc, ties by access_count desc, then id asc.
+def _days(t):
+    return 0.0 if t is None else max((T0 - datetime.fromisoformat(t)).total_seconds() / 86400.0, 0.0)
+
+def _score(ch, it):
+    H = CH["gist_half_life_days"] if it["kind"] == "gist" else CH["fact_half_life_days"]
+    if ch == "none":
+        return 1.0
+    if ch == "recency":
+        return 0.5 ** (_days(it["created_at"]) / H)
+    touch = min(_days(it["created_at"]), _days(it["last_accessed"])) if it["last_accessed"] else _days(it["created_at"])
+    f = 0.5 ** (touch / H)
+    boost = 1.0 + math.log1p(it["access_count"])
+    if ch == "reinforcement":
+        return f * boost
+    floor = CH["affect_floor"] if it["intensity"] >= 0.5 else 0.0
+    return max(f, floor) * boost * (1.0 + it["intensity"])
+
+SCORES = {ch: {it["id"]: round(_score(ch, it), 6) for it in ITEMS}
+          for ch in ("none", "recency", "reinforcement", "affect_weighted")}
+def _rank(ch):
+    return [it["id"] for it in sorted(ITEMS, key=lambda it: (-round(_score(ch, it), 12), -it["access_count"], it["id"]))]
+ORDER = {ch: _rank(ch) for ch in SCORES}
+
+# The invariants are asserted here, so the generator cannot emit a false one.
+pos = lambda ch, i: ORDER[ch].index(i)
+assert all(pos(ch, "d2") < pos(ch, "d1") for ch in ORDER)
+f_d3 = 0.5 ** (_days(ITEMS[2]["created_at"]) / 30)
+assert f_d3 < CH["affect_floor"] and SCORES["affect_weighted"]["d3"] == round(0.15 * 1.0 * 1.95, 6)
+assert SCORES["reinforcement"]["d1"] == SCORES["reinforcement"]["d3"]
+assert pos("affect_weighted", "d3") < pos("affect_weighted", "d1")
+assert ORDER["affect_weighted"][-1] == "d1" and ORDER["reinforcement"][-1] == "d3" and ORDER["recency"][-1] == "d5"
+
 D = {
- "as_of": ts(0), "channels": {"fact_half_life_days": 30, "gist_half_life_days": 120, "affect_floor": 0.15},
- "items": [
-   {"id":"d1","created_at":ts(-90),"access_count":0,"last_accessed":None,"intensity":0.1},
-   {"id":"d2","created_at":ts(-90),"access_count":12,"last_accessed":ts(-1),"intensity":0.1},
-   {"id":"d3","created_at":ts(-90),"access_count":0,"last_accessed":None,"intensity":0.95},
-   {"id":"d4","created_at":ts(-2),"access_count":0,"last_accessed":None,"intensity":0.1},
-   {"id":"d5","created_at":ts(-400),"access_count":30,"last_accessed":ts(-200),"intensity":0.5},
- ],
- "expected_order": {
-   "recency_only": ["d4","d2","d1","d3","d5"],
-   "reinforcement": ["d2","d5","d4","d1","d3"],
-   "affect_weighted": ["d2","d3","d4","d5","d1"],
-   "invariants": ["d2 > d1 under every channel (same age, reinforced)",
-                  "d3 never decays below affect_floor",
-                  "d1 is the first prune candidate under every channel"]
+ "as_of": ts(0), "channels": CH, "items": ITEMS,
+ "formulas": {
+   "half_life": "30 days for kind fact, 120 days for kind gist",
+   "touch": "later of created_at and last_accessed (created_at when never accessed)",
+   "f": "0.5 ** (days(touch) / half_life)",
+   "boost": "1 + ln(1 + access_count)",
+   "none": "score = 1",
+   "recency": "score = 0.5 ** (days(created_at) / half_life)",
+   "reinforcement": "score = f * boost",
+   "affect_weighted": "score = max(f, affect_floor if intensity >= 0.5 else 0) * boost * (1 + intensity)",
+   "tie_break": "score desc (rounded to 12 places), then access_count desc, then id asc",
  },
+ "expected_scores": SCORES,
+ "expected_order": dict(ORDER, invariants=[
+   "d2 ranks above d1 under every channel (same age; d2 is reinforced, and on a tie access_count breaks it)",
+   "d3 decay factor is floored at affect_floor 0.15 under affect_weighted (raw f = 0.125 after 90 days at half-life 30)",
+   "d1 and d3 tie on score under none, recency and reinforcement (same age, same count), so id order breaks the tie",
+   "d3 ranks above d1 under affect_weighted (the floor and intensity lift it)",
+   "last place (first prune candidate): none d4, recency d5, reinforcement d3, affect_weighted d1",
+ ]),
  "reinforcement_write_vectors": [
    {"op":"search_hit","before":{"access_count":3},"after":{"access_count":4,"last_accessed":"<now>"}},
    {"op":"recall","before":{"access_count":3},"after":{"access_count":4,"last_accessed":"<now>"}},

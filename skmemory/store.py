@@ -22,6 +22,7 @@ from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
 from .backends.skgraph_backend import SKGraphBackend
 from .backends.sqlite_backend import CONTENT_PREVIEW_LENGTH, SQLiteBackend
+from . import decay as _decay
 from .decompose import CHUNK_OVERLAP, CHUNK_TARGET, decompose_content
 from .forget import ForgetReport, StorePurge, resolve_agent
 from .fusion import (
@@ -1048,7 +1049,7 @@ class MemoryStore:
                 record_access=record_access,
             )
             if fused is not None:
-                return fused
+                return self._apply_decay(fused)
 
         # The legacy path cannot push context_tag down, so overfetch and filter.
         fetch = limit * 3 if context_tag is not None else limit
@@ -1068,7 +1069,7 @@ class MemoryStore:
                 if results:
                     if record_access:
                         self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
-                    return results
+                    return self._apply_decay(results)
             except Exception as exc:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
@@ -1090,7 +1091,24 @@ class MemoryStore:
             results = _ctx(self.primary.search_text(query, limit=fetch))
         if record_access:
             self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
-        return results
+        return self._apply_decay(results)
+
+    def _apply_decay(self, results: list[Memory]) -> list[Memory]:
+        """Bend a relevance-ordered result list by the SKMEMORY_DECAY channel.
+
+        Only reorders what ``search`` already selected (never adds or drops a
+        hit), skips when decay is off or the primary keeps no usage counters,
+        and never fails the search.
+        """
+        channel = _decay.configured_channel()
+        if channel is None or len(results) < 2:
+            return results
+        try:
+            usage = self.usage_counts([m.id for m in results])
+            return _decay.rerank(results, usage, channel)
+        except Exception as exc:
+            logger.debug("decay rerank skipped: %s", exc)
+            return results
 
     def _search_as_reader(
         self, query, scope, limit, *, tags, layer, source, context_tag, record_access=False
