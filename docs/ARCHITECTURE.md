@@ -12,9 +12,10 @@
 > | **Relational / recency** (always on) | **SQLite** `index.db` | *"what's here by layer/tag/recency; latest sessions"* | the `skmemory` CLI read path **+ skwhisper's recency feed**; local, zero-dep, works if pg is down |
 > | **Semantic + graph** (default) | **skmem-pg** (Postgres) | *"what's relevant / how memories relate"* | pgvector + pg_search **BM25** + Apache **AGE** - one container ("Plan A: one Postgres for everything") |
 >
-> 💤 **Retired as defaults** (still pluggable via `vector_backend`/`graph_backend`, but
-> not installed/used): **SKChroma** (embedded ChromaDB), **SKVector** (Qdrant),
-> **FalkorDB** graph - all superseded by skmem-pg. Sections mentioning them are reference-only.
+> 💤 **Removed (SKMEM-P5-01, SKMEM-P5-02):** **SKChroma** (embedded ChromaDB), **SKVector**
+> (Qdrant) and the **FalkorDB** SKGraph backend are deleted from the code; the vector tier is
+> pgvector only and the graph is AGE only. Sections below that mention them (including the
+> multi-endpoint HA selector, which was deleted with them) are historical reference only.
 > Sync: flat→SQLite via `skmemory reindex`; flat→skmem-pg via `skmemory/reconcile.py` (both cronned daily).
 > Full store-location map: `~/.skcapstone/docs/MEMORY_STORES.md`.
 >

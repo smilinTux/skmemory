@@ -27,11 +27,8 @@ pip install skmemory
 With optional backends:
 
 ```bash
-# Qdrant vector search
-pip install "skmemory[skvector]"
-
-# FalkorDB graph backend
-pip install "skmemory[skgraph]"
+# skmem-pg client (pgvector + AGE)
+pip install "skmemory[pg]"
 
 # Telegram importer
 pip install "skmemory[telegram]"
@@ -174,11 +171,10 @@ flowchart TD
 
     subgraph Vector["Vector Backends"]
         PG["PGVectorBackend\n(skmem-pg, hybrid vector + BM25)"]
-        Qdrant["SKVectorBackend\n(remote - shared collections)\nlumina-memory, jarvis-memory,\nchef-docs, ..."]
     end
 
     subgraph Graph["Graph Backend (optional)"]
-        FalkorDB["SKGraphBackend\nFalkorDB + decomposition nodes"]
+        AGE["AGEGraphBackend\nApache AGE in skmem-pg + decomposition nodes"]
     end
 
     Store --> Fortress["FortifiedMemoryStore\nTamper detection + Audit log"]
@@ -219,11 +215,10 @@ flowchart TD
 - **Polaroid snapshot model** - every memory stores content, emotional intensity (0-10), valence (−1 to +1), emotion labels, and a free-text resonance note
 - **Three-layer persistence** - `short-term` (session-scoped), `mid-term` (project-scoped), `long-term` (identity-level); memories promote up the ladder via CLI, MCP, or API
 - **Four semantic quadrants** - CORE, WORK, SOUL, WILD; keyword-based auto-classification routes memories to appropriate buckets with per-quadrant retention rules
-- **Multi-backend design** - SQLite is the default primary store; **pgvector (skmem-pg) is the vector backend** (SQLite FTS5 is the local lexical arm); Qdrant via SKVector is available for shared/cross-agent collections; FalkorDB provides graph traversal and lineage chains
-- **Cross-collection recall** - list shared SKVector collections in `recall_collections` (e.g. `lumina-memory`, `jarvis-memory`, `chef-docs`) and `deep_search` queries them alongside the local store index
+- **Multi-backend design** - SQLite is the default primary store; **pgvector (skmem-pg) is the vector backend** (SQLite FTS5 is the local lexical arm); Apache AGE (in skmem-pg) provides graph traversal and lineage chains. Qdrant (skvector) and FalkorDB (skgraph) are retired
 - **Sync & drift detection** - `skmemory health` surfaces SQLite ↔ flat-file drift; `skmemory sync` reconciles bidirectionally; per-agent `skmemory-sync@<agent>.timer` keeps everything in lockstep automatically
-- **Decomposition-aware ingestion** - `skmemory ingest-file` and `skmemory snapshot --decompose` create parent + chunk memories and extract section titles, citations, entities, and claims for downstream indexing. Auto-triggers when content ≥ 1200 chars (`DECOMPOSE_MIN_LENGTH`). Extracted entities/citations/claims/sections flow into the FalkorDB graph automatically when SKGraph is configured.
-- **Graph retrieval over decomposition signals** - query SKGraph by entity, citation, claim, or section via `skmemory graph ...`
+- **Decomposition-aware ingestion** - `skmemory ingest-file` and `skmemory snapshot --decompose` create parent + chunk memories and extract section titles, citations, entities, and claims for downstream indexing. Auto-triggers when content ≥ 1200 chars (`DECOMPOSE_MIN_LENGTH`). Extracted entities/citations/claims/sections flow into the AGE graph automatically when skmem-pg is configured.
+- **Graph retrieval over decomposition signals** - query the graph by entity, citation, claim, or section via `skmemory graph ...`
 - **Issue-oriented retrieval scaffolding** - `skmemory novelty`, `skmemory session-brief`, and `skmemory task-pack` turn live problems into ranked memory support with authority tiers, novelty leads, deadlines, defenses, and reusable task packs
 - **MCP server** - stdio tools exposed for Claude Code CLI, Cursor, Claude Desktop, Windsurf, Aider, Cline, and any MCP-speaking client
 - **Fortress / tamper detection** - every memory is SHA-256 sealed on write (`Memory.seal()`); integrity is verified on every recall; tampered memories trigger structured `TamperAlert` events
@@ -401,47 +396,17 @@ skmemory reindex --force       # DESTRUCTIVE: skip the orphan-rescue safety step
 
 ## Vector backends
 
-The vector layer is **two-tier** (the embedded local vector store was retired; the local lexical arm is SQLite FTS5):
+The vector tier is **pgvector only**. The embedded local vector store (ChromaDB), Qdrant (`skvector`) and FalkorDB (`skgraph`) are all retired; the local lexical arm is SQLite FTS5.
 
 | Tier | Backend | Use | Default |
 |---|---|---|---|
-| 1a (shared) | **pgvector / skmem-pg** (`PGVectorBackend`) | Hybrid vector + BM25, agent-isolated; the default | ✅ on |
-| 1b (remote) | **SKVector / Qdrant** (`SKVectorBackend`) | Shared collections (`lumina-memory`, `jarvis-memory`, `chef-docs`, etc.); cross-agent recall | optional |
+| 1 (shared) | **pgvector / skmem-pg** (`PGVectorBackend`) | Hybrid vector + BM25, agent-isolated | on |
 
-The embedded local vector store (the `chroma` extra and `SKMEMORY_VECTOR_BACKEND=chroma`) has been retired and now fails fast. Old `chroma_*` keys in a `skmemory.yaml` are ignored with a one-time warning.
+`SKMEMORY_VECTOR_BACKEND=chroma|skvector|qdrant|skgraph|falkordb` fails fast with a retirement message (non-zero exit on the CLI, red `health`). Stale `chroma_*`, `skvector_*`, `skgraph_*` or HA endpoint keys in a `skmemory.yaml` (and stale `SKMEMORY_SKVECTOR_*` / `SKMEMORY_SKGRAPH_URL` variables) are ignored with a one-time warning and never break a hook.
 
-### Embedding model - `mxbai-embed-large` (default, local)
+### Embedding model - `mxbai-embed-large`
 
-SKVector defaults to **`mxbai-embed-large`** (1024-dim) when the local model is available at `~/clawd/models/mxbai-embed-large/`, with `mixedbread-ai/mxbai-embed-large-v1` as the network fallback. This means:
-
-- SKVector embeddings: mxbai-embed-large (must match the indexed dimension of every collection in `recall_collections` - `lumina-memory`, `jarvis-memory`, etc. are all mxbai-embed-large)
-- Cross-collection queries Just Work because the embedding model is consistent across the mesh
-
-To override per-agent, edit `~/.skcapstone/agents/<agent>/config/skvector.yaml`:
-
-```yaml
-embedding:
-  provider: sentence_transformers
-  model: /home/cbrd21/clawd/models/mxbai-embed-large   # or any HF model id
-dimensions: 1024
-```
-
-### Adding cross-collection recall to an agent
-
-Edit `~/.skcapstone/agents/<agent>/config/skmemory.yaml`:
-
-```yaml
-recall_collections:
-- lumina-memory          # Lumina's shared snapshots
-- jarvis-memory          # Jarvis's shared snapshots
-- sovereign-memory       # cross-agent sovereign archive
-- chef-docs              # Chef's reference docs
-# - hammertime-v3        # add when collection exists
-```
-
-`deep_search()` and `skmemory search-deep` will then query every collection in `recall_collections` (via the SKVector Qdrant client), dedupe results, and tag each hit with `source_backend` (`sqlite`, `skvector`, `skvector:<collection>`).
-
-A collection must exist on the SKVector server (`https://skvector.skstack01.douno.it`); list available with `curl -H "api-key: <key>" https://skvector.../collections`. Bad names produce a logged `404` and are skipped - they don't break the search.
+Embeddings come from the configured embed endpoint (`SKMEMORY_EMBED_URL`, model `mxbai-embed-large`, 1024-dim). If you switch the model or dimension, rebuild the vector store before trusting semantic search.
 
 ### Vector backfill
 
@@ -449,9 +414,9 @@ Backfill the vector store from flat files with `skmemory sync --vector` (or wait
 
 ---
 
-## Graph backend (FalkorDB / SKGraph)
+## Graph backend (Apache AGE)
 
-When `~/.skcapstone/agents/<agent>/config/skgraph.yaml` is present (auto-generated by `skmemory setup`), the graph backend loads automatically and every `store.snapshot()` / `store.promote()` / decomposition pass mirrors into FalkorDB as:
+When pgvector (skmem-pg) is enabled, the AGE graph backend is wired in and every `store.snapshot()` / `store.promote()` / decomposition pass mirrors into the `<agent>_knowledge` graph as:
 
 | Node | Edge | Created by |
 |---|---|---|
@@ -473,7 +438,7 @@ Query via the `graph` CLI subcommands: `entity`, `citation`, `claim`, `section`,
 Backfill an existing agent (one-shot, idempotent - Cypher MERGE handles re-runs):
 
 ```bash
-SKAGENT=opus skmemory sync --graph         # FalkorDB only
+SKAGENT=opus skmemory sync --graph         # AGE graph only
 SKAGENT=opus skmemory sync --vector --graph # both pgvector and the AGE graph
 ```
 
@@ -581,12 +546,12 @@ print(store.health())
 
 ```python
 from skmemory import MemoryStore
-from skmemory.backends.skvector_backend import SKVectorBackend
-from skmemory.backends.skgraph_backend import SKGraphBackend
+from skmemory.backends.pgvector_backend import PGVectorBackend
+from skmemory.backends.age_backend import AGEGraphBackend
 
 store = MemoryStore(
-    vector=SKVectorBackend(url="http://localhost:6333"),
-    graph=SKGraphBackend(url="redis://localhost:6379"),
+    vector=PGVectorBackend(),   # DSN from SKMEMORY_PG_DSN
+    graph=AGEGraphBackend(),
 )
 ```
 
@@ -653,7 +618,7 @@ Add SKMemory to any MCP client:
 | `memory_export` | Export all memories to a dated JSON backup file |
 | `memory_import` | Restore memories from a JSON backup file |
 | `memory_health` | Full health check across all backends (primary, vector, graph) |
-| `memory_graph` | Graph operations: traverse connections, get lineage, find clusters (requires FalkorDB) |
+| `memory_graph` | Graph operations: traverse connections, get lineage, find clusters (requires the AGE graph) |
 | `memory_verify` | Verify SHA-256 integrity hashes for all stored memories; flags tampered entries with CRITICAL severity |
 | `memory_audit` | Show the most recent chain-hashed audit trail entries |
 
@@ -661,30 +626,20 @@ Add SKMemory to any MCP client:
 
 ## Configuration
 
-SKMemory resolves backend URLs with precedence: **CLI args > environment variables > config file > None**.
+SKMemory resolves the skmem-pg DSN with precedence: **`SKMEMORY_PG_DSN` env > config file > local default**.
 
 ### Config file
 
 Location: `~/.skcapstone/agents/<agent>/config/skmemory.yaml`
 
 ```yaml
-skvector_url: http://localhost:6333
-skvector_key: ""
-skvector_embedding_model: mxbai-embed-large
-skvector_vector_dim: 1024
-skgraph_url: redis://localhost:6379
+pgvector_dsn: postgresql://postgres@127.0.0.1:5432/skmemory   # node-local env SKMEMORY_PG_DSN wins
+embed_url: http://127.0.0.1:11434/api/embed
+embed_model: mxbai-embed-large
+vector_dim: 1024
 backends_enabled:
   - sqlite
-  - skvector
-  - skgraph
-routing_strategy: failover   # failover | round-robin
-heartbeat_discovery: false
-```
-
-Run the interactive setup wizard to generate this file:
-
-```bash
-skmemory setup
+  - pgvector
 ```
 
 ### Environment variables
@@ -703,45 +658,17 @@ skmemory setup
 | `SKMEM_PG_DB` / `SKMEM_PG_PORT` / `SKMEM_PG_CONTAINER` | skmem-pg DB name (`skmemory`), host port (`5432`), and container name (`skmem-pg`) overrides |
 | `SKBRAIN_PG_PROJECTOR_PW` / `SKBRAIN_PG_READER_PW` | ops LOGIN-role passwords read by `skmemory pg roles` (from skvault entries of the same name, via `~/.config/environment.d/skbrain.conf`) |
 | `EMBED_URL` / `EMBED_MODEL` | Embedding endpoint + model (`http://192.168.0.100:11434/api/embed`, `mxbai-embed-large`, 1024-dim) |
-| `SKMEMORY_SKVECTOR_URL` | Qdrant endpoint URL |
-| `SKMEMORY_SKVECTOR_KEY` | Qdrant API key |
-| `SKMEMORY_SKVECTOR_EMBEDDING_MODEL` | Override the sovereign embedding model (`mxbai-embed-large` by default, fallback: `mixedbread-ai/mxbai-embed-large-v1`) |
-| `SKMEMORY_SKVECTOR_VECTOR_DIM` | Override the embedding dimension (default: `1024`) |
-| `SKMEMORY_SKGRAPH_URL` | FalkorDB / Redis endpoint URL |
 | `SKMEMORY_SOUL_PATH` | Override soul blueprint path (default: `~/.skcapstone/soul/base.json`) |
 
 If you switch the embedding model or vector dimension, reindex or rebuild the
 vector-backed store before trusting semantic search results. Existing points
 from the old model are not compatible with the new embedding space.
 
-### Multi-endpoint HA (retired SKVector/SKGraph recall endpoints ONLY)
-
-> **Scope:** this primary/replica/failover routing applies **only** to the retired,
-> optional **SKVector (Qdrant)** and **SKGraph (FalkorDB)** shared recall endpoints.
-> **skmem-pg is never run primary/replica and has no failover.** It is LOCAL and
-> per-node: each node runs its own writable skmem-pg on `localhost:5432`, rebuilt from
-> source (agent memories via `reconcile.py` from synced flat JSON; `docs` via skingest
-> from the git wiki). HA for skmem-pg = node self-sufficiency + rebuild-from-source, not
-> replication (see [prb-6f069c5e]; the `.158 -> .41` streaming standby was abandoned
-> because ParadeDB Community cannot serve `pg_search` reads in recovery).
-
-```yaml
-skvector_endpoints:
-  - url: http://node1:6333
-    role: primary
-    tailscale_ip: 100.64.0.1
-  - url: http://node2:6333
-    role: replica
-    tailscale_ip: 100.64.0.2
-routing_strategy: failover
-```
-
 ### Optional dependencies
 
 | Extra | What it enables | Install |
 |-------|----------------|---------|
-| `skvector` | Qdrant vector search + sentence-transformers embeddings | `pip install "skmemory[skvector]"` |
-| `skgraph` | FalkorDB graph traversal and lineage | `pip install "skmemory[skgraph]"` |
+| `pg` | skmem-pg client (pgvector + AGE) | `pip install "skmemory[pg]"` |
 | `telegram` | Telegram chat history importer (Telethon) | `pip install "skmemory[telegram]"` |
 | `seed` | Cloud 9 seed system (`skseed`) | `pip install "skmemory[seed]"` |
 | `all` | All of the above | `pip install "skmemory[all]"` |
@@ -796,9 +723,6 @@ skmemory/
 │   ├── sharing.py             # Memory sharing utilities
 │   ├── openclaw.py            # SKMemoryPlugin (OpenClaw integration)
 │   ├── ai_client.py           # AI client abstraction
-│   ├── endpoint_selector.py   # Multi-endpoint HA routing
-│   ├── graph_queries.py       # Graph query helpers
-│   ├── setup_wizard.py        # Interactive setup CLI
 │   ├── audience.py            # KYA: audience-aware memory filtering
 │   ├── vault.py               # PGP vault helpers
 │   ├── data/
@@ -808,8 +732,8 @@ skmemory/
 │   │   ├── file_backend.py    # JSON file storage (legacy)
 │   │   ├── sqlite_backend.py  # SQLite primary store (default)
 │   │   ├── vaulted_backend.py # PGP-encrypted SQLite
-│   │   ├── skvector_backend.py# Qdrant vector search
-│   │   └── skgraph_backend.py # FalkorDB graph
+│   │   ├── pgvector_backend.py# pgvector + BM25 (skmem-pg)
+│   │   └── age_backend.py     # Apache AGE graph
 │   └── importers/
 │       ├── telegram.py        # Telegram JSON export importer
 │       └── telegram_api.py    # Live Telegram API importer (Telethon)
@@ -850,7 +774,7 @@ flowchart TD
     OS["🐧 OS / skos\nsovereign agent OS"]
     Identity["🔑 Identity\ncapauth · skaid"]
     Security["🛡️ Security\nsksecurity · skwaf"]
-    Data["💾 Data  ◄── YOU ARE HERE\nskmemory · skdata · skvector · skgraph\n(3-tier memory · embeddings · graph)"]
+    Data["💾 Data  ◄── YOU ARE HERE\nskmemory · skdata\n(3-tier memory · embeddings · graph)"]
     Models["🤖 Models\nskmodel · Ollama / vLLM"]
     Comms["📡 Comms\nskcomms · skchat · skvoice"]
     Apps["🔧 Apps\nskforge · skarchitect"]
