@@ -346,13 +346,22 @@ class MemoryStore:
         None when SKMEMORY_ENGINE is python (the default), or when the primary is
         not a SQLite index rooted in a real directory (Rust has nothing to open).
         An invalid value or a missing ``skmem_core`` raises, never falls back.
+        A store whose arms Python owns (injected vector/graph objects) stays on Python.
         """
         if not _engine.is_rust():
             return None
+        _engine.rust_module()  # fail fast when the wheel is missing, whatever the store
         base = getattr(self.primary, "base_path", None)
-        if not isinstance(self.primary, SQLiteBackend) or base is None:
-            _engine.rust_module()  # still fail fast when the wheel is missing
+        # Rust reads the plain SQLite index only: a subclass (vaulted, a test double) or
+        # another primary is Python's. Likewise a vector or graph backend that is not
+        # one of the shipped pg ones is an arm only Python can call, so it stays Python.
+        if type(self.primary) is not SQLiteBackend or base is None:
             return None
+        for derived in (self.vector, self.graph):
+            if derived is not None and not type(derived).__module__.startswith(
+                "skmemory.backends."
+            ):
+                return None
         return self._rust.get(base, pg=self.vector is not None)
 
     @staticmethod
@@ -418,6 +427,9 @@ class MemoryStore:
             "role": memory.role.value if hasattr(memory.role, "value") else memory.role,
             "tags": list(memory.tags),
             "emotional": memory.emotional.model_dump(),
+            "created_at": memory.created_at,
+            "updated_at": memory.updated_at,
+            "valid_from": memory.valid_from,
             "source": memory.source,
             "source_tier": memory.source_tier.value
             if hasattr(memory.source_tier, "value")
@@ -1374,7 +1386,9 @@ class MemoryStore:
             layer=getattr(layer, "value", layer),
             source=source,
             context_tag=ctx,
-            record_access=record_access,
+            # Reinforcement stays Python's (same debounced bump, same readers) so the
+            # access counters mean the same on both engines.
+            record_access=False,
             reader=_engine.rust_reader(reader),
             as_of=as_of,
         )
@@ -1383,6 +1397,8 @@ class MemoryStore:
         if ctxs is not None:
             rows = [r for r in rows if r.get("context_tag") in ctxs]
         kept = [self._from_rust(r) for r in rows]
+        if record_access:
+            self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         self._search_tls.degraded = report.get("degraded")
         if report.get("path") != "empty" or kept:
             self._log_rust_retrieval(query, report, kept)

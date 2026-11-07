@@ -108,7 +108,7 @@ def ceiling() -> str:
 
 
 class RustEngines:
-    """One lazily opened ``skmem_core.Engine`` per (memory dir, ceiling, pg).
+    """One lazily opened ``skmem_core.Engine`` per (memory dir, ceiling, pg, audience config).
 
     Process-wide on purpose: Python's sqlite3 and the Rust engine each bundle their
     own SQLite, and POSIX advisory locks are per process, so closing the Rust
@@ -121,16 +121,19 @@ class RustEngines:
     reusing an owner engine.
     """
 
-    _engines: dict[tuple[str, str, bool], Any] = {}
+    _engines: dict[tuple[str, str, bool, str], Any] = {}
     _lock = threading.Lock()
 
     def get(self, memory_dir: str | Path, *, pg: bool = False) -> Any:
         mod = rust_module()
         ensure_audience_config()
-        key = (str(memory_dir), ceiling(), pg)
+        cfg = str(packaged_audience_config())
+        key = (str(memory_dir), ceiling(), pg, cfg)
         with self._lock:
             eng = self._engines.get(key)
             if eng is None:
-                eng = mod.Engine(str(memory_dir), pg=pg)
+                # The per-call reader resolves under the engine's config, the ceiling under the
+                # env one: give both the same file so neither can disagree with Python.
+                eng = mod.Engine(str(memory_dir), cfg, pg=pg)
                 self._engines[key] = eng
         return eng
