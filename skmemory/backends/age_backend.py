@@ -54,7 +54,8 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 
 from ..invalid_records import payload_memory_id, quarantine_invalid_flat_file, require_memory_id
@@ -66,6 +67,7 @@ from ..models import (
     Memory,
     parent_relation_of,
 )
+from ..validity import parse_ts, valid_at
 
 logger = logging.getLogger(__name__)
 
@@ -1437,6 +1439,7 @@ class AGEGraphBackend:
         tags: list[str] | None = None,
         context_tag: str | list[str] | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> tuple[str, dict]:
         """Build a Cypher ``WHERE`` fragment over ``m`` plus its parameters.
 
@@ -1467,6 +1470,19 @@ class AGEGraphBackend:
         if source:
             parts.append("m.source = $source")
             params["source"] = source
+        if as_of:
+            # COARSE pre-filter only. Stored values are strings in mixed forms
+            # (Z, +00:00, +02:00), so an exact lexical compare is wrong at the
+            # boundary in both directions. Compare against date bounds wide
+            # enough to cover any UTC offset (a false keep is fine, a false drop
+            # is not); search_by_entity then applies the exact rule in Python.
+            day = parse_ts(as_of).date()
+            parts.append(
+                "coalesce(m.valid_from, m.created_at) < $as_of_hi "
+                "AND (m.valid_to IS NULL OR m.valid_to >= $as_of_lo)"
+            )
+            params["as_of_hi"] = (day + timedelta(days=2)).isoformat()
+            params["as_of_lo"] = (day - timedelta(days=1)).isoformat()
         return (" WHERE " + " AND ".join(parts) if parts else ""), params
 
     def search_by_entity(
@@ -1478,6 +1494,7 @@ class AGEGraphBackend:
         tags: list[str] | None = None,
         context_tag: str | list[str] | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> list[dict]:
         """Find memories mentioning an entity matching ``query`` (case-insensitive substring).
 
@@ -1494,22 +1511,36 @@ class AGEGraphBackend:
         if self.graph is None or not query or not query.strip():
             return []
         pattern = "(?i).*" + re.escape(query.strip()) + ".*"
-        where, fparams = self._memory_filter(layer, tags, context_tag, source)
+        where, fparams = self._memory_filter(layer, tags, context_tag, source, as_of)
         cyq = (
             "MATCH (e:Entity) WHERE e.name =~ $pattern "
             f"MATCH (m:Memory)-[:MENTIONS]->(e){where} "
-            "RETURN DISTINCT m.id, m.title, m.layer, e.name "
-            "LIMIT $limit"
+            "RETURN DISTINCT m.id, m.title, m.layer, e.name"
+            + (", m.valid_from, m.valid_to, m.created_at " if as_of else " ")
+            + "LIMIT $limit"
         )
+        cols = "id agtype, title agtype, layer agtype, entity agtype"
+        keys = ["id", "title", "layer", "entity"]
+        if as_of:
+            cols += ", valid_from agtype, valid_to agtype, created_at agtype"
+            keys += ["valid_from", "valid_to", "created_at"]
         rows = self._cypher(
             cyq,
-            {"pattern": pattern, "limit": int(limit), **fparams},
-            cols="id agtype, title agtype, layer agtype, entity agtype",
+            # Overfetch with as_of: the exact check below can drop coarse hits.
+            {"pattern": pattern, "limit": int(limit) * (3 if as_of else 1), **fparams},
+            cols=cols,
             # Capped: this is the regex-over-every-Entity query that was 94%
             # of fused search latency. An abstaining arm beats a hung query.
             timeout_ms=_search_timeout_ms(),
         )
-        return self._rows_to_dicts(rows, ["id", "title", "layer", "entity"])
+        out = self._rows_to_dicts(rows, keys)
+        if as_of:
+            out = [
+                {k: v for k, v in r.items() if k not in ("valid_from", "valid_to", "created_at")}
+                for r in out
+                if valid_at(SimpleNamespace(**r), as_of)
+            ][: int(limit)]
+        return out
 
     #: Query words too common to be worth an entity lookup. Deliberately tiny:
     #: the discriminative-token ordering below handles the rest, and a long
@@ -1584,6 +1615,7 @@ class AGEGraphBackend:
         tags: list[str] | None = None,
         context_tag: str | list[str] | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> list[dict]:
         """Entity lookup on query TOKENS rather than the whole query string.
 
@@ -1610,6 +1642,8 @@ class AGEGraphBackend:
         if self.graph is None or not query or not query.strip():
             return []
         filters = {"layer": layer, "tags": tags, "context_tag": context_tag, "source": source}
+        if as_of:
+            filters["as_of"] = as_of
 
         # MOST SPECIFIC FIRST. The whole query is tried before any token,
         # because for a query that IS close to an entity name the whole-query

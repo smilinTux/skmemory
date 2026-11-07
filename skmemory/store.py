@@ -9,6 +9,7 @@ or by search, and the polaroid comes back with everything intact.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -55,6 +56,7 @@ from .validation import (
     default_pre_write_hooks,
     run_pre_write_hooks,
 )
+from .validity import normalize_as_of, valid_at
 from .wal import WriteAheadLog
 
 # A search hit on the same memory counts once per this many seconds.
@@ -128,8 +130,18 @@ def _extract_inline_citations(text: str) -> list[str]:
     return _unique_list(found)
 
 
-def _passes_filters(mem, layer, tags, context_tag, source) -> bool:
+def _accepts(fn, name: str) -> bool:
+    """Whether ``fn`` takes a ``name`` keyword (capability check, made before calling)."""
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _passes_filters(mem, layer, tags, context_tag, source, as_of=None) -> bool:
     """Whether a hydrated memory satisfies the search filters (AND logic on tags)."""
+    if as_of is not None and not valid_at(mem, as_of):
+        return False
     if layer is not None:
         want = str(getattr(layer, "value", layer))
         have = getattr(mem, "layer", None)
@@ -142,6 +154,58 @@ def _passes_filters(mem, layer, tags, context_tag, source) -> bool:
         if getattr(mem, "context_tag", None) not in allowed:
             return False
     return not (source and getattr(mem, "source", None) != source)
+
+
+MAX_CHAIN = 32
+
+
+def _demote_list(memories: list[Memory]) -> list[Memory]:
+    """``_demote_superseded`` over a ranked list. Runs LAST (after decay) so no
+    later reorder can put a closed fact above its current head."""
+    by_id = {m.id: m for m in memories}
+    return [by_id[i] for i in _demote_superseded([m.id for m in memories], by_id)]
+
+
+def _demote_superseded(ids: list[str], found: dict[str, Memory]) -> list[str]:
+    """Rank a closed record directly below its open head, never above it.
+
+    A record is superseded when it is closed (valid_to set) and a pooled record
+    names it in ``supersedes_id`` or it carries ``metadata.superseded_by``. Only
+    reorders: nothing is dropped, and a record whose head is not in the pool
+    keeps its place. Stable: untouched records keep their relative order.
+    """
+    succ: dict[str, str] = {}
+    for i in ids:
+        m = found.get(i)
+        if m is not None and getattr(m, "supersedes_id", None):
+            succ[m.supersedes_id] = i
+
+    def closed(i: str) -> bool:
+        return getattr(found.get(i), "valid_to", None) is not None
+
+    for i in ids:
+        m = found.get(i)
+        if closed(i) and i not in succ:
+            nxt = ((getattr(m, "metadata", None) or {}).get("superseded_by") or {}).get("id")
+            if nxt:
+                succ[i] = nxt
+    pooled = set(ids)
+
+    def head(i: str) -> str | None:
+        seen = {i}
+        while i in succ and succ[i] in pooled and succ[i] not in seen:
+            i = succ[i]
+            seen.add(i)
+        return i if len(seen) > 1 else None
+
+    pos = {i: n for n, i in enumerate(ids)}
+    # Only records ranked ABOVE their head move (a record already below it stays,
+    # so this never promotes anything).
+    moving = [i for i in ids if closed(i) and (h := head(i)) is not None and pos[i] < pos[h]]
+    out = [i for i in ids if i not in set(moving)]
+    for i in moving:
+        out.insert(out.index(head(i)) + 1, i)
+    return out
 
 
 class MemoryStore:
@@ -1049,6 +1113,7 @@ class MemoryStore:
         context_tag: str | list[str] | None = None,
         record_access: bool = False,
         reader: str | None = None,
+        as_of: str | datetime | None = None,
     ) -> list[Memory]:
         """Search memories by text.
 
@@ -1071,6 +1136,13 @@ class MemoryStore:
                 Background searches (auto-context, novelty, briefs, hooks)
                 must leave it False so search popularity never drives
                 promotion.
+            as_of: ISO-8601 instant (naive or bare date reads as UTC). Keeps only
+                memories valid then: ``coalesce(valid_from, created_at) <= as_of``
+                and (``valid_to`` null or ``valid_to > as_of``), pushed into every
+                arm and re-checked on the hydrated rows. ``None`` (the default)
+                applies NO temporal filter: a closed or superseded memory is
+                still returned, exactly as before this parameter existed. Raises
+                ValueError when unparseable.
             reader: Who is asking, see ``audience.resolve_reader`` for the
                 grammar (``@public``, ``@work:x``, ``channel:<id>``, ...).
                 ``None`` is the owner, which keeps local owner sessions
@@ -1082,6 +1154,7 @@ class MemoryStore:
         Returns:
             list[Memory]: Matching memories ranked by relevance.
         """
+        as_of = normalize_as_of(as_of)
         scope = resolve_reader(reader)
         if not scope.unrestricted:
             return self._search_as_reader(
@@ -1093,6 +1166,7 @@ class MemoryStore:
                 source=source,
                 context_tag=context_tag,
                 record_access=record_access,
+                as_of=as_of,
             )
         return self._search_unscoped(
             query,
@@ -1102,10 +1176,11 @@ class MemoryStore:
             source=source,
             context_tag=context_tag,
             record_access=record_access,
+            as_of=as_of,
         )
 
     def _search_unscoped(
-        self, query, limit, *, tags, layer, source, context_tag, record_access=False
+        self, query, limit, *, tags, layer, source, context_tag, record_access=False, as_of=None
     ) -> list[Memory]:
         query = sanitize_query(query)
 
@@ -1118,17 +1193,20 @@ class MemoryStore:
                 source=source,
                 context_tag=context_tag,
                 record_access=record_access,
+                as_of=as_of,
             )
             if fused is not None:
-                return self._apply_decay(fused)
+                return _demote_list(self._apply_decay(fused))
 
         # The legacy path cannot push context_tag down, so overfetch and filter.
-        fetch = limit * 3 if context_tag is not None else limit
+        fetch = limit * 3 if (context_tag is not None or as_of) else limit
 
         def _ctx(rows):
-            if context_tag is None:
+            if context_tag is None and not as_of:
                 return rows
-            return [m for m in rows if _passes_filters(m, None, None, context_tag, None)][:limit]
+            return [m for m in rows if _passes_filters(m, None, None, context_tag, None, as_of)][
+                :limit
+            ]
 
         if self.vector:
             try:
@@ -1140,7 +1218,7 @@ class MemoryStore:
                 if results:
                     if record_access:
                         self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
-                    return self._apply_decay(results)
+                    return _demote_list(self._apply_decay(results))
             except Exception as exc:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
@@ -1155,6 +1233,7 @@ class MemoryStore:
                     tags=tags,
                     source=source,
                     context_tag=context_tag,
+                    **({"as_of": as_of} if as_of and _accepts(local, "as_of") else {}),
                 )
             except Exception as exc:
                 logger.warning("Local FTS search failed, falling back to LIKE: %s", exc)
@@ -1162,7 +1241,7 @@ class MemoryStore:
             results = _ctx(self.primary.search_text(query, limit=fetch))
         if record_access:
             self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
-        return self._apply_decay(results)
+        return _demote_list(self._apply_decay(results))
 
     def _apply_decay(self, results: list[Memory]) -> list[Memory]:
         """Bend a relevance-ordered result list by the SKMEMORY_DECAY channel.
@@ -1182,7 +1261,17 @@ class MemoryStore:
             return results
 
     def _search_as_reader(
-        self, query, scope, limit, *, tags, layer, source, context_tag, record_access=False
+        self,
+        query,
+        scope,
+        limit,
+        *,
+        tags,
+        layer,
+        source,
+        context_tag,
+        record_access=False,
+        as_of=None,
     ) -> list[Memory]:
         """Search for a declared (non-owner) reader.
 
@@ -1203,7 +1292,7 @@ class MemoryStore:
             ctx = context_tag
         fetch = limit * 3 if scope.exclusions else limit
         rows = self._search_unscoped(
-            query, fetch, tags=tags, layer=layer, source=source, context_tag=ctx
+            query, fetch, tags=tags, layer=layer, source=source, context_tag=ctx, as_of=as_of
         )
         # Last gate: re-check every hydrated row against the full scope, so a
         # backend that ignored the pushed filter still cannot leak.
@@ -1263,6 +1352,7 @@ class MemoryStore:
         context_tag: str | list[str] | None = None,
         return_report: bool = False,
         record_access: bool = False,
+        as_of: str | None = None,
     ) -> list[Memory] | tuple[list[Memory], FusionResult] | None:
         """Search by fusing every retrieval arm this store actually has.
 
@@ -1293,6 +1383,13 @@ class MemoryStore:
         """
         found: dict[str, Memory] = {}
 
+        def asof_kw(fn) -> dict:
+            # Sent only when set AND the arm's method takes it: a backend or fake
+            # that predates as_of must not be handed an unknown kwarg (that fails
+            # the whole arm). Such an arm is still held to as_of by _collect and
+            # the graph re-check, so it is only less efficient, never wrong.
+            return {"as_of": as_of} if as_of and _accepts(fn, "as_of") else {}
+
         def _collect(memories: Sequence[Memory], *, check_ctx: bool = False) -> list[str]:
             ids = []
             for mem in memories:
@@ -1308,6 +1405,10 @@ class MemoryStore:
                     and context_tag is not None
                     and not _passes_filters(mem, None, None, context_tag, None)
                 ):
+                    continue
+                # as_of is re-checked on every arm: the pushed-down predicate is
+                # the fast path, this is the guarantee for a backend that ignored it.
+                if as_of and not valid_at(mem, as_of):
                     continue
                 found.setdefault(str(mem_id), mem)
                 ids.append(str(mem_id))
@@ -1330,6 +1431,7 @@ class MemoryStore:
                     tags=tags,
                     context_tag=context_tag,
                     source=source,
+                    **asof_kw(search_semantic),
                 )
             )
 
@@ -1348,7 +1450,14 @@ class MemoryStore:
             search_lexical = getattr(self.vector, "search_lexical", None)
             if search_lexical is not None:
                 return _collect(
-                    search_lexical(query, limit=arm_limit, layer=layer, tags=tags, source=source),
+                    search_lexical(
+                        query,
+                        limit=arm_limit,
+                        layer=layer,
+                        tags=tags,
+                        source=source,
+                        **asof_kw(search_lexical),
+                    ),
                     check_ctx=True,
                 )
             return _collect(self.primary.search_text(query, limit=arm_limit), check_ctx=True)
@@ -1368,6 +1477,7 @@ class MemoryStore:
                     tags=tags,
                     source=source,
                     context_tag=context_tag,
+                    **asof_kw(local),
                 )
             )
 
@@ -1392,6 +1502,7 @@ class MemoryStore:
                 "tags": tags,
                 "context_tag": context_tag,
                 "source": source,
+                **asof_kw(search_by_entity),
             }
             for row in search_by_entity(query, limit=arm_limit, **graph_filters) or []:
                 row_id = row.get("id") if isinstance(row, dict) else getattr(row, "id", None)
@@ -1410,7 +1521,7 @@ class MemoryStore:
                     # changed since indexing), so re-check the hydrated row
                     # against the source of truth. The Cypher WHERE already did
                     # the bulk of the work; this is the safety net.
-                    if not _passes_filters(loaded, layer, tags, context_tag, source):
+                    if not _passes_filters(loaded, layer, tags, context_tag, source, as_of):
                         continue
                     found[row_id] = loaded
                 ids.append(row_id)
@@ -1429,6 +1540,7 @@ class MemoryStore:
                     created_after=after,
                     created_before=before,
                     source=source,
+                    **asof_kw(self.primary.list_memories),
                 ),
                 check_ctx=True,
             )
@@ -1464,7 +1576,7 @@ class MemoryStore:
                 report.ids = [pool_ids[i] for i in outcome.order]
             else:
                 report.ids = pool_ids
-        report.ids = report.ids[:limit]
+        report.ids = _demote_superseded(report.ids, found)[:limit]
 
         if report.failed_arms:
             logger.warning(
@@ -2052,6 +2164,85 @@ class MemoryStore:
             if len(kept) >= limit or len(rows) < fetch:
                 return kept[:limit]
             fetch *= 4
+
+    def history(self, memory_id: str, reader: str | None = None) -> list[dict]:
+        """The supersession chain through ``memory_id``, oldest first.
+
+        Walks ``supersedes_id`` back to the first record and forward over
+        ``metadata.superseded_by`` (or, on a SQLite primary, the records that
+        name this one in ``supersedes_id``). Returns ``[]`` for an unknown id.
+
+        A declared reader sees only what it may see: a hidden start is the same
+        as an unknown id, and the walk STOPS at the first hidden neighbour in
+        either direction, so nothing past a hidden member is returned. The
+        ``supersedes_id`` / ``superseded_by`` links on returned rows are kept
+        only when they point at a row that is also returned.
+        """
+        scope = resolve_reader(reader)
+
+        def visible(m: Memory | None) -> bool:
+            return m is not None and scope.allows(m.context_tag, m.tags)
+
+        start = self.primary.load(memory_id)
+        if not visible(start):
+            return []
+        chain: list[Memory] = [start]
+        seen = {start.id}
+        cur = start
+        for _ in range(MAX_CHAIN):
+            prev = self.primary.load(cur.supersedes_id) if cur.supersedes_id else None
+            if prev is None or prev.id in seen or not visible(prev):
+                break
+            chain.insert(0, prev)
+            seen.add(prev.id)
+            cur = prev
+        cur = start
+        ids_superseding = getattr(self.primary, "ids_superseding", None)
+        hidden_next = False
+        for _ in range(MAX_CHAIN):
+            nxt_ids = [(cur.metadata.get("superseded_by") or {}).get("id")]
+            if callable(ids_superseding):
+                nxt_ids += ids_superseding(cur.id)
+            nxt = next(
+                (
+                    m
+                    for m in (self.primary.load(i) for i in dict.fromkeys(nxt_ids) if i)
+                    if m is not None and m.id not in seen
+                ),
+                None,
+            )
+            if nxt is None:
+                break
+            if not visible(nxt):
+                hidden_next = True
+                break
+            chain.append(nxt)
+            seen.add(nxt.id)
+            cur = nxt
+        keep = {m.id for m in chain}
+        # The last visible member was closed by a record this reader cannot see.
+        # Show it as it would look with no hidden edit (open), so its valid_to
+        # and `current` do not reveal that a hidden successor exists.
+        masked = chain[-1].id if hidden_next else None
+        return [
+            {
+                "id": m.id,
+                "title": m.title,
+                "layer": m.layer.value,
+                "created_at": m.created_at,
+                "valid_from": m.valid_from,
+                "valid_to": None if m.id == masked else m.valid_to,
+                "supersedes_id": m.supersedes_id if m.supersedes_id in keep else None,
+                "superseded_by": (
+                    sid
+                    if (sid := (m.metadata.get("superseded_by") or {}).get("id")) in keep
+                    else (chain[i + 1].id if i + 1 < len(chain) else None)
+                ),
+                "current": m.valid_to is None or m.id == masked,
+                "requested": m.id == memory_id,
+            }
+            for i, m in enumerate(chain)
+        ]
 
     def reader_can_see(self, memory_id: str, reader: str | None = None) -> bool:
         """Whether the reader may see this memory. An unknown id is not visible."""

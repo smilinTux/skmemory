@@ -1312,3 +1312,71 @@ class TestExtendsEdge:
         assert edge["properties"].get("valid_to") is None
         assert not [e for e in backend.supersedes_edges() if e["child"] == child.id]
         assert any(r["id"] == parent.id for r in backend.get_related(child.id, depth=1))
+
+
+@requires_skmem_pg
+class TestEntityArmAsOf:
+    """as_of is pushed into the entity arm's Cypher (SKMEM-P3-03), run on a real AGE graph."""
+
+    def _idx(self, backend, word, created, valid_to=None, valid_from="unset"):
+        mem = make_memory(
+            title="asof",
+            content="short",
+            metadata={"decomposition": {"entities": [word]}},
+        )
+        mem.created_at = created
+        mem.valid_from = created if valid_from == "unset" else valid_from
+        mem.valid_to = valid_to
+        backend.index_memory(mem)
+        return mem
+
+    def test_as_of_filters_in_cypher(self, backend):
+        word = f"AsOfEnt{uuid.uuid4().hex[:6]}"
+        old = self._idx(backend, word, "2026-01-01T00:00:00+00:00", "2026-06-01T00:00:00+00:00")
+        new = self._idx(backend, word, "2026-06-01T00:00:00+00:00")
+        v1 = self._idx(backend, word, "2026-03-01T00:00:00+00:00", valid_from=None)
+
+        def ids(t, fn="search_by_entity"):
+            return {r["id"] for r in getattr(backend, fn)(word, as_of=t)}
+
+        assert ids("2026-02-01T00:00:00+00:00") == {old.id}
+        # v1 node (no valid_from) falls back to created_at; null valid_to is open
+        assert ids("2026-04-01T00:00:00+00:00") == {old.id, v1.id}
+        assert ids("2026-06-01T00:00:00+00:00") == {new.id, v1.id}  # old closed AT as_of
+        assert ids("2025-01-01T00:00:00+00:00") == set()
+        assert ids("2026-06-01T00:00:00+00:00", "search_by_entity_tokens") == {new.id, v1.id}
+        assert {r["id"] for r in backend.search_by_entity(word)} == {old.id, new.id, v1.id}
+
+    def test_as_of_mixed_stored_forms_at_the_boundary(self, backend):
+        """Z, +00:00 and +02:00 stored values, exactly on the as_of instant."""
+        word = f"AsOfFmt{uuid.uuid4().hex[:6]}"
+        t = "2026-06-01T00:00:00+00:00"
+        base = "2026-01-01T00:00:00+00:00"
+        keep = {
+            "from_Z": self._idx(backend, word, base, valid_from="2026-06-01T00:00:00Z"),
+            "from_plus2": self._idx(backend, word, base, valid_from="2026-06-01T02:00:00+02:00"),
+            "to_after_plus2": self._idx(
+                backend, word, base, "2026-06-01T03:00:00+02:00", valid_from=base
+            ),
+            "to_after_Z": self._idx(backend, word, base, "2026-06-01T00:00:01Z", valid_from=base),
+        }
+        drop = {
+            "to_eq_Z": self._idx(backend, word, base, "2026-06-01T00:00:00Z", valid_from=base),
+            "to_eq_plus2": self._idx(
+                backend, word, base, "2026-06-01T02:00:00+02:00", valid_from=base
+            ),
+            "to_before_plus2": self._idx(
+                backend, word, base, "2026-06-01T01:00:00+02:00", valid_from=base
+            ),
+            "from_future": self._idx(backend, word, base, valid_from="2026-06-01T00:00:01+00:00"),
+            "from_future_plus2": self._idx(
+                backend, word, base, valid_from="2026-06-01T02:00:01+02:00"
+            ),
+        }
+        for fn in ("search_by_entity", "search_by_entity_tokens"):
+            got = {r["id"] for r in getattr(backend, fn)(word, as_of=t, limit=50)}
+            assert got == {m.id for m in keep.values()}, (fn, got)
+            assert not got & {m.id for m in drop.values()}
+        # the same instant written as +02:00 gives the same answer
+        got = {r["id"] for r in backend.search_by_entity(word, as_of="2026-06-01T02:00:00+02:00")}
+        assert got == {m.id for m in keep.values()}

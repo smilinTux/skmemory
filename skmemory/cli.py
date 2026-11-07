@@ -611,11 +611,22 @@ def recall(ctx: click.Context, memory_id: str) -> None:
     default=None,
     help="Audience the results are for (@public, @work:x, channel:<id>). Omit for the owner.",
 )
+@click.option(
+    "--as-of",
+    "as_of",
+    default=None,
+    help="ISO-8601 instant: only memories valid then. Omit for no temporal filter.",
+)
 @click.pass_context
-def search(ctx: click.Context, query: str, limit: int, reader: str | None) -> None:
+def search(
+    ctx: click.Context, query: str, limit: int, reader: str | None, as_of: str | None
+) -> None:
     """Search memories by text or meaning."""
     store: MemoryStore = ctx.obj["store"]
-    results = store.search(query, limit=limit, record_access=True, reader=reader)
+    try:
+        results = store.search(query, limit=limit, record_access=True, reader=reader, as_of=as_of)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--as-of") from exc
 
     if not results:
         click.echo("No memories found.")
@@ -645,6 +656,23 @@ def search(ctx: click.Context, query: str, limit: int, reader: str | None) -> No
         if mem.summary:
             click.echo(f"  Summary: {mem.summary[:100]}")
         click.echo()
+
+
+@cli.command("history")
+@click.argument("memory_id")
+@click.option("--reader", default=None, help="Audience (@public, @work:x). Omit for the owner.")
+@click.pass_context
+def history(ctx: click.Context, memory_id: str, reader: str | None) -> None:
+    """Show the supersession chain through a memory, oldest first."""
+    store: MemoryStore = ctx.obj["store"]
+    chain = store.history(memory_id, reader=reader)
+    if not chain:
+        click.echo(f"Memory not found: {memory_id}")
+        sys.exit(1)
+    for row in chain:
+        end = row["valid_to"] or "open"
+        mark = "*" if row["requested"] else " "
+        click.echo(f"{mark} {row['id']} | {row['title']} | {row['valid_from']} -> {end}")
 
 
 @cli.command("list")

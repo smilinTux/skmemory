@@ -47,6 +47,7 @@ from .audience import READER_ENV, resolve_reader
 from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
 from .models import MemoryLayer
 from .store import MemoryStore
+from .validity import superseded_by_map
 
 logger = logging.getLogger("skmemory.mcp")
 
@@ -197,6 +198,14 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Filter results by source (e.g. 'manual', 'mcp', 'claude-code-hook').",
                     },
+                    "as_of": {
+                        "type": "string",
+                        "description": (
+                            "ISO-8601 instant. Only memories valid then: valid_from (or "
+                            "created_at) <= as_of and valid_to unset or > as_of. Omit for no "
+                            "temporal filter (closed facts are still returned)."
+                        ),
+                    },
                     "reader": {
                         "type": "string",
                         "description": (
@@ -248,6 +257,20 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "The memory's unique ID.",
                     },
+                },
+                "required": ["memory_id"],
+            },
+        ),
+        Tool(
+            name="memory_history",
+            description=(
+                "Supersession chain through a memory, oldest first: what it replaced and "
+                "what replaced it, with each record's validity window."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string", "description": "Any memory in the chain."},
                 },
                 "required": ["memory_id"],
             },
@@ -645,6 +668,7 @@ _READER_TOOLS = frozenset(
     {
         "memory_check_duplicate",
         "memory_recall",
+        "memory_history",
         "memory_list",
         "memory_context",
         "memory_health",
@@ -661,6 +685,10 @@ TOOL_READER_POLICY: dict[str, tuple[str, str]] = {
     "memory_search": (_FILTERED, ""),
     "memory_auto_context": (_FILTERED, ""),
     "memory_recall": (_FILTERED, ""),
+    "memory_history": (
+        _FILTERED,
+        "chain cut at the first hidden member; hidden start is not-found",
+    ),
     "memory_list": (_FILTERED, ""),
     "memory_context": (_FILTERED, ""),
     "memory_graph": (_FILTERED, ""),
@@ -738,8 +766,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 source=source,
                 record_access=True,
                 reader=reader,
+                as_of=arguments.get("as_of") or None,
             )
-            return _json_response([_memory_dict(m) for m in memories])
+            reader = arguments.get("reader")
+            # Under a reader, a superseder is named only when the reader may see
+            # it: metadata.superseded_by can point at a hidden record.
+            sup = {
+                k: v
+                for k, v in superseded_by_map(memories).items()
+                if store.reader_can_see(v, reader)
+            }
+            return _json_response(
+                [
+                    {**_memory_dict(m), "superseded": m.id in sup, "superseded_by": sup.get(m.id)}
+                    for m in memories
+                ]
+            )
+
+        elif name == "memory_history":
+            chain = store.history(arguments["memory_id"], reader=arguments.get("reader"))
+            if not chain:
+                return _error_response(f"Memory not found: {arguments['memory_id']}")
+            return _json_response(chain)
 
         elif name == "memory_check_duplicate":
             content = arguments["content"]

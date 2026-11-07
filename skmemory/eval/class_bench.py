@@ -32,8 +32,9 @@ definition. The default is a round number that was NOT fit to the fixtures;
 the report also prints false-abstain on answerable queries so a threshold that
 "passes" absent by abstaining on everything is visible.
 
-``as_of`` does not exist until SKMEM-P3-03. Queries carrying it are scored as
-the system behaves today and tagged ``expected_fail`` (never skipped).
+Queries carrying ``as_of`` are run with it (SKMEM-P3-03): the candidate's
+``store.search`` receives ``as_of=`` and the fixture validity windows. The
+``expected_fail`` tag is kept for any as_of query that still misses its gate.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ from skmemory.store import MemoryStore
 
 K = 5
 DEFAULT_ABSTAIN = 0.30
-EXPECTED_FAIL_REASON = "needs as_of (SKMEM-P3-03)"
+EXPECTED_FAIL_REASON = "still below gate with as_of applied (SKMEM-P3-03)"
 CANDIDATE = "candidate"
 
 Strategy = Callable[[str, Sequence[dict], int], list[str]]
@@ -128,10 +129,10 @@ def _embed_text(text: str) -> list[float]:
     return [float(x) for x in vec]
 
 
-def _match(mem: Memory, layer, tags, context_tag, source) -> bool:
+def _match(mem: Memory, layer, tags, context_tag, source, as_of=None) -> bool:
     from skmemory.store import _passes_filters
 
-    return _passes_filters(mem, layer, tags, context_tag, source)
+    return _passes_filters(mem, layer, tags, context_tag, source, as_of)
 
 
 class EvalVectorBackend(BaseBackend):
@@ -149,12 +150,12 @@ class EvalVectorBackend(BaseBackend):
         self._vecs[mem.id] = _embed_text(f"{mem.title} {mem.content} {' '.join(mem.tags)}")
 
     def search_semantic(
-        self, query, limit=10, *, layer=None, tags=None, context_tag=None, source=None
+        self, query, limit=10, *, layer=None, tags=None, context_tag=None, source=None, as_of=None
     ):
         qv = _embed_text(query)
         scored = []
         for mem in self._primary.list_memories(limit=100000):
-            if not _match(mem, layer, tags, context_tag, source):
+            if not _match(mem, layer, tags, context_tag, source, as_of):
                 continue
             sim = fb._cosine(qv, self._vecs[mem.id])
             if sim > 0.0:
@@ -191,12 +192,12 @@ class EvalTagGraph:
         self._primary = primary
 
     def search_by_entity_tokens(
-        self, query, limit=20, *, layer=None, tags=None, context_tag=None, source=None
+        self, query, limit=20, *, layer=None, tags=None, context_tag=None, source=None, as_of=None
     ):
         toks = set(fb._tokenize(query))
         hits = []
         for mem in self._primary.list_memories(limit=100000):
-            if not _match(mem, layer, tags, context_tag, source):
+            if not _match(mem, layer, tags, context_tag, source, as_of):
                 continue
             n = sum(1 for t in mem.tags if t.casefold() in toks)
             if n:
@@ -215,6 +216,9 @@ def _to_memory(c) -> Memory:
         created_at=c.created_at,
         updated_at=c.created_at,
         context_tag=c.context_tag,
+        valid_from=c.valid_from,
+        valid_to=c.valid_to,
+        supersedes_id=c.supersedes_id,
         emotional=EmotionalSnapshot(intensity=c.emotional.intensity, valence=c.emotional.valence),
         metadata={"kind": c.kind, "event_at": c.event_at, "source_tier": c.source_tier},
     )
@@ -326,7 +330,9 @@ def _run(corpus_dir, home: str) -> dict:
                 sig = None
             elif name == CANDIDATE:
                 ctx = None if q.reader == "@chef" else "@public"
-                got = [m.id for m in store.search(q.query, limit=10, context_tag=ctx)]
+                got = [
+                    m.id for m in store.search(q.query, limit=10, context_tag=ctx, as_of=q.as_of)
+                ]
                 cost = None
                 sig = _signal(q.query, got, by_id)
             else:

@@ -43,6 +43,7 @@ from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_pg_write_allowed
 from ..query_sanitizer import sanitize_query
 from ..stub_markers import is_stub_payload
+from ..validity import valid_at
 from .base import BaseBackend
 from .sqlite_backend import CONTENT_PREVIEW_LENGTH
 
@@ -435,6 +436,33 @@ class PGVectorBackend(BaseBackend):
         self._v2_columns = bool(row) and row[0] == len(_V2_PG_COLUMNS)
         return self._v2_columns
 
+    def _as_of_clause(self, conn, as_of: str) -> tuple[str, list]:
+        """SQL predicate + binds for ``as_of`` (see ``skmemory.validity``).
+
+        ``coalesce(valid_from, created_at) <= T AND (valid_to IS NULL OR
+        valid_to > T)``. Uses the typed columns once 06-memory-schema-v2.sql is
+        applied; before that it reads the same fields out of ``memory_json``
+        (cast only when the value looks like a timestamp). A v1 row has no
+        ``valid_from`` (created_at stands in) and no ``valid_to`` (open).
+        """
+        if self._has_v2_columns(conn):
+            lo, hi = "valid_from", "valid_to"
+        else:
+            iso = "'^[0-9]{4}-[0-9]{2}-[0-9]{2}'"
+            lo = (
+                f"(CASE WHEN memory_json->>'valid_from' ~ {iso} "
+                "THEN (memory_json->>'valid_from')::timestamptz END)"
+            )
+            hi = (
+                f"(CASE WHEN memory_json->>'valid_to' ~ {iso} "
+                "THEN (memory_json->>'valid_to')::timestamptz END)"
+            )
+        return (
+            f"(COALESCE({lo}, created_at) <= %s::timestamptz "
+            f"AND ({hi} IS NULL OR {hi} > %s::timestamptz))",
+            [as_of, as_of],
+        )
+
     def _verify_embedding(self, vec: list[float], served_model: str | None = None) -> list[float]:
         """Verify a vector matches the pinned model identity, else raise.
 
@@ -747,6 +775,7 @@ class PGVectorBackend(BaseBackend):
         created_after: str | None = None,
         created_before: str | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> list[Memory]:
         """List memories, optionally bounded to a date range.
 
@@ -765,6 +794,7 @@ class PGVectorBackend(BaseBackend):
                 (card: skmemory synthesis-silent-empty-on-historical-dates,
                 2026-10-17).
             created_before: ISO 8601 timestamp upper bound (exclusive).
+            as_of: Normalized UTC ISO instant; keep only memories valid then.
 
         Returns:
             list[Memory]: Matching memories, newest first.
@@ -785,9 +815,13 @@ class PGVectorBackend(BaseBackend):
         if created_before:
             clauses.append("created_at < %s")
             params.append(created_before)
+        conn = self._connection()
+        if as_of:
+            sql_as_of, binds = self._as_of_clause(conn, as_of)
+            clauses.append(sql_as_of)
+            params.extend(binds)
         where = " WHERE " + " AND ".join(clauses)
         params.append(limit)
-        conn = self._connection()
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT memory_json FROM memories{where} ORDER BY created_at DESC LIMIT %s",
@@ -853,7 +887,7 @@ class PGVectorBackend(BaseBackend):
             return self._rows_to_memories(cur.fetchall())
 
     def search_lexical(
-        self, query: str, limit: int = 10, layer=None, tags=None, source=None
+        self, query: str, limit: int = 10, layer=None, tags=None, source=None, as_of=None
     ) -> list[Memory]:
         """PURE lexical search, no vector stage: ParadeDB BM25 if available.
 
@@ -887,8 +921,14 @@ class PGVectorBackend(BaseBackend):
         if source:
             clauses.append("source=%s")
             params.append(source)
-        where = " AND ".join(clauses)
         conn = self._connection()
+        where = " AND ".join(clauses)
+        base_params = list(params)
+
+        # ParadeDB rejects the validity predicate next to `@@@` ("Unsupported
+        # query shape") and the whole arm fell back to ts_rank. So on the BM25
+        # path as_of is NOT in the SQL: overfetch, then keep rows valid at as_of.
+        fetch = limit * 4 if as_of else limit
 
         if self._has_bm25_index():
             try:
@@ -898,9 +938,12 @@ class PGVectorBackend(BaseBackend):
                         f"AND id @@@ paradedb.boolean(should => ARRAY["
                         f"  paradedb.match('content', %s), paradedb.match('title', %s)"
                         f"]) ORDER BY paradedb.score(id) DESC LIMIT %s",
-                        params + [query, query, limit],
+                        params + [query, query, fetch],
                     )
-                    return self._rows_to_memories(cur.fetchall())
+                    rows = self._rows_to_memories(cur.fetchall())
+                    if as_of:
+                        rows = [m for m in rows if valid_at(m, as_of)]
+                    return rows[:limit]
             except Exception as exc:
                 # Surface it: a BM25 arm that silently degrades to ts_rank is
                 # indistinguishable from one that worked, which is the defect
@@ -908,6 +951,12 @@ class PGVectorBackend(BaseBackend):
                 logger.warning("ParadeDB BM25 lexical search failed, using ts_rank: %s", exc)
                 conn.rollback()
 
+        # ts_rank path: the validity predicate is plain SQL here, keep it in the WHERE.
+        params = base_params
+        if as_of:
+            sql_as_of, binds = self._as_of_clause(conn, as_of)
+            where += " AND " + sql_as_of
+            params = params + binds
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT memory_json FROM memories WHERE {where} "
@@ -1015,6 +1064,7 @@ class PGVectorBackend(BaseBackend):
         tags: list[str] | None = None,
         context_tag: str | list[str] | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> list[Memory]:
         """Dense cosine search with every filter applied in the SQL WHERE.
 
@@ -1026,7 +1076,7 @@ class PGVectorBackend(BaseBackend):
         ``tags`` is AND logic. ``context_tag`` is an exact tag, or a list
         meaning any-of (the shape a caller builds from an audience's allowed
         levels); it reads ``memory_json`` because skmem-pg has no such column.
-        There is no ``as_of`` here: schema v2 validity columns do not exist yet.
+        ``as_of`` (normalized UTC ISO) keeps rows valid at that instant, in the WHERE.
 
         When the query cannot be embedded this arm abstains with ``[]`` rather
         than falling back to text search, which would be an unfiltered (for
@@ -1052,8 +1102,12 @@ class PGVectorBackend(BaseBackend):
         if source:
             clauses.append("source=%s")
             params.append(source)
-        where = " AND ".join(clauses)
         conn = self._connection()
+        if as_of:
+            sql_as_of, binds = self._as_of_clause(conn, as_of)
+            clauses.append(sql_as_of)
+            params.extend(binds)
+        where = " AND ".join(clauses)
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT memory_json FROM memories WHERE {where} "

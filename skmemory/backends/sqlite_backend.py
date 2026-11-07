@@ -43,6 +43,7 @@ from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_write_allowed
 from ..stub_markers import STUB_METADATA_KEY, TRUNCATED_PREVIEW_SUFFIX
 from ..tombstones import load_tombstones
+from ..validity import normalize_as_of
 from .base import BaseBackend
 from .file_backend import is_hidden_conflict_copy, scan_conflict_copies
 
@@ -196,6 +197,14 @@ def _is_legacy_importance(importance, access_count) -> bool:
     computed as 0.5 recomputes to 0.5.
     """
     return importance is not None and abs(float(importance) - 0.5) < 1e-9 and not access_count
+
+
+def _norm_bound(value: str) -> str:
+    """A created_at bound in the stored UTC '+00:00' form (unparseable: unchanged)."""
+    try:
+        return normalize_as_of(value) or value
+    except ValueError:
+        return value
 
 
 class SQLiteBackend(BaseBackend):
@@ -949,6 +958,7 @@ class SQLiteBackend(BaseBackend):
         created_after: str | None = None,
         created_before: str | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> list[Memory]:
         """List memories using the index for filtering, loading full objects.
 
@@ -967,6 +977,8 @@ class SQLiteBackend(BaseBackend):
                 (card: skmemory synthesis-silent-empty-on-historical-dates,
                 2026-10-17).
             created_before: ISO 8601 timestamp upper bound (exclusive).
+            as_of: Normalized UTC ISO instant; keep only memories valid then
+                (``skmemory.validity``). None means no temporal filter.
 
         Returns:
             list[Memory]: Matching memories sorted newest first.
@@ -989,12 +1001,21 @@ class SQLiteBackend(BaseBackend):
             params.append(source)
 
         if created_after:
-            conditions.append("created_at >= ?")
-            params.append(created_after)
+            # Bounds arrive as 'Z' (parse_time_window) while rows are stored
+            # '+00:00', and '+' sorts before 'Z', so a row created exactly on the
+            # bound was dropped. Normalize the bind to the stored form and read
+            # a stored 'Z' as '+00:00'. Still an exact (microsecond) string
+            # compare, so created_before paging cursors do not skip rows.
+            conditions.append("replace(created_at, 'Z', '+00:00') >= ?")
+            params.append(_norm_bound(created_after))
 
         if created_before:
-            conditions.append("created_at < ?")
-            params.append(created_before)
+            conditions.append("replace(created_at, 'Z', '+00:00') < ?")
+            params.append(_norm_bound(created_before))
+
+        if as_of:
+            conditions.append(fts_local.as_of_sql(""))
+            params.extend([as_of, as_of])
 
         where = " AND ".join(conditions) if conditions else "1=1"
         params.append(limit)
@@ -1177,6 +1198,7 @@ class SQLiteBackend(BaseBackend):
         tags: list[str] | None = None,
         source: str | None = None,
         context_tag: str | list[str] | None = None,
+        as_of: str | None = None,
     ) -> list[Memory]:
         """bm25-ranked full-text search over title, content, summary and tags.
 
@@ -1191,7 +1213,14 @@ class SQLiteBackend(BaseBackend):
         conn = self._get_conn()
         self._lazy_fts_backfill(conn)
         rows = fts_local.search_rows(
-            conn, query, limit, layer=layer, tags=tags, source=source, context_tag=context_tag
+            conn,
+            query,
+            limit,
+            layer=layer,
+            tags=tags,
+            source=source,
+            context_tag=context_tag,
+            as_of=as_of,
         )
         results = []
         for row in rows:
@@ -2029,6 +2058,22 @@ class SQLiteBackend(BaseBackend):
                 "backend": "SQLiteBackend",
                 "error": str(e),
             }
+
+    def ids_superseding(self, memory_id: str) -> list[str]:
+        """Ids of records whose ``supersedes_id`` is ``memory_id``, oldest first."""
+        try:
+            rows = (
+                self._get_conn()
+                .execute(
+                    "SELECT id FROM memories WHERE supersedes_id = ? ORDER BY created_at, id",
+                    (memory_id,),
+                )
+                .fetchall()
+            )
+            return [r[0] for r in rows]
+        except sqlite3.Error as exc:
+            logger.warning("ids_superseding failed: %s", type(exc).__name__)
+            return []
 
     def find_by_content_hash(self, content_hash: str) -> Memory | None:
         """Find an existing memory by content hash. Returns None if not found."""
