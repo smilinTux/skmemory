@@ -1,0 +1,1 @@
+`MemoryStore.snapshot()` takes an optional `outcome` (success, failure, lesson) next to `kind`, so a writer can store `kind=procedure, outcome=lesson` without building a `Memory` by hand (SKMEM-P4-04). Default `None` changes nothing.
