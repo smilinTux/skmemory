@@ -720,7 +720,7 @@ class SQLiteBackend(BaseBackend):
             for path in tier.glob("*.json"):
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
-                    Memory(**data)
+                    Memory.from_stored(data)
                 except Exception:  # noqa: BLE001
                     bad += 1
         return bad
@@ -732,7 +732,7 @@ class SQLiteBackend(BaseBackend):
 
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                return Memory(**data)
+                return Memory.from_stored(data)
             except (json.JSONDecodeError, Exception):
                 return None
 
@@ -750,7 +750,7 @@ class SQLiteBackend(BaseBackend):
         """
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return Memory(**data)
+            return Memory.from_stored(data)
         except Exception as exc:  # noqa: BLE001
             key = str(path)
             if key not in self._unloadable_seen:
@@ -1269,7 +1269,7 @@ class SQLiteBackend(BaseBackend):
         count = 0
         for mem_data in data["memories"]:
             try:
-                memory = Memory(**mem_data)
+                memory = Memory.from_stored(mem_data)
                 file_path = self._file_path(memory)
                 assert_write_allowed(file_path)
                 # Durable flat write BEFORE indexing (card: sqlite-only
@@ -1612,7 +1612,7 @@ class SQLiteBackend(BaseBackend):
             for json_file in layer_dir.glob("*.json"):
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
-                    memory = Memory(**data)
+                    memory = Memory.from_stored(data)
                     self._index_memory(memory, json_file)
                     count += 1
                 except (json.JSONDecodeError, Exception):
@@ -1867,7 +1867,7 @@ class SQLiteBackend(BaseBackend):
             # Load the full memory from its flat file
             file_path = Path(row[0])
             if file_path.exists():
-                return Memory.model_validate_json(file_path.read_text())
+                return Memory.from_stored_json(file_path.read_text())
         except Exception as e:
             logger.warning("find_by_content_hash failed: %s", e)
         return None

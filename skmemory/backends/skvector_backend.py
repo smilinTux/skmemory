@@ -347,7 +347,7 @@ class SKVectorBackend(BaseBackend):
         """Build a Memory from either current or legacy Qdrant payloads."""
         raw = payload.get("memory_json")
         if raw:
-            return Memory.model_validate_json(raw)
+            return Memory.from_stored_json(raw)
 
         layer_raw = payload.get("layer") or payload.get("tier") or MemoryLayer.SHORT.value
         try:
@@ -818,7 +818,7 @@ class SKVectorBackend(BaseBackend):
                 try:
                     raw = json_file.read_text(encoding="utf-8")
                     data = json.loads(raw)
-                    memory = Memory.model_validate(data)
+                    memory = Memory.from_stored(data)
                     flat_memory_ids.add(memory.id)
 
                     content_hash = memory.content_hash()

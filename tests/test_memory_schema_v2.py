@@ -353,3 +353,157 @@ def test_pg_save_skips_typed_columns_when_unmigrated(monkeypatch):
     be.save(Memory(id="u1", title="t", content="c"))
     insert = [q for q in cur.sql if q.startswith("INSERT")][0]
     assert "schema_version" not in insert and "memory_json" in insert
+
+
+# --- tolerant reads, honest schema_version, promote ----------------------
+
+BAD = {"kind": "hypothesis", "outcome": "sucess", "source_tier": "user_stated"}
+
+
+def _bad_dict(mid="bad-0001"):
+    return dict(V1_DICT, id=mid, schema_version=2, **BAD)
+
+
+def _assert_degraded(m):
+    assert (m.kind, m.outcome, m.source_tier) == ("episode", None, "self-generated")
+    assert m.metadata["schema_v2_unknown"] == BAD
+
+
+def test_public_construction_stays_strict():
+    with pytest.raises(ValidationError):
+        Memory(title="t", content="c", kind="hypothesis")
+
+
+def test_file_backend_reads_unknown_values_leniently(tmp_path, caplog):
+    be = FileBackend(str(tmp_path))
+    p = tmp_path / "mid-term" / "bad-0001.json"
+    p.write_text(json.dumps(_bad_dict()))
+    raw = p.read_bytes()
+    _assert_degraded(be.load("bad-0001"))
+    assert [m.id for m in be.list_memories()] == ["bad-0001"]
+    assert [m.id for m in be.search_text("schema")] == ["bad-0001"]
+    assert p.read_bytes() == raw
+
+
+def test_unknown_value_logged_once(tmp_path, caplog):
+    import logging
+
+    from skmemory import models
+
+    models._warned_unknown.clear()
+    be = FileBackend(str(tmp_path))
+    (tmp_path / "mid-term" / "bad-0001.json").write_text(json.dumps(_bad_dict()))
+    with caplog.at_level(logging.WARNING, logger="skmemory.models"):
+        be.load("bad-0001")
+        be.load("bad-0001")
+    assert len([r for r in caplog.records if "unknown kind" in r.getMessage()]) == 1
+
+
+def test_sqlite_load_list_reindex_see_unknown_values(tmp_path):
+    be = SQLiteBackend(str(tmp_path))
+    p = tmp_path / "mid-term" / "bad-0001.json"
+    p.write_text(json.dumps(_bad_dict()))
+    _assert_degraded(be.load("bad-0001"))
+    be.reindex()
+    row = be._get_conn().execute("SELECT kind, outcome, source_tier FROM memories").fetchall()
+    assert [tuple(r) for r in row] == [("episode", None, "self-generated")]
+    _assert_degraded(be.load("bad-0001"))
+    assert [m.id for m in be.list_memories()] == ["bad-0001"]
+    # And a fresh backend with no index row at all still finds it.
+    (tmp_path / "index.db").unlink()
+    be2 = SQLiteBackend(str(tmp_path))
+    assert be2.reindex() >= 1 or be2.load("bad-0001") is not None
+    assert [m.id for m in be2.list_memories()] == ["bad-0001"]
+
+
+def test_v1_file_reports_schema_version_1_without_rewrite(tmp_path):
+    for be in (FileBackend(str(tmp_path / "f")), SQLiteBackend(str(tmp_path / "s"))):
+        base = Path(be.base_path)
+        p = base / "mid-term" / "v1-memory-0001.json"
+        raw = json.dumps(V1_DICT, indent=2).encode()
+        p.write_bytes(raw)
+        m = be.load("v1-memory-0001")
+        assert m.schema_version == 1
+        assert p.read_bytes() == raw
+    assert Memory(title="t", content="c").schema_version == 2
+
+
+def test_promote_does_not_copy_supersession():
+    m = Memory(title="t", content="c", supersedes_id="old", valid_to="2031-01-01T00:00:00+00:00")
+    from skmemory.models import MemoryLayer
+
+    p = m.promote(MemoryLayer.LONG)
+    assert p.supersedes_id is None and p.valid_to is None and p.parent_id == m.id
+
+
+def test_pgvector_load_unknown_values_on_throwaway(monkeypatch):
+    conn = _live_conn()
+    monkeypatch.setenv("SKMEMORY_ALLOW_PYTEST_REAL_WRITES", "1")
+    from skmemory.backends.pgvector_backend import PGVectorBackend
+
+    be = PGVectorBackend(agent="test-agent", embed_fn=lambda _t: [0.1] * 1024)
+    d = _bad_dict("p301-bad")
+    conn.execute(
+        "INSERT INTO memories (id, agent, layer, title, content, memory_json) "
+        "VALUES ('p301-bad','test-agent','mid-term','t','c', %s::jsonb) "
+        "ON CONFLICT (id) DO UPDATE SET memory_json = EXCLUDED.memory_json",
+        (json.dumps(d),),
+    )
+    try:
+        _assert_degraded(be.load("p301-bad"))
+    finally:
+        conn.execute("DELETE FROM memories WHERE id = 'p301-bad'")
+
+
+def test_has_v2_columns_probe_is_cached(monkeypatch):
+    from skmemory.backends import pgvector_backend as mod
+
+    probes = []
+
+    class Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            probes.append(sql)
+
+        def fetchone(self):
+            return (0,)
+
+    class Conn:
+        closed = False
+
+        def cursor(self):
+            return Cur()
+
+    be = mod.PGVectorBackend(agent="test-agent", embed_fn=lambda _t: [0.1] * 1024)
+    assert be._has_v2_columns(Conn()) is False
+    assert be._has_v2_columns(Conn()) is False
+    assert len(probes) == 1
+
+
+def test_resave_restores_raw_unknown_values(tmp_path):
+    be = FileBackend(str(tmp_path))
+    p = tmp_path / "mid-term" / "bad-0001.json"
+    p.write_text(json.dumps(_bad_dict(), indent=2))
+    be.save(be.load("bad-0001"))
+    out = json.loads(p.read_text())
+    assert {k: out[k] for k in BAD} == BAD
+    assert "schema_v2_unknown" not in out["metadata"]
+    # byte-stable on a second pass
+    first = p.read_bytes()
+    be.save(be.load("bad-0001"))
+    assert p.read_bytes() == first
+
+
+def test_deliberate_change_beats_restore_and_promote_survives():
+    m = Memory.from_stored(_bad_dict())
+    m.kind = "rule"
+    d = m.model_dump()
+    assert d["kind"] == "rule" and d["outcome"] == "sucess"
+    from skmemory.models import MemoryLayer
+
+    assert Memory.from_stored(_bad_dict()).promote(MemoryLayer.LONG).kind == "episode"

@@ -152,7 +152,7 @@ class FileBackend(BaseBackend):
         try:
             raw = path.read_bytes()
             data = json.loads(raw.decode("utf-8"))
-            memory = Memory(**data)
+            memory = Memory.from_stored(data)
         except (json.JSONDecodeError, Exception):
             self.last_verdict = None
             return None
@@ -246,7 +246,7 @@ class FileBackend(BaseBackend):
             for json_file in layer_dir.glob("*.json"):
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
-                    mem = Memory(**data)
+                    mem = Memory.from_stored(data)
                     if tags and not all(t in mem.tags for t in tags):
                         continue
                     if source and mem.source != source:
@@ -285,7 +285,7 @@ class FileBackend(BaseBackend):
             for json_file in layer_dir.glob("*.json"):
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
-                    mem = Memory(**data)
+                    mem = Memory.from_stored(data)
                     searchable = mem.to_embedding_text().lower()
                     hits = sum(1 for w in words if w in searchable)
                     if hits == 0:

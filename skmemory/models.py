@@ -8,12 +8,23 @@ that captures not just what happened, but what it felt like.
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    ValidationInfo,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 from .invalid_records import require_memory_id
 
@@ -35,6 +46,22 @@ class MemoryLayer(str, Enum):
 MemoryKind = Literal["episode", "fact", "procedure", "preference", "rule"]
 MemoryOutcome = Literal["success", "failure", "lesson"]
 SourceTier = Literal["user-stated", "tool-output", "web", "self-generated"]
+
+logger = logging.getLogger(__name__)
+
+#: Defaults a stored value falls back to when it is outside the v2 vocabulary.
+_V2_VOCAB_DEFAULTS: dict[str, tuple[Any, tuple[Any, ...]]] = {
+    "kind": ("episode", ("episode", "fact", "procedure", "preference", "rule")),
+    "outcome": (None, ("success", "failure", "lesson", None)),
+    "source_tier": (
+        "self-generated",
+        ("user-stated", "tool-output", "web", "self-generated"),
+    ),
+}
+_warned_unknown: set[tuple[str, str]] = set()
+
+#: Validation context used by every read-from-storage path.
+STORED_CONTEXT = {"stored": True}
 
 #: Current on-disk schema version written for new and re-saved memories.
 SCHEMA_VERSION = 2
@@ -249,6 +276,91 @@ class Memory(BaseModel):
     )
     schema_version: int = Field(default=SCHEMA_VERSION)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _tolerate_stored_values(cls, data: Any, info: ValidationInfo) -> Any:
+        """Read-from-storage leniency (see :meth:`from_stored`).
+
+        Only active with the ``stored`` validation context, so constructing a
+        Memory through the public API stays strict. A stored file whose
+        kind/outcome/source_tier is outside the vocabulary (typo, or written
+        by a newer node) must not become invisible: map it to the default and
+        keep the raw value in ``metadata['schema_v2_unknown']``. A stored v1
+        file with no ``schema_version`` key reports 1.
+        """
+        if not (info.context and info.context.get("stored")) or not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "schema_version" not in data:
+            data["schema_version"] = 1
+        for field, (default, allowed) in _V2_VOCAB_DEFAULTS.items():
+            if field not in data:
+                continue
+            try:
+                ok = data[field] in allowed
+            except TypeError:  # unhashable junk
+                ok = False
+            if ok:
+                continue
+            raw = data[field]
+            meta = dict(data.get("metadata") or {})
+            unknown = dict(meta.get("schema_v2_unknown") or {})
+            unknown[field] = raw
+            meta["schema_v2_unknown"] = unknown
+            data["metadata"] = meta
+            data[field] = default
+            key = (field, repr(raw))
+            if key not in _warned_unknown:
+                _warned_unknown.add(key)
+                logger.warning(
+                    "memory %s: unknown %s=%r, using %r (raw kept in metadata)",
+                    data.get("id", "?"),
+                    field,
+                    raw,
+                    default,
+                )
+        return data
+
+    @model_serializer(mode="wrap")
+    def _restore_unknown_on_dump(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> dict[str, Any]:
+        """Write back raw out-of-vocabulary values kept by the lenient read.
+
+        A node that does not know a newer ``kind`` reads it as the default and
+        stashes the raw value in ``metadata['schema_v2_unknown']``. Without
+        this, re-saving would downgrade the file on disk (and Syncthing would
+        replicate the downgrade). Only restores while the field still holds
+        the default, so a deliberate change after load wins.
+        """
+        out = handler(self)
+        if info.context and info.context.get("no_restore"):
+            return out
+        unknown = (out.get("metadata") or {}).get("schema_v2_unknown")
+        if not isinstance(unknown, dict) or not unknown:
+            return out
+        meta = dict(out["metadata"])
+        for field, raw in unknown.items():
+            if field in _V2_VOCAB_DEFAULTS and out.get(field) == _V2_VOCAB_DEFAULTS[field][0]:
+                out[field] = raw
+                unknown = {k: v for k, v in unknown.items() if k != field}
+        if unknown:
+            meta["schema_v2_unknown"] = unknown
+        else:
+            meta.pop("schema_v2_unknown", None)
+        out["metadata"] = meta
+        return out
+
+    @classmethod
+    def from_stored(cls, data: dict[str, Any]) -> Memory:
+        """Build a Memory from stored data (flat file, index, pg row)."""
+        return cls.model_validate(data, context=STORED_CONTEXT)
+
+    @classmethod
+    def from_stored_json(cls, raw: str | bytes) -> Memory:
+        """Like :meth:`from_stored` for a JSON string."""
+        return cls.model_validate_json(raw, context=STORED_CONTEXT)
+
     @model_validator(mode="after")
     def _default_temporal_fields(self) -> Memory:
         """Fill event_at/valid_from from created_at (in memory only)."""
@@ -338,7 +450,7 @@ class Memory(BaseModel):
             Memory: A new Memory instance at the target layer.
         """
         require_memory_id(self.id)
-        data = self.model_dump()
+        data = self.model_dump(context={"no_restore": True})
         data["id"] = str(uuid.uuid4())
         data["layer"] = target
         data["parent_id"] = self.id
@@ -346,6 +458,9 @@ class Memory(BaseModel):
             **(data.get("metadata") or {}),
             PARENT_RELATION_KEY: RELATION_PROMOTED_FROM,
         }
+        # Promotion is a copy, not a replacement or a closing of validity.
+        data["supersedes_id"] = None
+        data["valid_to"] = None
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         if summary:
             data["summary"] = summary

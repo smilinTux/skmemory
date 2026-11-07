@@ -2021,7 +2021,7 @@ class AGEGraphBackend:
                 if current is not None:
                     quarantine_invalid_flat_file(base, current, reason=str(exc))
                 return None
-            return Memory.model_validate(data)
+            return Memory.from_stored(data)
 
         # Pass 1: cheap. Hash bytes, skip what the graph already holds, and
         # order the rest new-first. Only (priority, name, path, hash) is kept,

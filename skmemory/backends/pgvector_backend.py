@@ -403,6 +403,7 @@ class PGVectorBackend(BaseBackend):
         self._unparseable_seen: set[str] = set()
         self._embed_fn = embed_fn
         self._conn = None
+        self._v2_columns: bool | None = None
 
     # --- infra ---------------------------------------------------------------
     def _connection(self):
@@ -415,9 +416,14 @@ class PGVectorBackend(BaseBackend):
         return self._conn
 
     def _has_v2_columns(self, conn) -> bool:
-        """True once the schema-v2 typed columns exist (cached when true)."""
-        if getattr(self, "_v2_columns", False):
-            return True
+        """True when the schema-v2 typed columns exist.
+
+        Probed once per backend instance and cached (true or false), so a
+        save costs no extra query. A node migrated while a daemon is running
+        starts writing the typed columns on that daemon's next restart.
+        """
+        if self._v2_columns is not None:
+            return self._v2_columns
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT count(*) FROM information_schema.columns "
@@ -426,10 +432,8 @@ class PGVectorBackend(BaseBackend):
                 (list(_V2_PG_COLUMNS),),
             )
             row = cur.fetchone()
-        ok = bool(row) and row[0] == len(_V2_PG_COLUMNS)
-        if ok:
-            self._v2_columns = True
-        return ok
+        self._v2_columns = bool(row) and row[0] == len(_V2_PG_COLUMNS)
+        return self._v2_columns
 
     def _verify_embedding(self, vec: list[float], served_model: str | None = None) -> list[float]:
         """Verify a vector matches the pinned model identity, else raise.
@@ -697,7 +701,7 @@ class PGVectorBackend(BaseBackend):
                 (memory_id, self.agent),
             )
             row = cur.fetchone()
-        return Memory.model_validate_json(_as_json_str(row[0])) if row else None
+        return Memory.from_stored_json(_as_json_str(row[0])) if row else None
 
     def delete(self, memory_id: str) -> bool:
         conn = self._connection()
@@ -952,7 +956,7 @@ class PGVectorBackend(BaseBackend):
         for row in rows:
             payload = _as_json_str(row[0])
             try:
-                out.append(Memory.model_validate_json(payload))
+                out.append(Memory.from_stored_json(payload))
             except Exception as exc:
                 mem_id = "<unknown>"
                 with contextlib.suppress(Exception):
