@@ -57,7 +57,7 @@ from skmemory.store import MemoryStore
 
 K = 5
 DEFAULT_ABSTAIN = 0.30
-EXPECTED_FAIL_REASON = "as_of applied, still below gate: window parse, not validity (SKMEM-P3-03)"
+EXPECTED_FAIL_REASON = "still below gate with as_of applied (SKMEM-P3-03)"
 CANDIDATE = "candidate"
 
 Strategy = Callable[[str, Sequence[dict], int], list[str]]
