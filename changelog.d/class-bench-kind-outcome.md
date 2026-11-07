@@ -1,0 +1,1 @@
+The class bench `_to_memory` now sets `Memory.kind`, `outcome` and `event_at` from the fixture row instead of only stashing kind and event_at in metadata, so procedure ordering and outcome handling see real fixture values (SKMEM-P1-12). Per-class numbers are unchanged on the v1 fixtures.

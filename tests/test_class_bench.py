@@ -170,3 +170,16 @@ def test_strict_flag_fails_on_expected_fail_passing(tmp_path, monkeypatch):
     regression_gate.write_json(base, path)
     assert regression_gate.main(["--baseline", str(path)]) == 0
     assert regression_gate.main(["--baseline", str(path), "--strict"]) == 1
+
+
+def test_to_memory_forwards_kind_outcome_event_at():
+    from skmemory.eval.fixtures import load_corpus
+
+    corpus = load_corpus()
+    for c in corpus:
+        m = class_bench._to_memory(c)
+        assert m.kind == c.kind
+        assert m.outcome == c.outcome
+        assert m.event_at == c.event_at
+    assert any(c.kind == "procedure" for c in corpus)
+    assert any(c.outcome for c in corpus)
