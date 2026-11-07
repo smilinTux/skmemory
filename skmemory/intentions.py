@@ -213,6 +213,17 @@ def merge_intentions(a: Intention, b: Intention) -> Intention:
 
 
 _SEP = "\x1f"
+_WORD = re.compile(r"\w+")
+_FIRST_TOKEN = _WORD
+
+
+def _env_num(name: str, default: Any, cast: Any) -> Any:
+    try:
+        return cast(os.environ.get(f"SKMEMORY_PREFILTER_{name}", default))
+    except (TypeError, ValueError):
+        return default
+
+
 _BASE_COLS = (
     "id", "kind", "state", "due_at", "snooze_until", "expires_at", "origin_memory_id",
     "channel", "data",
@@ -296,6 +307,8 @@ class IntentionStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self.base_path / "index.db"
         self._conn: sqlite3.Connection | None = None
+        self._gen = 0  # bumped on every index write by this instance
+        self._pf_cache: tuple | None = None
         #: Count of unreadable files/rows skipped by this store instance.
         self.unreadable = 0
         self._lock_dir = (
@@ -376,6 +389,7 @@ class IntentionStore:
 
     def _index(self, i: Intention, body: str) -> None:
         db = self._db()
+        self._gen += 1
         with db:
             db.execute(_UPSERT_SQL, self._row(i, body))
 
@@ -555,6 +569,7 @@ class IntentionStore:
                 merged.append({"id": iid, "files": [p.name for p in paths if p.stem != iid]})
                 rows.append(self._row(res, res.model_dump_json(indent=2)))
         db = self._db()
+        self._gen += 1
         with db:  # one transaction: readers never see an empty table
             db.execute("DELETE FROM intentions")
             db.executemany(_UPSERT_SQL, rows)
@@ -609,13 +624,58 @@ class IntentionStore:
         return result
 
     # -- prefilter (SKMEM-P2-02) ---------------------------------------
+    def _stamp(self) -> tuple:
+        """Cheap change key for the index: db and WAL stat plus this instance's write count."""
+        out: list[Any] = [self._gen]
+        for suffix in ("", "-wal"):
+            try:
+                st = os.stat(str(self._db_path) + suffix)
+                out += [st.st_mtime_ns, st.st_size]
+            except OSError:
+                out += [0, 0]
+        return tuple(out)
+
+    def _matcher(self) -> tuple[dict[str, list[str]], list[str], dict[str, list[str]]]:
+        """(first-token -> ids, ids with no word-char term, id -> terms), cached on the index stamp.
+
+        Every term that contains a word char is a whole-token phrase start: its
+        first ``\\w+`` run can only match a complete token of the prompt (a
+        neighbouring literal or a boundary guard stops it). So one tokenisation
+        of the prompt plus set lookups finds every candidate; the regex then
+        only verifies those. Terms with no word char are always verified.
+        """
+        key = self._stamp()
+        if self._pf_cache is not None and self._pf_cache[0] == key:
+            return self._pf_cache[1]
+        by_tok: dict[str, list[str]] = {}
+        nonword: list[str] = []
+        terms_of: dict[str, list[str]] = {}
+        for iid, terms in self._db().execute(
+            "SELECT id, terms FROM intentions WHERE kind='event' AND state IN ('armed','fired')"
+        ):
+            if not terms:
+                continue
+            ts = [t for t in terms.split(_SEP) if t]
+            terms_of[iid] = ts
+            for t in ts:
+                m = _FIRST_TOKEN.search(t)
+                if m is None:
+                    nonword.append(iid)
+                else:
+                    by_tok.setdefault(m.group(0), []).append(iid)
+        val = (by_tok, nonword, terms_of)
+        self._pf_cache = (key, val)
+        return val
+
     def prefilter(
         self,
         text: str,
         scope: dict[str, str] | None = None,
         now: datetime | None = None,
         *,
-        lock_timeout: float = 0.05,
+        deadline_s: float | None = None,
+        max_fires: int | None = None,
+        _t0: float | None = None,
     ) -> list[Intention]:
         """Fire and return the event intentions this prompt triggers.
 
@@ -625,21 +685,41 @@ class IntentionStore:
         the cooldown. Candidates are chosen from the index, then each is
         re-checked and fired on the flat file under its lock via
         :func:`transition`, so a stale index cannot double-fire and flat and
-        index move together. An intention whose lock cannot be had within
-        ``lock_timeout`` is skipped (another prompt is firing it). Run
-        :meth:`sweep_supersession` first when invalidation must be honoured.
+        index move together.
+
+        Bounded work: the whole call has one ``deadline_s`` (default 50 ms,
+        env ``SKMEMORY_PREFILTER_DEADLINE_S``); at most ``max_fires`` (default
+        3, ``SKMEMORY_PREFILTER_MAX_FIRES``) intentions fire; the fire path only
+        try-locks, so a locked intention is skipped this prompt; only the head
+        and tail of ``SKMEMORY_PREFILTER_MAX_CHARS`` (default 16384) of a long
+        prompt is scanned. Run :meth:`sweep_supersession` first when
+        invalidation must be honoured.
         """
+        t0 = _t0 if _t0 is not None else time.monotonic()
+        end = t0 + (deadline_s if deadline_s is not None else _env_num("DEADLINE_S", 0.05, float))
+        cap = max_fires if max_fires is not None else _env_num("MAX_FIRES", 3, int)
+        limit = _env_num("MAX_CHARS", 16384, int)
         now = _aware(now) or datetime.now(timezone.utc)
-        low = (text or "").lower()
-        if not low.strip():
+        text = text or ""
+        if len(text) > limit:  # head and tail; NUL cannot join two words into a phrase
+            half = max(limit // 2, 1)
+            text = text[:half] + "\x00" + text[-half:]
+        low = text.lower()
+        if not low.strip() or cap <= 0:
             return []
         have = scope or {}
-        cands: list[str] = []
+        by_tok, nonword, terms_of = self._matcher()
+        ids = set(nonword)
+        for tok in set(_WORD.findall(low)):
+            hit = by_tok.get(tok)
+            if hit:
+                ids.update(hit)
         db = self._db()
-        for iid, terms in db.execute(
-            "SELECT id, terms FROM intentions WHERE kind='event' AND state IN ('armed','fired')"
-        ).fetchall():
-            if not terms or not _phrase_hit(terms.split(_SEP), low):
+        fired: list[Intention] = []
+        for iid in sorted(ids):
+            if time.monotonic() >= end or len(fired) >= cap:
+                break
+            if not _phrase_hit(terms_of[iid], low):
                 continue
             r = db.execute(
                 "SELECT scope, cooldown_s, max_fires, fires, last_fired_at, expires_at, state"
@@ -656,20 +736,17 @@ class IntentionStore:
                     continue
             except (ValueError, TypeError):
                 continue
-            cands.append(iid)
-        fired: list[Intention] = []
-        for iid in cands:
-            got = self._fire_if_eligible(iid, low, have, now, lock_timeout)
+            got = self._fire_if_eligible(iid, low, have, now)
             if got is not None:
                 fired.append(got)
         return fired
 
     def _fire_if_eligible(
-        self, iid: str, low: str, have: dict[str, str], now: datetime, lock_timeout: float
+        self, iid: str, low: str, have: dict[str, str], now: datetime
     ) -> Intention | None:
-        """Re-check on the flat file and fire under the lock. None if not fired."""
+        """Re-check on the flat file and fire under a try-lock. None if not fired or locked."""
         try:
-            with self._lock(iid, timeout=lock_timeout):
+            with self._lock(iid, timeout=0):
                 cur = self._read(iid)
                 if cur is None or cur.kind != "event":
                     return None
@@ -751,13 +828,14 @@ def prefilter_safe(
     """Hook entry point: :meth:`IntentionStore.prefilter` that can never raise.
 
     Any failure (missing dir, locked or corrupt database, bad input) returns
-    ``[]`` and is logged at debug. SQLite waits at most 50 ms and each
-    intention lock at most 50 ms, so a locked store fails fast and silent.
+    ``[]`` and is logged at debug. SQLite waits at most 50 ms, intention locks are
+    try-locks and the whole call shares one deadline (see :meth:`prefilter`).
     """
     store = None
+    t0 = time.monotonic()
     try:
         store = IntentionStore(base_path, busy_timeout_ms=50)
-        return store.prefilter(text, scope, now)
+        return store.prefilter(text, scope, now, _t0=t0)
     except Exception as e:  # noqa: BLE001 - runs on every prompt, must not raise into the hook
         logger.debug("intention prefilter skipped: %s", e)
         return []

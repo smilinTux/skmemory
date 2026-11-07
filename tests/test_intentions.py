@@ -625,3 +625,104 @@ def test_prefilter_5ms_budget_at_1000_intentions(tmp_path):
     med = statistics.median(times)
     print(f"prefilter 1000 intentions: median {med:.2f} ms, max {max(times):.2f} ms")
     assert med < 5.0
+
+
+def _many(tmp_path, n, term_fmt="term{n} alpha", **kw):
+    store = IntentionStore(tmp_path)
+    for k in range(n):
+        store.save(
+            Intention(
+                id=f"i{k}", kind="event", title="t", state="armed",
+                trigger_terms=[term_fmt.format(n=k)], **kw,
+            )
+        )  # fmt: skip
+    return store
+
+
+def test_held_locks_total_stays_under_deadline(tmp_path):
+    import fcntl
+    import time
+
+    store = _many(tmp_path, 200, "zz")
+    store._lock_dir.mkdir(parents=True, exist_ok=True)
+    fds = []
+    for k in range(200):
+        fd = os.open(store._lock_dir / f"i{k}.lock", os.O_CREAT | os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        fds.append(fd)
+    try:
+        t = time.perf_counter()
+        assert prefilter_safe(tmp_path, "zz", {}, NOW) == []
+        elapsed = time.perf_counter() - t
+        assert elapsed < 0.25, elapsed  # was ~10.9 s with 50 ms per candidate
+    finally:
+        for fd in fds:
+            os.close(fd)
+    assert all(store.get(f"i{k}").fires == 0 for k in range(200))
+
+
+def test_fires_per_prompt_are_capped(tmp_path):
+    store = _many(tmp_path, 10, "zz")
+    got = store.prefilter("zz", {}, NOW)
+    assert len(got) == 3
+    assert len(store.prefilter("zz", {}, NOW, max_fires=2)) == 2
+
+
+def test_env_overrides_deadline_and_cap(tmp_path, monkeypatch):
+    store = _many(tmp_path, 10, "zz")
+    monkeypatch.setenv("SKMEMORY_PREFILTER_MAX_FIRES", "1")
+    assert len(store.prefilter("zz", {}, NOW)) == 1
+    monkeypatch.setenv("SKMEMORY_PREFILTER_DEADLINE_S", "0")
+    assert store.prefilter("zz", {}, NOW) == []
+
+
+def test_long_prompt_scans_head_and_tail_only(tmp_path):
+    store = IntentionStore(tmp_path)
+    for iid, term in (("h", "headterm"), ("t", "tailterm"), ("m", "midterm")):
+        store.save(Intention(id=iid, kind="event", title="t", state="armed", trigger_terms=[term]))
+    text = "headterm " + "x " * 200_000 + "midterm " + "y " * 200_000 + " tailterm"
+    assert sorted(i.id for i in store.prefilter(text, {}, NOW, max_fires=9)) == ["h", "t"]
+
+
+def test_one_mb_prompt_under_50ms_at_1000_intentions(tmp_path):
+    import statistics
+    import time
+
+    store = _many(tmp_path, 1000, "term{n} alpha", scope={"repo": "r"}, max_fires=5)
+    store.close()
+    fresh = IntentionStore(tmp_path)
+    text = ("lorem ipsum dolor sit amet confusion " * 30000)[:1_000_000]
+    times = []
+    for _ in range(15):
+        t = time.perf_counter()
+        fresh.prefilter(text, {"repo": "r"}, NOW)
+        times.append((time.perf_counter() - t) * 1000)
+    med = statistics.median(times)
+    print(f"1 MB prompt, 1000 intentions: median {med:.2f} ms, max {max(times):.2f} ms")
+    assert med < 50.0
+
+
+def test_matcher_cache_follows_index_changes(tmp_path):
+    a = IntentionStore(tmp_path)
+    b = IntentionStore(tmp_path)
+    assert b.prefilter("late", {}, NOW) == []  # warms b's cache
+    a.save(Intention(id="n", kind="event", title="t", state="armed", trigger_terms=["late"]))
+    assert [i.id for i in b.prefilter("late", {}, NOW)] == ["n"]  # other process's write seen
+    b.apply("n", "cancel")
+    assert b.prefilter("late", {}, NOW) == []
+
+
+def test_overlapping_and_prefix_terms_both_match(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_PREFILTER_DEADLINE_S", "5")  # three fsynced fires on a loaded box
+    store = IntentionStore(tmp_path)
+    store.save(
+        Intention(id="a", kind="event", title="t", state="armed", trigger_terms=["rollout"])
+    )
+    store.save(
+        Intention(id="b", kind="event", title="t", state="armed", trigger_terms=["rollout ring"])
+    )
+    store.save(
+        Intention(id="c", kind="event", title="t", state="armed", trigger_terms=["ring now"])
+    )
+    got = sorted(i.id for i in store.prefilter("the rollout ring now", {}, NOW, max_fires=9))
+    assert got == ["a", "b", "c"]
