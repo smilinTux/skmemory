@@ -117,6 +117,22 @@ def _extract_inline_citations(text: str) -> list[str]:
     return _unique_list(found)
 
 
+def _passes_filters(mem, layer, tags, context_tag, source) -> bool:
+    """Whether a hydrated memory satisfies the search filters (AND logic on tags)."""
+    if layer is not None:
+        want = str(getattr(layer, "value", layer))
+        have = getattr(mem, "layer", None)
+        if str(getattr(have, "value", have)) != want:
+            return False
+    if tags and not set(tags) <= set(getattr(mem, "tags", None) or []):
+        return False
+    if context_tag is not None:
+        allowed = [context_tag] if isinstance(context_tag, str) else list(context_tag)
+        if getattr(mem, "context_tag", None) not in allowed:
+            return False
+    return not (source and getattr(mem, "source", None) != source)
+
+
 class MemoryStore:
     """Main entry point for all memory operations.
 
@@ -932,6 +948,7 @@ class MemoryStore:
         tags: list[str] | None = None,
         layer: str | None = None,
         source: str | None = None,
+        context_tag: str | list[str] | None = None,
     ) -> list[Memory]:
         """Search memories by text.
 
@@ -943,6 +960,11 @@ class MemoryStore:
             tags: Optional tag filter (AND logic).
             layer: Optional layer filter ("short-term", "mid-term", "long-term").
             source: Optional source filter.
+            context_tag: Optional audience tag filter, exact or a list (any-of).
+                Honoured by the fused semantic and graph arms and the primary
+                text path; NOT an access-control check by itself, see
+                ``audience.py`` for the resolver that decides what a reader
+                may see.
 
         Returns:
             list[Memory]: Matching memories ranked by relevance.
@@ -950,21 +972,38 @@ class MemoryStore:
         query = sanitize_query(query)
 
         if self._fusion_enabled():
-            fused = self.search_fused(query, limit=limit, tags=tags, layer=layer, source=source)
+            fused = self.search_fused(
+                query,
+                limit=limit,
+                tags=tags,
+                layer=layer,
+                source=source,
+                context_tag=context_tag,
+            )
             if fused is not None:
                 return fused
 
+        # The legacy path cannot push context_tag down, so overfetch and filter.
+        fetch = limit * 3 if context_tag is not None else limit
+
+        def _ctx(rows):
+            if context_tag is None:
+                return rows
+            return [m for m in rows if _passes_filters(m, None, None, context_tag, None)][:limit]
+
         if self.vector:
             try:
-                results = self.vector.search_text(
-                    query, limit=limit, layer=layer, tags=tags, source=source
+                results = _ctx(
+                    self.vector.search_text(
+                        query, limit=fetch, layer=layer, tags=tags, source=source
+                    )
                 )
                 if results:
                     return results
             except Exception as exc:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
-        return self.primary.search_text(query, limit=limit)
+        return _ctx(self.primary.search_text(query, limit=fetch))
 
     def _fusion_enabled(self) -> bool:
         """Whether multi-arm fusion should handle ``search()``.
@@ -1013,6 +1052,7 @@ class MemoryStore:
         tags: list[str] | None = None,
         layer: str | None = None,
         source: str | None = None,
+        context_tag: str | list[str] | None = None,
         return_report: bool = False,
     ) -> list[Memory] | tuple[list[Memory], FusionResult] | None:
         """Search by fusing every retrieval arm this store actually has.
@@ -1040,11 +1080,21 @@ class MemoryStore:
         """
         found: dict[str, Memory] = {}
 
-        def _collect(memories: Sequence[Memory]) -> list[str]:
+        def _collect(memories: Sequence[Memory], *, check_ctx: bool = False) -> list[str]:
             ids = []
             for mem in memories:
                 mem_id = getattr(mem, "id", None)
                 if not mem_id:
+                    continue
+                # The lexical and temporal backends cannot filter on
+                # context_tag in their own query yet, so it is enforced here
+                # on the overfetched arm (arm_limit is 3x limit). Fewer hits
+                # than asked is possible; a leaked private hit is not.
+                if (
+                    check_ctx
+                    and context_tag is not None
+                    and not _passes_filters(mem, None, None, context_tag, None)
+                ):
                     continue
                 found.setdefault(str(mem_id), mem)
                 ids.append(str(mem_id))
@@ -1059,7 +1109,16 @@ class MemoryStore:
             search_semantic = getattr(backend, "search_semantic", None)
             if search_semantic is None:
                 return []
-            return _collect(search_semantic(query, limit=arm_limit))
+            return _collect(
+                search_semantic(
+                    query,
+                    limit=arm_limit,
+                    layer=layer,
+                    tags=tags,
+                    context_tag=context_tag,
+                    source=source,
+                )
+            )
 
         def _lexical() -> list[str]:
             # Prefer the strongest lexical engine the attached backends offer.
@@ -1076,9 +1135,10 @@ class MemoryStore:
             search_lexical = getattr(self.vector, "search_lexical", None)
             if search_lexical is not None:
                 return _collect(
-                    search_lexical(query, limit=arm_limit, layer=layer, tags=tags, source=source)
+                    search_lexical(query, limit=arm_limit, layer=layer, tags=tags, source=source),
+                    check_ctx=True,
                 )
-            return _collect(self.primary.search_text(query, limit=arm_limit))
+            return _collect(self.primary.search_text(query, limit=arm_limit), check_ctx=True)
 
         def _graph() -> list[str]:
             backend = self.graph
@@ -1096,7 +1156,13 @@ class MemoryStore:
             if search_by_entity is None:
                 return []
             ids = []
-            for row in search_by_entity(query, limit=arm_limit) or []:
+            graph_filters = {
+                "layer": layer,
+                "tags": tags,
+                "context_tag": context_tag,
+                "source": source,
+            }
+            for row in search_by_entity(query, limit=arm_limit, **graph_filters) or []:
                 row_id = row.get("id") if isinstance(row, dict) else getattr(row, "id", None)
                 if not row_id:
                     continue
@@ -1107,6 +1173,12 @@ class MemoryStore:
                         # The graph is a derived projection and can name a row
                         # the source of truth no longer has. Skip it rather
                         # than emit an id the caller cannot hydrate.
+                        continue
+                    # The graph is derived and can be stale (a layer or tag
+                    # changed since indexing), so re-check the hydrated row
+                    # against the source of truth. The Cypher WHERE already did
+                    # the bulk of the work; this is the safety net.
+                    if not _passes_filters(loaded, layer, tags, context_tag, source):
                         continue
                     found[row_id] = loaded
                 ids.append(row_id)
@@ -1125,7 +1197,8 @@ class MemoryStore:
                     created_after=after,
                     created_before=before,
                     source=source,
-                )
+                ),
+                check_ctx=True,
             )
 
         arms = [

@@ -961,9 +961,61 @@ class PGVectorBackend(BaseBackend):
             )
             return self._rows_to_memories(cur.fetchall())
 
-    # convenience alias
-    def search_semantic(self, query: str, limit: int = 10) -> list[Memory]:
-        return self.search(query, limit)
+    def search_semantic(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        layer=None,
+        tags: list[str] | None = None,
+        context_tag: str | list[str] | None = None,
+        source: str | None = None,
+    ) -> list[Memory]:
+        """Dense cosine search with every filter applied in the SQL WHERE.
+
+        The filters sit before ``ORDER BY ... LIMIT`` so the limit truncates
+        only rows that already match: a predicate applied after the limit
+        silently returns fewer rows than asked for. All values are bound
+        parameters.
+
+        ``tags`` is AND logic. ``context_tag`` is an exact tag, or a list
+        meaning any-of (the shape a caller builds from an audience's allowed
+        levels); it reads ``memory_json`` because skmem-pg has no such column.
+        There is no ``as_of`` here: schema v2 validity columns do not exist yet.
+
+        When the query cannot be embedded this arm abstains with ``[]`` rather
+        than falling back to text search, which would be an unfiltered (for
+        ``context_tag``) answer; the fused lexical arm covers that case.
+        """
+        qvec = self._embed(query)
+        if not qvec:
+            return []
+        clauses, params = ["agent=%s", "embedding IS NOT NULL"], [self.agent]
+        if layer is not None:
+            clauses.append("layer=%s")
+            params.append(str(getattr(layer, "value", layer)))
+        if tags:
+            clauses.append("tags @> %s")
+            params.append(list(tags))
+        if context_tag is not None:
+            if isinstance(context_tag, str):
+                clauses.append("memory_json->>'context_tag' = %s")
+                params.append(context_tag)
+            else:
+                clauses.append("memory_json->>'context_tag' = ANY(%s)")
+                params.append(list(context_tag))
+        if source:
+            clauses.append("source=%s")
+            params.append(source)
+        where = " AND ".join(clauses)
+        conn = self._connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT memory_json FROM memories WHERE {where} "
+                "ORDER BY embedding <=> %s::vector LIMIT %s",
+                params + [qvec, limit],
+            )
+            return self._rows_to_memories(cur.fetchall())
 
     def find_similar(self, content: str, k: int = 5) -> list[dict]:
         """Find memories with content similar to *content* (advisory dedup check).

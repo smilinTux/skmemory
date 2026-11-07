@@ -1304,12 +1304,62 @@ class AGEGraphBackend:
         )
         return self._rows_to_dicts(rows, ["id", "title", "layer"])
 
-    def search_by_entity(self, query: str, limit: int = 20) -> list[dict]:
+    @staticmethod
+    def _memory_filter(
+        layer=None,
+        tags: list[str] | None = None,
+        context_tag: str | list[str] | None = None,
+        source: str | None = None,
+    ) -> tuple[str, dict]:
+        """Build a Cypher ``WHERE`` fragment over ``m`` plus its parameters.
+
+        Only generated names (``$layer``, ``$tag0``...) enter the query text;
+        every caller value travels in the parameter map, so a hostile tag
+        cannot alter the query. ``$tagN IN m.tags`` is used instead of the
+        ``ALL()`` predicate, which AGE does not reliably support. A node with
+        no ``context_tag`` property (indexed before it existed) never matches
+        a context_tag filter, which fails closed.
+
+        Returns ``("", {})`` when no filter is set.
+        """
+        parts: list[str] = []
+        params: dict = {}
+        if layer is not None:
+            parts.append("m.layer = $layer")
+            params["layer"] = str(getattr(layer, "value", layer))
+        for i, tag in enumerate(tags or []):
+            parts.append(f"$tag{i} IN m.tags")
+            params[f"tag{i}"] = str(tag)
+        if context_tag is not None:
+            if isinstance(context_tag, str):
+                parts.append("m.context_tag = $context_tag")
+                params["context_tag"] = context_tag
+            else:
+                parts.append("m.context_tag IN $context_tags")
+                params["context_tags"] = [str(c) for c in context_tag]
+        if source:
+            parts.append("m.source = $source")
+            params["source"] = source
+        return (" WHERE " + " AND ".join(parts) if parts else ""), params
+
+    def search_by_entity(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        layer=None,
+        tags: list[str] | None = None,
+        context_tag: str | list[str] | None = None,
+        source: str | None = None,
+    ) -> list[dict]:
         """Find memories mentioning an entity matching ``query`` (case-insensitive substring).
 
         Args:
             query: Entity name or substring to search for.
             limit: Maximum results.
+            layer, tags, context_tag, source: Memory filters applied in the
+                Cypher ``WHERE`` before ``LIMIT``. ``tags`` is AND logic;
+                ``context_tag`` is an exact tag or a list meaning any-of.
 
         Returns:
             list[dict]: Matching memory stubs with the matched entity name.
@@ -1317,15 +1367,16 @@ class AGEGraphBackend:
         if self.graph is None or not query or not query.strip():
             return []
         pattern = "(?i).*" + re.escape(query.strip()) + ".*"
+        where, fparams = self._memory_filter(layer, tags, context_tag, source)
         cyq = (
             "MATCH (e:Entity) WHERE e.name =~ $pattern "
-            "MATCH (m:Memory)-[:MENTIONS]->(e) "
+            f"MATCH (m:Memory)-[:MENTIONS]->(e){where} "
             "RETURN DISTINCT m.id, m.title, m.layer, e.name "
             "LIMIT $limit"
         )
         rows = self._cypher(
             cyq,
-            {"pattern": pattern, "limit": int(limit)},
+            {"pattern": pattern, "limit": int(limit), **fparams},
             cols="id agtype, title agtype, layer agtype, entity agtype",
             # Capped: this is the regex-over-every-Entity query that was 94%
             # of fused search latency. An abstaining arm beats a hung query.
@@ -1397,7 +1448,16 @@ class AGEGraphBackend:
         }
     )
 
-    def search_by_entity_tokens(self, query: str, limit: int = 20) -> list[dict]:
+    def search_by_entity_tokens(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        layer=None,
+        tags: list[str] | None = None,
+        context_tag: str | list[str] | None = None,
+        source: str | None = None,
+    ) -> list[dict]:
         """Entity lookup on query TOKENS rather than the whole query string.
 
         ``search_by_entity`` substring-matches the ENTIRE query against entity
@@ -1422,6 +1482,7 @@ class AGEGraphBackend:
         """
         if self.graph is None or not query or not query.strip():
             return []
+        filters = {"layer": layer, "tags": tags, "context_tag": context_tag, "source": source}
 
         # MOST SPECIFIC FIRST. The whole query is tried before any token,
         # because for a query that IS close to an entity name the whole-query
@@ -1448,7 +1509,7 @@ class AGEGraphBackend:
 
         out: list[dict] = []
         seen: set[str] = set()
-        for row in self.search_by_entity(query, limit=limit) or []:
+        for row in self.search_by_entity(query, limit=limit, **filters) or []:
             row_id = str(row.get("id") or "")
             if row_id and row_id not in seen:
                 seen.add(row_id)
@@ -1478,7 +1539,7 @@ class AGEGraphBackend:
                     len(tokens) - tokens.index(tok),
                 )
                 break
-            rows = self.search_by_entity(tok, limit=limit) or []
+            rows = self.search_by_entity(tok, limit=limit, **filters) or []
             if rows:
                 per_token.append((len(rows), tok, rows))
         per_token.sort(key=lambda t: (t[0], t[1]))

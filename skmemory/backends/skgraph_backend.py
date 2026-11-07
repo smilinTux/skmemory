@@ -584,8 +584,23 @@ class SKGraphBackend:
             logger.warning("SKGraph tag search failed: %s", exc)
             return []
 
-    def search_by_entity(self, query: str, limit: int = 20) -> list[dict]:
-        """Find memories mentioning entities extracted during decomposition."""
+    def search_by_entity(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        layer=None,
+        tags: list[str] | None = None,
+        context_tag: str | list[str] | None = None,
+        source: str | None = None,
+    ) -> list[dict]:
+        """Find memories mentioning entities extracted during decomposition.
+
+        The filter kwargs are accepted so the fusion graph arm can call every
+        graph backend alike, but this backend's fixed Cypher templates do NOT
+        apply them. Fusion re-checks each hydrated row against the filters, so
+        results stay correct; only the per-arm limit is not filter-aware.
+        """
         return self._search_by_structure(Q.SEARCH_BY_ENTITY, query, limit)
 
     def search_by_citation(self, query: str, limit: int = 20) -> list[dict]:
