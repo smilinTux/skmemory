@@ -1,0 +1,1 @@
+On the identifier route the fused head is now lexical_local's (FTS5) own top 3 even when skmem-pg is attached; before, the pg BM25 arm (live recall@5 0.692) was pinned ahead of it (0.899). The natural route pins the top 3 vector hits (was 2). Other arms still fill after the head (SKMEM-P1-09).

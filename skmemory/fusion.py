@@ -120,9 +120,16 @@ def fusion_pin() -> int:
         return DEFAULT_PIN
 
 
+#: Identifier route head: lexical_local's (FTS5) own order is recall@5 0.899 /
+#: MRR 0.820 live against 0.692 for pg BM25, so it is pinned FIRST even when
+#: skmem-pg is attached (SKMEM-P1-09). Depth 3: depth 4 and 5 drop class_bench
+#: semantic recall@5 0.75 -> 0.625 (q-semantic-08), the offline gate.
+IDENTIFIER_PIN = 3
+IDENTIFIER_PIN_ARMS = ("lexical_local", "lexical")
+
 ROUTE_ENV = "SKMEMORY_FUSION_ROUTE"
 VECTOR_PIN_ENV = "SKMEMORY_FUSION_VECTOR_PIN"
-DEFAULT_VECTOR_PIN = 2
+DEFAULT_VECTOR_PIN = 3
 #: A query token whose lexical-index document frequency is in ``1..RARE_DF_MAX``
 #: is rare enough that an exact lexical hit is likely the answer.
 RARE_DF_MAX = 3
@@ -691,6 +698,15 @@ def fuse(
         return FusionResult(ids=[], arms=list(arms), provenance={})
 
     pin: int | None = None
+    if (
+        route is not None
+        and route.cls == "identifier"
+        and any(n in contributing for n in IDENTIFIER_PIN_ARMS)
+    ):
+        # Identifier route: rank like the best lexical arm, whichever pg
+        # BM25 would otherwise be preferred by the caller's pin order.
+        pin_arms = IDENTIFIER_PIN_ARMS
+        pin = max(fusion_pin(), IDENTIFIER_PIN)
     if route is not None and route.cls == "natural" and VECTOR_ARM in contributing:
         # Natural-language route: pin the vector head. When the vector arm did
         # not contribute the lexical pin stands, so a dead vector arm degrades

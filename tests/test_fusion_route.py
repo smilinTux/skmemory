@@ -115,3 +115,41 @@ def test_vector_pin_env(monkeypatch):
         route=route_query("why is the sync slow"),
     )
     assert r.ids[:3] == ["v1", "v2", "v3"]
+
+
+# SKMEM-P1-09: fusion must rank like the route's best single arm.
+def _dilution_arms():
+    # pg BM25 ("lexical") and the semantic arm disagree with lexical_local,
+    # which alone has the target at rank 1. Decoys are shared across the others.
+    return [
+        ArmOutcome("semantic", ("d1", "d2", "d3", "d4", "d5", "target")),
+        ArmOutcome("lexical", ("d1", "d2", "d3", "d4", "d5", "target")),
+        ArmOutcome("lexical_local", ("target", "l2", "l3", "l4", "l5", "d1")),
+    ]
+
+
+def test_identifier_route_matches_lexical_local_order_with_pg_bm25_attached():
+    # store passes ("lexical", "lexical_local") when skmem-pg is attached
+    r = fuse(
+        _dilution_arms(),
+        strategy="pinned_rrf",
+        pin_arms=("lexical", "lexical_local"),
+        route=route_query("prb-6f069c5e"),
+    )
+    assert r.ids[:3] == ["target", "l2", "l3"]
+
+
+def test_natural_route_keeps_vector_order_over_lexical_votes():
+    arms = [
+        ArmOutcome("semantic", ("target", "v2", "v3", "v4", "v5")),
+        ArmOutcome("lexical", ("d1", "d2", "d3", "d4", "target")),
+        ArmOutcome("lexical_local", ("d1", "d2", "d3", "d4", "v2")),
+    ]
+    r = fuse(
+        arms,
+        strategy="pinned_rrf",
+        pin_arms=("lexical", "lexical_local"),
+        route=route_query("why is the sync slow"),
+    )
+    assert r.ids[:3] == ["target", "v2", "v3"]
+    assert "d1" in r.ids[:6]  # other arms still fill
