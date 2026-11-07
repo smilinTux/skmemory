@@ -181,6 +181,7 @@ class LiveQuery:
     kind: str  # "title" | "rare_token" (labelled: the harvest source)
     text: str
     gold: tuple[str, ...] = ()  # labelled queries: all gold ids; empty means (id,)
+    near: tuple[str, ...] = ()  # near-duplicates of gold (LENIENT column only, never gold)
 
     @property
     def gold_ids(self) -> frozenset[str]:
@@ -231,7 +232,12 @@ def load_paraphrase(private_dir: str | os.PathLike) -> tuple[list[LiveQuery], di
     for line in (d / "paraphrase.jsonl").read_text().splitlines():
         if line.strip():
             r = json.loads(line)
-            qs.append(LiveQuery(r["qid"], r.get("qtype", "other"), r["query"], tuple(r["gold"])))
+            qs.append(
+                LiveQuery(
+                    r["qid"], r.get("qtype", "other"), r["query"], tuple(r["gold"]),
+                    tuple(r.get("near", ())),
+                )
+            )  # fmt: skip
     meta_path = d / "paraphrase-meta.json"
     return qs, (json.loads(meta_path.read_text()) if meta_path.exists() else {})
 
@@ -241,8 +247,12 @@ def paraphrase_line(meta: dict) -> str:
         return "generation counts unknown (no paraphrase-meta.json)"
     return (
         f"requested {meta.get('requested')}, accepted {meta.get('accepted')}, rejected for "
-        f"overlap {meta.get('rejected_overlap')} (missing, not scored), other failures "
-        f"{meta.get('failed_other')}; query types {meta.get('query_types')}"
+        f"overlap {meta.get('rejected_overlap')} and yes/no cap "
+        f"{meta.get('rejected_yes_no_cap')} (missing, not scored), other failures "
+        f"{meta.get('failed_other')}; missing by layer and length "
+        f"{meta.get('missing_profile', {}).get('rejected')}; query types "
+        f"{meta.get('query_types')}; {meta.get('with_near_duplicates')} queries have "
+        "near-duplicate gold"
     )
 
 
@@ -330,7 +340,15 @@ def run_live(
             per["fallback_chain"] = dict(lex)
         else:
             per["fallback_chain"] = {"skipped": True}
-        rows.append({"id": q.id, "kind": q.kind, "gold": sorted(q.gold_ids), "per": per})
+        rows.append(
+            {
+                "id": q.id,
+                "kind": q.kind,
+                "gold": sorted(q.gold_ids),
+                "near": sorted(q.near),
+                "per": per,
+            }
+        )
 
     return _summarise(rows, alive)
 
@@ -372,8 +390,27 @@ def _summarise(rows: list[dict], alive: dict[str, tuple[bool, str]]) -> dict:
                 and not r["per"].get(name, {}).get("skipped")
                 and not r["per"][name]["error"]
             ]
+            lenient = any(r["near"] for r in rows)
             by_kind[kind] = {
                 "n": len(sel),
+                **(
+                    {
+                        "recall@5_lenient": mean(
+                            float(bool(set(c["ids"][:K]) & (set(r["gold"]) | set(r["near"]))))
+                            for r, c in sel
+                        )
+                        if sel
+                        else None,
+                        "mrr_lenient": mean(
+                            _rr(c["ids"], frozenset(r["gold"]) | frozenset(r["near"]))
+                            for r, c in sel
+                        )
+                        if sel
+                        else None,
+                    }
+                    if lenient
+                    else {}
+                ),
                 "recall@5": mean(recall_at_k(c["ids"], set(r["gold"]), K) for r, c in sel)
                 if sel
                 else None,
@@ -383,6 +420,7 @@ def _summarise(rows: list[dict], alive: dict[str, tuple[bool, str]]) -> dict:
         arms_out[name] = entry
     return {
         "queries": len(rows),
+        "lenient": any(r["near"] for r in rows),
         "kinds": kinds,
         "arms": arms_out,
         "rows": [
@@ -440,7 +478,10 @@ def format_table(res: dict, meta: dict | None = None) -> str:
             "questions are not real user queries.",
             f"- {res.get('missingness', '')}",
             f"- {res.get('judge_limits', '')}",
-            "- the per-kind rows below are the QUERY-TYPE breakdown (question word)",
+            "- the per-kind rows below are the QUERY-TYPE breakdown (question word); the "
+            "generator is asked for what/why/how first and yes/no is capped at 20 percent",
+            "- STRICT recall counts only the known gold id. LENIENT (separate rows) also counts "
+            "near-duplicates of gold within vector distance 0.05 and never replaces strict",
         ]
         if paraphrase
         else [
@@ -487,8 +528,11 @@ def format_table(res: dict, meta: dict | None = None) -> str:
             f"{scrub(a['reason'])}"
         )
     out.append("")
-    for metric in ("recall@5", "mrr"):
-        hdr = f"{metric:<12}" + "".join(f"{n:>16}" for n in ARMS)
+    metrics = [("recall@5", "recall@5"), ("mrr", "mrr")]
+    if res.get("lenient"):
+        metrics += [("recall@5_lenient", "lenient r@5"), ("mrr_lenient", "lenient mrr")]
+    for metric, label in metrics:
+        hdr = f"{label:<12}" + "".join(f"{n:>16}" for n in ARMS)
         out += [hdr, "-" * len(hdr)]
         for kind in [*res["kinds"], "all"]:
             cells = []

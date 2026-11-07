@@ -328,16 +328,39 @@ PM = [
 
 
 def _df():
-    return lb.document_frequency([f"{t} {c}" for _, t, c in PM])
+    return para.CorpusDF.from_texts([f"{t} {c}" for _, t, c in PM])
 
 
-def test_overlap_rejects_identifier_rare_token_and_trigram():
+def test_overlap_rejects_identifier_stem_number_and_trigram():
     t, c = PM[0][1], PM[0][2]
     df = _df()
-    assert para.overlap_reason("what is zebra9-x", t, c, df) == "identifier"
-    assert para.overlap_reason("how many concurrent codex workers", t, c, df) == "rare_token"
+    assert para.overlap_reason("what is zebra9-x", t, c, df) == "number"  # shares the 9
+    assert para.overlap_reason("what is abcd", t, "see ref ab-cd here", df) == "identifier"
+    assert para.overlap_reason("what is ab-cd", t, "see ref abcd here", df) == "identifier"
+    assert para.overlap_reason("how many concurrent codexes", t, c, df) == "rare_stem"  # plural
+    assert para.overlap_reason("which gateways are busy", t, c, df) == "rare_stem"
+    assert para.overlap_reason("how many agents run, 32 or more", t, c, df) == "number"
+    assert para.overlap_reason("a limit of 7", t, "limit 7 here", df) == "number"
     assert para.overlap_reason("is the gateway pool ceiling ok", t, c, df) is not None
     assert para.overlap_reason("how many agents can run at once", t, c, df) is None
+
+
+def test_rarity_comes_from_corpus_not_sample():
+    t, c = "Pool", "The ceiling applies"
+    common = para.CorpusDF.from_texts(["the ceiling alpha"] * 50 + ["the other beta"] * 50)
+    assert not common.is_rare("ceil") and common.is_rare("zzz")
+    assert para.overlap_reason("what is the limit", t, c, common) is None  # shares only "the"
+    assert para.overlap_reason("what ceilings exist", t, c, common) is None  # common stem
+    rare = para.CorpusDF.from_texts(["x y z"] * 100)
+    assert para.overlap_reason("what ceilings exist", t, c, rare) == "rare_stem"
+
+
+def test_corpus_df_cache_roundtrip(tmp_path):
+    df = para.CorpusDF.from_texts(["the ceiling alpha"] * 50 + ["the other beta"] * 50)
+    pdir = hv.ensure_private_dir(tmp_path / "pp")
+    df.dump(pdir / "df.json")
+    back = para.CorpusDF.load(pdir / "df.json")
+    assert back.n == 100 and back.common == df.common
 
 
 def test_question_type_and_cleaning():
@@ -347,6 +370,17 @@ def test_question_type_and_cleaning():
     assert para.clean_question('<think>x</think>\n"How many agents run at once?"') == (
         "How many agents run at once?"
     )
+
+
+def test_sensitive_widened_plurals_terms_tags_and_paths():
+    for t in ["physicians advised", "anxiety", "diabetes", "death", "medications", "surgeries",
+              "diagnoses", "transplants", "his late wife"]:  # fmt: skip
+        assert hv.is_sensitive_text(t), t
+    assert not hv.is_sensitive_text("stdout of the hive deliver job")
+    assert hv.is_sensitive_memory("t", "boring text", ["Personal-History"])
+    assert hv.is_sensitive_memory("t", "boring text", ["chef-medical-notes"])
+    assert hv.is_sensitive_memory("t", "boring text", [], source_ref="notes/sacred/x.md")
+    assert not hv.is_sensitive_memory("t", "boring text", ["infra"], source_ref="docs/gw.md")
 
 
 def test_select_memories_skips_sensitive_and_short():
@@ -386,18 +420,24 @@ class QGateway:
 
 def test_generate_retry_then_accept_and_private_files(tmp_path):
     gw = QGateway()
-    meta = para.generate(PM[:1], lab.Judge(transport=gw), tmp_path / "pp", interval_s=0)
+    meta = para.generate(
+        PM[:1], lab.Judge(transport=gw), tmp_path / "pp", df=_df(), interval_s=0,
+        near=lambda mid: ["n1", mid],
+    )  # fmt: skip
     assert meta["requested"] == 1 and meta["accepted"] == 1 and meta["retried"] == 1
     rec = json.loads((tmp_path / "pp" / "paraphrase.jsonl").read_text())
     assert rec["gold"] == ["p1"] and rec["qtype"] == "how"
+    assert rec["near"] == ["n1"]  # near-duplicates are separate from gold
+    assert meta["with_near_duplicates"] == 1
     assert stat.S_IMODE(os.stat(tmp_path / "pp").st_mode) == 0o700
     assert stat.S_IMODE(os.stat(tmp_path / "pp" / "paraphrase.jsonl").st_mode) == 0o600
 
 
 def test_generate_rejected_stays_missing(tmp_path):
     meta = para.generate(
-        PM[:1], lab.Judge(transport=QGateway(always_leak=True)), tmp_path / "pp", interval_s=0
-    )
+        PM[:1], lab.Judge(transport=QGateway(always_leak=True)), tmp_path / "pp", df=_df(),
+        interval_s=0,
+    )  # fmt: skip
     assert meta["accepted"] == 0 and meta["rejected_overlap"] == 1
     assert (tmp_path / "pp" / "paraphrase.jsonl").read_text() == ""
 
@@ -405,21 +445,58 @@ def test_generate_rejected_stays_missing(tmp_path):
 def test_generate_non_local_route_sends_only_canary(tmp_path):
     gw = QGateway(headers={"x-sk-rail": "remote", "x-sk-provider": "x"})
     with pytest.raises(lab.RouteRefused):
-        para.generate(PM, lab.Judge(transport=gw), tmp_path / "pp", interval_s=0)
+        para.generate(PM, lab.Judge(transport=gw), tmp_path / "pp", df=_df(), interval_s=0)
     assert len(gw.sent) == 1
 
 
 def test_live_bench_paraphrase_header_and_breakdown(tmp_path):
     d = tmp_path / "pp"
-    para.generate(PM[:1], lab.Judge(transport=QGateway()), d, interval_s=0)
+    para.generate(PM[:1], lab.Judge(transport=QGateway()), d, df=_df(), interval_s=0,
+                  near=lambda m: ["n1"])  # fmt: skip
     qs, meta = lb.load_paraphrase(d)
     assert qs[0].kind == "how" and qs[0].gold == ("p1",)
-    arms = {n: (lambda q: ["p1"]) for n in lb.ARMS if n != "fallback_chain"}
+    arms = {n: (lambda q: ["n1"]) for n in lb.ARMS if n != "fallback_chain"}  # near-dup only
     res = lb.run_live(arms, qs, alive={n: (True, "ok") for n in lb.ARMS}, embed_interval_s=0)
+    a = res["arms"]["bm25_only"]["by_kind"]["all"]
+    assert a["recall@5"] == 0.0 and a["recall@5_lenient"] == 1.0  # lenient never replaces strict
     res.update(evidence_class=lb.EVIDENCE_SELF, query_source="paraphrase",
                missingness=lb.paraphrase_line(meta), judge_limits=para.LIMITS)  # fmt: skip
     table = lb.format_table(res)
     assert "query_source: paraphrase" in table and "live_self_retrieval" in table
     assert "not real user queries" in table and "QUERY-TYPE" in table
     assert "how " in table and "How many helpers" not in table
+    assert "lenient r@5" in table and "never replaces strict" in table
     assert "—" not in table and "–" not in table
+
+
+def test_yes_no_capped_and_stratified_prompt(tmp_path):
+    class YN(QGateway):
+        def __call__(self, url, payload, timeout):
+            text = payload["messages"][-1]["content"]
+            self.sent.append(text)
+            out = "ok" if "single word" in text else "Does a helper pool exist for agents?"
+            return 200, self.headers, json.dumps({"choices": [{"message": {"content": out}}]})
+
+    mems = [
+        (f"p{i}", "T", "unrelated filler words about nothing " * 3, "long-term") for i in range(5)
+    ]
+    gw = YN()
+    meta = para.generate(mems, lab.Judge(transport=gw), tmp_path / "pp", df=_df(), interval_s=0)
+    assert meta["query_types"] == {"yes_no": 1}  # cap = ceil(0.2 * 5) = 1
+    assert meta["rejected_yes_no_cap"] == 4 and meta["accepted"] == 1
+    assert "Start with What, Why or How" in gw.sent[1]
+    assert "MUST begin with What, Why or How" in "\n".join(gw.sent)
+    assert meta["missing_profile"]["rejected"]["layer"] == {"long-term": 4}
+    assert meta["missing_profile"]["rejected"]["length"]
+
+
+def test_pg_near_sql_runs_on_throwaway_db():
+    dsn = os.environ.get("SKMEMORY_PG_DSN")
+    if not dsn:
+        pytest.skip("needs the throwaway skmem-pg")
+    from skmemory.backends.pgvector_backend import PGVectorBackend
+
+    pg = PGVectorBackend(dsn=dsn, agent="lumina")
+    with pg._connection().cursor() as cur:  # read-only SQL: must parse and execute
+        cur.execute(para.NEAR_SQL, ("none", "lumina", "lumina", "none", 0.05))
+        assert cur.fetchall() == []

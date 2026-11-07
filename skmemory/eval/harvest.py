@@ -59,22 +59,143 @@ SENSITIVE_TAGS = frozenset(
         "chef-medical",
     }
 )
+# Prefix terms: each matches the word and its plurals/inflections (\\w* tail).
+_SENSITIVE_STEMS = [
+    "sacred",
+    "medical",
+    "medic",
+    "diagnos",
+    "transplant",
+    "liver",
+    "kidney",
+    "cancer",
+    "tumor",
+    "tumour",
+    "oncolog",
+    "chemo",
+    "radiation",
+    "surger",
+    "surgical",
+    "hospital",
+    "clinic",
+    "physician",
+    "doctor",
+    "nurse",
+    "patient",
+    "prescri",
+    "pharma",
+    "drug",
+    "opioid",
+    "steroid",
+    "antibiotic",
+    "vaccin",
+    "dosage",
+    "nootropic",
+    "bacopa",
+    "piracetam",
+    "modafinil",
+    "adderall",
+    "ritalin",
+    "lithium",
+    "ssri",
+    "antidepress",
+    "ssri",
+    "anxi",
+    "depress",
+    "bipolar",
+    "schizo",
+    "psych",
+    "therap",
+    "counsel",
+    "trauma",
+    "ptsd",
+    "adhd",
+    "autis",
+    "suicid",
+    "self-harm",
+    "overdose",
+    "addict",
+    "rehab",
+    "sober",
+    "alcoholi",
+    "grief",
+    "griev",
+    "mourn",
+    "funeral",
+    "widow",
+    "bereave",
+    "death",
+    "deceased",
+    "died",
+    "dying",
+    "mortality",
+    "terminal",
+    "hospice",
+    "palliative",
+    "diabet",
+    "insulin",
+    "glucose",
+    "cholesterol",
+    "hypertens",
+    "cardiac",
+    "cardio",
+    "heart-attack",
+    "stroke",
+    "seizure",
+    "epilep",
+    "migraine",
+    "dementia",
+    "alzheimer",
+    "parkinson",
+    "arthritis",
+    "asthma",
+    "allerg",
+    "infect",
+    "virus",
+    "covid",
+    "symptom",
+    "illness",
+    "disease",
+    "disorder",
+    "condition-treat",
+    "hormone",
+    "testosterone",
+    "estrogen",
+    "pregnan",
+    "miscarr",
+    "abortion",
+    "fertility",
+    "menopaus",
+    "erectile",
+    "sarah",
+]
 _SENSITIVE_RE = re.compile(
-    r"\b(sacred|medical|medic\w*|health (?:issue|condition|history|record|insurance|problem)\w*|diagnos\w*|transplant\w*|liver|cancer|chemo\w*|"
-    r"surger\w+|hospital\w*|doctor|physician|prescri\w+|dosage|dose|nootropic\w*|bacopa|"
-    r"therap\w+|psych\w+|depress\w*|suicid\w*|grief|griev\w*|funeral|widow\w*|sarah|"
-    r"symptom\w*|illness|disease|blood (?:pressure|test|work|sugar|clot)|clinic\w*|pharma\w*|cholesterol|insulin|"
-    r"medication\w*|rehab|addict\w*)\b",
+    r"\b(?:"
+    + "|".join(re.escape(t) for t in _SENSITIVE_STEMS)
+    + r"|dos(?:e|es|ing)|hiv\b|ocd\b|health[ -](?:issue|condition|history|record|insurance|problem|care|"
+    r"scare|crisis)\w*|mental health|blood[ -](?:pressure|test|work|sugar|clot)|"
+    r"late wife|medical history|next of kin|will and testament)\w*",
     re.I,
 )
+SENSITIVE_TAG_SUBSTRINGS = (
+    "sacred", "private", "medical", "health", "grief", "therap", "personal", "sarah",
+    "bereave", "diagnos", "medication", "nootropic", "no-ritual",
+)  # fmt: skip
+_SENSITIVE_REF_RE = re.compile(r"sacred|medical|private|health|personal|grief", re.I)
 
 
 def is_sensitive_text(text: str) -> bool:
     return bool(_SENSITIVE_RE.search(text or ""))
 
 
-def is_sensitive_memory(title: str, content: str, tags: Iterable[str]) -> bool:
-    if {str(t).casefold() for t in tags} & SENSITIVE_TAGS:
+def is_sensitive_memory(
+    title: str, content: str, tags: Iterable[str], source_ref: str = ""
+) -> bool:
+    """Sacred or medical by tag (exact or substring), source path, or wording."""
+    low = [str(t).casefold() for t in tags]
+    if set(low) & SENSITIVE_TAGS or any(k in t for t in low for k in SENSITIVE_TAG_SUBSTRINGS):
+        return True
+    if source_ref and _SENSITIVE_REF_RE.search(source_ref):
         return True
     return is_sensitive_text(title) or is_sensitive_text(content)
 
