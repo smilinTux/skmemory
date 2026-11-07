@@ -264,3 +264,17 @@ def test_header_states_entry_and_rate_limit():
     t = lb.format_table(res, {"embed_interval_s": 0.25})
     assert "MemoryStore.search(query, limit=10, record_access=False, reader=None)" in t
     assert "memory_search" in t and ">= 0.25s" in t
+
+
+def test_route_arms_appear_in_table_and_summary():
+    """SKMEM-P1-08: one candidate column per fusion route, on identical queries."""
+    qs = lb.build_queries(MEMS)
+    names = [*lb.ARMS, *lb.ROUTE_ARMS]
+    arms = dict(_arms(), **{n: _arms()["bm25_only"] for n in lb.ROUTE_ARMS})
+    alive = dict(ALIVE, **{n: (True, "ok") for n in lb.ROUTE_ARMS})
+    res = lb.run_live(arms, qs, alive=alive, embed_interval_s=0, arm_names=names)
+    assert res["arm_order"] == names
+    table = lb.format_table(res)
+    for n in lb.ROUTE_ARMS:
+        assert n in table
+        assert res["arms"][n]["by_kind"]["all"]["recall@5"] == 1.0

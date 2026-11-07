@@ -84,7 +84,10 @@ ARMS = [
     "candidate",
 ]
 CANDIDATE = "candidate"
-EMBEDDING_ARMS = frozenset({"vector_only", CANDIDATE})
+#: SKMEM-P1-08: the production candidate run once per fusion route, on identical queries.
+ROUTES = ("lexical", "vector", "auto")
+ROUTE_ARMS = [f"candidate_{r}" for r in ROUTES]
+EMBEDDING_ARMS = frozenset({"vector_only", CANDIDATE, *ROUTE_ARMS})
 
 Arm = Callable[[str], "list[str]"]
 
@@ -297,6 +300,7 @@ def run_live(
     embed_interval_s: float = DEFAULT_EMBED_INTERVAL_S,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.perf_counter,
+    arm_names: Sequence[str] = ARMS,
 ) -> dict:
     """Run every arm on every query. ``fallback_chain`` is derived, not called.
 
@@ -309,7 +313,7 @@ def run_live(
     last_embed = -1e9
     for q in queries:
         per: dict[str, dict] = {}
-        for name in ARMS:
+        for name in arm_names:
             if name == "fallback_chain":
                 continue
             if not alive.get(name, (False, "not wired"))[0]:
@@ -351,13 +355,15 @@ def run_live(
             }
         )
 
-    return _summarise(rows, alive)
+    return _summarise(rows, alive, arm_names)
 
 
-def _summarise(rows: list[dict], alive: dict[str, tuple[bool, str]]) -> dict:
+def _summarise(
+    rows: list[dict], alive: dict[str, tuple[bool, str]], arm_names: Sequence[str] = ARMS
+) -> dict:
     kinds = sorted({r["kind"] for r in rows})
     arms_out: dict[str, dict] = {}
-    for name in ARMS:
+    for name in arm_names:
         calls = [r["per"][name] for r in rows if not r["per"].get(name, {}).get("skipped")]
         ok = [c for c in calls if not c["error"]]
         if name == "fallback_chain":
@@ -423,6 +429,7 @@ def _summarise(rows: list[dict], alive: dict[str, tuple[bool, str]]) -> dict:
         "queries": len(rows),
         "lenient": any(r["near"] for r in rows),
         "kinds": kinds,
+        "arm_order": list(arm_names),
         "arms": arms_out,
         "rows": [
             {
@@ -464,6 +471,7 @@ def _ms(v) -> str:
 
 def format_table(res: dict, meta: dict | None = None) -> str:
     meta = dict(meta or {})
+    order = res.get("arm_order", ARMS)
     labelled = res.get("evidence_class") == EVIDENCE_LABELLED
     paraphrase = res.get("query_source") == "paraphrase"
     head = (
@@ -521,7 +529,7 @@ def format_table(res: dict, meta: dict | None = None) -> str:
         out.append(f"- {k}: {v}")
     out.append(f"- {res['queries']} queries; ids and metrics only, no memory text\n")
     out += ["arm health", "-" * 10]
-    for n in ARMS:
+    for n in order:
         a = res["arms"][n]
         tag = "ALIVE" if a["status"] == "alive" else "DEAD"
         out.append(
@@ -533,23 +541,23 @@ def format_table(res: dict, meta: dict | None = None) -> str:
     if res.get("lenient"):
         metrics += [("recall@5_lenient", "lenient r@5"), ("mrr_lenient", "lenient mrr")]
     for metric, label in metrics:
-        hdr = f"{label:<12}" + "".join(f"{n:>16}" for n in ARMS)
+        hdr = f"{label:<12}" + "".join(f"{n:>16}" for n in order)
         out += [hdr, "-" * len(hdr)]
         for kind in [*res["kinds"], "all"]:
             cells = []
-            for n in ARMS:
+            for n in order:
                 a = res["arms"][n]
                 cells.append("dead" if a["status"] == "dead" else _f(a["by_kind"][kind][metric]))
             out.append(f"{kind:<12}" + "".join(f"{c:>16}" for c in cells))
         out.append("")
-    hdr = f"{'latency ms':<12}" + "".join(f"{n:>16}" for n in ARMS)
+    hdr = f"{'latency ms':<12}" + "".join(f"{n:>16}" for n in order)
     out += [hdr, "-" * len(hdr)]
     for label, key in (("p50", "p50_ms"), ("p95", "p95_ms")):
         out.append(
             f"{label:<12}"
             + "".join(
                 f"{('dead' if res['arms'][n]['status'] == 'dead' else _ms(res['arms'][n][key])):>16}"
-                for n in ARMS
+                for n in order
             )
         )
     out.append("(vector_only and candidate latency include the embed call)")
@@ -809,6 +817,11 @@ def probe_arms(pg, age, sqlite_backend) -> dict[str, tuple[bool, str]]:
         alive["bm25_only"][0] or alive["vector_only"][0] or alive["graph_only"][0],
         "fused over whichever of the above are alive",
     )
+    for r in ROUTES:
+        alive[f"candidate_{r}"] = (
+            alive[CANDIDATE][0],
+            f"candidate with SKMEMORY_FUSION_ROUTE={r}",
+        )
     return alive
 
 
@@ -823,6 +836,9 @@ def build_arms(pg, age, sqlite_backend, store, telemetry: dict) -> dict[str, Arm
         mems, report = orig_fused(query, *a, **kw)
         for arm in report.arms:
             telemetry.setdefault(arm.name, Counter())[arm.status] += 1
+        if getattr(report, "route", None):
+            mode = os.environ.get("SKMEMORY_FUSION_ROUTE", "auto")
+            telemetry.setdefault(f"route[{mode}]", Counter())[report.route] += 1
         return (mems, report) if wanted else mems
 
     store.search_fused = spy
@@ -831,7 +847,24 @@ def build_arms(pg, age, sqlite_backend, store, telemetry: dict) -> dict[str, Arm
         mems = store.search(q, limit=LIMIT, record_access=False, reader=None)
         return [m.id for m in mems]
 
+    def routed(mode: str) -> Arm:
+        def run_one(q: str) -> list[str]:
+            from skmemory.fusion import ROUTE_ENV
+
+            keep = os.environ.get(ROUTE_ENV)
+            os.environ[ROUTE_ENV] = mode
+            try:
+                return candidate(q)
+            finally:
+                if keep is None:
+                    os.environ.pop(ROUTE_ENV, None)
+                else:
+                    os.environ[ROUTE_ENV] = keep
+
+        return run_one
+
     return {
+        **{f"candidate_{r}": routed(r) for r in ROUTES},
         "bm25_only": lambda q: [m.id for m in pg.search_lexical(q, limit=LIMIT)],
         "vector_only": lambda q: [m.id for m in pg.search_semantic(q, limit=LIMIT)],
         "sqlite_like": lambda q: [m.id for m in sqlite_backend.search_text(q, limit=LIMIT)],
@@ -865,6 +898,7 @@ def run(
     embed_interval_s: float = DEFAULT_EMBED_INTERVAL_S,
     labelled: str | None = None,
     paraphrase: str | None = None,
+    routes: bool = False,
 ) -> dict:
     require_live()
     check_out_dir(out_dir)
@@ -892,7 +926,13 @@ def run(
     keep = os.environ.get("SKMEMORY_SEARCH_FUSION")
     os.environ["SKMEMORY_SEARCH_FUSION"] = "on"
     try:
-        res = run_live(arms, queries, alive=alive, embed_interval_s=embed_interval_s)
+        res = run_live(
+            arms,
+            queries,
+            alive=alive,
+            embed_interval_s=embed_interval_s,
+            arm_names=[*ARMS, *ROUTE_ARMS] if routes else ARMS,
+        )
     finally:
         if keep is None:
             os.environ.pop("SKMEMORY_SEARCH_FUSION", None)
@@ -944,6 +984,12 @@ def main() -> None:
         help="score generated paraphrase queries (query_source: paraphrase); the dir holds "
         "paraphrase.jsonl from eval.paraphrase",
     )
+    p.add_argument(
+        "--routes",
+        action="store_true",
+        help="also run the candidate once per SKMEMORY_FUSION_ROUTE (lexical, vector, auto) "
+        "on the same queries (SKMEM-P1-08)",
+    )
     p.add_argument("--embed-interval", type=float, default=DEFAULT_EMBED_INTERVAL_S)
     args = p.parse_args()
     res = run(
@@ -954,6 +1000,7 @@ def main() -> None:
         embed_interval_s=args.embed_interval,
         labelled=args.labelled,
         paraphrase=args.paraphrase,
+        routes=args.routes,
     )
     meta = res["meta"]
     table = format_table(

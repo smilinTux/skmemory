@@ -120,6 +120,221 @@ def fusion_pin() -> int:
         return DEFAULT_PIN
 
 
+ROUTE_ENV = "SKMEMORY_FUSION_ROUTE"
+VECTOR_PIN_ENV = "SKMEMORY_FUSION_VECTOR_PIN"
+DEFAULT_VECTOR_PIN = 2
+#: A query token whose lexical-index document frequency is in ``1..RARE_DF_MAX``
+#: is rare enough that an exact lexical hit is likely the answer.
+RARE_DF_MAX = 3
+VECTOR_ARM = "semantic"
+
+
+def fusion_route_mode() -> str:
+    """``auto`` (default), ``lexical`` or ``vector`` (``SKMEMORY_FUSION_ROUTE``)."""
+    raw = os.environ.get(ROUTE_ENV, "auto").strip().casefold()
+    if raw in ("lexical", "vector"):
+        return raw
+    if raw not in ("", "auto"):
+        logger.warning("ignoring unknown %s=%r", ROUTE_ENV, raw)
+    return "auto"
+
+
+def fusion_vector_pin() -> int:
+    """How many vector hits a natural-language route pins (default 2)."""
+    raw = os.environ.get(VECTOR_PIN_ENV, "").strip()
+    try:
+        return max(0, int(raw)) if raw else DEFAULT_VECTOR_PIN
+    except ValueError:
+        logger.warning("ignoring non-integer %s=%r", VECTOR_PIN_ENV, raw)
+        return DEFAULT_VECTOR_PIN
+
+
+_ROUTE_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._\-]*", re.IGNORECASE)
+_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+$")
+_DATE_TOKEN_RE = re.compile(r"^(?:20\d{2}|20\d{2}-\d{2}(?:-\d{2})?|\d{1,2}(?:st|nd|rd|th)?)$")
+_QUESTION_LEADS = frozenset(
+    [
+        "who",
+        "whom",
+        "whose",
+        "what",
+        "when",
+        "where",
+        "why",
+        "how",
+        "which",
+        "did",
+        "do",
+        "does",
+        "is",
+        "are",
+        "was",
+        "were",
+        "can",
+        "could",
+        "should",
+        "would",
+        "will",
+        "have",
+        "has",
+        "had",
+        "tell",
+        "explain",
+        "describe",
+        "remind",
+    ]
+)
+_STOPWORDS = frozenset(
+    [
+        "a",
+        "an",
+        "the",
+        "of",
+        "to",
+        "in",
+        "on",
+        "at",
+        "for",
+        "with",
+        "about",
+        "from",
+        "by",
+        "and",
+        "or",
+        "but",
+        "if",
+        "then",
+        "so",
+        "as",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "there",
+        "here",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "they",
+        "them",
+        "his",
+        "her",
+        "their",
+        "be",
+        "been",
+        "being",
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "do",
+        "does",
+        "did",
+        "have",
+        "has",
+        "had",
+        "not",
+        "no",
+        "what",
+        "when",
+        "where",
+        "why",
+        "how",
+        "which",
+        "who",
+        "whom",
+        "can",
+        "could",
+        "should",
+        "would",
+        "will",
+        "just",
+        "any",
+        "some",
+    ]
+)
+
+
+@dataclass(frozen=True)
+class RouteDecision:
+    """Which head the fusion pins, and the shape rule that decided it."""
+
+    cls: Literal["identifier", "natural"]
+    reason: str
+
+
+def _route_tokens(query: str) -> list[str]:
+    return [t.strip("._-").casefold() for t in _ROUTE_TOKEN_RE.findall(query) if t.strip("._-")]
+
+
+def _strong_identifier(tok: str) -> bool:
+    if _DATE_TOKEN_RE.match(tok):
+        return False
+    return (
+        any(c.isdigit() for c in tok)
+        or "_" in tok
+        or bool(_HOST_RE.match(tok))
+        or ("-" in tok and any(c.isdigit() for c in tok))
+    )
+
+
+def route_query(
+    query: str,
+    df: Callable[[str], int] | None = None,
+    *,
+    mode: str | None = None,
+) -> RouteDecision:
+    """Classify ``query`` as identifier-ish or natural-language. No LLM, deterministic.
+
+    ``identifier`` keeps the lexical pin; ``natural`` pins the vector head.
+    Rules, in order (shape only, plus an optional corpus document frequency
+    ``df(token) -> int`` from the lexical index):
+
+    1. a token with a digit, an underscore or a host shape (``a.b.c``), dates
+       excluded -> identifier;
+    2. a token that is rare in the corpus (``1 <= df <= RARE_DF_MAX``) -> identifier;
+    3. a question lead word or a trailing ``?`` -> natural;
+    4. at least four tokens with stopwords making up a third or more -> natural;
+    5. otherwise a keyword-style query -> identifier (the long-standing default).
+    ``mode`` (default ``SKMEMORY_FUSION_ROUTE``) of ``lexical`` or ``vector`` forces it.
+    """
+    mode = mode or fusion_route_mode()
+    if mode == "lexical":
+        return RouteDecision("identifier", "forced")
+    if mode == "vector":
+        return RouteDecision("natural", "forced")
+    toks = _route_tokens(query)
+    if not toks:
+        return RouteDecision("identifier", "empty")
+    for tok in toks:
+        if _strong_identifier(tok):
+            return RouteDecision("identifier", "id-shape")
+    content = [t for t in toks if t not in _STOPWORDS]
+    if df is not None:
+        for tok in content[:8]:
+            try:
+                n = df(tok)
+            except Exception:  # noqa: BLE001 - df is advisory, never fatal
+                n = 0
+            if 1 <= n <= RARE_DF_MAX:
+                return RouteDecision("identifier", "rare-token")
+    if toks[0] in _QUESTION_LEADS or query.rstrip().endswith("?"):
+        return RouteDecision("natural", "question")
+    stop = sum(1 for t in toks if t in _STOPWORDS)
+    if len(toks) >= 4 and stop / len(toks) >= 1 / 3:
+        return RouteDecision("natural", "stopwords")
+    return RouteDecision("identifier", "keywords")
+
+
 def search_deadline_s() -> float:
     raw = os.environ.get(DEADLINE_ENV, "").strip()
     try:
@@ -164,6 +379,8 @@ class FusionResult:
     #: wall-clock the arms took and the deadline they were given (0 when unknown)
     elapsed_s: float = 0.0
     deadline_s: float = 0.0
+    #: route class ("identifier" / "natural") the fusion pinned by, None when unrouted
+    route: str | None = None
 
     @property
     def contributing_arms(self) -> list[str]:
@@ -460,6 +677,7 @@ def fuse(
     k: int = RRF_K,
     strategy: str = "interleave",
     pin_arms: Sequence[str] = LEXICAL_ARMS,
+    route: RouteDecision | None = None,
 ) -> FusionResult:
     """Merge executed arms into one ranking.
 
@@ -472,10 +690,18 @@ def fuse(
     if not contributing:
         return FusionResult(ids=[], arms=list(arms), provenance={})
 
+    pin: int | None = None
+    if route is not None and route.cls == "natural" and VECTOR_ARM in contributing:
+        # Natural-language route: pin the vector head. When the vector arm did
+        # not contribute the lexical pin stands, so a dead vector arm degrades
+        # to the previous behaviour rather than to no pin.
+        pin_arms = (VECTOR_ARM,)
+        pin = fusion_vector_pin()
+
     if strategy == "pinned_rrf":
 
         def merge(results, kk):
-            return pinned_rrf(results, kk, pin_arms=pin_arms)
+            return pinned_rrf(results, kk, pin=pin, pin_arms=pin_arms)
 
     elif strategy == "interleave":
         merge = rank_interleave
@@ -486,6 +712,7 @@ def fuse(
         ids=[doc_id for doc_id, _, _ in ranked[:limit]],
         arms=list(arms),
         provenance={doc_id: prov for doc_id, _, prov in ranked[:limit]},
+        route=route.cls if route else None,
     )
 
 
