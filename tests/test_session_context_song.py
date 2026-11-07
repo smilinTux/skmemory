@@ -70,10 +70,52 @@ def test_song_line_after_feb(home):
     res = _build()
     assert res.included == ["feb", "song"] or res.included[-2:] == ["feb", "song"]
     assert "Test Tune - Invented Artist" in res.text
-    assert "A made-up moment." in res.text and "Second sentence" not in res.text
+    assert "A made-up moment. Second sentence is dropped." in res.text
     assert "tilt: joy, love, warmth" in res.text
     assert res.text.index("Emotional state") < res.text.index("Song anchor tilt")
     assert "—" not in res.text.split("## Song anchor tilt")[1].split("\n---")[0]
+
+
+def test_second_anchor_bars(home, monkeypatch):
+    sd = home / "memory" / "songs"
+    for aid in ("t", "hi", "lo", "far"):
+        _anchor(sd, aid, aid, {"joy": 0.9})
+    scores = {"t": 0.80, "hi": 0.70, "lo": 0.35, "far": 0.55}
+
+    def fake(feb, agent=None, top_k=3, min_score=0.3):
+        out = [(a, scores[a.anchor_id]) for a in songs.scan_song_anchors()]
+        return sorted([x for x in out if x[1] >= min_score], key=lambda x: -x[1])
+
+    monkeypatch.setattr(songs, "match_anchors_for_feb", fake)
+    block = _build().text.split("## Song anchor tilt")[1]
+    assert "- t - " in block and "- hi - " in block  # 0.70: >= 0.4 and within 0.15
+    assert "- far - " not in block  # 0.55: >= 0.4 but gap 0.25
+    assert "- lo - " not in block  # 0.35: below 0.4
+    scores.update(t=0.55, hi=0.40, far=0.1, lo=0.1)
+    block = _build().text.split("## Song anchor tilt")[1]
+    assert "- hi - " in block  # exactly on both bars
+    scores.update(t=0.30, hi=0.30)
+    assert "- hi - " not in _build().text  # second below 0.4 even within gap
+
+
+def test_moment_cap_on_word_boundary(home):
+    long = " ".join(["wordy"] * 60)
+    _anchor(home / "memory" / "songs", "a1", "T", {"joy": 0.9, "love": 0.9}, moment_summary=long)
+    line = [x for x in _build().text.splitlines() if x.startswith("- T - ")][0]
+    moment = line.split(" | ")[1]
+    assert moment.endswith("\u2026") and len(moment) <= 140
+    assert set(moment[:-1].split()) == {"wordy"}
+
+
+def test_moment_dashes_normalised(home):
+    _anchor(
+        home / "memory" / "songs",
+        "a1",
+        "T",
+        {"joy": 0.9, "love": 0.9},
+        moment_summary="sang along \u2014 first conduit",
+    )
+    assert "sang along - first conduit" in _build().text
 
 
 def test_top_two_only_and_min_score(home):

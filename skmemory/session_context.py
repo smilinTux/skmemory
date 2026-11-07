@@ -452,8 +452,23 @@ def collect_feb(c: Ctx) -> Section | None:
     return Section("feb", "Emotional state (FEB)", lines, min_lines=1)
 
 
-SONG_MIN_SCORE = 0.3
+SONG_MIN_SCORE = 0.3  # first anchor bar
+SONG_SECOND_MIN_SCORE = 0.4  # a second anchor must reach this
+SONG_SECOND_MAX_GAP = 0.15  # and be within this of the top score
 SONG_MAX_ANCHORS = 2
+SONG_MOMENT_CHARS = 140
+
+
+def _moment_line(text: str, n: int = SONG_MOMENT_CHARS) -> str:
+    """The moment summary on one line, cut on a word boundary with an ellipsis."""
+    text = _WS_RE.sub(" ", str(text or "").replace("\u2014", " - ").replace("\u2013", " - "))
+    text = _WS_RE.sub(" ", text).strip()
+    if len(text) <= n:
+        return text
+    cut = text[: n - 1]
+    if text[n - 1] != " " and " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut.rstrip(" ,;:-") + "\u2026"
 
 
 def collect_song(c: Ctx) -> Section | None:
@@ -474,7 +489,12 @@ def collect_song(c: Ctx) -> Section | None:
         feb, agent=c.agent.name, top_k=SONG_MAX_ANCHORS + 2, min_score=SONG_MIN_SCORE
     )
     lines: list[str] = []
+    top = matches[0][1] if matches else 0.0
     for anchor, score in matches:
+        if lines and (
+            score < SONG_SECOND_MIN_SCORE or round(top - score, 6) > SONG_SECOND_MAX_GAP
+        ):
+            break
         weights = anchor.emotion_weights or {}
         if weights:
             emos = [k for k, _ in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)]
@@ -482,7 +502,7 @@ def collect_song(c: Ctx) -> Section | None:
             emos = list(anchor.emotions)
         bits = [f"{anchor.title} - {anchor.artist} (match {score:.2f})"]
         if anchor.moment_summary:
-            bits.append(_first_sentence(anchor.moment_summary, 160))
+            bits.append(_moment_line(anchor.moment_summary))
         if emos:
             bits.append("tilt: " + ", ".join(emos[:5]))
         lines.append("- " + " | ".join(bits))
