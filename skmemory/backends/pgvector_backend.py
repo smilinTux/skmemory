@@ -165,7 +165,7 @@ DEFAULT_HNSW_EF_SEARCH = 200
 DEFAULT_HNSW_ITERATIVE_SCAN = "relaxed_order"
 
 
-def knn_sql(cols: str, where: str) -> str:
+def knn_sql(cols: str, where: str, table: str = "memories") -> str:
     """Nearest-neighbour SELECT whose output is exactly ordered by distance.
 
     ``hnsw.iterative_scan = relaxed_order`` may hand rows back slightly out of
@@ -176,9 +176,61 @@ def knn_sql(cols: str, where: str) -> str:
     """
     return (
         f"WITH knn AS MATERIALIZED (SELECT {cols}, embedding <=> %s::vector AS _d "
-        f"FROM memories WHERE {where} ORDER BY embedding <=> %s::vector LIMIT %s) "
+        f"FROM {table} WHERE {where} ORDER BY embedding <=> %s::vector LIMIT %s) "
         f"SELECT {cols}, _d FROM knn ORDER BY _d"
     )
+
+
+def hnsw_query_settings(limit: int) -> tuple[int | None, str | None]:
+    """Per-query ``(ef_search, iterative_scan)`` for a filtered kNN of ``limit`` rows.
+
+    ``ef_search`` is never below ``limit`` (HNSW hands back at most ``ef_search``
+    candidates before the WHERE clause runs, so a LIMIT above it can never be
+    filled) and is capped at pgvector's 1000. ``None`` means "leave it alone".
+    ``SKMEMORY_HNSW_EF_SEARCH`` (0 skips) and ``SKMEMORY_HNSW_ITERATIVE_SCAN``
+    (``off``, ``strict_order``, ``relaxed_order``) override the defaults.
+    """
+    raw = os.environ.get("SKMEMORY_HNSW_EF_SEARCH", str(DEFAULT_HNSW_EF_SEARCH)).strip()
+    try:
+        ef: int | None = int(raw)
+    except ValueError:
+        logger.warning("ignoring non-integer SKMEMORY_HNSW_EF_SEARCH=%r", raw)
+        ef = DEFAULT_HNSW_EF_SEARCH
+    ef = None if ef is None or ef < 1 else min(1000, max(ef, int(limit)))
+    mode = (
+        os.environ.get("SKMEMORY_HNSW_ITERATIVE_SCAN", DEFAULT_HNSW_ITERATIVE_SCAN)
+        .strip()
+        .casefold()
+    )
+    return ef, (mode if mode in ("off", "strict_order", "relaxed_order") else None)
+
+
+def knn_fetch(conn, sql: str, params: list, limit: int) -> list:
+    """Run a kNN ``sql`` with HNSW settings applied ``SET LOCAL`` to this query only.
+
+    The settings live and die inside one transaction, so a pooled or injected
+    connection is never left tuned. A connection without ``transaction()`` (a
+    test fake) just runs the query. ``hnsw.iterative_scan`` needs pgvector 0.8+;
+    it runs in its own savepoint so an older server cannot abort the query.
+    """
+    tx = getattr(conn, "transaction", None)
+    if tx is None:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.fetchall()
+    ef, mode = hnsw_query_settings(limit)
+    with tx():
+        with conn.cursor() as cur:
+            if ef is not None:
+                cur.execute("SELECT set_config('hnsw.ef_search', %s, true)", (str(ef),))
+            if mode is not None:
+                try:
+                    with tx():
+                        cur.execute("SELECT set_config('hnsw.iterative_scan', %s, true)", (mode,))
+                except Exception as exc:  # noqa: BLE001 - pgvector < 0.8
+                    logger.warning("could not set hnsw.iterative_scan for this query: %s", exc)
+            cur.execute(sql, params)
+            return cur.fetchall()
 
 
 def _parse_float_env(name: str, default: float) -> float:
@@ -1185,9 +1237,8 @@ class PGVectorBackend(BaseBackend):
             clauses.append(sql_as_of)
             params.extend(binds)
         where = " AND ".join(clauses)
-        with conn.cursor() as cur:
-            cur.execute(knn_sql("memory_json", where), [qvec, *params, qvec, limit])
-            return self._rows_to_memories(cur.fetchall())
+        rows = knn_fetch(conn, knn_sql("memory_json", where), [qvec, *params, qvec, limit], limit)
+        return self._rows_to_memories(rows)
 
     def find_similar(self, content: str, k: int = 5) -> list[dict]:
         """Find memories with content similar to *content* (advisory dedup check).
