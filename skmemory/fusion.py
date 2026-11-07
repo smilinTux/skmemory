@@ -320,6 +320,11 @@ _MARCH_EVENT_NOUNS = {
     "notes",
     "update",
 }
+_MODAL_SUBJECTS = {"i", "we", "you", "they", "it", "he", "she", "people", "who"}
+_MODAL_FOLLOWERS = {
+    "times", "time", "miles", "mile", "minutes", "minute", "hours", "hour",
+    "days", "day", "weeks", "week", "go", "be",
+}  # fmt: skip
 _PAST_UNIT_RE = re.compile(
     r"\bpast\s+(day|week|month)\b"
     r"(?=\s*(?:[.,;:!?]|$)|\s+(?:or|and|to|on|in|for|about|with|but|from|we|i)\b)"
@@ -387,6 +392,13 @@ def _month_match(query: str, text: str):
         d = re.match(rf"\s*,?\s*{_DAY}\b(?!\s*:)", after)
         d2 = re.search(rf"{_DAY}\s+(?:of\s+)?$", before)
         if d and not re.match(r"\s*,?\s*20\d{2}\b", after):
+            if name in _AMBIGUOUS_MONTHS:
+                prev = re.search(r"(\w+)\s+$", before)
+                nxt = re.match(r"\s*([a-z]+)", after[d.end() :])
+                if (prev and prev.group(1) in _MODAL_SUBJECTS) or (
+                    nxt and nxt.group(1) in _MODAL_FOLLOWERS
+                ):
+                    continue  # "we may 3 times", "people march 4 hours"
             day = int(d.group(1))
         elif d2:
             # "step 3 may fail": a bare number before an ambiguous word is not

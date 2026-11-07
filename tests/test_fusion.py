@@ -467,6 +467,14 @@ def test_last_week_of_month_is_the_month_not_the_iso_week():
         "room 12 may",
         "scored 9 may",
         "I scored 90 may",
+        "we may 3 times a week",
+        "you may 5 minutes later",
+        "it may 2 weeks",
+        "we may 10 days",
+        "I may 2 go later",
+        "we march 5 miles",
+        "people march 4 hours",
+        "it may 4th be fine",
         "past day trading",
         "past month rent roll",
     ],
@@ -483,3 +491,16 @@ def test_week_n_of_march_is_march_not_day():
 def test_march_event_nouns_at_start_narrow():
     assert _win("March incident review")[0].startswith("2026-03-01")
     assert _win("March 2025 notes")[0].startswith("2025-03-01")
+
+
+@pytest.mark.parametrize(
+    "query,start",
+    [
+        ("may 5", "2026-05-05"),
+        ("march 5", "2026-03-05"),
+        ("in may 2026", "2026-05-01"),
+        ("may 5 outage", "2026-05-05"),
+    ],
+)
+def test_month_then_number_still_parses(query, start):
+    assert _win(query)[0].startswith(start)
