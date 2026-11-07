@@ -34,7 +34,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .. import fts_local
+from .. import fts_local, wal_guard
 from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
 from ..decay import REINFORCE_IMPORTANCE_STEP, initial_importance
@@ -250,6 +250,7 @@ class SQLiteBackend(BaseBackend):
             self._conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_S * 1000)}")
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
+            wal_guard.apply(self._conn)
         return self._conn
 
     def _reset_conn(self) -> None:
@@ -528,6 +529,7 @@ class SQLiteBackend(BaseBackend):
                         "sqlite_backend: fts index failed for %s: %s", memory.id, fts_err
                     )
             conn.commit()
+            wal_guard.maybe_checkpoint(conn, str(self._db_path))
             return True
         except sqlite3.Error as e:
             logger.warning(
@@ -586,6 +588,7 @@ class SQLiteBackend(BaseBackend):
         conn = None
         try:
             conn = sqlite3.connect(str(self._db_path), timeout=self._BUMP_BUSY_MS / 1000)
+            wal_guard.apply(conn)
             for i in range(0, len(ids), self._BUMP_CHUNK):
                 chunk = ids[i : i + self._BUMP_CHUNK]
                 marks = ",".join("?" * len(chunk))
@@ -1979,8 +1982,11 @@ class SQLiteBackend(BaseBackend):
             s = self.stats()
             drift = self.drift_check()
             unloadable = self.count_unloadable()
+            wal = wal_guard.wal_status(self._db_path)
+            wal_guard.maybe_checkpoint(self._get_conn(), str(self._db_path))
             return {
-                "ok": unloadable == 0,
+                "ok": unloadable == 0 and wal["wal_ok"],
+                "wal": wal,
                 "backend": "SQLiteBackend",
                 "base_path": str(self.base_path),
                 "total_memories": s["total"],
