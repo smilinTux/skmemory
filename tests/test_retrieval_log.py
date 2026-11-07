@@ -89,12 +89,14 @@ def test_zero_hits_for_100_with_failed_probe_is_degraded():
 
 def test_errors_and_timeouts_degrade():
     recs = [_rec(semantic=("ok", 2)) for _ in range(20)] + [_rec(semantic=("timeout", 0))]
-    assert rl.arm_liveness(recs, {}, {})["semantic"]["state"] == "degraded"
+    assert rl.arm_liveness(recs, {}, {})["semantic"]["state"] == "ok"  # one blip
+    recs += [_rec(semantic=("timeout", 0)) for _ in range(2)]
+    assert rl.arm_liveness(recs, {}, {})["semantic"]["state"] == "degraded"  # last 3 bad
     recs = [_rec(semantic=("ok", 2)) for _ in range(30)]
-    recs[3] = _rec(semantic=("failed", 0))
-    recs[4] = _rec(semantic=("failed", 0))
-    recs[5] = _rec(semantic=("failed", 0))
-    recs[6] = _rec(semantic=("failed", 0))
+    recs[15] = _rec(semantic=("failed", 0))
+    recs[16] = _rec(semantic=("failed", 0))
+    recs[17] = _rec(semantic=("failed", 0))
+    recs[18] = _rec(semantic=("failed", 0))
     assert rl.arm_liveness(recs, {}, {})["semantic"]["state"] == "degraded"
 
 
@@ -142,3 +144,18 @@ def test_threaded_records_all_land(tmp_path):
     [t.join() for t in ts]
     rl.flush(5)
     assert len(rl.read_window(tmp_path / "logs", 500)) == 200
+
+
+def test_file_modes_and_lock_rotation(tmp_path, monkeypatch):
+    monkeypatch.setattr(rl, "MAX_BYTES", 100)
+    for i in range(10):
+        rl.record(tmp_path / "logs", {"i": i, "pad": "x" * 40})
+        rl.flush()
+    assert (tmp_path / "logs").stat().st_mode & 0o777 == 0o700
+    assert (tmp_path / "logs" / rl.LOG_NAME).stat().st_mode & 0o777 == 0o600
+
+
+def test_legacy_path_labelled_unobserved(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", "off")
+    h = _store(tmp_path).health()
+    assert h["retrieval"]["observed"] is False and "unobserved" in h["retrieval"]["note"]

@@ -18,6 +18,7 @@ probe also fails.
 from __future__ import annotations
 
 import atexit
+import fcntl
 import hashlib
 import json
 import logging
@@ -33,9 +34,10 @@ LOG_NAME = "retrieval.jsonl"
 WINDOW = 100
 MAX_BYTES = 5 * 1024 * 1024
 KEEP = 3
-#: error+timeout share of an arm's attempts, over a window of at least MIN_ATTEMPTS
-BAD_RATE = 0.10
-MIN_ATTEMPTS = 5
+#: degraded when RECENT_BAD of the last RECENT attempts were bad, or the last TAIL all were
+RECENT = 20
+RECENT_BAD = 3
+TAIL = 3
 _QUEUE_MAX = 1000
 _ENV = "SKMEMORY_RETRIEVAL_LOG"
 
@@ -104,6 +106,26 @@ def _rotate(path: Path) -> None:
     os.replace(path, path.with_name(f"{path.name}.1"))
 
 
+def _write(p: Path, lines: list[str]) -> None:
+    """Append under an flock so two processes cannot interleave or clobber a rotation."""
+    p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(p.parent, 0o700)
+    except OSError:
+        pass
+    lock_fd = os.open(str(p) + ".lock", os.O_CREAT | os.O_WRONLY, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        _rotate(p)
+        fd = os.open(p, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+        try:
+            os.write(fd, ("\n".join(lines) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    finally:
+        os.close(lock_fd)
+
+
 def _drain() -> None:
     while True:
         path, rec = _q.get()
@@ -116,10 +138,7 @@ def _drain() -> None:
             batch.setdefault(p, []).append(json.dumps(r, separators=(",", ":")))
         for p, lines in batch.items():
             try:
-                p.parent.mkdir(parents=True, exist_ok=True)
-                _rotate(p)
-                with p.open("a", encoding="utf-8") as fh:
-                    fh.write("\n".join(lines) + "\n")
+                _write(p, lines)
             except Exception as exc:  # noqa: BLE001 - best effort by design
                 logger.debug("retrieval log write dropped: %s", exc)
         if _q.empty():
@@ -216,11 +235,14 @@ def arm_liveness(records: list[dict], states: dict[str, dict], backend_ok: dict)
         if cfg == "disabled" or (rows and all(x.get("status") == "disabled" for x in rows)):
             info.update(state="disabled", reason="disabled by config")
         elif attempts:
-            bad = errors + timeouts
-            if attempts[-1]["status"] in ("failed", "timeout"):
-                info.update(state="degraded", reason=f"latest attempt {attempts[-1]['status']}")
-            elif len(attempts) >= MIN_ATTEMPTS and bad / len(attempts) >= BAD_RATE:
-                info.update(state="degraded", reason=f"{bad} of {len(attempts)} attempts bad")
+            flags = [x["status"] in ("failed", "timeout") for x in attempts]
+            recent = flags[-RECENT:]
+            if len(flags) >= TAIL and all(flags[-TAIL:]):
+                info.update(state="degraded", reason=f"last {TAIL} attempts bad")
+            elif sum(recent) >= RECENT_BAD:
+                info.update(
+                    state="degraded", reason=f"{sum(recent)} of last {len(recent)} attempts bad"
+                )
             elif hits == 0 and len(attempts) >= WINDOW:
                 if backend_ok.get(ARM_BACKEND.get(name, "primary")) is False:
                     info.update(state="degraded", reason="zero hits and backend probe failing")

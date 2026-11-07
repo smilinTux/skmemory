@@ -1445,6 +1445,10 @@ class MemoryStore:
         }
         records = retrieval_log.read_window(self._retrieval_log_dir())
         return {
+            "observed": self._fusion_enabled(),
+            "note": None
+            if self._fusion_enabled()
+            else "legacy search path in use: searches are not logged, so liveness is unobserved",
             "window": len(records),
             "arms": retrieval_log.arm_liveness(records, self.search_arm_states(), backend_ok),
         }
