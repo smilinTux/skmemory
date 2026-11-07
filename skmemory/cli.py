@@ -976,9 +976,7 @@ def graph_citation(ctx: click.Context, query: str, limit: int) -> None:
     """Find memories citing a decomposed citation."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(
-        _reader_rows(store, store.graph.search_by_citation(query, limit=limit))
-    )
+    _emit_graph_results(_reader_rows(store, store.graph.search_by_citation(query, limit=limit)))
 
 
 @graph.command("claim")
@@ -1038,7 +1036,7 @@ def graph_related_claims(
         results = store.graph.related_claims_by_entity(entity_query, limit=limit)
     else:
         results = store.graph.related_claims_by_citation(citation_query or "", limit=limit)
-    _emit_graph_results(_reader_rows(store, results)
+    _emit_graph_results(_reader_rows(store, results))
 
 
 @graph.command("reconcile")
