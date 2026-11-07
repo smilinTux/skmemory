@@ -1,0 +1,1 @@
+- **memory_auto_context ranks by relevance (SKMEM-P0-06).** Results are now ordered by the reciprocal-rank sum of each keyword's fused search hits, with emotional intensity as a tiebreak only (it previously sorted by intensity alone). The tool description now says so; the reader argument and non-reinforcing search are unchanged.
