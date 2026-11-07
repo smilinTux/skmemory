@@ -24,10 +24,14 @@ bm25_only       skmem-pg ``search_lexical`` (ParadeDB BM25, else ts_rank)
 vector_only     skmem-pg ``search_semantic`` (mxbai over a real embed endpoint)
 sqlite_like     the SQLite index ``search_text`` (LIKE), the live stand-in for
                 ``grep_substring``
+lexical_local   the SQLite FTS5 bm25 arm (``search_lexical_local``), read-only and
+                never backfilled: DEAD (not built) when the FTS tables are absent
 graph_only      AGE ``search_by_entity_tokens``
 fallback_chain  old production: vector, lexical only if vector is empty. Derived
                 from the two runs above, so it costs no extra embed call
-candidate       PRODUCTION ``MemoryStore.search_fused`` (fusion + rerank)
+candidate       PRODUCTION ``MemoryStore.search(query, limit=10, record_access=False,
+                reader=None)`` with fusion forced on: the entry the MCP
+                ``memory_search`` tool calls (which passes record_access=True)
 
 Read-only contract
 ------------------
@@ -67,7 +71,15 @@ K = 5
 LIMIT = 10
 DEFAULT_EMBED_INTERVAL_S = 0.25
 
-ARMS = ["bm25_only", "vector_only", "sqlite_like", "graph_only", "fallback_chain", "candidate"]
+ARMS = [
+    "bm25_only",
+    "vector_only",
+    "sqlite_like",
+    "lexical_local",
+    "graph_only",
+    "fallback_chain",
+    "candidate",
+]
 CANDIDATE = "candidate"
 EMBEDDING_ARMS = frozenset({"vector_only", CANDIDATE})
 
@@ -352,7 +364,12 @@ def format_table(res: dict, meta: dict | None = None) -> str:
         "its rarest tokens). Easy for lexical arms; says little about semantic recall on a "
         "paraphrased question. Compare arms on identical queries; do not read as absolute quality.",
         "- rare tokens are rare relative to the SAMPLE (document frequency proxy), not the corpus",
-        "- candidate = PRODUCTION MemoryStore.search_fused (fusion + rerank), record_access=False",
+        "- candidate entry = MemoryStore.search(query, limit=10, record_access=False, reader=None) "
+        "with SKMEMORY_SEARCH_FUSION=on: the same public entry as MCP memory_search (which "
+        "passes record_access=True; forced False here so nothing is counted)",
+        f"- embed rate limit: vector_only and candidate calls are spaced >= "
+        f"{meta.get('embed_interval_s', DEFAULT_EMBED_INTERVAL_S)}s apart (sleep excluded from "
+        "latency); other arms are unthrottled",
         "- not reported (no live analogue): reimpl_fusion, full_context",
     ]
     for k, v in meta.items():
@@ -364,7 +381,7 @@ def format_table(res: dict, meta: dict | None = None) -> str:
         tag = "ALIVE" if a["status"] == "alive" else "DEAD"
         out.append(
             f"{n:<15}{tag:<6}calls={a['calls']} errors={a['errors']} empty={a['empty']}  "
-            f"{a['reason']}"
+            f"{scrub(a['reason'])}"
         )
     out.append("")
     for metric in ("recall@5", "mrr"):
@@ -426,6 +443,23 @@ def write_outputs(out_dir: str | os.PathLike, res: dict, table: str, stem: str) 
 # ---------------------------------------------------------------------------
 
 
+_SECRET_RES = [
+    re.compile(r"[a-z][a-z0-9+.-]*://\S+", re.I),  # URLs and DSNs
+    re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"),  # IPv4[:port]
+    re.compile(r"\b[\w-]+(?:\.[\w-]+)+(?::\d+)?\b"),  # dotted hostnames
+    re.compile(r"\b(?:host|hostname|user|password|dbname|port)\s*=\s*\S+", re.I),
+    re.compile(r"\S+@\S+"),
+]
+
+
+def scrub(text: object, limit: int = 120) -> str:
+    """Redact URLs, hosts, IPs and DSN fragments from an error string."""
+    out = str(text)
+    for rx in _SECRET_RES:
+        out = rx.sub("<redacted>", out)
+    return " ".join(out.split())[:limit]
+
+
 def _blocked(name: str):
     def method(self, *a, **kw):
         raise ReadOnlyViolation(f"{type(self).__name__}.{name} is blocked in the live bench")
@@ -469,6 +503,24 @@ def make_backends(dsn: str | None, agent: str, sqlite_dir: str):
             self._conn = None
             self._unloadable_seen: set[str] = set()
             self.last_import_report = None
+            self.fts_enabled = True
+            self._fts_ok = False
+            self._fts_complete_at = None
+            # Read-only FTS: usable only if the tables already exist. Never
+            # created here (ensure_schema writes) and never backfilled.
+            try:
+                names = {
+                    r[0]
+                    for r in self._get_conn().execute(
+                        "SELECT name FROM sqlite_master WHERE name IN ('memory_fts', 'fts_meta')"
+                    )
+                }
+                self._fts_ok = {"memory_fts", "fts_meta"} <= names
+            except sqlite3.Error:
+                self._fts_ok = False
+
+        def _lazy_fts_backfill(self, conn):  # backfill writes: never in the live bench
+            return None
 
         def _get_conn(self):
             if self._conn is None:
@@ -495,6 +547,7 @@ def make_backends(dsn: str | None, agent: str, sqlite_dir: str):
         [
             "save", "delete", "reindex", "import_backup", "_index_memory", "_init_schema",
             "_ensure_db", "_ensure_dirs", "_quarantine_corrupt_db", "_bump_access",
+            "fts_backfill",
         ],
     )  # fmt: skip
     pg = ReadOnlyPG(**({"dsn": dsn} if dsn else {}), agent=agent)
@@ -550,6 +603,21 @@ def build_store(pg, age, sqlite_backend):
         store_mod.WriteAheadLog = orig
 
 
+def probe_fts(sqlite_backend) -> tuple[bool, str]:
+    try:
+        if not sqlite_backend._fts_ok:
+            return False, "FTS tables not built in index.db (not built)"
+        cov = sqlite_backend.fts_status()
+        ok = cov.get("indexed", 0) > 0
+        return ok, (
+            f"fts indexed={cov.get('indexed')}/{cov.get('total')} "
+            f"missing={cov.get('missing')} (read-only, no backfill)"
+            + ("" if ok else " (not built: 0 rows indexed)")
+        )
+    except sqlite3.Error as exc:
+        return False, f"fts error: {scrub(exc)}"
+
+
 def probe_arms(pg, age, sqlite_backend) -> dict[str, tuple[bool, str]]:
     """Health of each arm from the backends themselves (never from a recall of zero)."""
     alive: dict[str, tuple[bool, str]] = {}
@@ -558,20 +626,25 @@ def probe_arms(pg, age, sqlite_backend) -> dict[str, tuple[bool, str]]:
     embed_ok = (h.get("embed_probe") or {}).get("ok")
     why = f"pg memories={h.get('memories')} unparseable={h.get('unparseable_rows')}"
     if h.get("error"):
-        why = f"pg error: {str(h['error'])[:120]}"
+        why = f"pg error: {scrub(h['error'])}"
     alive["bm25_only"] = (pg_up, why + (" bm25" if pg_up and pg._has_bm25_index() else " ts_rank"))
     probe = h.get("embed_probe") or {}
     alive["vector_only"] = (
         pg_up and embed_ok is True,
-        f"embed_ok={embed_ok} latency_ms={probe.get('latency_ms')} {probe.get('error', '')}".strip(),
+        f"embed_ok={embed_ok} latency_ms={probe.get('latency_ms')} "
+        f"{scrub(probe.get('error', ''))}".strip(),
     )
     g = age.health_check()
-    alive["graph_only"] = (bool(g.get("ok")), f"nodes={g.get('node_count')} {g.get('error', '')}")
+    alive["graph_only"] = (
+        bool(g.get("ok")),
+        f"nodes={g.get('node_count')} {scrub(g.get('error', ''))}",
+    )
     try:
         n = sqlite_backend._get_conn().execute("SELECT count(*) FROM memories").fetchone()[0]
         alive["sqlite_like"] = (n > 0, f"index rows={n} (opened mode=ro)")
     except sqlite3.Error as exc:
-        alive["sqlite_like"] = (False, f"sqlite error: {exc}")
+        alive["sqlite_like"] = (False, f"sqlite error: {scrub(exc)}")
+    alive["lexical_local"] = probe_fts(sqlite_backend)
     alive[CANDIDATE] = (
         alive["bm25_only"][0] or alive["vector_only"][0] or alive["graph_only"][0],
         "fused over whichever of the above are alive",
@@ -580,21 +653,28 @@ def probe_arms(pg, age, sqlite_backend) -> dict[str, tuple[bool, str]]:
 
 
 def build_arms(pg, age, sqlite_backend, store, telemetry: dict) -> dict[str, Arm]:
-    from skmemory.query_sanitizer import sanitize_query
+    # Observe (never alter) the fused call the production entry makes, to learn
+    # which arm failed. The wrapper forwards every argument unchanged.
+    orig_fused = store.search_fused
+
+    def spy(query, *a, **kw):
+        kw["return_report"] = True
+        mems, report = orig_fused(query, *a, **kw)
+        for arm in report.arms:
+            telemetry.setdefault(arm.name, Counter())[arm.status] += 1
+        return mems
+
+    store.search_fused = spy
 
     def candidate(q: str) -> list[str]:
-        out = store.search_fused(
-            sanitize_query(q), limit=LIMIT, return_report=True, record_access=False
-        )
-        mems, report = out
-        for a in report.arms:
-            telemetry.setdefault(a.name, Counter())[a.status] += 1
-        return [m.id for m in (mems or [])]
+        mems = store.search(q, limit=LIMIT, record_access=False, reader=None)
+        return [m.id for m in mems]
 
     return {
         "bm25_only": lambda q: [m.id for m in pg.search_lexical(q, limit=LIMIT)],
         "vector_only": lambda q: [m.id for m in pg.search_semantic(q, limit=LIMIT)],
         "sqlite_like": lambda q: [m.id for m in sqlite_backend.search_text(q, limit=LIMIT)],
+        "lexical_local": lambda q: [m.id for m in sqlite_backend.search_lexical_local(q, LIMIT)],
         "graph_only": lambda q: [
             str(r["id"]) for r in age.search_by_entity_tokens(q, limit=LIMIT) if r.get("id")
         ],
@@ -638,7 +718,15 @@ def run(
     queries = build_queries(mems)
     telemetry: dict = {}
     arms = build_arms(pg, age, sq, store, telemetry)
-    res = run_live(arms, queries, alive=alive, embed_interval_s=embed_interval_s)
+    keep = os.environ.get("SKMEMORY_SEARCH_FUSION")
+    os.environ["SKMEMORY_SEARCH_FUSION"] = "on"
+    try:
+        res = run_live(arms, queries, alive=alive, embed_interval_s=embed_interval_s)
+    finally:
+        if keep is None:
+            os.environ.pop("SKMEMORY_SEARCH_FUSION", None)
+        else:
+            os.environ["SKMEMORY_SEARCH_FUSION"] = keep
     res["meta"] = {
         "agent": agent,
         "sample": len(mems),
@@ -676,6 +764,7 @@ def main() -> None:
         {
             "agent": meta["agent"],
             "sample": f"{meta['sample']} memories, seed {meta['seed']}",
+            "embed_interval_s": meta["embed_interval_s"],
             "read-only guards": ", ".join(
                 f"{k}: {v}" for k, v in meta["read_only_guards"].items()
             ),

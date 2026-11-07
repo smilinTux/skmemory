@@ -52,6 +52,7 @@ def _arms(vec_empty=False):
         "bm25_only": hit,
         "vector_only": (lambda q: []) if vec_empty else hit,
         "sqlite_like": hit,
+        "lexical_local": hit,
         "graph_only": lambda q: [],
         "candidate": hit,
     }
@@ -184,3 +185,82 @@ def test_pg_session_is_read_only_against_throwaway_db(tmp_path):
     report = lb.verify_read_only(pg, age, ro)
     assert report["sqlite"] == "write refused" and report["pg"] == "write refused"
     assert report["age"] in ("write refused", "no connection")
+
+
+def _seed(tmp_path, build_fts=True):
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+    from skmemory.models import Memory, MemoryLayer
+
+    src = SQLiteBackend(str(tmp_path / "mem"))
+    src.save(Memory(id="m1", title="alpha beta", content="gamma delta", layer=MemoryLayer.SHORT))
+    if not build_fts:
+        from skmemory import fts_local
+
+        fts_local.drop(src._get_conn())
+        src._get_conn().commit()
+    src._get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return str(tmp_path / "mem")
+
+
+def test_readonly_fts_enabled_when_built_and_never_writes(tmp_path):
+    mem = _seed(tmp_path)
+    _, _, ro = lb.make_backends(None, "lumina", mem)
+    assert ro._fts_ok
+    assert [m.id for m in ro.search_lexical_local("alpha")] == ["m1"]
+    ok, why = lb.probe_fts(ro)
+    assert ok and "indexed=1/1" in why
+    with pytest.raises(lb.ReadOnlyViolation):
+        ro.fts_backfill()
+    with pytest.raises(Exception, match="readonly|read-only"):
+        ro._get_conn().execute("DELETE FROM memory_fts")
+
+
+def test_readonly_fts_absent_reports_dead_not_built(tmp_path):
+    mem = _seed(tmp_path, build_fts=False)
+    _, _, ro = lb.make_backends(None, "lumina", mem)
+    ok, why = lb.probe_fts(ro)
+    assert not ok and "not built" in why
+    assert ro.search_lexical_local("alpha") == []
+
+
+def test_candidate_enters_through_store_search_unaltered(tmp_path, monkeypatch):
+    from skmemory.store import MemoryStore
+
+    mem = _seed(tmp_path)
+    pg, age, ro = lb.make_backends(None, "lumina", mem)
+    monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", "on")
+    store = lb.build_store(pg, age, ro)
+    assert isinstance(store, MemoryStore)
+    seen = {}
+    orig_search = store.search
+
+    def search_spy(q, *a, **kw):
+        seen["q"], seen["kw"] = q, kw
+        return orig_search(q, *a, **kw)
+
+    store.search = search_spy
+    telemetry = {}
+    arms = lb.build_arms(pg, age, ro, store, telemetry)
+    assert arms["candidate"]("alpha beta") == ["m1"]
+    assert seen["q"] == "alpha beta"  # the arm does not pre-sanitise
+    assert seen["kw"]["record_access"] is False and seen["kw"]["reader"] is None
+    assert telemetry["lexical_local"]["ok"] == 1  # reached the fused path
+    assert not (tmp_path / "mem" / "wal").exists()
+
+
+def test_scrub_removes_hosts_dsn_ips():
+    raw = (
+        "could not connect to postgresql://u:pw@db.example.internal:5432/x; "
+        "host=10.1.2.3 port=5432 http://embed.lan:11434/api user=bob a@b.c"
+    )
+    out = lb.scrub(raw, 500)
+    for bad in ("example", "pw", "10.1.2.3", "embed.lan", "bob", "a@b.c", "5432"):
+        assert bad not in out
+
+
+def test_header_states_entry_and_rate_limit():
+    qs = lb.build_queries(MEMS)
+    res = lb.run_live(_arms(), qs, alive=ALIVE, embed_interval_s=0)
+    t = lb.format_table(res, {"embed_interval_s": 0.25})
+    assert "MemoryStore.search(query, limit=10, record_access=False, reader=None)" in t
+    assert "memory_search" in t and ">= 0.25s" in t
