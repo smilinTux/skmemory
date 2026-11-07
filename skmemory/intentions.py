@@ -834,6 +834,37 @@ class IntentionStore:
         return changed
 
 
+_IN_RE = re.compile(
+    r"^\s*in\s+(\d{1,6})\s*(minutes?|mins?|hours?|hrs?|days?|weeks?)\s*$", re.IGNORECASE
+)
+_IN_UNIT = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+
+
+def parse_due_at(value: Any, now: datetime | None = None) -> datetime:
+    """Parse ``due_at``: an ISO 8601 timestamp or ``in N minutes|hours|days|weeks``.
+
+    Relative forms are resolved against ``now`` (default: the current time). A
+    naive ISO time is taken as UTC. Raises ``ValueError`` with a message that
+    names the accepted formats; it never returns a guess.
+    """
+    now = _aware(now) or datetime.now(timezone.utc)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("due_at is required: an ISO 8601 time or 'in N days/hours'")
+    m = _IN_RE.match(value)
+    if m:
+        from datetime import timedelta
+
+        unit = _IN_UNIT[m.group(2)[0].lower()]
+        return now + timedelta(**{unit: int(m.group(1))})
+    try:
+        return _aware(datetime.fromisoformat(value.strip().replace("Z", "+00:00")))
+    except ValueError:
+        raise ValueError(
+            f"unrecognised due_at {value!r}: use an ISO 8601 time "
+            "(2026-12-01T09:00:00Z) or 'in N days/hours/minutes/weeks'"
+        ) from None
+
+
 def prefilter_safe(
     base_path: str | Path,
     text: str,

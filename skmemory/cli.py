@@ -3464,7 +3464,14 @@ def _auto_register_once() -> None:
 # Harness hooks (Claude Code, Codex, OpenCode, Pi)
 # ═══════════════════════════════════════════════════════════
 
-_HOOK_EVENTS = ["session-start", "post-compact", "pre-compact", "session-end", "stop"]
+_HOOK_EVENTS = [
+    "session-start",
+    "post-compact",
+    "pre-compact",
+    "session-end",
+    "stop",
+    "user-prompt",
+]
 _HOOK_HARNESSES = ["claude", "codex", "opencode", "pi", "generic"]
 
 

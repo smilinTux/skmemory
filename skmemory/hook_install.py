@@ -4,7 +4,8 @@ Mechanism per harness (researched against the installed versions):
 
     claude    ~/.claude/settings.json "hooks": SessionStart (startup|clear ->
               session-start, compact|resume -> post-compact), PreCompact,
-              SessionEnd, Stop. Command hooks, JSON additionalContext output.
+              SessionEnd, Stop, UserPromptSubmit (user-prompt: standing
+              intentions; SKMEMORY_HOOKS=off is the kill switch). Command hooks, JSON additionalContext output.
     codex     ~/.codex/hooks.json, same event/matcher/handler shape as Claude
               (Codex >= 0.16x ships lifecycle hooks on by default). Codex only
               runs hooks the user has trusted; the installer records trust for
@@ -175,6 +176,8 @@ def _desired_groups(harness: str, exe: str) -> dict[str, list[dict]]:
             {"matcher": "", "hooks": [h("session-end", 3 if harness == "codex" else 30)]}
         ],
         "Stop": [{"matcher": "", "hooks": [h("stop", 10)]}],
+        # Standing intentions: fast, silent when nothing fires, never fails a prompt.
+        "UserPromptSubmit": [{"matcher": "", "hooks": [h("user-prompt", 5)]}],
     }
 
 
