@@ -28,7 +28,15 @@ def _backend(responses: dict[str, list[str]]) -> AGEGraphBackend:
     calls: list[str] = []
     be.calls = calls  # type: ignore[attr-defined]
 
-    def _search(query: str, limit: int = 20):
+    def _search(
+        query: str,
+        limit: int = 20,
+        *,
+        layer=None,
+        tags=None,
+        context_tag=None,
+        source=None,
+    ):
         calls.append(query)
         ids = responses.get(query, responses.get(query.casefold(), []))
         return [
