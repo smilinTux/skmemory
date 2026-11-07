@@ -471,6 +471,8 @@ All content is synthetic (public repo): host names skap*/skwk*, agents marvin/as
 
 affect-v2 (affect-v2-corpus.jsonl, affect-v2-queries.jsonl) is a separate fixture made by gen_affect_v2.py (run it, do not hand-edit): 144 invented memories and 31 queries over felt_peak, felt_quiet, factual_guard, valence_pair and reinforce, with real intensity spread and real access_count/last_accessed. Used by `fusion_bench --ablation --fixture affect-v2`.
 
+affect-v3 (affect-v3-corpus.jsonl, affect-v3-queries.jsonl) is made by gen_affect_v3.py (run it, do not hand-edit): affect-v2 unchanged plus 60 invented memories and 20 queries in `felt_answerable`, where each memory carries a different felt detail, the query paraphrases one of them, and gold rotates across the intensity ladder (no tie-break oracle). `--blind-sheet/--blind-key` write the human answerability check. Used by `fusion_bench --ablation --fixture affect-v3 --gamma 0.15,0.3,0.5,1.0`.
+
 Baselines every retrieval run must report next to the candidate: bm25_only, grep_substring (over the flat files),
 vector_only (hashed offline; real embed when live), full_context (oracle, with token cost), fallback_chain (old production).
 Gate per class (gate_recall_at_5 in each query), never on the aggregate.

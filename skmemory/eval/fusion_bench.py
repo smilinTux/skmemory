@@ -1167,7 +1167,12 @@ ABLATION_WEIGHTS = (0.0, 0.25, 0.5, 1.0)
 
 
 def _ablation_rank(
-    ranked: list[str], by_id: dict, weight: float, channel: str, as_of
+    ranked: list[str],
+    by_id: dict,
+    weight: float,
+    channel: str,
+    as_of,
+    gamma: float = decay.RERANK_GAMMA,
 ) -> list[str]:
     keyed = []
     for rank, doc_id in enumerate(ranked):
@@ -1182,7 +1187,7 @@ def _ablation_rank(
             intensity=i,
             kind="gist" if d["layer"] == "long-term" else "fact",
         )
-        key = (1.0 / (1 + rank)) * max(s, 1e-9) ** decay.RERANK_GAMMA * (1.0 + weight * i)
+        key = (1.0 / (1 + rank)) * max(s, 1e-9) ** gamma * (1.0 + weight * i)
         keyed.append((-key, rank, doc_id))
     keyed.sort()
     return [t[2] for t in keyed]
@@ -1240,6 +1245,7 @@ def run_ablation(
     affect_weights: Sequence[float] = ABLATION_WEIGHTS,
     channels: Sequence[str] = decay.CHANNELS,
     fixture: str = "v1",
+    gammas: Sequence[float] = (decay.RERANK_GAMMA,),
 ) -> dict:
     """Score every (affect_weight, channel) cell per query class and overall.
 
@@ -1250,13 +1256,14 @@ def run_ablation(
     """
     from skmemory.eval import fixtures as fx
 
-    if fixture not in ("v1", "affect-v2"):
-        raise ValueError(f"unknown fixture {fixture!r}; expected 'v1' or 'affect-v2'")
-    load_corpus, load_queries = (
-        (fx.load_corpus, fx.load_queries)
-        if fixture == "v1"
-        else (fx.load_affect_corpus, fx.load_affect_queries)
-    )
+    loaders = {
+        "v1": (fx.load_corpus, fx.load_queries),
+        "affect-v2": (fx.load_affect_corpus, fx.load_affect_queries),
+        "affect-v3": (fx.load_affect_v3_corpus, fx.load_affect_v3_queries),
+    }
+    if fixture not in loaders:
+        raise ValueError(f"unknown fixture {fixture!r}; expected one of {sorted(loaders)}")
+    load_corpus, load_queries = loaders[fixture]
     for ch in channels:
         if ch not in decay.CHANNELS:
             raise ValueError(f"unknown decay channel {ch!r}; expected one of {decay.CHANNELS}")
@@ -1276,75 +1283,87 @@ def run_ablation(
                 lo = d["id"]
 
     cells = []
-    rr_by_cell: dict[tuple[str, float], dict[str, float]] = {}
-    r5_by_cell: dict[tuple[str, float], dict[str, float]] = {}
+    rr_by_cell: dict[tuple[str, float, float], dict[str, float]] = {}
+    r5_by_cell: dict[tuple[str, float, float], dict[str, float]] = {}
     for ch in channels:
-        for w in affect_weights:
-            per: dict[str, list] = {}
-            rr_by_cell[(ch, float(w))] = {}
-            r5_by_cell[(ch, float(w))] = {}
-            moved = 0
-            pair = [0, 0]
-            for q in queries:
-                got = _ablation_rank(base[q.id], by_id, float(w), ch, as_of)
-                moved += got != base[q.id]
-                gold = set(q.gold_ids)
-                rr_by_cell[(ch, float(w))][q.id] = reciprocal_rank(got, gold)
-                r5_by_cell[(ch, float(w))][q.id] = recall_at_k(got, gold, 5)
-                per.setdefault(q.query_class, []).append(
-                    (
-                        recall_at_k(got, gold, 5),
-                        reciprocal_rank(got, gold),
-                        recall_at_k(got, gold, 1),
+        for g in gammas:
+            for w in affect_weights:
+                k = (ch, float(g), float(w))
+                per: dict[str, list] = {}
+                rr_by_cell[k], r5_by_cell[k] = {}, {}
+                moved = 0
+                pair = [0, 0]
+                for q in queries:
+                    got = _ablation_rank(base[q.id], by_id, float(w), ch, as_of, float(g))
+                    moved += got != base[q.id]
+                    gold = set(q.gold_ids)
+                    rr_by_cell[k][q.id] = reciprocal_rank(got, gold)
+                    r5_by_cell[k][q.id] = recall_at_k(got, gold, 5)
+                    per.setdefault(q.query_class, []).append(
+                        (
+                            recall_at_k(got, gold, 5),
+                            reciprocal_rank(got, gold),
+                            recall_at_k(got, gold, 1),
+                        )
                     )
+                    if q.query_class == "affect" and hi in got and lo in got:
+                        pair[1] += 1
+                        pair[0] += got.index(hi) < got.index(lo)
+                by_class = {
+                    c: {
+                        "recall@5": mean(r for r, _, _ in v),
+                        "mrr": mean(m for _, m, _ in v),
+                        "recall@1": mean(o for _, _, o in v),
+                        "queries": len(v),
+                    }
+                    for c, v in sorted(per.items())
+                }
+                allv = [x for v in per.values() for x in v]
+                cells.append(
+                    {
+                        "affect_weight": float(w),
+                        "gamma": float(g),
+                        "channel": ch,
+                        "overall": {
+                            "recall@5": mean(r[0] for r in allv),
+                            "mrr": mean(r[1] for r in allv),
+                            "recall@1": mean(r[2] for r in allv),
+                            "queries": len(allv),
+                        },
+                        "by_class": by_class,
+                        "reordered": moved,
+                        "hi_above_lo": f"{pair[0]}/{pair[1]}",
+                    }
                 )
-                if q.query_class == "affect" and hi in got and lo in got:
-                    pair[1] += 1
-                    pair[0] += got.index(hi) < got.index(lo)
-            by_class = {
-                c: {
-                    "recall@5": mean(r for r, _, _ in v),
-                    "mrr": mean(m for _, m, _ in v),
-                    "recall@1": mean(o for _, _, o in v),
-                    "queries": len(v),
-                }
-                for c, v in sorted(per.items())
-            }
-            allv = [x for v in per.values() for x in v]
-            cells.append(
-                {
-                    "affect_weight": float(w),
-                    "channel": ch,
-                    "overall": {
-                        "recall@5": mean(r[0] for r in allv),
-                        "mrr": mean(r[1] for r in allv),
-                        "recall@1": mean(r[2] for r in allv),
-                        "queries": len(allv),
-                    },
-                    "by_class": by_class,
-                    "reordered": moved,
-                    "hi_above_lo": f"{pair[0]}/{pair[1]}",
-                }
-            )
     qclass = {q.id: q.query_class for q in queries}
-    for cell in cells:
-        ref = rr_by_cell.get((cell["channel"], 0.0))
-        if ref is None or cell["affect_weight"] == 0.0:
-            continue
-        key = (cell["channel"], cell["affect_weight"])
-        cur, r5, r5ref = rr_by_cell[key], r5_by_cell[key], r5_by_cell[(cell["channel"], 0.0)]
-        cell["vs_w0"] = {
+    classes = sorted(set(qclass.values()))
+
+    def _vs(cell: dict, ref_key: tuple[str, float, float]) -> dict:
+        key = (cell["channel"], cell["gamma"], cell["affect_weight"])
+        cur, r5 = rr_by_cell[key], r5_by_cell[key]
+        ref, r5ref = rr_by_cell[ref_key], r5_by_cell[ref_key]
+        return {
             c: paired_delta(
                 [cur[i] - ref[i] for i in sorted(cur) if qclass[i] == c],
                 [r5[i] - r5ref[i] for i in sorted(cur) if qclass[i] == c],
             )
-            for c in sorted(set(qclass.values()))
+            for c in classes
         }
+
+    for cell in cells:
+        ch, g, w = cell["channel"], cell["gamma"], cell["affect_weight"]
+        if w != 0.0 and (ch, g, 0.0) in rr_by_cell:
+            cell["vs_w0"] = _vs(cell, (ch, g, 0.0))
+        # Same channel and weight, default gamma: does a larger gamma earn its keep?
+        dg = float(decay.RERANK_GAMMA)
+        if g != dg and (ch, dg, w) in rr_by_cell:
+            cell["vs_gamma_default"] = _vs(cell, (ch, dg, w))
     return {
         "strategy": strategy,
         "fixture": fixture,
         "as_of": ABLATION_AS_OF,
         "affect_weights": [float(w) for w in affect_weights],
+        "gammas": [float(g) for g in gammas],
         "channels": list(channels),
         "cells": cells,
     }
@@ -1372,8 +1391,10 @@ def _print_ablation(res: dict) -> None:
     print(
         "\nmoved = queries whose top-10 order changed; hi>lo = high-intensity dream memory above the low one.\n"
     )
-    if res.get("fixture") == "affect-v2":
+    if res.get("fixture") in ("affect-v2", "affect-v3"):
         _print_class_table(res)
+    if len(res.get("gammas", [])) > 1:
+        _print_gamma_verdict(res)
 
 
 def _print_class_table(res: dict) -> None:
@@ -1381,11 +1402,11 @@ def _print_class_table(res: dict) -> None:
     print(
         "per class MRR (R@1 in parens); d = MRR delta vs weight 0 same channel, * = beats noise (CI above 0, d >= 0.05, wins > losses)\n"
     )
-    h = f"{'channel':<16}{'w':>5}" + "".join(f"{c:>20}" for c in classes)
+    h = f"{'channel':<16}{'gam':>5}{'w':>5}" + "".join(f"{c:>20}" for c in classes)
     print(h)
     print("-" * len(h))
     for cell in res["cells"]:
-        row = f"{cell['channel']:<16}{cell['affect_weight']:>5.2f}"
+        row = f"{cell['channel']:<16}{cell.get('gamma', decay.RERANK_GAMMA):>5.2f}{cell['affect_weight']:>5.2f}"
         for c in classes:
             b = cell["by_class"][c]
             d = cell.get("vs_w0", {}).get(c)
@@ -1394,6 +1415,59 @@ def _print_class_table(res: dict) -> None:
                 tag = f" {d['d_mrr']:+.2f}{'*' if d['beats_noise'] else ''}"
             row += f"{b['mrr']:>9.2f}({b['recall@1']:.2f}){tag:>8}"
         print(row)
+    print()
+
+
+#: Classes where a larger gamma is supposed to help, and the guards it must not hurt.
+GAMMA_GAIN_CLASSES = ("felt_answerable", "reinforce")
+GAMMA_GUARD_CLASSES = ("factual_guard",)
+
+
+def gamma_verdict(res: dict) -> list[dict]:
+    """For every (channel, gamma, weight) cell, does gamma beat the default without harm?
+
+    A cell ``wins`` when at least one gain class beats the noise bar against the
+    default gamma at the same channel and weight AND no guard class loses any MRR
+    (``d_mrr < 0`` on factual_guard counts as harm: a guard is gated at 1.0, so there is
+    nothing to spend). The weight-0 rows are the product-relevant ones: the product has
+    no affect weight, only gamma.
+    """
+    out = []
+    for cell in res["cells"]:
+        vs = cell.get("vs_gamma_default")
+        if not vs:
+            continue
+        gains = [c for c in GAMMA_GAIN_CLASSES if c in vs and vs[c]["beats_noise"]]
+        harmed = [c for c in GAMMA_GUARD_CLASSES if c in vs and vs[c]["d_mrr"] < -1e-12]
+        out.append(
+            {
+                "channel": cell["channel"],
+                "gamma": cell["gamma"],
+                "affect_weight": cell["affect_weight"],
+                "gains": gains,
+                "harmed_guards": harmed,
+                "wins": bool(gains) and not harmed,
+            }
+        )
+    return out
+
+
+def _print_gamma_verdict(res: dict) -> None:
+    rows = gamma_verdict(res)
+    print(
+        "gamma vs default (same channel and weight): gain = beats noise on "
+        + ", ".join(GAMMA_GAIN_CLASSES)
+    )
+    print("harm = factual_guard MRR drops at all\n")
+    h = f"{'channel':<16}{'gam':>5}{'w':>5}  {'gains':<26}{'harmed guards':<16}{'wins':>5}"
+    print(h)
+    print("-" * len(h))
+    for r in rows:
+        print(
+            f"{r['channel']:<16}{r['gamma']:>5.2f}{r['affect_weight']:>5.2f}  "
+            f"{','.join(r['gains']) or '-':<26}{','.join(r['harmed_guards']) or '-':<16}"
+            f"{'YES' if r['wins'] else 'no':>5}"
+        )
     print()
 
 
@@ -1415,13 +1489,17 @@ def main() -> None:
     parser.add_argument(
         "--fixture",
         default="v1",
-        choices=["v1", "affect-v2"],
-        help="ablation fixture: corpus-v1 or the synthetic affect-v2 (SKMEM-P1-13)",
+        choices=["v1", "affect-v2", "affect-v3"],
+        help="ablation fixture: corpus-v1, synthetic affect-v2 (P1-13) or affect-v3 (P1-17)",
+    )
+    parser.add_argument(
+        "--gamma",
+        help="comma list of RERANK_GAMMA values to sweep, e.g. 0.15,0.3,0.5,1.0 (runs the ablation)",
     )
     parser.add_argument("--ablation", action="store_true", help="full weight x channel grid")
     parser.add_argument("--strategy", default="interleave_rerank", choices=list(STRATEGIES))
     args = parser.parse_args()
-    if args.ablation or args.affect_weight or args.decay_channel:
+    if args.ablation or args.affect_weight or args.decay_channel or args.gamma:
         weights = _floats(args.affect_weight) if args.affect_weight else None
         chans = [c.strip() for c in args.decay_channel.split(",")] if args.decay_channel else None
         if args.ablation:
@@ -1431,6 +1509,7 @@ def main() -> None:
             weights if weights is not None else [0.0],
             chans if chans is not None else ["none"],
             fixture=args.fixture,
+            gammas=_floats(args.gamma) if args.gamma else (decay.RERANK_GAMMA,),
         )
         if args.json:
             print(json.dumps(res, indent=2, sort_keys=True))
