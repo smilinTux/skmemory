@@ -1346,3 +1346,37 @@ class TestEntityArmAsOf:
         assert ids("2025-01-01T00:00:00+00:00") == set()
         assert ids("2026-06-01T00:00:00+00:00", "search_by_entity_tokens") == {new.id, v1.id}
         assert {r["id"] for r in backend.search_by_entity(word)} == {old.id, new.id, v1.id}
+
+    def test_as_of_mixed_stored_forms_at_the_boundary(self, backend):
+        """Z, +00:00 and +02:00 stored values, exactly on the as_of instant."""
+        word = f"AsOfFmt{uuid.uuid4().hex[:6]}"
+        t = "2026-06-01T00:00:00+00:00"
+        base = "2026-01-01T00:00:00+00:00"
+        keep = {
+            "from_Z": self._idx(backend, word, base, valid_from="2026-06-01T00:00:00Z"),
+            "from_plus2": self._idx(backend, word, base, valid_from="2026-06-01T02:00:00+02:00"),
+            "to_after_plus2": self._idx(
+                backend, word, base, "2026-06-01T03:00:00+02:00", valid_from=base
+            ),
+            "to_after_Z": self._idx(backend, word, base, "2026-06-01T00:00:01Z", valid_from=base),
+        }
+        drop = {
+            "to_eq_Z": self._idx(backend, word, base, "2026-06-01T00:00:00Z", valid_from=base),
+            "to_eq_plus2": self._idx(
+                backend, word, base, "2026-06-01T02:00:00+02:00", valid_from=base
+            ),
+            "to_before_plus2": self._idx(
+                backend, word, base, "2026-06-01T01:00:00+02:00", valid_from=base
+            ),
+            "from_future": self._idx(backend, word, base, valid_from="2026-06-01T00:00:01+00:00"),
+            "from_future_plus2": self._idx(
+                backend, word, base, valid_from="2026-06-01T02:00:01+02:00"
+            ),
+        }
+        for fn in ("search_by_entity", "search_by_entity_tokens"):
+            got = {r["id"] for r in getattr(backend, fn)(word, as_of=t, limit=50)}
+            assert got == {m.id for m in keep.values()}, (fn, got)
+            assert not got & {m.id for m in drop.values()}
+        # the same instant written as +02:00 gives the same answer
+        got = {r["id"] for r in backend.search_by_entity(word, as_of="2026-06-01T02:00:00+02:00")}
+        assert got == {m.id for m in keep.values()}

@@ -220,11 +220,11 @@ def test_graph_arm_receives_as_of_and_rechecks(tmp_path, monkeypatch):
 # ------------------------------------------------------------- SQL / Cypher shape
 
 
-def test_age_filter_clause():
+def test_age_filter_clause_is_a_coarse_prefilter():
     where, params = AGEGraphBackend._memory_filter(None, None, None, None, as_of=MID)
-    assert "coalesce(m.valid_from, m.created_at) <= $as_of" in where
-    assert "m.valid_to IS NULL OR m.valid_to > $as_of" in where
-    assert params["as_of"] == MID
+    # date-wide bounds, never an exact lexical compare against the instant text
+    assert "$as_of_hi" in where and "$as_of_lo" in where and MID not in params.values()
+    assert params["as_of_hi"] == "2026-06-03" and params["as_of_lo"] == "2026-05-31"
     assert AGEGraphBackend._memory_filter(None, None, None, None) == ("", {})
 
 
@@ -390,7 +390,7 @@ _DSN = os.environ.get("SKMEMORY_PG_DSN")
 @pytest.mark.skipif(
     not _DSN or importlib.util.find_spec("psycopg") is None, reason="no throwaway pg"
 )
-def test_pg_as_of_executes_on_real_postgres(monkeypatch):
+def test_pg_as_of_executes_on_real_postgres(monkeypatch, caplog):
     from skmemory.backends.pgvector_backend import PGVectorBackend
 
     be = PGVectorBackend(dsn=_DSN, agent="lumina")
@@ -434,6 +434,8 @@ def test_pg_as_of_executes_on_real_postgres(monkeypatch):
             assert {
                 m.id for m in be.search_lexical("p303 gateway", as_of="2026-07-01T00:00:00+00:00")
             } <= {"p303-new"}
+            assert be._has_bm25_index()
+            assert "BM25 lexical search failed" not in caplog.text  # BM25 kept, not ts_rank
     finally:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM memories WHERE agent='lumina' AND id LIKE 'p303-%'")
@@ -561,3 +563,67 @@ def test_temporal_arm_keeps_row_on_the_window_bound(tmp_path, monkeypatch):
     s = _store(tmp_path, _mem("edge", "unrelated words", "2026-10-29T12:00:00+00:00"))
     got = s.search_fused("what changed in the last 3 days")
     assert got and [m.id for m in got] == ["edge"]
+
+
+# ------------------------------------------------------------- review fixes
+
+
+def test_history_masks_hidden_successor_edit(tmp_path):
+    s = _hist_store(tmp_path)  # a (public, closed by hidden b), b hidden, c public
+    ha = s.history("a", reader="@public")
+    assert len(ha) == 1
+    assert (
+        ha[0]["valid_to"] is None and ha[0]["current"] is True and ha[0]["superseded_by"] is None
+    )
+    # the owner still sees the real window
+    owner = s.history("a")[0]
+    assert owner["valid_to"] == MID and owner["current"] is False
+    # a closed member whose successor IS visible keeps its window for the reader
+    s2 = _store(
+        tmp_path / "v",
+        _mem("x", "v1", OLD, valid_to=MID, context_tag="@public"),
+        _mem("y", "v2", MID, supersedes_id="x", context_tag="@public"),
+    )
+    hx = s2.history("x", reader="@public")
+    assert [r["id"] for r in hx] == ["x", "y"] and hx[0]["valid_to"] == MID
+
+
+def test_memory_search_does_not_name_hidden_superseder(tmp_path, monkeypatch):
+    s = _store(
+        tmp_path,
+        _mem("pubold", "gateway port 1", OLD, valid_to=MID, context_tag="@public"),
+        _mem("privnew", "gateway port 2", MID, supersedes_id="pubold", context_tag="@chef-only"),
+    )
+    s.primary.save(
+        _mem(
+            "pubold",
+            "gateway port 1",
+            OLD,
+            valid_to=MID,
+            context_tag="@public",
+            metadata={"superseded_by": {"id": "privnew"}},
+        )
+    )
+    out = json.loads(
+        _call(s, monkeypatch, "memory_search", query="gateway port", reader="@public")
+    )
+    assert [m["id"] for m in out] == ["pubold"]
+    assert out[0]["superseded_by"] is None and out[0]["superseded"] is False
+    owner = json.loads(_call(s, monkeypatch, "memory_search", query="gateway port"))
+    assert {m["id"]: m["superseded_by"] for m in owner}["pubold"] == "privnew"
+
+
+def test_decay_cannot_put_a_closed_fact_above_its_head(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", "on")
+    s = _store(
+        tmp_path,
+        _mem("old", "gateway port gateway port", OLD, valid_to=MID),
+        _mem("new", "gateway port moved", MID, supersedes_id="old"),
+    )
+    # a decay channel that floats the OLD record to the top
+    monkeypatch.setattr(
+        MemoryStore,
+        "_apply_decay",
+        lambda self, rs: sorted(rs, key=lambda m: m.id != "old"),
+    )
+    assert [m.id for m in s.search("gateway port")] == ["new", "old"]

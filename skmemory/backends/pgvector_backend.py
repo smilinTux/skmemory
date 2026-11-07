@@ -43,6 +43,7 @@ from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_pg_write_allowed
 from ..query_sanitizer import sanitize_query
 from ..stub_markers import is_stub_payload
+from ..validity import valid_at
 from .base import BaseBackend
 from .sqlite_backend import CONTENT_PREVIEW_LENGTH
 
@@ -921,11 +922,13 @@ class PGVectorBackend(BaseBackend):
             clauses.append("source=%s")
             params.append(source)
         conn = self._connection()
-        if as_of:
-            sql_as_of, binds = self._as_of_clause(conn, as_of)
-            clauses.append(sql_as_of)
-            params.extend(binds)
         where = " AND ".join(clauses)
+        base_params = list(params)
+
+        # ParadeDB rejects the validity predicate next to `@@@` ("Unsupported
+        # query shape") and the whole arm fell back to ts_rank. So on the BM25
+        # path as_of is NOT in the SQL: overfetch, then keep rows valid at as_of.
+        fetch = limit * 4 if as_of else limit
 
         if self._has_bm25_index():
             try:
@@ -935,9 +938,12 @@ class PGVectorBackend(BaseBackend):
                         f"AND id @@@ paradedb.boolean(should => ARRAY["
                         f"  paradedb.match('content', %s), paradedb.match('title', %s)"
                         f"]) ORDER BY paradedb.score(id) DESC LIMIT %s",
-                        params + [query, query, limit],
+                        params + [query, query, fetch],
                     )
-                    return self._rows_to_memories(cur.fetchall())
+                    rows = self._rows_to_memories(cur.fetchall())
+                    if as_of:
+                        rows = [m for m in rows if valid_at(m, as_of)]
+                    return rows[:limit]
             except Exception as exc:
                 # Surface it: a BM25 arm that silently degrades to ts_rank is
                 # indistinguishable from one that worked, which is the defect
@@ -945,6 +951,12 @@ class PGVectorBackend(BaseBackend):
                 logger.warning("ParadeDB BM25 lexical search failed, using ts_rank: %s", exc)
                 conn.rollback()
 
+        # ts_rank path: the validity predicate is plain SQL here, keep it in the WHERE.
+        params = base_params
+        if as_of:
+            sql_as_of, binds = self._as_of_clause(conn, as_of)
+            where += " AND " + sql_as_of
+            params = params + binds
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT memory_json FROM memories WHERE {where} "

@@ -159,6 +159,13 @@ def _passes_filters(mem, layer, tags, context_tag, source, as_of=None) -> bool:
 MAX_CHAIN = 32
 
 
+def _demote_list(memories: list[Memory]) -> list[Memory]:
+    """``_demote_superseded`` over a ranked list. Runs LAST (after decay) so no
+    later reorder can put a closed fact above its current head."""
+    by_id = {m.id: m for m in memories}
+    return [by_id[i] for i in _demote_superseded([m.id for m in memories], by_id)]
+
+
 def _demote_superseded(ids: list[str], found: dict[str, Memory]) -> list[str]:
     """Rank a closed record directly below its open head, never above it.
 
@@ -1189,7 +1196,7 @@ class MemoryStore:
                 as_of=as_of,
             )
             if fused is not None:
-                return self._apply_decay(fused)
+                return _demote_list(self._apply_decay(fused))
 
         # The legacy path cannot push context_tag down, so overfetch and filter.
         fetch = limit * 3 if (context_tag is not None or as_of) else limit
@@ -1211,7 +1218,7 @@ class MemoryStore:
                 if results:
                     if record_access:
                         self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
-                    return self._apply_decay(results)
+                    return _demote_list(self._apply_decay(results))
             except Exception as exc:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
@@ -1234,7 +1241,7 @@ class MemoryStore:
             results = _ctx(self.primary.search_text(query, limit=fetch))
         if record_access:
             self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
-        return self._apply_decay(results)
+        return _demote_list(self._apply_decay(results))
 
     def _apply_decay(self, results: list[Memory]) -> list[Memory]:
         """Bend a relevance-ordered result list by the SKMEMORY_DECAY channel.
@@ -2191,6 +2198,7 @@ class MemoryStore:
             cur = prev
         cur = start
         ids_superseding = getattr(self.primary, "ids_superseding", None)
+        hidden_next = False
         for _ in range(MAX_CHAIN):
             nxt_ids = [(cur.metadata.get("superseded_by") or {}).get("id")]
             if callable(ids_superseding):
@@ -2203,12 +2211,19 @@ class MemoryStore:
                 ),
                 None,
             )
-            if nxt is None or not visible(nxt):
+            if nxt is None:
+                break
+            if not visible(nxt):
+                hidden_next = True
                 break
             chain.append(nxt)
             seen.add(nxt.id)
             cur = nxt
         keep = {m.id for m in chain}
+        # The last visible member was closed by a record this reader cannot see.
+        # Show it as it would look with no hidden edit (open), so its valid_to
+        # and `current` do not reveal that a hidden successor exists.
+        masked = chain[-1].id if hidden_next else None
         return [
             {
                 "id": m.id,
@@ -2216,14 +2231,14 @@ class MemoryStore:
                 "layer": m.layer.value,
                 "created_at": m.created_at,
                 "valid_from": m.valid_from,
-                "valid_to": m.valid_to,
+                "valid_to": None if m.id == masked else m.valid_to,
                 "supersedes_id": m.supersedes_id if m.supersedes_id in keep else None,
                 "superseded_by": (
                     sid
                     if (sid := (m.metadata.get("superseded_by") or {}).get("id")) in keep
                     else (chain[i + 1].id if i + 1 < len(chain) else None)
                 ),
-                "current": m.valid_to is None,
+                "current": m.valid_to is None or m.id == masked,
                 "requested": m.id == memory_id,
             }
             for i, m in enumerate(chain)

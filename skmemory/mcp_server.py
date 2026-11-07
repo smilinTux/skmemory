@@ -768,7 +768,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 reader=reader,
                 as_of=arguments.get("as_of") or None,
             )
-            sup = superseded_by_map(memories)
+            reader = arguments.get("reader")
+            # Under a reader, a superseder is named only when the reader may see
+            # it: metadata.superseded_by can point at a hidden record.
+            sup = {
+                k: v
+                for k, v in superseded_by_map(memories).items()
+                if store.reader_can_see(v, reader)
+            }
             return _json_response(
                 [
                     {**_memory_dict(m), "superseded": m.id in sup, "superseded_by": sup.get(m.id)}
