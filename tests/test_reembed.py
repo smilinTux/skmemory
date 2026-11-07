@@ -208,3 +208,29 @@ def test_failed_rows_are_retried_on_resume_not_skipped(tmp_path):
     assert "id05" in conn.embeddings
     assert second["failed"] == 0 and second["failed_ids"] == []
     assert json.loads(state.read_text())["failed_ids"] == []
+
+
+def test_cli_exits_nonzero_when_rows_failed(monkeypatch, capsys):
+    import sys
+    import types
+
+    monkeypatch.setenv("SKMEMORY_PG_DSN", "postgresql://x@127.0.0.1:1/none")
+
+    class _C:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    fake_pg = types.SimpleNamespace(connect=lambda *a, **k: _C())
+    monkeypatch.setitem(sys.modules, "psycopg", fake_pg)
+    monkeypatch.setitem(
+        sys.modules, "pgvector.psycopg", types.SimpleNamespace(register_vector=lambda c: None)
+    )
+    monkeypatch.setitem(sys.modules, "pgvector", types.SimpleNamespace())
+    monkeypatch.setattr(rb, "reembed", lambda *a, **k: {"failed": 2, "failed_ids": ["a", "b"]})
+    assert rb.main(["--agent", "lumina"]) == 1
+    assert "failed" in capsys.readouterr().err
+    monkeypatch.setattr(rb, "reembed", lambda *a, **k: {"failed": 0})
+    assert rb.main(["--agent", "lumina"]) == 0

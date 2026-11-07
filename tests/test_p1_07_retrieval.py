@@ -454,7 +454,9 @@ def test_cli_search_prints_degraded_to_stderr(store, monkeypatch):
 
     monkeypatch.setenv("SKMEMORY_SEARCH_DEADLINE_S", "0.4")
     store.vector = _Hung()
-    res = CliRunner(mix_stderr=False).invoke(cli, ["search", "skgateway routing"], obj={"store": store})
+    res = CliRunner(mix_stderr=False).invoke(
+        cli, ["search", "skgateway routing"], obj={"store": store}
+    )
     assert "degraded: arms timed out" in res.stderr
 
 
@@ -509,3 +511,16 @@ def test_a_hung_arm_does_not_starve_other_searches(store, monkeypatch):
 def test_month_day_question_is_time_intent():
     assert has_time_intent("what did we decide june 5")
     assert not has_time_intent("June 5 notes")
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["October 2025", "the June outage", "week of Oct 5", "mid-October decisions", "end of June"],
+)
+def test_more_real_time_phrasings_fire(query):
+    assert has_time_intent(query)
+
+
+@pytest.mark.parametrize("query", ["June notes", "March outage", "Q3 2026 roadmap"])
+def test_titles_still_do_not_fire(query):
+    assert not has_time_intent(query)

@@ -294,6 +294,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"refused: {exc}", file=sys.stderr)
             return 2
     print(json.dumps(report, sort_keys=True))
+    if report.get("failed"):
+        print(f"{report['failed']} row(s) failed; re-run to retry them", file=sys.stderr)
+        return 1
     return 0
 
 

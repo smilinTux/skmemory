@@ -689,9 +689,33 @@ _DATE_EXPR = (
 )
 _DATE_CUE_RE = re.compile(
     r"\b(?:in|during|since|until|till|before|after|from|on|by|around|throughout|"
-    r"between|as of|back in|early|late|mid)\s+(?:the\s+)?(?:(?:month|year)\s+of\s+)?"
+    r"between|as of|back in|early|late|mid)[\s-]+(?:the\s+)?(?:(?:month|year)\s+of\s+)?"
     r"(?:(?:early|late|mid)[\s-]+)?" + _DATE_EXPR
 )
+# "October 2025": a month directly followed by a year is a period, not a title word.
+_MONTH_YEAR_RE = re.compile(
+    rf"\b(?:{'|'.join(sorted(_MONTHS, key=len, reverse=True))})\s+20\d{{2}}\b"
+)
+# A capitalized, unambiguous month that is not the first word ("the June outage").
+_CAP_MONTH_RE = re.compile(
+    r"(?<!^)(?<![.!?]\s)\b(?:January|February|April|June|July|August|September|October|"
+    r"November|December|Jan|Feb|Apr|Jun|Jul|Aug|Sept|Sep|Oct|Nov|Dec)\b"
+)
+
+
+# "week of Oct 5", "end of June": "of" counts before a MONTH, never before a bare
+# year ("Top 10 of 2026").
+_OF_MONTH_RE = re.compile(
+    rf"\bof\s+(?:the\s+)?(?:{'|'.join(sorted(_MONTHS, key=len, reverse=True))})\b"
+)
+
+
+def _has_date_cue(query: str, text: str) -> bool:
+    if _DATE_CUE_RE.search(text) or _MONTH_YEAR_RE.search(text) or _OF_MONTH_RE.search(text):
+        return True
+    if _QUESTION_RE.search(text) and _MONTH_DAY_RE.search(text):
+        return True
+    return _CAP_MONTH_RE.search(query.strip()) is not None
 
 
 # "what did we decide june 5": no preposition, but a question word plus a month
@@ -763,11 +787,7 @@ def parse_time_window(
     today = now.date()
 
     # Calendar forms need a cue under strict; relative phrases never do.
-    dated_ok = (
-        not strict
-        or _DATE_CUE_RE.search(text) is not None
-        or (_QUESTION_RE.search(text) is not None and _MONTH_DAY_RE.search(text) is not None)
-    )
+    dated_ok = not strict or _has_date_cue(query, text)
 
     iso_day = _ISO_DATE_RE.search(text) if dated_ok else None
     if iso_day:
