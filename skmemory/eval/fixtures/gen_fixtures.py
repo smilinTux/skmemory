@@ -469,6 +469,8 @@ All content is synthetic (public repo): host names skap*/skwk*, agents marvin/as
 | supersession-v1.json | 4 chains | as_of validity, PROMOTED_FROM / CHUNK_OF must not close parents, write-time conflict verdicts |
 | decay-v1.json | 5 items | expected rank order per decay channel, reinforcement write vectors |
 
+affect-v2 (affect-v2-corpus.jsonl, affect-v2-queries.jsonl) is a separate fixture made by gen_affect_v2.py (run it, do not hand-edit): 144 invented memories and 31 queries over felt_peak, felt_quiet, factual_guard, valence_pair and reinforce, with real intensity spread and real access_count/last_accessed. Used by `fusion_bench --ablation --fixture affect-v2`.
+
 Baselines every retrieval run must report next to the candidate: bm25_only, grep_substring (over the flat files),
 vector_only (hashed offline; real embed when live), full_context (oracle, with token cost), fallback_chain (old production).
 Gate per class (gate_recall_at_5 in each query), never on the aggregate.

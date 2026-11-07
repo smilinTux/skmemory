@@ -1163,7 +1163,7 @@ def _print_report(res: dict) -> None:
 
 #: Same pinned clock as ``class_bench.FIXTURE_NOW`` (asserted equal in tests).
 ABLATION_AS_OF = "2026-11-01T12:00:00+00:00"
-ABLATION_WEIGHTS = (0.0, 0.25, 0.5)
+ABLATION_WEIGHTS = (0.0, 0.25, 0.5, 1.0)
 
 
 def _ablation_rank(
@@ -1177,6 +1177,8 @@ def _ablation_rank(
             channel,
             as_of=as_of,
             created_at=d["created_at"],
+            last_accessed=d.get("last_accessed"),
+            access_count=int(d.get("access_count") or 0),
             intensity=i,
             kind="gist" if d["layer"] == "long-term" else "fact",
         )
@@ -1186,10 +1188,58 @@ def _ablation_rank(
     return [t[2] for t in keyed]
 
 
+#: Smallest mean MRR delta worth calling an effect (practical floor, on top of
+#: the bootstrap interval): 0.05 is half a rank position at rank 2.
+NOISE_MIN_EFFECT = 0.05
+
+
+def paired_delta(
+    diffs: Sequence[float],
+    r5_diffs: Sequence[float] = (),
+    resamples: int = 2000,
+    seed: int = 13,
+    min_effect: float = NOISE_MIN_EFFECT,
+) -> dict:
+    """Mean paired reciprocal-rank delta with a seeded bootstrap 95% interval.
+
+    ``beats_noise`` is true only when the whole interval sits above zero, the mean
+    delta is at least ``min_effect`` MRR, AND wins exceed losses; with a dozen
+    queries per class that is a deliberately strict bar. Ties (zero delta) count as neither win nor loss.
+    """
+    import random
+
+    n = len(diffs)
+    if n == 0:
+        return {
+            "n": 0,
+            "d_mrr": 0.0,
+            "d_recall@5": 0.0,
+            "ci95": [0.0, 0.0],
+            "wins": 0,
+            "losses": 0,
+            "beats_noise": False,
+        }
+    rng = random.Random(seed)
+    means = sorted(sum(diffs[rng.randrange(n)] for _ in range(n)) / n for _ in range(resamples))
+    lo, hi = means[int(0.025 * resamples)], means[int(0.975 * resamples) - 1]
+    wins = sum(1 for d in diffs if d > 1e-12)
+    losses = sum(1 for d in diffs if d < -1e-12)
+    return {
+        "n": n,
+        "d_mrr": sum(diffs) / n,
+        "d_recall@5": (sum(r5_diffs) / len(r5_diffs)) if r5_diffs else 0.0,
+        "ci95": [round(lo, 4), round(hi, 4)],
+        "wins": wins,
+        "losses": losses,
+        "beats_noise": lo > 0.0 and sum(diffs) / n >= min_effect and wins > losses,
+    }
+
+
 def run_ablation(
     strategy: str = "interleave_rerank",
     affect_weights: Sequence[float] = ABLATION_WEIGHTS,
     channels: Sequence[str] = decay.CHANNELS,
+    fixture: str = "v1",
 ) -> dict:
     """Score every (affect_weight, channel) cell per query class and overall.
 
@@ -1198,8 +1248,15 @@ def run_ablation(
     and, for the affect class, ``hi_above_lo``: how often the high-intensity
     dream memory outranks the low-intensity one on the queries that retrieve both.
     """
-    from skmemory.eval.fixtures import load_corpus, load_queries
+    from skmemory.eval import fixtures as fx
 
+    if fixture not in ("v1", "affect-v2"):
+        raise ValueError(f"unknown fixture {fixture!r}; expected 'v1' or 'affect-v2'")
+    load_corpus, load_queries = (
+        (fx.load_corpus, fx.load_queries)
+        if fixture == "v1"
+        else (fx.load_affect_corpus, fx.load_affect_queries)
+    )
     for ch in channels:
         if ch not in decay.CHANNELS:
             raise ValueError(f"unknown decay channel {ch!r}; expected one of {decay.CHANNELS}")
@@ -1219,25 +1276,36 @@ def run_ablation(
                 lo = d["id"]
 
     cells = []
+    rr_by_cell: dict[tuple[str, float], dict[str, float]] = {}
+    r5_by_cell: dict[tuple[str, float], dict[str, float]] = {}
     for ch in channels:
         for w in affect_weights:
             per: dict[str, list] = {}
+            rr_by_cell[(ch, float(w))] = {}
+            r5_by_cell[(ch, float(w))] = {}
             moved = 0
             pair = [0, 0]
             for q in queries:
                 got = _ablation_rank(base[q.id], by_id, float(w), ch, as_of)
                 moved += got != base[q.id]
                 gold = set(q.gold_ids)
+                rr_by_cell[(ch, float(w))][q.id] = reciprocal_rank(got, gold)
+                r5_by_cell[(ch, float(w))][q.id] = recall_at_k(got, gold, 5)
                 per.setdefault(q.query_class, []).append(
-                    (recall_at_k(got, gold, 5), reciprocal_rank(got, gold))
+                    (
+                        recall_at_k(got, gold, 5),
+                        reciprocal_rank(got, gold),
+                        recall_at_k(got, gold, 1),
+                    )
                 )
                 if q.query_class == "affect" and hi in got and lo in got:
                     pair[1] += 1
                     pair[0] += got.index(hi) < got.index(lo)
             by_class = {
                 c: {
-                    "recall@5": mean(r for r, _ in v),
-                    "mrr": mean(m for _, m in v),
+                    "recall@5": mean(r for r, _, _ in v),
+                    "mrr": mean(m for _, m, _ in v),
+                    "recall@1": mean(o for _, _, o in v),
                     "queries": len(v),
                 }
                 for c, v in sorted(per.items())
@@ -1248,8 +1316,9 @@ def run_ablation(
                     "affect_weight": float(w),
                     "channel": ch,
                     "overall": {
-                        "recall@5": mean(r for r, _ in allv),
-                        "mrr": mean(m for _, m in allv),
+                        "recall@5": mean(r[0] for r in allv),
+                        "mrr": mean(r[1] for r in allv),
+                        "recall@1": mean(r[2] for r in allv),
                         "queries": len(allv),
                     },
                     "by_class": by_class,
@@ -1257,8 +1326,23 @@ def run_ablation(
                     "hi_above_lo": f"{pair[0]}/{pair[1]}",
                 }
             )
+    qclass = {q.id: q.query_class for q in queries}
+    for cell in cells:
+        ref = rr_by_cell.get((cell["channel"], 0.0))
+        if ref is None or cell["affect_weight"] == 0.0:
+            continue
+        key = (cell["channel"], cell["affect_weight"])
+        cur, r5, r5ref = rr_by_cell[key], r5_by_cell[key], r5_by_cell[(cell["channel"], 0.0)]
+        cell["vs_w0"] = {
+            c: paired_delta(
+                [cur[i] - ref[i] for i in sorted(cur) if qclass[i] == c],
+                [r5[i] - r5ref[i] for i in sorted(cur) if qclass[i] == c],
+            )
+            for c in sorted(set(qclass.values()))
+        }
     return {
         "strategy": strategy,
+        "fixture": fixture,
         "as_of": ABLATION_AS_OF,
         "affect_weights": [float(w) for w in affect_weights],
         "channels": list(channels),
@@ -1269,7 +1353,7 @@ def run_ablation(
 def _print_ablation(res: dict) -> None:
     print(
         f"\naffect weight x decay channel  |  strategy {res['strategy']}  |  "
-        f"corpus-v1, clock {res['as_of']}\n"
+        f"{res.get('fixture', 'v1')}, clock {res['as_of']}\n"
     )
     h = (
         f"{'channel':<16}{'weight':>7}{'affect R@5':>12}{'affect MRR':>12}"
@@ -1288,6 +1372,29 @@ def _print_ablation(res: dict) -> None:
     print(
         "\nmoved = queries whose top-10 order changed; hi>lo = high-intensity dream memory above the low one.\n"
     )
+    if res.get("fixture") == "affect-v2":
+        _print_class_table(res)
+
+
+def _print_class_table(res: dict) -> None:
+    classes = sorted({c for cell in res["cells"] for c in cell["by_class"]})
+    print(
+        "per class MRR (R@1 in parens); d = MRR delta vs weight 0 same channel, * = beats noise (CI above 0, d >= 0.05, wins > losses)\n"
+    )
+    h = f"{'channel':<16}{'w':>5}" + "".join(f"{c:>20}" for c in classes)
+    print(h)
+    print("-" * len(h))
+    for cell in res["cells"]:
+        row = f"{cell['channel']:<16}{cell['affect_weight']:>5.2f}"
+        for c in classes:
+            b = cell["by_class"][c]
+            d = cell.get("vs_w0", {}).get(c)
+            tag = ""
+            if d:
+                tag = f" {d['d_mrr']:+.2f}{'*' if d['beats_noise'] else ''}"
+            row += f"{b['mrr']:>9.2f}({b['recall@1']:.2f}){tag:>8}"
+        print(row)
+    print()
 
 
 def _floats(raw: str) -> list[float]:
@@ -1305,6 +1412,12 @@ def main() -> None:
         "--decay-channel",
         help=f"comma list of decay channels from {', '.join(decay.CHANNELS)} (runs the ablation)",
     )
+    parser.add_argument(
+        "--fixture",
+        default="v1",
+        choices=["v1", "affect-v2"],
+        help="ablation fixture: corpus-v1 or the synthetic affect-v2 (SKMEM-P1-13)",
+    )
     parser.add_argument("--ablation", action="store_true", help="full weight x channel grid")
     parser.add_argument("--strategy", default="interleave_rerank", choices=list(STRATEGIES))
     args = parser.parse_args()
@@ -1317,6 +1430,7 @@ def main() -> None:
             args.strategy,
             weights if weights is not None else [0.0],
             chans if chans is not None else ["none"],
+            fixture=args.fixture,
         )
         if args.json:
             print(json.dumps(res, indent=2, sort_keys=True))
