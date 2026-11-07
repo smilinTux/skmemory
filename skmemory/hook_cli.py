@@ -12,8 +12,11 @@ Events:
     stop           cheap breadcrumb checkpoint every 5th stop; every stop also feeds
                    the outcome ledger (claude only; SKMEMORY_LEDGER=off or a declared
                    SKMEMORY_READER skips it)
-    user-prompt    standing intentions whose trigger fired on this prompt
-                   (no output when nothing fires; SKMEMORY_HOOKS=off silences it)
+    user-prompt    standing intentions whose trigger fired on this prompt, plus a
+                   query-conditioned memory slice (<= 1200 tokens, only for a prompt
+                   with a noun phrase over 3 words, never under SKMEMORY_READER, total
+                   deadline 1 s; no output when neither applies; SKMEMORY_HOOKS=off
+                   silences it, SKMEMORY_PROMPT_SLICE=off silences the slice)
 
 Output contract per harness:
     claude, codex  context events print {"hookSpecificOutput": {...additionalContext}}
@@ -365,10 +368,28 @@ def _context_event(
 
 
 def _prompt_event(harness: str, payload: dict, out) -> None:
-    """UserPromptSubmit: print standing-intent lines only when an intention fired."""
+    """UserPromptSubmit: standing-intent lines, then the query slice, one injection.
+
+    The slice (SKMEM-W-01) only runs for a qualifying prompt, never under a
+    declared reader, and shares the fast path's 1 s total deadline via
+    SKMEMORY_HOOK_T0; a degraded slice is simply absent.
+    """
     from .intention_inject import prompt_context
 
-    text = prompt_context(payload)
+    parts = [prompt_context(payload)]
+    try:
+        from .hooks import query_slice
+
+        if not query_slice.disabled() and query_slice.qualifies(payload.get("prompt")):
+            from .config import SKMEMORY_HOME
+
+            if SKMEMORY_HOME is not None:
+                parts.append(
+                    query_slice.build_slice(payload.get("prompt"), Path(SKMEMORY_HOME) / "memory")
+                )
+    except Exception:  # noqa: BLE001 - a prompt must never fail
+        pass
+    text = "\n".join(p for p in parts if p)
     if text:
         _emit_context(text, harness, out, hook_event="UserPromptSubmit")
 

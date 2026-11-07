@@ -41,10 +41,16 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .hooks.query_slice import estimate_tokens
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
+# Budgets are tokens (tiktoken-free estimate, hooks.query_slice.estimate_tokens).
+# The char constants below are the legacy spelling of the same defaults
+# (4 chars per token) and still work as ``budget`` / ``budget:`` inputs.
 DEFAULT_BUDGET = 8000
 DEFAULT_COMPACT_BUDGET = 3500
+CHARS_PER_TOKEN = 4
 DEFAULT_DEADLINE_S = 8.0
 # Claude Code (and Codex, which mirrors its hook contract) truncate hook
 # context above 10,000 characters. Stay safely under it.
@@ -168,6 +174,24 @@ def resolve_budget(event: str, flag: int | None, cfg: dict, env: dict | None = N
     except (TypeError, ValueError):
         pass
     return DEFAULT_COMPACT_BUDGET if compact else DEFAULT_BUDGET
+
+
+def resolve_budget_tokens(event: str, flag: int | None, cfg: dict, env: dict | None = None) -> int:
+    """Token budget: flag, SKMEMORY_HOOK_BUDGET_TOKENS, ``budget_tokens:``, else
+    the legacy char budget divided by CHARS_PER_TOKEN."""
+    env = os.environ if env is None else env
+    if flag:
+        return int(flag)
+    raw = env.get("SKMEMORY_HOOK_BUDGET_TOKENS", "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    key = "compact_budget_tokens" if event == "post-compact" else "budget_tokens"
+    try:
+        if cfg.get(key):
+            return int(cfg[key])
+    except (TypeError, ValueError):
+        pass
+    return resolve_budget(event, None, cfg, env) // CHARS_PER_TOKEN
 
 
 # ── Small helpers ────────────────────────────────────────────────────────────
@@ -827,10 +851,16 @@ class BuildResult:
     timed_out: list[str]
     errors: dict[str, str]
     elapsed: float
+    budget_tokens: int = 0
 
     @property
     def chars(self) -> int:
         return len(self.text)
+
+    @property
+    def tokens(self) -> int:
+        """Estimated tokens of the assembled text."""
+        return estimate_tokens(self.text)
 
 
 def _run_collectors(keys, ctx: Ctx, deadline: float) -> tuple[dict, list[str], dict]:
@@ -882,23 +912,27 @@ def _dedupe_across(sections: list[Section]) -> None:
 
 
 def _fit(
-    header: str, footer: str, sections: list[Section], budget: int
+    header: str, footer: str, sections: list[Section], budget_tokens: int
 ) -> tuple[list[Section], list[str]]:
-    """Trim lowest priority sections first until everything fits the budget."""
+    """Trim lowest priority sections first until everything fits the token budget."""
     dropped: list[str] = []
     secs = [s for s in sections if s.lines]
 
     def total() -> int:
-        return len(header) + len(footer) + sum(len(s.render()) + 2 for s in secs)
+        body = "\n\n".join(s.render() for s in secs)
+        return estimate_tokens(header + body + footer)
 
-    while secs and total() > budget:
+    while secs and total() > budget_tokens:
         last = secs[-1]
         if len(last.lines) > last.min_lines:
             last.lines.pop(-1 if not last.lines[-1].startswith(("Source:", "`")) else -2)
             continue
         if len(secs) == 1:
             # Only identity left: hard clip it.
-            room = max(200, budget - len(header) - len(footer) - len(last.title) - 8)
+            room = max(
+                200,
+                budget_tokens * CHARS_PER_TOKEN - len(header) - len(footer) - len(last.title) - 8,
+            )
             last.lines = [_clip("\n".join(last.lines), room)]
             break
         dropped.append(secs.pop().key)
@@ -913,7 +947,14 @@ def build_context(
     sections: list[str] | None = None,
     env: dict | None = None,
     deadline: float | None = None,
+    budget_tokens: int | None = None,
 ) -> BuildResult:
+    """Assemble the session context. THE assembler: hooks, MCP and other repos call this.
+
+    ``budget_tokens`` is the budget (estimated tokens). ``budget`` is the legacy
+    character spelling (4 chars per token). The hard cap for Claude/Codex
+    (9800 chars, their hook limit) still applies on top.
+    """
     t0 = time.monotonic()
     env = dict(os.environ if env is None else env)
     event = "post-compact" if event in ("post-compact", "compact", "resume") else "session-start"
@@ -928,9 +969,13 @@ def build_context(
         return BuildResult(text, info, budget or 0, [], [], [], {}, time.monotonic() - t0)
 
     cfg = load_ritual_config(info.home)
-    eff_budget = resolve_budget(event, budget, cfg, env)
+    eff_tokens = resolve_budget_tokens(
+        event, budget_tokens or ((budget // CHARS_PER_TOKEN) or 1 if budget else None), cfg, env
+    )
+    eff_budget = eff_tokens * CHARS_PER_TOKEN  # char ceiling that mirrors the token budget
     if harness in HARD_CAP:
         eff_budget = min(eff_budget, HARD_CAP[harness])
+        eff_tokens = min(eff_tokens, -(-eff_budget // CHARS_PER_TOKEN))
     wanted = sections or list(EVENT_SECTIONS[event])
     disabled = (
         {k for k, v in (cfg.get("sections") or {}).items() if v is False}
@@ -961,7 +1006,7 @@ def build_context(
     )
     # Reserve room for the header (rendered after fitting; ~300 chars).
     reserve = "x" * 320
-    fitted, dropped = _fit(reserve, footer, secs, eff_budget)
+    fitted, dropped = _fit(reserve, footer, secs, eff_tokens)
     for k in timed_out:
         if k not in dropped:
             dropped.append(f"{k} (timeout)")
@@ -969,7 +1014,7 @@ def build_context(
     header = (
         f"# SK agent context: {info.name} ({label}, {harness})\n"
         f"_skmemory ritual v2, agent via {info.how}, home `{info.home}`. "
-        f"Budget {eff_budget} chars"
+        f"Budget {eff_tokens} tokens"
         + (f"; dropped: {', '.join(dropped)}" if dropped else "")
         + ". This is a summary: pull more with the commands at the bottom._\n\n"
     )
@@ -985,6 +1030,7 @@ def build_context(
         timed_out=timed_out,
         errors=errors,
         elapsed=time.monotonic() - t0,
+        budget_tokens=eff_tokens,
     )
 
 
@@ -994,10 +1040,12 @@ __all__ = [
     "DEFAULT_BUDGET",
     "DEFAULT_COMPACT_BUDGET",
     "build_context",
+    "estimate_tokens",
     "load_ritual_config",
     "norm_title",
     "parse_journal_tail",
     "parse_whisper",
     "resolve_agent",
     "resolve_budget",
+    "resolve_budget_tokens",
 ]
