@@ -3,7 +3,7 @@
 Ports MemPalace's format-detection + parsing (``mempalace/normalize.py``)
 and exchange chunking (``mempalace/convo_miner.py``) into skmemory, wired
 through the two-gate admission pipeline the same way
-``skmemory.importers.notion`` is — NOT MemPalace's raw ChromaDB upsert.
+``skmemory.importers.notion`` is - NOT MemPalace's raw vector-store upsert.
 
 Supported export formats (first non-``None`` parser wins, mirroring
 MemPalace's try-chain):
@@ -17,10 +17,10 @@ MemPalace's try-chain):
 
 Deliberately NOT ported from MemPalace:
 
-* The ``ai_lines[:8]`` truncation in ``_chunk_by_exchange`` — assistant
+* The ``ai_lines[:8]`` truncation in ``_chunk_by_exchange`` - assistant
   turns are kept in full; ``store.snapshot()`` already knows how to
   split/decompose long content.
-* The keyword-frequency ``detect_convo_room`` topic classifier —
+* The keyword-frequency ``detect_convo_room`` topic classifier -
   skmemory already has ``skmemory.extractor`` for keyword-based
   classification; reuse that later if per-exchange topic tagging is
   wanted instead of duplicating a second classifier here.
@@ -59,12 +59,12 @@ Message = tuple[str, str]
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Format parsing — ported from mempalace/normalize.py
+# Format parsing - ported from mempalace/normalize.py
 # ─────────────────────────────────────────────────────────────────────────
 
 
 def _extract_content(content: Any) -> str:
-    """Pull text from content — handles str, list of blocks, or dict."""
+    """Pull text from content - handles str, list of blocks, or dict."""
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
@@ -111,7 +111,7 @@ def _try_codex_jsonl(content: str) -> list[Message] | None:
 
     Uses only ``event_msg`` entries (user_message / agent_message), which
     represent the canonical conversation turns. ``response_item`` entries
-    are skipped — they include synthetic context injections and duplicate
+    are skipped - they include synthetic context injections and duplicate
     the real messages.
     """
     lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
@@ -274,7 +274,7 @@ def _try_slack_json(data: Any) -> list[Message] | None:
 
 # JSONL-shaped formats are tried against raw text (they don't parse as a
 # single JSON document). JSON-shaped formats are tried against the parsed
-# object. Order matches MemPalace's try-chain — first non-None wins.
+# object. Order matches MemPalace's try-chain - first non-None wins.
 _JSONL_PARSERS: list[tuple[str, Callable[[str], list[Message] | None]]] = [
     ("claude-code", _try_claude_code_jsonl),
     ("codex", _try_codex_jsonl),
@@ -328,7 +328,7 @@ def detect_format(path: Path | str) -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Chunking — ported from mempalace/convo_miner.py's _chunk_by_exchange
+# Chunking - ported from mempalace/convo_miner.py's _chunk_by_exchange
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -341,7 +341,7 @@ def chunk_exchanges(messages: list[Message]) -> list[dict[str, Any]]:
     * Operates directly on the structured ``(role, text)`` list produced
       by the parsers above, instead of round-tripping through a
       ``> user\\nassistant`` marker-text intermediate.
-    * Keeps the full assistant reply — no ``ai_lines[:8]`` truncation.
+    * Keeps the full assistant reply - no ``ai_lines[:8]`` truncation.
 
     A leading run of assistant-only messages (no preceding user turn)
     is still captured as its own chunk so no content is silently dropped.
@@ -381,7 +381,7 @@ def chunk_exchanges(messages: list[Message]) -> list[dict[str, Any]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Row building + admission-gate import — mirrors skmemory.importers.notion
+# Row building + admission-gate import - mirrors skmemory.importers.notion
 # ─────────────────────────────────────────────────────────────────────────
 
 
@@ -404,7 +404,7 @@ def iter_rows(source_path: Path | str) -> Iterator[dict[str, Any]]:
         idx = chunk["chunk_index"]
         yield {
             "row_id": f"{p.name}#{idx}",
-            "title": f"{p.stem} — exchange {idx}",
+            "title": f"{p.stem} - exchange {idx}",
             "content": chunk["content"],
             "source": SOURCE_TYPE,
             "tags": ["convo-import", f"convo-format:{fmt}"],
@@ -501,7 +501,7 @@ def import_conversation(
 
         if rerun.needs_review:
             queued_for_review += 1
-            refused += 1  # blocked write — stays at prior refuse state
+            refused += 1  # blocked write - stays at prior refuse state
             if agent_home is not None:
                 enqueue_review(
                     agent_home,

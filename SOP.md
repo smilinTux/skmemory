@@ -1,7 +1,7 @@
 # SKMemory - Standard Operating Procedures
 
 Sovereign, multi-layer, emotionally-aware memory for AI agents. Flat JSON files are
-the **source of truth**; SQLite is the working index; ChromaDB (local default) and
+the **source of truth**; SQLite is the working index; pgvector (skmem-pg) and
 pgvector/skmem-pg provide vector recall. Called by SKCapstone agents (Claude Code,
 Hermes) over the CLI, the Python API, and the stdio MCP server.
 
@@ -65,7 +65,6 @@ flowchart TD
     end
 
     subgraph L1["Level 1 - Vector"]
-        Chroma["SKChromaBackend\nlocal default · mxbai 1024-dim"]
         PG["pgvector backend\nskmem-pg · docs+memories · BM25+HNSW"]
         Qdrant["SKVectorBackend\nremote shared collections"]
     end
@@ -78,7 +77,6 @@ flowchart TD
     Flat -->|rebuildable index| SQLite
     Store --> SQLite
     Store --> Vaulted
-    Store --> Chroma
     Store --> PG
     Store --> Qdrant
     Store --> Graph
@@ -117,7 +115,7 @@ Community cannot serve `pg_search` reads in recovery, prb-6f069c5e).
 | `skmemory/mcp_server.py` | The `skmemory-mcp` console script (`skmemory.mcp_server:main`). The stdio MCP surface every agent runtime consumes. |
 | `skmemory/store.py` | `MemoryStore`, the facade every caller funnels through. The pre-write hook chain, layer promotion and backend fan-out all land here. |
 | `skmemory/config.py` + `skmemory/agents.py` | Agent resolution (`SKAGENT` → `SKCAPSTONE_AGENT` → `SKMEMORY_AGENT`) and the per-agent `config/skmemory.yaml` this SOP's §6 paths come from. |
-| `skmemory/backends/` | One module per persistence tier (`pgvector_backend.py`, `age_backend.py`, chroma, SQLite, vaulted). Where a DSN or embed default drifts, it drifts here. |
+| `skmemory/backends/` | One module per persistence tier (`pgvector_backend.py`, `age_backend.py`, SQLite, vaulted). Where a DSN or embed default drifts, it drifts here. |
 
 **Endpoints / paths.**
 - Embed endpoint: Ollama-compatible, `mxbai-embed-large`, default
@@ -266,7 +264,7 @@ reconciler, not a server.
   an explicitly configured `SK_DEFAULT_AGENT` → the sole installed agent. Multiple
   installed agents with no explicit selection are ambiguous and must fail rather than
   choosing a named identity.
-- Vector backend defaults: ChromaDB local; pgvector when `skmem-pg` is reachable.
+- Vector backend defaults: pgvector when `skmem-pg` is reachable; otherwise the SQLite FTS5 local arm.
 
 **Coding-agent MCP registration.** The shared registrar detects Codex and Pi and writes
 absolute `~/.skenv/bin/skmemory-mcp` commands so stdio startup does not depend on the
@@ -282,7 +280,6 @@ context ritual consume.
 | Per-agent home | `~/.skcapstone/agents/<agent>/` | `SKMEMORY_HOME` root; `agents.py` |
 | Flat-file store (**canonical**) | `<home>/memory/{short-term,mid-term,long-term}/` | JSON, Syncthing-synced |
 | SQLite index (derived) | `<home>/memory/index.db` | rebuildable; `skmemory reindex` |
-| ChromaDB (derived, Level 1 default) | `chroma_persist_dir` in the per-agent YAML | `config.py` |
 | Per-agent config | `~/.skcapstone/agents/<agent>/config/skmemory.yaml` | `config.py`, `agents.py` |
 
 **Postgres (skmem-pg) connection.** The code resolves the DSN from the **`SKMEMORY_PG_DSN`

@@ -1,8 +1,7 @@
-"""Tests for metadata-scoped search in store.py and chroma_backend.py.
+"""Tests for metadata-scoped search in store.py.
 
 These tests verify that tags, layer, and source filters are correctly
-passed through the search() API. They run against the FileBackend (no
-ChromaDB required) to keep tests self-contained.
+passed through the search() API. They run against the FileBackend (no vector store required) to keep tests self-contained.
 """
 
 import pytest

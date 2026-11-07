@@ -6,7 +6,7 @@ Instead of dumping flat transcript summaries, it captures each moment as a "pola
 
 ## Scope
 
-- Flat JSON files are the source of truth; SQLite is a local working index, ChromaDB the default local vector backend (SKVector/Qdrant for shared collections), with graph traversal layers on top.
+- Flat JSON files are the source of truth; SQLite is a local working index, pgvector (skmem-pg) the vector backend (SKVector/Qdrant for shared collections), with graph traversal layers on top.
 - Soul blueprints and a rehydration ritual give a fresh instance a "who was I?" answer before the first user message.
 - The active agent is declared (selectors, else `SK_DEFAULT_AGENT`, else a sole installed agent; never guessed), and every per-agent path resolves under `~/.skcapstone/agents/<agent>/`.
 

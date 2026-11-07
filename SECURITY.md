@@ -14,7 +14,7 @@ rules, the crypto posture (honestly), and how to report a vulnerability.
   smilinTux maintainers directly. Do **not** open a public issue for an unpatched
   vulnerability.
 - Include: affected version (`skmemory --version` / `pyproject.toml`), the backend
-  involved (SQLite / vaulted / Chroma / pgvector / graph), and a reproduction.
+  involved (SQLite / vaulted / pgvector / graph), and a reproduction.
 - We aim to acknowledge within a few days and to ship a fix or mitigation before any
   public disclosure.
 

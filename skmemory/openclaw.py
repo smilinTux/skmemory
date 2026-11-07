@@ -54,7 +54,6 @@ class SKMemoryPlugin:
         base_path: str | None = None,
         skvector_url: str | None = None,
         skvector_key: str | None = None,
-        use_chroma: bool = True,
     ) -> None:
         vector = None
 
@@ -69,25 +68,7 @@ class SKMemoryPlugin:
             except Exception as e:
                 logger.warning("openclaw.py pgvector: %s", e)
 
-        # Prefer ChromaDB (local, embedded) by default
-        if vector is None and use_chroma:
-            try:
-                from .agents import get_agent_paths
-                from .backends.chroma_backend import SKChromaBackend
-
-                agent_paths = get_agent_paths()
-                memory_root = agent_paths["base"] / "memory"
-                persist_dir = str(memory_root / "chroma")
-                state_path = memory_root / "chroma-state.json"
-                vector = SKChromaBackend(
-                    persist_dir=persist_dir,
-                    state_path=state_path,
-                )
-            except Exception as e:
-                logger.warning("openclaw.py: %s", e)
-                pass
-
-        # Fall back to Qdrant for shared collections
+        # Qdrant for shared collections
         if vector is None and skvector_url:
             try:
                 from .backends.skvector_backend import SKVectorBackend

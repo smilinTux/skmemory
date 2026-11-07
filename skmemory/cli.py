@@ -193,7 +193,6 @@ def _get_store(
     if no_vector:
         # Flat JSON + SQLite only — skip the 1.8GB SentenceTransformer load.
         # Used by session-end hooks where semantic search isn't needed.
-        chroma_enabled = False
         skvector_enabled = False
         pgvector_enabled = False
         requested = None
@@ -201,9 +200,8 @@ def _get_store(
         # SKMEMORY_VECTOR_BACKEND names a backend explicitly: that backend is
         # used or this call fails with the real reason. No fallback to another
         # store (a different vector store is a different set of answers).
-        # Otherwise only what the config declares is enabled, and ChromaDB is
-        # never a default: it needs an explicit opt-in.
-        pgvector_enabled, chroma_enabled, skvector_enabled, requested = enabled_vector_backends(
+        # Otherwise only what the config declares is enabled.
+        pgvector_enabled, skvector_enabled, requested = enabled_vector_backends(
             cfg, has_skvector_url=bool(final_skvector_url)
         )
         if requested == "skvector" and not final_skvector_url:
@@ -249,41 +247,8 @@ def _get_store(
         except Exception as e:
             _fail("pgvector", e)
 
-    if vector is None and chroma_enabled and (requested in (None, "chroma")):
-        try:
-            from .agents import get_agent_paths
-            from .backends.chroma_backend import SKChromaBackend
-
-            agent_paths = get_agent_paths()
-            persist_dir = (
-                cfg.chroma_persist_dir
-                if cfg and cfg.chroma_persist_dir
-                else str(agent_paths["base"] / "memory" / "chroma")
-            )
-            chroma_collection = (
-                cfg.chroma_collection if cfg and cfg.chroma_collection else "skmemory"
-            )
-            chroma_embedding = (
-                cfg.chroma_embedding_model if cfg and cfg.chroma_embedding_model else None
-            )
-            state_path = agent_paths["base"] / "memory" / "chroma-state.json"
-
-            chroma_kwargs = {
-                "persist_dir": persist_dir,
-                "collection": chroma_collection,
-                "state_path": state_path,
-            }
-            if chroma_embedding:
-                chroma_kwargs["embedding_model"] = chroma_embedding
-
-            vector = SKChromaBackend(**chroma_kwargs)
-        except BackendInitError:
-            raise
-        except Exception as e:
-            _fail("ChromaDB", e)
-
     # Qdrant only when it was asked for (explicitly, via config, or by URL),
-    # never as a fallback for a failed Chroma/pgvector.
+    # never as a fallback for a failed pgvector.
     if vector is None and skvector_enabled and not backend_errors:
         try:
             from .backends.skvector_backend import SKVectorBackend
@@ -1370,20 +1335,16 @@ def importance_backfill(ctx: click.Context, batch: int) -> None:
 
 @cli.command()
 @click.option(
-    "--vector", is_flag=True, help="Also sync flat-file memories into the ChromaDB vector index."
-)
-@click.option(
     "--force",
     is_flag=True,
     help="Skip the safety export of SQLite-only memories before rebuilding (DESTRUCTIVE).",
 )
 @click.pass_context
-def reindex(ctx: click.Context, vector: bool, force: bool) -> None:
+def reindex(ctx: click.Context, force: bool) -> None:
     """Rebuild the SQLite index from JSON files on disk.
 
     Use after manual file edits or migration from an older version.
-    Pass --vector to additionally backfill the ChromaDB vector store from
-    flat files (useful when chroma was added after memories already existed).
+    The vector store is backfilled by ``skmemory sync --vector`` (skmem-pg).
 
     SAFETY: by default, any memories in SQLite without a corresponding flat
     file are exported to disk first so they survive the rebuild. Pass
@@ -1410,36 +1371,6 @@ def reindex(ctx: click.Context, vector: bool, force: bool) -> None:
         click.echo("Reindex only works with SQLite backend.", err=True)
         sys.exit(1)
     click.echo(f"Indexed {count} memories into SQLite.")
-
-    if vector:
-        from .agents import get_agent_paths
-        from .backends.chroma_backend import SKChromaBackend
-
-        paths = get_agent_paths()
-        agent = paths["base"].name
-        persist_dir = str(paths["base"] / "memory" / "chroma")
-        state_path = paths["base"] / "memory" / "chroma-state.json"
-        mem_dir = paths["base"] / "memory"
-
-        try:
-            be = SKChromaBackend(
-                persist_dir=persist_dir,
-                collection="skmemory",
-                state_path=state_path,
-            )
-            if not be._ensure_initialized():
-                click.echo("ChromaDB backend failed to initialize.", err=True)
-                sys.exit(1)
-            stats = be.sync_all(mem_dir, agent)
-            click.echo(
-                f"ChromaDB sync for '{agent}': "
-                f"indexed={stats['indexed']} skipped={stats['skipped']} "
-                f"removed={stats['removed']} errors={stats['errors']}"
-            )
-        except Exception as e:
-            logger.warning("cli.py: %s", e)
-            click.echo(f"ChromaDB sync failed: {e}", err=True)
-            sys.exit(1)
 
 
 @cli.command("export-flat")
@@ -1508,7 +1439,7 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
                        relationships (Tag, Source, RELATED_TO, SUPERSEDES,
                        MENTIONS, CITES, ASSERTS, IN_SECTION) from flat files.
 
-    The retired ChromaDB and FalkorDB sync targets have been removed
+    The retired embedded-vector and FalkorDB sync targets have been removed
     (card 162a19eb): the live stack is pgvector + AGE in the node-local
     skmem-pg container.
 

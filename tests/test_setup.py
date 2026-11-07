@@ -1029,8 +1029,7 @@ class TestGetStoreWiring:
         with mock.patch("skmemory.config.load_config", return_value=None):
             store = _get_store()
 
-        # With no config and no env vars, ChromaDB is now the default vector backend.
-        # It may succeed (SKChromaBackend) or gracefully fail (None); either is acceptable.
+        # With no config and no env vars no vector backend is built.
         assert store.primary is not None
         assert store.graph is None
 

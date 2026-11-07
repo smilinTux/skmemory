@@ -970,42 +970,17 @@ class LazyMemoryLoader:
     def _ensure_backends(self) -> None:
         """Lazy-load vector and graph backends from agent config (once).
 
-        Prefers ChromaDB (local, embedded) over Qdrant. Falls back to
-        Qdrant if ChromaDB is unavailable or not installed.
-        When ChromaDB is primary, Qdrant is loaded separately as
-        _recall_qdrant_backend for shared recall_collections queries.
+        Qdrant (skvector) is the only vector backend loaded here, and only when
+        configured; shared recall_collections use it too.
         """
         if self._backends_loaded:
             return
         self._backends_loaded = True
         config_dir = self.paths["config"]
 
-        # Always load skvector config — needed for recall_collections even when Chroma is primary
         skvector_cfg = _load_skvector_config(config_dir)
-
-        # Try ChromaDB first (local, zero-config)
-        chroma_ok = False
-        try:
-            from .backends.chroma_backend import SKChromaBackend
-
-            persist_dir = str(self.paths["base"] / "memory" / "chroma")
-            state_path = self.paths["base"] / "memory" / "chroma-state.json"
-            self._vector_backend = SKChromaBackend(
-                persist_dir=persist_dir,
-                state_path=state_path,
-            )
-            chroma_ok = True
-        except Exception as e:
-            logger.warning("context_loader.py: %s", e)
-            pass
-
-        if not chroma_ok:
-            # Fall back to Qdrant as primary vector backend
-            if skvector_cfg:
-                self._vector_backend = _build_skvector_backend(skvector_cfg)
-        elif skvector_cfg:
-            # ChromaDB is primary — but load Qdrant separately for recall_collections
-            self._recall_qdrant_backend = _build_skvector_backend(skvector_cfg)
+        if skvector_cfg:
+            self._vector_backend = _build_skvector_backend(skvector_cfg)
 
         # AGE (Postgres-backed, live per-agent knowledge graphs) is opt-in and
         # takes priority when configured; falls back to skgraph (FalkorDB,
@@ -1405,7 +1380,6 @@ class LazyMemoryLoader:
 
             # Also search recall_collections (cross-agent/cross-project indexes)
             # Uses the Qdrant backend (shared collections like hammertime-v3, opus-memory).
-            # When ChromaDB is primary, _recall_qdrant_backend holds the Qdrant client.
             _recall_backend = self._recall_qdrant_backend or (
                 self._vector_backend
                 if self._vector_backend is not None

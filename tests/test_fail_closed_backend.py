@@ -15,7 +15,7 @@ Defect 1 (these tests): ``get_active_agent()`` correctly returned None, but
 ``config.py`` then pointed ``SKMEMORY_HOME`` at ``lumina-template`` and the
 backends opened it as the live store. Separately, the CLI never read
 ``SKMEMORY_VECTOR_BACKEND``: it tried ChromaDB and then Qdrant. Chef's rule:
-ChromaDB must never be used unless explicitly enabled, and an explicitly
+the retired vector store is gone for good, and an explicitly
 requested backend that cannot initialise fails closed with the real reason.
 
 Defect 2: ``memory_health`` returned ``embed_ok/vector_ok/graph_ok: null`` and
@@ -152,13 +152,14 @@ def _store_with(monkeypatch, spy, env, pg_fail=None):
         monkeypatch.setenv(key, val)
     with (
         patch("skmemory.backends.pgvector_backend.PGVectorBackend", make("pgvector", pg_fail)),
-        patch("skmemory.backends.chroma_backend.SKChromaBackend", make("chroma")),
         patch("skmemory.backends.skvector_backend.SKVectorBackend", make("skvector")),
     ):
         return skcli._get_store()
 
 
-def test_explicit_pgvector_failure_fails_closed_and_never_tries_chroma(monkeypatch, spy_backends):
+def test_explicit_pgvector_failure_fails_closed_and_never_tries_another_store(
+    monkeypatch, spy_backends
+):
     with pytest.raises(BackendInitError, match="dsn guard says no"):
         _store_with(
             monkeypatch,
@@ -175,16 +176,60 @@ def test_explicit_pgvector_is_used(monkeypatch, spy_backends):
     assert store.vector is not None
 
 
-def test_no_declaration_never_builds_chroma(monkeypatch, spy_backends):
-    """With nothing declared the old code defaulted to embedded ChromaDB."""
+def test_no_declaration_builds_no_vector_backend(monkeypatch, spy_backends):
+    """With nothing declared the old code defaulted to an embedded vector store."""
     store = _store_with(monkeypatch, spy_backends, {})
-    assert "chroma" not in spy_backends[0]
+    assert spy_backends[0] == []
     assert store.vector is None
 
 
-def test_chroma_only_when_explicitly_requested(monkeypatch, spy_backends):
-    _store_with(monkeypatch, spy_backends, {"SKMEMORY_VECTOR_BACKEND": "chroma"})
-    assert spy_backends[0] == ["chroma"]
+@pytest.mark.parametrize("name", ["chroma", "chromadb", "CHROMA"])
+def test_retired_backend_env_fails_fast_with_message(monkeypatch, spy_backends, name):
+    with pytest.raises(BackendInitError, match="ChromaDB has been retired") as exc:
+        _store_with(monkeypatch, spy_backends, {"SKMEMORY_VECTOR_BACKEND": name})
+    assert "pgvector" in str(exc.value) and "FTS5" in str(exc.value)
+    assert spy_backends[0] == [], "nothing may be built for a retired backend"
+
+
+def test_retired_backend_env_exits_nonzero_on_cli_and_health(tmp_path):
+    out = _run_isolated(
+        tmp_path,
+        """
+        import os, sys
+        os.environ["SKCAPSTONE_AGENT"] = "lumina"
+        os.environ["SKMEMORY_VECTOR_BACKEND"] = "chroma"
+        from click.testing import CliRunner
+        from skmemory.cli import cli
+        for cmd in (["health"], ["list"]):
+            r = CliRunner().invoke(cli, cmd)
+            print(cmd[0], r.exit_code, "retired" in (r.output or ""))
+        """,
+    )
+    assert out.returncode == 0, out.stderr
+    lines = dict((ln.split()[0], ln.split()[1:]) for ln in out.stdout.strip().splitlines())
+    for cmd in ("health", "list"):
+        assert lines[cmd][0] != "0", out.stdout
+    assert lines["health"][1] == "True", "health must carry the message on stdout"
+
+
+def test_stale_yaml_keys_are_ignored_with_one_warning(tmp_path, caplog):
+    import logging
+
+    from skmemory import config as skconfig
+
+    skconfig._retired_warned = False
+    yml = tmp_path / "skmemory.yaml"
+    yml.write_text(
+        "chroma_persist_dir: /x\nchroma_collection: c\nbackends_enabled: [sqlite, chroma, pgvector]\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="skmemory.config"):
+        cfg = skconfig.load_config(yml)
+        skconfig.load_config(yml)
+    assert cfg is not None, "a stale yaml must not fail config loading"
+    assert cfg.backends_enabled == ["sqlite", "pgvector"]
+    assert not hasattr(cfg, "chroma_persist_dir")
+    warnings = [r for r in caplog.records if "retired" in r.getMessage()]
+    assert len(warnings) == 1, "warn once per process, not per load"
 
 
 def test_explicit_none_builds_no_vector(monkeypatch, spy_backends):
@@ -199,14 +244,14 @@ def test_unknown_backend_name_is_an_error_not_a_guess(monkeypatch, spy_backends)
     assert spy_backends[0] == []
 
 
-def test_failed_config_declared_pgvector_does_not_reach_chroma(monkeypatch, spy_backends):
+def test_failed_config_declared_pgvector_does_not_reach_another_store(monkeypatch, spy_backends):
     """backends_enabled=[pgvector] with a failing constructor: no Chroma."""
     from skmemory import config as skconfig
 
     cfg = skconfig.SKMemoryConfig(backends_enabled=["pgvector"])
     with patch("skmemory.config.load_config", return_value=cfg):
         store = _store_with(monkeypatch, spy_backends, {}, pg_fail="boom")
-    assert "chroma" not in spy_backends[0]
+    assert spy_backends[0] == ["pgvector"]
     assert store.vector is None
     # and the failure is carried into health instead of vanishing
     h = store.health()
@@ -221,31 +266,33 @@ def test_mcp_explicit_pgvector_unhealthy_fails_closed(monkeypatch):
     monkeypatch.setenv("SKMEMORY_VECTOR_BACKEND", "pgvector")
     pg = MagicMock()
     pg.health_check.return_value = {"ok": False, "error": "connection refused"}
-    chroma = MagicMock()
     with (
         patch("skmemory.backends.pgvector_backend.PGVectorBackend", return_value=pg),
-        patch("skmemory.backends.chroma_backend.SKChromaBackend", chroma),
         pytest.raises(BackendInitError, match="connection refused"),
     ):
         mcp._get_store()
-    chroma.assert_not_called()
     mcp._store = None
 
 
-def test_mcp_default_pgvector_unhealthy_never_builds_chroma(monkeypatch):
+def test_mcp_retired_backend_env_fails_fast(monkeypatch):
+    import skmemory.mcp_server as mcp
+
+    mcp._store = None
+    monkeypatch.setenv("SKMEMORY_VECTOR_BACKEND", "chroma")
+    with pytest.raises(BackendInitError, match="ChromaDB has been retired"):
+        mcp._get_store()
+    mcp._store = None
+
+
+def test_mcp_default_pgvector_unhealthy_runs_on_sqlite(monkeypatch):
     import skmemory.mcp_server as mcp
 
     mcp._store = None
     monkeypatch.delenv("SKMEMORY_VECTOR_BACKEND", raising=False)
     pg = MagicMock()
     pg.health_check.return_value = {"ok": False, "error": "connection refused"}
-    chroma = MagicMock()
-    with (
-        patch("skmemory.backends.pgvector_backend.PGVectorBackend", return_value=pg),
-        patch("skmemory.backends.chroma_backend.SKChromaBackend", chroma),
-    ):
+    with patch("skmemory.backends.pgvector_backend.PGVectorBackend", return_value=pg):
         store = mcp._get_store()
-    chroma.assert_not_called()
     assert store.health()["vector"]["error"]
     mcp._store = None
 

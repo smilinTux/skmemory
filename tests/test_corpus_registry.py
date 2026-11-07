@@ -110,7 +110,7 @@ def test_build_corpus_registry_report_includes_local_and_shared(monkeypatch, tmp
             backends_enabled=["sqlite", "skvector", "skgraph"],
             skvector_collection="jarvis-memory",
             skgraph_graph_name="jarvis-memory",
-            chroma_collection="jarvis-memory",
+            chroma_collection="jarvis-memory",  # stale key: ignored
         ),
     )
     report = build_corpus_registry_report(agent="jarvis")
