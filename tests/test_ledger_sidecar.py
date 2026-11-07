@@ -121,15 +121,31 @@ def test_unknown_skill_is_served_with_unknown_version(tmp_path, home):
     assert e["version"] == "unknown" and e["event"] == "served"
 
 
-def test_failed_matched_call_is_explicit_harm(tmp_path, home):
+def test_failed_matched_call_is_followed_error_never_harm(tmp_path, home):
     lines = [_skill("t1", "gog-demo"), _bash("b1", "gog calendar"), _result("b1", err=True)]
     _, led, *_ = _record(tmp_path, home, lines)
-    f = _ev(led, "followed")
-    assert (
-        f["effect"] == "harm"
-        and f["source"] == sc.SRC_ERROR
-        and "may not be the skill" in f["missing"]
-    )
+    assert sorted(e["event"] for e in led.events()) == ["followed_error", "served"]
+    f = _ev(led, "followed_error")
+    assert f["effect"] is None and f["source"] == sc.SRC_ERROR and "cause unknown" in f["missing"]
+    s = led.score("gog-demo", f["version"])
+    assert (s.followed, s.net_effect_sign, s.anti_pattern) == (1, "0", False)
+
+
+def test_imported_counters_do_not_feed_floors_or_rates(tmp_path):
+    led = Ledger(tmp_path, host="h")
+    for _ in range(3):
+        led.record("s", "1", "followed", source=sc.SRC_HERMES, session="x")
+        led.record("s", "1", "served", source=sc.SRC_HERMES, session="x")
+    led.record("s", "1", "followed", effect="harm", session="real")
+    sc_ = led.score("s", "1")
+    assert sc_.followed == 1 and not sc_.anti_pattern  # 1 real follow < floor of 3
+    assert (sc_.imported_served, sc_.imported_followed) == (3, 3)
+    assert sc_.follow_rate == 0.0 and sc_.flag is None  # served 0 first-party
+    led.record("t", "1", "served", source=sc.SRC_HERMES, session="x")
+    for _ in range(3):
+        led.record("t", "1", "served", session="real")
+    assert led.score("t", "1").flag == "served-never-followed"
+    assert led.score("t", "1").imported_served == 1
 
 
 def test_failed_unmatched_call_is_not_harm(tmp_path, home):
@@ -289,9 +305,10 @@ def test_hermes_import_shape_idempotent_and_read_only(tmp_path):
     assert sc.import_hermes_usage(u, led)["served"] == 0
     assert len(led.events()) == 11
     s = led.score("daily-sk-review", "patch-7")
-    assert (s.served, s.followed, s.net_effect_sign) == (4, 3, "0")
-    assert led.score("odd", "patch-0").served == 2  # served raised to use
+    assert s.net_effect_sign == "0"
+    assert led.score("odd", "patch-0").imported_served == 2  # served raised to use
     assert all(e["effect"] is None and e["source"] == sc.SRC_HERMES for e in led.events())
+    assert (s.imported_served, s.imported_followed) == (4, 3) and s.served == 0
     assert (u.read_bytes(), u.stat().st_mtime_ns) == before
 
 

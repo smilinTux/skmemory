@@ -19,11 +19,12 @@ declares only generic commands (``ls``, ``cat``, ``python``) never matches.
 So a heuristic follow is stored with ``effect=null`` and ``source`` naming the
 heuristic. ``success`` is NEVER written by the Stop hook: a transcript has no explicit
 positive signal, and a command that did not fail is not evidence the skill helped.
-``harm`` is written only on an explicit signal: a matched call that came back with
-``is_error`` set (the harness's own failure flag). Each event states in ``missing``
-what stays unknown (the failure may not be the skill's fault, a later user correction
-is not attributed because the ledger is append-only and a turn's window is closed
-at Stop, MCP tool calls are not matched).
+Neither ``success`` nor ``harm`` is ever written here. A matched call that came back
+with ``is_error`` set is recorded as ``followed_error`` with effect null: a grep with no
+match or a deliberately failing test would otherwise brand a good skill harmful. Harm and
+success come only from an explicit record by an agent or user. Each event states in
+``missing`` what stays unknown (the cause of a failure, later user corrections, MCP tool
+calls are not matched).
 
 Events carry no transcript text: ids, skill name, version hash, timestamps only.
 Idempotency: every event id is a hash of the session id and the ``tool_use`` id (or the
@@ -297,19 +298,20 @@ def record_transcript(
         if not matched:
             continue
         failed = any(b["error"] for b in matched)
-        eid = _sha("followed", base_id)
+        kind = "followed_error" if failed else "followed"
+        eid = _sha(kind, base_id)
         before = led._known(eid)
         led.record(
             c["skill"],
             version,
-            "followed",
-            effect="harm" if failed else None,
+            kind,
             session=sid,
             at=at,
             event_id=eid,
             source=SRC_ERROR if failed else SRC_HEURISTIC,
             missing=(
-                "failure may not be the skill's fault; no positive signal exists"
+                "matched command failed; cause unknown (grep miss, deliberate failing test, "
+                "the skill); effect left null"
                 if failed
                 else "no explicit success or harm signal; later user reaction not read"
             ),

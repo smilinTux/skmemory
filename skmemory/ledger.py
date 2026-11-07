@@ -18,7 +18,10 @@ Scoring
 -------
 Each ``followed`` event with an effect is weighted by exponential decay
 (half-life 90 days). Harm counts ``HARM_WEIGHT`` times a success.
-``follow_rate`` is raw followed / served. A skill version is an anti-pattern
+``follow_rate`` is raw followed / served, first-party events only: events whose source is in
+``IMPORTED_SOURCES`` (Hermes counters) are reported in ``imported_*`` and excluded from rates,
+the anti-pattern floor and the served-never-followed flag. ``followed_error`` is a follow
+whose matched command failed; it carries no effect (a failure is not evidence of harm). A skill version is an anti-pattern
 when decayed harm exceeds decayed success after at least 3 follows, and is
 flagged ``served-never-followed`` when served >= 3 and followed == 0.
 """
@@ -43,7 +46,9 @@ HALF_LIFE_DAYS = 90.0
 HARM_WEIGHT = 4.0
 MIN_FOLLOWS_ANTI = 3
 MIN_SERVED_NEVER_FOLLOWED = 3
-EVENTS = frozenset({"served", "followed"})
+EVENTS = frozenset({"served", "followed", "followed_error"})
+# Counter imports from another runtime: reported apart, never counted toward floors or rates.
+IMPORTED_SOURCES = frozenset({"hermes-usage-counter"})
 EFFECTS = frozenset({"success", "harm", "neutral"})
 _FIELDS = ("skill", "version", "event", "at", "effect", "session")
 _HOST_RE = re.compile(r"[^A-Za-z0-9_.-]")
@@ -74,6 +79,8 @@ class Score:
     anti_pattern: bool
     flag: str | None = None
     rank: int = 0
+    imported_served: int = 0
+    imported_followed: int = 0
 
     @property
     def key(self) -> str:
@@ -236,12 +243,15 @@ class Ledger:
         now = _utc(as_of) if as_of is not None else datetime.now(timezone.utc)
         agg: dict[tuple[str, str], list[float]] = {}
         for r in self.events():
-            # [served, followed, decayed success, decayed harm]
-            a = agg.setdefault((r["skill"], r["version"]), [0, 0, 0.0, 0.0])
+            # [served, followed, decayed success, decayed harm, imported served, imported followed]
+            a = agg.setdefault((r["skill"], r["version"]), [0, 0, 0.0, 0.0, 0, 0])
+            if r.get("source") in IMPORTED_SOURCES:
+                a[4 if r["event"] == "served" else 5] += 1
+                continue
             if r["event"] == "served":
                 a[0] += 1
                 continue
-            a[1] += 1
+            a[1] += 1  # followed and followed_error both count as a (heuristic) follow
             # Future-dated events (clock skew between hosts) are capped at weight 1.0.
             age = max((now - _utc(r["at"])).total_seconds() / 86400.0, 0.0)
             w = 0.5 ** (age / HALF_LIFE_DAYS)
@@ -250,7 +260,7 @@ class Ledger:
             elif r["effect"] == "harm":
                 a[3] += w
         out = []
-        for (skill, version), (served, followed, succ, harm) in agg.items():
+        for (skill, version), (served, followed, succ, harm, imp_s, imp_f) in agg.items():
             net = succ - HARM_WEIGHT * harm
             out.append(
                 Score(
@@ -258,6 +268,8 @@ class Ledger:
                     version=version,
                     served=int(served),
                     followed=int(followed),
+                    imported_served=int(imp_s),
+                    imported_followed=int(imp_f),
                     follow_rate=(followed / served) if served else 0.0,
                     net=net,
                     net_effect_sign="+" if net > 1e-9 else "-" if net < -1e-9 else "0",

@@ -4053,7 +4053,11 @@ def ledger_import_hermes(usage: str, base: str | None) -> None:
 @click.option("--as-of", default=None, help="ISO timestamp to score at (default: now)")
 @click.option("--base", "base", default=None, help="Memory base dir (default: agent memories)")
 def ledger_top(limit: int, as_of: str | None, base: str | None) -> None:
-    """Rank skill versions by decayed net effect (harm weighted 4x)."""
+    """Rank skill versions by decayed net effect (harm weighted 4x).
+
+    follow and srv are first-party events only; "imp f/s" is imported Hermes counters
+    (followed/served), shown apart and never used for rates or flags.
+    """
     from .ledger import Ledger
 
     if base is None:
@@ -4068,12 +4072,14 @@ def ledger_top(limit: int, as_of: str | None, base: str | None) -> None:
     if not rows:
         click.echo("No ledger events.")
         return
-    click.echo(f"{'#':>2}  {'skill@version':<34} {'net':>7} {'follow':>6} {'srv':>4}  flags")
+    click.echo(
+        f"{'#':>2}  {'skill@version':<34} {'net':>7} {'follow':>6} {'srv':>4} {'imp f/s':>8}  flags"
+    )
     for s in rows:
         flags = ["anti-pattern"] if s.anti_pattern else []
         if s.flag:
             flags.append(s.flag)
         click.echo(
-            f"{s.rank:>2}  {s.key:<34} {s.net:>+7.2f} {s.follow_rate:>6.2f} {s.served:>4}  "
-            + ",".join(flags)
+            f"{s.rank:>2}  {s.key:<34} {s.net:>+7.2f} {s.follow_rate:>6.2f} {s.served:>4} "
+            f"{f'{s.imported_followed}/{s.imported_served}':>8}  " + ",".join(flags)
         )
