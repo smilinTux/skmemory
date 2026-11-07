@@ -3637,3 +3637,96 @@ def ledger_top(limit: int, as_of: str | None, base: str | None) -> None:
             f"{s.rank:>2}  {s.key:<34} {s.net:>+7.2f} {s.follow_rate:>6.2f} {s.served:>4} "
             f"{f'{s.imported_followed}/{s.imported_served}':>8}  " + ",".join(flags)
         )
+
+
+@cli.group("skills")
+def skills_group() -> None:
+    """Read-only index over the skill stores, ranked with ledger scores."""
+
+
+def _skills_options(f):
+    f = click.option(
+        "--store",
+        "stores",
+        multiple=True,
+        help="NAME=PATH override or addition (repeatable). Defaults: hermes, clawd, claude, "
+        "plugins, skcapstone. Missing directories are skipped.",
+    )(f)
+    return click.option(
+        "--base", "base", default=None, help="Memory base dir for the ledger (default: agent)"
+    )(f)
+
+
+def _skills_load(stores: tuple[str, ...], base: str | None):
+    from .ledger import Ledger
+    from .skills_index import build_index
+
+    over: dict[str, str] = {}
+    for item in stores:
+        name, sep, path = item.partition("=")
+        if not sep or not name:
+            raise click.BadParameter(f"expected NAME=PATH, got {item!r}", param_hint="--store")
+        over[name] = path
+    ledger = None
+    if base is None:
+        from .agents import get_agent_paths
+
+        try:
+            base = str(get_agent_paths()["base"] / "memory")
+        except ValueError:
+            base = None
+    if base is not None:
+        ledger = Ledger(base)
+    entries, stats = build_index(over)
+    return entries, stats, ledger
+
+
+@skills_group.command("index")
+@_skills_options
+def skills_index_cmd(stores: tuple[str, ...], base: str | None) -> None:
+    """Count skills per store and report name collisions (read-only)."""
+    from .skills_index import find_collisions
+
+    entries, stats, _ = _skills_load(stores, base)
+    for name, n in stats["stores"].items():
+        click.echo(f"{name}: {n}")
+    if stats["missing"]:
+        click.echo("missing (skipped): " + ",".join(stats["missing"]))
+    col = find_collisions(entries)
+    click.echo(f"total: {len(entries)}  unreadable: {stats['unreadable']}")
+    click.echo(
+        f"collisions: {col['names']} names ({col['entries']} entries) share a name across "
+        "stores with different content"
+    )
+
+
+@skills_group.command("search")
+@click.argument("query")
+@click.option("--limit", default=10, show_default=True)
+@_skills_options
+def skills_search_cmd(query: str, limit: int, stores: tuple[str, ...], base: str | None) -> None:
+    """Rank skills by lexical match times ledger score; anti-patterns last.
+
+    net/follow/srv are first-party ledger events only. "imp f/s" is imported Hermes
+    counters (followed/served), shown apart and never used for ranking or flags.
+    """
+    from .skills_index import rank
+
+    entries, _, ledger = _skills_load(stores, base)
+    hits = rank(query, entries, ledger, limit)
+    if not hits:
+        click.echo("No matching skills.")
+        return
+    click.echo(
+        f"{'name':<30} {'store':<10} {'ver':<16} {'score':>6} {'net':>7} {'imp f/s':>8}  flags"
+    )
+    for h in hits:
+        e = h.entry
+        flags = ["ANTI-PATTERN"] if h.anti_pattern else []
+        if h.flag:
+            flags.append(h.flag)
+        net = f"{h.ledger_net:+.2f}" if h.ledger_net is not None else "-"
+        click.echo(
+            f"{e.name[:30]:<30} {e.store:<10} {e.version:<16} {h.score:>6.2f} {net:>7} "
+            f"{f'{h.imported_followed}/{h.imported_served}':>8}  " + ",".join(flags)
+        )
