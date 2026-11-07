@@ -946,6 +946,11 @@ def _emit_graph_results(results: list[dict]) -> None:
     click.echo(json.dumps(results, indent=2))
 
 
+def _reader_rows(store: MemoryStore, rows: list[dict]) -> list[dict]:
+    """Apply the SKMEMORY_READER ceiling to graph search hits (owner: untouched)."""
+    return rows if resolve_reader(None).unrestricted else store.filter_graph_rows(rows)
+
+
 def _require_graph_backend(store: MemoryStore) -> None:
     if not store.graph:
         click.echo("SKGraph backend not configured.", err=True)
@@ -960,7 +965,7 @@ def graph_entity(ctx: click.Context, query: str, limit: int) -> None:
     """Find memories mentioning an extracted entity."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.filter_graph_rows(store.graph.search_by_entity(query, limit=limit)))
+    _emit_graph_results(_reader_rows(store, store.graph.search_by_entity(query, limit=limit)))
 
 
 @graph.command("citation")
@@ -972,7 +977,7 @@ def graph_citation(ctx: click.Context, query: str, limit: int) -> None:
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
     _emit_graph_results(
-        store.filter_graph_rows(store.graph.search_by_citation(query, limit=limit))
+        _reader_rows(store, store.graph.search_by_citation(query, limit=limit))
     )
 
 
@@ -984,7 +989,7 @@ def graph_claim(ctx: click.Context, query: str, limit: int) -> None:
     """Find memories asserting a decomposed claim."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.filter_graph_rows(store.graph.search_by_claim(query, limit=limit)))
+    _emit_graph_results(_reader_rows(store, store.graph.search_by_claim(query, limit=limit)))
 
 
 @graph.command("section")
@@ -995,7 +1000,7 @@ def graph_section(ctx: click.Context, query: str, limit: int) -> None:
     """Find memories associated with a decomposed section title."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.filter_graph_rows(store.graph.search_by_section(query, limit=limit)))
+    _emit_graph_results(_reader_rows(store, store.graph.search_by_section(query, limit=limit)))
 
 
 @graph.command("around")
@@ -1006,7 +1011,10 @@ def graph_around(ctx: click.Context, memory_id: str, depth: int) -> None:
     """Traverse graph neighbourhood around a memory."""
     store: MemoryStore = ctx.obj["store"]
     _require_graph_backend(store)
-    _emit_graph_results(store.graph_related(memory_id, depth=depth))
+    if resolve_reader(None).unrestricted:
+        _emit_graph_results(store.graph.get_related(memory_id, depth=depth))
+    else:
+        _emit_graph_results(store.graph_related(memory_id, depth=depth))
 
 
 @graph.command("related-claims")
@@ -1030,7 +1038,7 @@ def graph_related_claims(
         results = store.graph.related_claims_by_entity(entity_query, limit=limit)
     else:
         results = store.graph.related_claims_by_citation(citation_query or "", limit=limit)
-    _emit_graph_results(store.filter_graph_rows(results))
+    _emit_graph_results(_reader_rows(store, results)
 
 
 @graph.command("reconcile")
