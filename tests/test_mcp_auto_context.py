@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
 
 import skmemory.mcp_server as mcp_server
 from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
