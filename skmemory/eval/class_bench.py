@@ -221,6 +221,9 @@ def _to_memory(c) -> Memory:
         supersedes_id=c.supersedes_id,
         source_tier=c.source_tier,
         schema_version=c.schema_version,
+        kind=c.kind,
+        outcome=c.outcome,
+        event_at=c.event_at,
         emotional=EmotionalSnapshot(intensity=c.emotional.intensity, valence=c.emotional.valence),
         metadata={"kind": c.kind, "event_at": c.event_at, "source_tier": c.source_tier},
     )
