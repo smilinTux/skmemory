@@ -47,8 +47,8 @@ import sqlite3
 import tempfile
 import time
 from collections.abc import Iterator
-from functools import lru_cache
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -249,10 +249,8 @@ def _term_re(term: str) -> re.Pattern[str]:
 
 
 def _phrase_hit(terms: list[str], low: str) -> bool:
-    for t in terms:
-        if t and t in low and _term_re(t).search(low):  # substring first: cheap reject
-            return True
-    return False
+    # substring first: cheap reject before the regex
+    return any(t and t in low and _term_re(t).search(low) for t in terms)
 
 
 def _scope_ok(want: dict[str, str], have: dict[str, str]) -> bool:

@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -516,7 +517,7 @@ def test_expired_pending_scope_missing_key_skipped(tmp_path):
 
 def _fire_race(base, out):
     got = IntentionStore(base).prefilter("zz", {}, NOW)
-    open(out, "w").write(str(len(got)))
+    Path(out).write_text(str(len(got)))
 
 
 def test_concurrent_prompts_fire_once(tmp_path):
@@ -541,7 +542,7 @@ def test_concurrent_prompts_fire_once(tmp_path):
         fin = IntentionStore(base)
         assert fin.get("a").fires == 1
         assert fin.list()[0].fires == 1
-        assert sum(int(open(o).read()) for o in outs if os.path.exists(o)) <= 1
+        assert sum(int(Path(o).read_text()) for o in outs if os.path.exists(o)) <= 1
 
 
 def test_locked_store_fails_silent_and_fast(tmp_path):
