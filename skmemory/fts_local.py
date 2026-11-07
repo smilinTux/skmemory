@@ -206,6 +206,18 @@ def backfill(
     return {"indexed": done, "unloadable": skipped, "complete": left == 0}
 
 
+#: Validity window over ``m`` (see skmemory.validity). julianday() makes the
+#: comparison format-proof; a null result (unparseable) lower bound falls back
+#: to created_at, then to "include", and an unparseable valid_to stays open.
+def as_of_sql(alias: str = "m") -> str:
+    """SQL predicate for ``as_of`` over ``alias`` (two ``?`` binds, both as_of)."""
+    a = f"{alias}." if alias else ""
+    return (
+        f"COALESCE(julianday({a}valid_from), julianday({a}created_at), 0) <= julianday(?) "
+        f"AND (julianday({a}valid_to) IS NULL OR julianday({a}valid_to) > julianday(?))"
+    )
+
+
 def search_rows(
     conn: sqlite3.Connection,
     query: str,
@@ -215,11 +227,15 @@ def search_rows(
     tags: Sequence[str] | None = None,
     source: str | None = None,
     context_tag: str | Sequence[str] | None = None,
+    as_of: str | None = None,
 ) -> list[sqlite3.Row]:
     """bm25-ranked ``memories`` rows with P0-05 filter semantics pushed into SQL.
 
     ``tags`` is AND. ``context_tag`` is an exact tag or an any-of list, and an
     empty list matches nothing (fails closed). ``None`` means no filter.
+    ``as_of`` (normalized UTC ISO) keeps rows valid at that instant, see
+    :mod:`skmemory.validity`; v1 rows fall back to ``created_at`` and a null,
+    empty or unparseable ``valid_to`` is open.
     """
     match_or = sanitize_match(query)
     if match_or is None or limit <= 0:
@@ -241,6 +257,9 @@ def search_rows(
             return []
         where.append(f"f.context_tag IN ({','.join('?' * len(allowed))})")
         params.extend(allowed)
+    if as_of:
+        where.append(as_of_sql())
+        params.extend([as_of, as_of])
     params.append(limit)
     sql = (
         "SELECT m.* FROM memory_fts "

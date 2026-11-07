@@ -607,6 +607,7 @@ class SKGraphBackend:
         tags: list[str] | None = None,
         context_tag: str | list[str] | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> list[dict]:
         """Find memories mentioning entities extracted during decomposition.
 

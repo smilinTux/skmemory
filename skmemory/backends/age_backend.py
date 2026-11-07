@@ -1437,6 +1437,7 @@ class AGEGraphBackend:
         tags: list[str] | None = None,
         context_tag: str | list[str] | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> tuple[str, dict]:
         """Build a Cypher ``WHERE`` fragment over ``m`` plus its parameters.
 
@@ -1467,6 +1468,15 @@ class AGEGraphBackend:
         if source:
             parts.append("m.source = $source")
             params["source"] = source
+        if as_of:
+            # skmemory.validity: v1 nodes have no valid_from (created_at stands
+            # in) and a null valid_to is open. Strings compare lexically, which
+            # is chronological for the fixed-width UTC form memories stamp.
+            parts.append(
+                "coalesce(m.valid_from, m.created_at) <= $as_of "
+                "AND (m.valid_to IS NULL OR m.valid_to > $as_of)"
+            )
+            params["as_of"] = as_of
         return (" WHERE " + " AND ".join(parts) if parts else ""), params
 
     def search_by_entity(
@@ -1478,6 +1488,7 @@ class AGEGraphBackend:
         tags: list[str] | None = None,
         context_tag: str | list[str] | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> list[dict]:
         """Find memories mentioning an entity matching ``query`` (case-insensitive substring).
 
@@ -1494,7 +1505,7 @@ class AGEGraphBackend:
         if self.graph is None or not query or not query.strip():
             return []
         pattern = "(?i).*" + re.escape(query.strip()) + ".*"
-        where, fparams = self._memory_filter(layer, tags, context_tag, source)
+        where, fparams = self._memory_filter(layer, tags, context_tag, source, as_of)
         cyq = (
             "MATCH (e:Entity) WHERE e.name =~ $pattern "
             f"MATCH (m:Memory)-[:MENTIONS]->(e){where} "
@@ -1584,6 +1595,7 @@ class AGEGraphBackend:
         tags: list[str] | None = None,
         context_tag: str | list[str] | None = None,
         source: str | None = None,
+        as_of: str | None = None,
     ) -> list[dict]:
         """Entity lookup on query TOKENS rather than the whole query string.
 
@@ -1610,6 +1622,8 @@ class AGEGraphBackend:
         if self.graph is None or not query or not query.strip():
             return []
         filters = {"layer": layer, "tags": tags, "context_tag": context_tag, "source": source}
+        if as_of:
+            filters["as_of"] = as_of
 
         # MOST SPECIFIC FIRST. The whole query is tried before any token,
         # because for a query that IS close to an entity name the whole-query
