@@ -2485,6 +2485,81 @@ class MemoryStore:
             for i, m in enumerate(chain)
         ]
 
+    def redact_links(self, memory: Memory, reader: str | None = None) -> Memory:
+        """A copy of ``memory`` with links to memories the reader cannot see removed.
+
+        A reader that may see memory A must not learn the ids of hidden memories
+        A links to. Dropped: hidden ``related_ids`` entries, a hidden ``parent_id``
+        (and the relation that describes it), a hidden ``supersedes_id``, and in
+        ``metadata`` a hidden ``superseded_by`` (removed whole, its other fields
+        would still say a hidden successor exists), ``possible_conflict_with``
+        entries, ``write_triage`` (it names its target),
+        ``decomposition.parent_id``, ``promoted_id``, ``chunk_memory_ids`` and
+        ``observation.evidence_ids``. A dangling link reads like a hidden one.
+        This is the same rule :meth:`history` applies to its chain. The owner gets
+        the memory back untouched (the same object), so owner output is unchanged.
+
+        Call this ONLY at an output boundary (MCP result, CLI print). ``recall``,
+        ``search`` and ``list_memories`` return the real record because internal
+        code (promotion, observation refresh) reads them and writes them back;
+        a redacted copy saved there would erase real links.
+        """
+        if resolve_reader(reader).unrestricted:
+            return memory
+        cache: dict[str, bool] = {}
+
+        def vis(i: Any) -> bool:
+            if not isinstance(i, str) or not i:
+                return False
+            if i not in cache:
+                cache[i] = self.reader_can_see(i, reader)
+            return cache[i]
+
+        meta = dict(memory.metadata or {})
+        parent_id = memory.parent_id if memory.parent_id and vis(memory.parent_id) else None
+        if memory.parent_id and parent_id is None:
+            meta.pop(PARENT_RELATION_KEY, None)
+        sb = meta.get("superseded_by")
+        if sb is not None and not (isinstance(sb, dict) and vis(sb.get("id"))):
+            meta.pop("superseded_by")
+        pcw = meta.get("possible_conflict_with")
+        if isinstance(pcw, list):
+            kept = [i for i in pcw if vis(i)]
+            if kept:
+                meta["possible_conflict_with"] = kept
+            else:
+                meta.pop("possible_conflict_with")
+        pid = meta.get("promoted_id")
+        if pid is not None and not vis(pid):
+            meta.pop("promoted_id")
+        cmi = meta.get("chunk_memory_ids")
+        if isinstance(cmi, list):
+            meta["chunk_memory_ids"] = [i for i in cmi if vis(i)]
+        obs = meta.get("observation")
+        if isinstance(obs, dict) and isinstance(obs.get("evidence_ids"), list):
+            meta["observation"] = {
+                **obs,
+                "evidence_ids": [i for i in obs["evidence_ids"] if vis(i)],
+            }
+        wt = meta.get("write_triage")
+        if isinstance(wt, dict) and not vis(wt.get("target")):
+            meta.pop("write_triage")
+        dec = meta.get("decomposition")
+        if isinstance(dec, dict) and dec.get("parent_id") and not vis(dec.get("parent_id")):
+            meta["decomposition"] = {k: v for k, v in dec.items() if k != "parent_id"}
+        return memory.model_copy(
+            update={
+                "related_ids": [i for i in memory.related_ids if vis(i)],
+                "parent_id": parent_id,
+                "supersedes_id": (
+                    memory.supersedes_id
+                    if memory.supersedes_id and vis(memory.supersedes_id)
+                    else None
+                ),
+                "metadata": meta,
+            }
+        )
+
     def reader_can_see(self, memory_id: str, reader: str | None = None) -> bool:
         """Whether the reader may see this memory. An unknown id is not visible."""
         scope = resolve_reader(reader)
@@ -2628,6 +2703,8 @@ class MemoryStore:
         """
         if not str(memory_id or "").strip():
             raise ValueError("memory_id cannot be empty or null for promote()")
+        if not resolve_reader(None).unrestricted:
+            raise PermissionError("promote is owner-only: a declared reader may not write")
 
         source = self.primary.load(memory_id)
         if source is None:

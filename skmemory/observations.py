@@ -77,6 +77,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from .agents import get_agent_paths
 from .atomic_io import atomic_write_text
+from .audience import resolve_reader
 from .invalid_records import require_memory_id
 from .models import Memory
 from .pytest_guard import assert_write_allowed
@@ -798,6 +799,8 @@ def write_observation(store: Any, observation: Observation, *, key: str = "") ->
     layer with zero intensity and inherits the most restrictive ``context_tag``
     of its evidence.
     """
+    if not resolve_reader(None).unrestricted:
+        return None  # a declared reader never writes
     text = render_observation_text(observation)
     if citation_gate(text, observation.evidence, content_lookup_from_store(store)):
         return None
@@ -838,6 +841,8 @@ def refresh_observation(
     ``MIN_EVIDENCE`` the observation is closed (``valid_to``), never deleted.
     The file is rewritten only when a value changed.
     """
+    if not resolve_reader(None).unrestricted:
+        return "refused"  # a declared reader never writes
     stored = (memory.metadata.get("observation") or {}).get("evidence_ids", [])
     members = _valid_sources(store, [*stored, *extra_ids], key)
     now = datetime.now(timezone.utc).isoformat()
@@ -891,6 +896,8 @@ def sweep_observations(store: Any, *, max_new: int = 5, scan_limit: int = 500) -
     are counted, never raised.
     """
     out = {"written": 0, "refused": 0, "errors": 0, "updated": 0, "closed": 0}
+    if not resolve_reader(None).unrestricted:
+        return out  # a declared reader never writes
     candidates = [
         m
         for m in store.list_memories(limit=scan_limit)

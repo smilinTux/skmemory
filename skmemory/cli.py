@@ -426,6 +426,7 @@ def recall(ctx: click.Context, memory_id: str) -> None:
         click.echo(f"Memory not found: {memory_id}", err=True)
         sys.exit(1)
 
+    memory = store.redact_links(memory)
     click.echo(json.dumps(memory.model_dump(), indent=2, default=str))
 
 
@@ -1087,7 +1088,7 @@ def task_pack_show(ctx: click.Context, memory_id: str) -> None:
     if memory is None:
         click.echo(f"Memory not found: {memory_id}", err=True)
         raise SystemExit(1)
-    click.echo(json.dumps(memory.model_dump(), indent=2))
+    click.echo(json.dumps(store.redact_links(memory).model_dump(), indent=2))
 
 
 @cli.command("session-brief")

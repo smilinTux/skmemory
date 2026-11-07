@@ -130,6 +130,11 @@ def _memory_dict(m: Any) -> dict:
     return m.model_dump() if hasattr(m, "model_dump") else vars(m)
 
 
+def _reader_memory_dict(store: Any, m: Any, reader: str | None) -> dict:
+    """``_memory_dict`` with links to memories the reader cannot see removed."""
+    return _memory_dict(store.redact_links(m, reader))
+
+
 _LAYER_MAP = {
     "short-term": MemoryLayer.SHORT,
     "mid-term": MemoryLayer.MID,
@@ -831,7 +836,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 if store.reader_can_see(v, reader)
             }
             rows = [
-                {**_memory_dict(m), "superseded": m.id in sup, "superseded_by": sup.get(m.id)}
+                {
+                    **_reader_memory_dict(store, m, reader),
+                    "superseded": m.id in sup,
+                    "superseded_by": sup.get(m.id),
+                }
                 for m in memories
             ]
             if arguments.get("detail") == "index":
@@ -876,7 +885,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             memory = store.recall(memory_id, reader=arguments.get("reader"))
             if memory is None:
                 return _error_response(f"Memory not found: {memory_id}")
-            return _json_response(_memory_dict(memory))
+            return _json_response(_reader_memory_dict(store, memory, arguments.get("reader")))
 
         elif name == "memory_expand":
             memory_id = arguments["memory_id"]
@@ -906,7 +915,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             memories = store.list_memories(
                 layer=layer, tags=tags, limit=limit, reader=arguments.get("reader")
             )
-            return _json_response([_memory_dict(m) for m in memories])
+            reader = arguments.get("reader")
+            return _json_response([_reader_memory_dict(store, m, reader) for m in memories])
 
         elif name == "memory_forget":
             memory_id = arguments["memory_id"]
