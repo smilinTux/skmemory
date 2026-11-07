@@ -458,6 +458,15 @@ class MemoryStore:
             decision = write_triage.explicit(self, supersedes_id, reader)
         else:
             decision = write_triage.decide(self, memory, reader=reader) if kind else None
+        if (
+            decision is not None
+            and decision.verdict == "changes"
+            and not write_triage.can_close(self, decision.target)
+        ):
+            logger.warning("supersession downgraded to extends: sealed record cannot be re-sealed")
+            decision = write_triage.WriteDecision(
+                "extends", decision.target, decision.tier, decision.status, True
+            )
         if decision is not None:
             if decision.verdict == "unchanged":
                 return decision.target

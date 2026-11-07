@@ -384,3 +384,116 @@ def test_fixture_conflict_cases():
         quote = verdict_json(case.expected_verdict, old.split()[0], case.new_fact.split()[0])
         got = judge_relation(case.new_fact, old, use_llm=True, llm_call=lambda p, q=quote: q)
         assert got.verdict == case.expected_verdict, case.new_fact
+
+
+# ---- sealed sidecar, conflict-only copies, heal guards -------------------------------
+
+
+def _sidecar(store, mem_id, layer="mid-term"):
+    from skmemory import sealing
+
+    path = Path(store.primary.base_path) / layer / f"{mem_id}.json"
+    Path(sealing.sidecar_path_for(path)).write_text("fake-signature")
+    return path
+
+
+def test_sealed_record_without_reseal_is_not_closed(store, monkeypatch):
+    old = store.snapshot("port alias", OLD, kind="fact", layer=MemoryLayer.MID)
+    path = _sidecar(store, old.id)
+    use_llm(
+        monkeypatch, verdict_json("changes", "points skwk12 at port 2222", "listens on port 22")
+    )
+    new = store.snapshot("skwk12 port", NEW, kind="fact", layer=MemoryLayer.MID)
+    assert new.supersedes_id is None and new.metadata["possible_conflict_with"] == [old.id]
+    assert store.primary.load(old.id).valid_to is None
+    assert disk(store, old.id)["valid_to"] is None and path.exists()
+    # explicit supersedes_id gets the same protection, and heal never closes it either
+    again = store.snapshot("x", "another", supersedes_id=old.id)
+    assert again.supersedes_id is None and store.primary.load(old.id).valid_to is None
+    assert write_triage.heal_supersessions(store)["closed"] == 0
+
+
+def test_sealed_record_closes_when_store_can_resign(store, monkeypatch):
+    from skmemory import sealing
+
+    class Signer:
+        scheme = "classical"
+
+        def sign(self, mem):
+            return b"sig"
+
+    old = store.snapshot("port alias", OLD, kind="fact", layer=MemoryLayer.MID)
+    _sidecar(store, old.id)
+    monkeypatch.setattr(sealing, "get_sealer", lambda cfg=None: Signer())
+    new = store.snapshot("skwk12 port", "other text", kind="fact", supersedes_id=old.id)
+    assert store.primary.load(old.id).valid_to == new.valid_from
+
+
+def test_conflict_only_copy_stays_visible_and_is_counted(store, tmp_path):
+    from skmemory.backends.file_backend import scan_conflict_copies
+
+    m = store.snapshot("only", "lonely fact", kind="fact", layer=MemoryLayer.MID)
+    path = Path(store.primary.base_path) / "mid-term" / f"{m.id}.json"
+    copy = path.with_name(f"{m.id}.sync-conflict-20261101-000000-AAAAAAA.json")
+    path.rename(copy)  # the canonical file is gone: the copy is the only copy
+    assert [x.id for x in store.primary.list_memories(limit=10)] == [m.id]
+    assert store.primary.load(m.id).content == "lonely fact"
+    assert scan_conflict_copies(store.primary.base_path) == {"hidden": 0, "only_copy": 1}
+    # saving promotes it to canonical; the old copy is then a hidden divergent copy
+    store.primary.save(store.primary.load(m.id))
+    assert [x.id for x in store.primary.list_memories(limit=10)] == [m.id]
+    assert scan_conflict_copies(store.primary.base_path) == {"hidden": 1, "only_copy": 0}
+
+
+def test_two_conflict_copies_no_canonical_shows_newest_once(store):
+    m = store.snapshot("only", "lonely fact", kind="fact", layer=MemoryLayer.MID)
+    d = Path(store.primary.base_path) / "mid-term"
+    (d / f"{m.id}.json").rename(d / f"{m.id}.sync-conflict-20261101-000000-AAA.json")
+    (d / f"{m.id}.sync-conflict-20261102-000000-BBB.json").write_text(
+        (d / f"{m.id}.sync-conflict-20261101-000000-AAA.json").read_text()
+    )
+    assert [x.id for x in store.primary.list_memories(limit=10)] == [m.id]
+
+
+def test_sqlite_drift_counts_and_reindex_keeps_conflict_only(tmp_path):
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+
+    be = SQLiteBackend(base_path=str(tmp_path / "s"))
+    s = MemoryStore(primary=be)
+    keep = s.snapshot("a", "kept fact", kind="fact", layer=MemoryLayer.MID)
+    lone = s.snapshot("b", "lone fact", kind="fact", layer=MemoryLayer.MID)
+    d = Path(be.base_path) / "mid-term"
+    (d / f"{keep.id}.sync-conflict-1.json").write_text((d / f"{keep.id}.json").read_text())
+    (d / f"{lone.id}.json").rename(d / f"{lone.id}.sync-conflict-1.json")
+    assert be.reindex() >= 2
+    assert be.load(lone.id) is not None
+    assert be.drift_check()["conflict_copies"] == {"hidden": 1, "only_copy": 1}
+
+
+def test_heal_does_not_adopt_closure_when_canonical_reopened_later(store):
+    old = store.snapshot("port alias", OLD, kind="fact", layer=MemoryLayer.MID)
+    path = Path(store.primary.base_path) / "mid-term" / f"{old.id}.json"
+    closed = json.loads(path.read_text())
+    closed["valid_to"] = "2026-10-29T12:00:00+00:00"
+    closed["updated_at"] = "2026-10-29T12:00:00+00:00"
+    path.with_name(f"{old.id}.sync-conflict-1-X.json").write_text(json.dumps(closed))
+    canonical = store.primary.load(old.id)  # reopened/edited AFTER the copy
+    canonical.updated_at = "2026-11-02T00:00:00+00:00"
+    store.primary.save(canonical)
+    report = write_triage.heal_supersessions(store)
+    assert report["adopted_from_conflict"] == 0
+    assert store.primary.load(old.id).valid_to is None
+
+
+def test_heal_uses_index_on_sqlite(tmp_path, monkeypatch):
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+
+    be = SQLiteBackend(base_path=str(tmp_path / "s"))
+    s = MemoryStore(primary=be)
+    a = s.snapshot("a", "skap08 listens on 22", kind="fact", layer=MemoryLayer.MID)
+    monkeypatch.setattr(write_triage, "close_superseded", lambda *a, **k: False)
+    b = s.snapshot("b", "unrelated text", kind="fact", supersedes_id=a.id)
+    monkeypatch.undo()
+    monkeypatch.setattr(be, "list_memories", lambda **k: pytest.fail("full scan"))
+    assert write_triage.heal_supersessions(s)["closed"] == 1
+    assert be.load(a.id).valid_to == b.valid_from

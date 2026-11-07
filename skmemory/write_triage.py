@@ -34,9 +34,12 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from . import sealing
 from .audience import resolve_reader
+from .backends.file_backend import CONFLICT_MARK
 from .triage import RelationVerdict, _lexical_similarity, judge_relation
 
 if TYPE_CHECKING:
@@ -51,7 +54,6 @@ logger = logging.getLogger(__name__)
 TRIAGE_KINDS = frozenset({"fact", "rule", "preference"})
 TOP_K = 5
 _OFF = {"0", "off", "false", "no"}
-CONFLICT_MARK = ".sync-conflict-"
 
 
 @dataclass(frozen=True)
@@ -139,9 +141,33 @@ def decide(
         return None
 
 
+def can_close(store: MemoryStore, old: Memory) -> bool:
+    """False when ``old`` has a detached-signature sidecar this store cannot re-sign.
+
+    Closing rewrites the flat file; without a fresh signature the sidecar goes
+    stale (``signature_ok`` False) and a strict-verify load would drop the
+    record. In that case the record is left valid, not closed.
+    """
+    base = getattr(store.primary, "base_path", None)
+    if base is None:
+        return True
+    path = Path(base) / old.layer.value / f"{old.id}.json"
+    if not os.path.exists(sealing.sidecar_path_for(path)):
+        return True
+    if not hasattr(store.primary, "_seal_config"):
+        return False  # this backend's save() never re-signs
+    try:
+        return bool(sealing.get_sealer(store.primary._seal_config).sign(old))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _close(store: MemoryStore, old_id: str, valid_to: str, by_id: str, via: str) -> bool:
     old = store.primary.load(old_id)
     if old is None or old.valid_to is not None:
+        return False
+    if not can_close(store, old):
+        logger.warning("not closing a sealed record: this store cannot re-seal its sidecar")
         return False
     sealed_ok = old.verify_integrity()
     now = datetime.now(timezone.utc).isoformat()
@@ -170,17 +196,36 @@ def close_superseded(store: MemoryStore, old_id: str, new: Memory) -> bool:
     return _close(store, old_id, new.valid_from or new.created_at, new.id, "write_time_triage")
 
 
+def _superseding_records(store: MemoryStore) -> list[Memory]:
+    """Live records carrying a ``supersedes_id``. SQLite primaries answer from the indexed
+    column and load only those rows; other backends fall back to listing everything
+    (O(store) per sweep, parsed one file at a time by the backend)."""
+    get_conn = getattr(store.primary, "_get_conn", None)
+    if callable(get_conn):
+        try:
+            rows = (
+                get_conn()
+                .execute(
+                    "SELECT id FROM memories WHERE supersedes_id IS NOT NULL AND supersedes_id != ''"
+                )
+                .fetchall()
+            )
+            return [m for m in (store.primary.load(r[0]) for r in rows) if m is not None]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("heal: index query failed, scanning: %s", type(exc).__name__)
+    return [m for m in store.primary.list_memories(limit=10**7) if m.supersedes_id]
+
+
 def heal_supersessions(store: MemoryStore) -> dict:
     """Close every open record that a live record's ``supersedes_id`` points at.
 
     Self-heals the crash window between the new write and the old close, and adopts
-    a closure that exists only in a Syncthing conflict copy. Oldest supersessor
-    first, so with two writers the earliest closes the record. Never raises.
+    a closure that exists only in a Syncthing conflict copy, unless the canonical
+    record was edited (reopened) after that copy. Oldest supersessor first. Never raises.
     """
     report = {"closed": 0, "adopted_from_conflict": 0, "errors": 0}
     try:
-        mems = store.primary.list_memories(limit=10**7)
-        for m in sorted((m for m in mems if m.supersedes_id), key=lambda x: x.valid_from or ""):
+        for m in sorted(_superseding_records(store), key=lambda x: x.valid_from or ""):
             try:
                 if _close(
                     store,
@@ -195,16 +240,19 @@ def heal_supersessions(store: MemoryStore) -> dict:
                 logger.warning("heal: close failed: %s", type(exc).__name__)
         base = getattr(store.primary, "base_path", None)
         if base is not None:
-            for path in sorted(base.glob(f"*/*{CONFLICT_MARK}*.json")):
+            for path in sorted(Path(base).glob(f"*/*{CONFLICT_MARK}*.json")):
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
                     cid, vto = data.get("id"), data.get("valid_to")
+                    if not (cid and vto):
+                        continue
+                    canonical = store.primary.load(cid)
+                    if canonical is None or canonical.valid_to is not None:
+                        continue
+                    if (data.get("updated_at") or "") < (canonical.updated_at or ""):
+                        continue  # the canonical record was edited after this copy
                     by = (data.get("metadata") or {}).get("superseded_by") or {}
-                    if (
-                        cid
-                        and vto
-                        and _close(store, cid, vto, by.get("id", "conflict-copy"), "conflict_copy")
-                    ):
+                    if _close(store, cid, vto, by.get("id", "conflict-copy"), "conflict_copy"):
                         report["adopted_from_conflict"] += 1
                 except Exception:  # noqa: BLE001
                     report["errors"] += 1

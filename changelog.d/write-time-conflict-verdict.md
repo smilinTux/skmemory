@@ -17,3 +17,8 @@
   Closing rewrites the old flat file: `integrity_hash` does not cover `valid_to`, so the hash and fortress
   `verify_all` stay valid; the edit is recorded in `metadata.superseded_by` and the WAL. Calls without `kind`
   are unchanged. `SKMEMORY_WRITE_TRIAGE=off` disables triage.
+  A sealed record (detached-signature sidecar) that the store cannot re-sign is never closed: the write
+  becomes `extends` with `possible_conflict_with`. A record that exists only as a Syncthing conflict copy
+  stays visible (and loadable); divergent copies with a canonical file stay hidden; both are counted in
+  `drift_check()["conflict_copies"]`. `heal_supersessions` reads `supersedes_id` from the SQLite index and
+  will not adopt a conflict copy's closure when the canonical record was edited after it.
