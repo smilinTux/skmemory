@@ -437,3 +437,66 @@ def test_pg_as_of_executes_on_real_postgres(monkeypatch):
     finally:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM memories WHERE agent='lumina' AND id LIKE 'p303-%'")
+
+
+# ------------------------------------------------------------- default ranking
+
+
+@pytest.mark.parametrize("fusion", ["on"])
+def test_closed_record_ranks_below_its_open_head_without_as_of(tmp_path, monkeypatch, fusion):
+    monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", fusion)
+    # old matches the query far better than new, so plain fusion would lead with it
+    s = _store(
+        tmp_path,
+        _mem("old", "gateway port gateway port gateway port", OLD, valid_to=MID),
+        _mem("new", "gateway port moved", MID, supersedes_id="old"),
+        _mem("mid", "gateway port notes", NEW),
+    )
+    ids = [m.id for m in s.search("gateway port", limit=10)]
+    assert set(ids) == {"old", "new", "mid"}  # nothing hidden
+    assert ids.index("new") < ids.index("old")
+
+
+def test_demote_is_stable_and_only_reorders():
+    from skmemory.store import _demote_superseded
+
+    ms = {
+        "a": _mem("a", "x", OLD, valid_to=MID),
+        "b": _mem("b", "x", MID, valid_to=NEW, supersedes_id="a"),
+        "c": _mem("c", "x", NEW, supersedes_id="b"),
+        "z": _mem("z", "x", NEW),
+        "q": _mem("q", "x", OLD, valid_to=MID),  # closed, no known superseder: stays put
+    }
+    assert _demote_superseded(["a", "z", "b", "q", "c"], ms) == ["z", "q", "c", "b", "a"]
+    assert _demote_superseded(["a", "z"], ms) == ["a", "z"]  # head not pooled: untouched
+
+
+def test_memory_search_flags_superseded(tmp_path, monkeypatch):
+    s = _chain_store(tmp_path)
+    out = {
+        m["id"]: m
+        for m in json.loads(_call(s, monkeypatch, "memory_search", query="gateway port"))
+    }
+    assert out["old"]["superseded"] is True and out["old"]["superseded_by"] == "new"
+    assert out["new"]["superseded"] is False and out["new"]["superseded_by"] is None
+
+
+def test_class_bench_must_not_ranks_below_gold():
+    """Conflict queries: every must_not memory that is returned ranks below every gold one."""
+    import tempfile
+
+    from skmemory.eval import class_bench as cb
+    from skmemory.eval.fixtures import load_corpus, load_queries
+
+    with tempfile.TemporaryDirectory() as home, cb._fusion_env():
+        store = cb.build_production_store(home, load_corpus())
+        checked = 0
+        for q in load_queries():
+            if q.query_class != "conflict" or not q.must_not_ids or not q.gold_ids:
+                continue
+            ids = [m.id for m in store.search(q.query, limit=10, as_of=q.as_of)]
+            for bad in q.must_not_ids:
+                if bad in ids:
+                    assert all(ids.index(g) < ids.index(bad) for g in q.gold_ids if g in ids), q.id
+                    checked += 1
+        assert checked >= 2

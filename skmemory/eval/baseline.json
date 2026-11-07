@@ -64,7 +64,7 @@
     "class_bench.candidate.absent.abstain_correct": 1.0,
     "class_bench.candidate.affect.mrr": 1.0,
     "class_bench.candidate.affect.recall@5": 1.0,
-    "class_bench.candidate.conflict.mrr": 0.8055555555555556,
+    "class_bench.candidate.conflict.mrr": 0.9166666666666666,
     "class_bench.candidate.conflict.recall@5": 1.0,
     "class_bench.candidate.entity.mrr": 0.9166666666666666,
     "class_bench.candidate.entity.recall@5": 1.0,

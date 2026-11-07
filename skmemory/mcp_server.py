@@ -47,6 +47,7 @@ from .audience import READER_ENV, resolve_reader
 from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
 from .models import MemoryLayer
 from .store import MemoryStore
+from .validity import superseded_by_map
 
 logger = logging.getLogger("skmemory.mcp")
 
@@ -767,7 +768,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 reader=reader,
                 as_of=arguments.get("as_of") or None,
             )
-            return _json_response([_memory_dict(m) for m in memories])
+            sup = superseded_by_map(memories)
+            return _json_response(
+                [
+                    {**_memory_dict(m), "superseded": m.id in sup, "superseded_by": sup.get(m.id)}
+                    for m in memories
+                ]
+            )
 
         elif name == "memory_history":
             chain = store.history(arguments["memory_id"], reader=arguments.get("reader"))

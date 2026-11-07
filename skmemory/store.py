@@ -159,6 +159,48 @@ def _passes_filters(mem, layer, tags, context_tag, source, as_of=None) -> bool:
 MAX_CHAIN = 32
 
 
+def _demote_superseded(ids: list[str], found: dict[str, Memory]) -> list[str]:
+    """Rank a closed record directly below its open head, never above it.
+
+    A record is superseded when it is closed (valid_to set) and a pooled record
+    names it in ``supersedes_id`` or it carries ``metadata.superseded_by``. Only
+    reorders: nothing is dropped, and a record whose head is not in the pool
+    keeps its place. Stable: untouched records keep their relative order.
+    """
+    succ: dict[str, str] = {}
+    for i in ids:
+        m = found.get(i)
+        if m is not None and getattr(m, "supersedes_id", None):
+            succ[m.supersedes_id] = i
+
+    def closed(i: str) -> bool:
+        return getattr(found.get(i), "valid_to", None) is not None
+
+    for i in ids:
+        m = found.get(i)
+        if closed(i) and i not in succ:
+            nxt = ((getattr(m, "metadata", None) or {}).get("superseded_by") or {}).get("id")
+            if nxt:
+                succ[i] = nxt
+    pooled = set(ids)
+
+    def head(i: str) -> str | None:
+        seen = {i}
+        while i in succ and succ[i] in pooled and succ[i] not in seen:
+            i = succ[i]
+            seen.add(i)
+        return i if len(seen) > 1 else None
+
+    pos = {i: n for n, i in enumerate(ids)}
+    # Only records ranked ABOVE their head move (a record already below it stays,
+    # so this never promotes anything).
+    moving = [i for i in ids if closed(i) and (h := head(i)) is not None and pos[i] < pos[h]]
+    out = [i for i in ids if i not in set(moving)]
+    for i in moving:
+        out.insert(out.index(head(i)) + 1, i)
+    return out
+
+
 class MemoryStore:
     """Main entry point for all memory operations.
 
@@ -1527,7 +1569,7 @@ class MemoryStore:
                 report.ids = [pool_ids[i] for i in outcome.order]
             else:
                 report.ids = pool_ids
-        report.ids = report.ids[:limit]
+        report.ids = _demote_superseded(report.ids, found)[:limit]
 
         if report.failed_arms:
             logger.warning(

@@ -60,3 +60,20 @@ def valid_at(mem: object, as_of: str | datetime) -> bool:
         return False
     end = parse_ts(getattr(mem, "valid_to", None))
     return not (end is not None and end <= t)
+
+
+def superseded_by_map(mems) -> dict[str, str]:
+    """``{closed_id: superseder_id}`` for closed records with a known superseder.
+
+    Known = ``metadata.superseded_by`` on the closed record, or another record in
+    ``mems`` naming it in ``supersedes_id``. Open records are never superseded.
+    """
+    mems = list(mems)
+    out = {m.supersedes_id: m.id for m in mems if getattr(m, "supersedes_id", None)}
+    for m in mems:
+        meta = getattr(m, "metadata", None) or {}
+        sid = (meta.get("superseded_by") or {}).get("id")
+        if sid:
+            out.setdefault(m.id, sid)
+    by_id = {m.id: m for m in mems}
+    return {k: v for k, v in out.items() if k in by_id and by_id[k].valid_to is not None}
