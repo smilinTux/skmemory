@@ -258,7 +258,7 @@ def _live_conn():
     dsn = os.environ.get("SKMEMORY_PG_DSN", "")
     if not dsn or "127.0.0.1" not in dsn and "localhost" not in dsn:
         pytest.skip("needs a local throwaway SKMEMORY_PG_DSN")
-    import psycopg
+    psycopg = pytest.importorskip("psycopg")
 
     try:
         return psycopg.connect(dsn, autocommit=True, connect_timeout=3)
@@ -350,6 +350,8 @@ def test_pg_save_skips_typed_columns_when_unmigrated(monkeypatch):
 
     be = mod.PGVectorBackend(agent="test-agent", embed_fn=lambda _t: [0.1] * 1024)
     be._conn = Conn()
+    # _connection() imports psycopg, which CI does not install; hand back the fake.
+    be._connection = lambda: be._conn
     be.save(Memory(id="u1", title="t", content="c"))
     insert = [q for q in cur.sql if q.startswith("INSERT")][0]
     assert "schema_version" not in insert and "memory_json" in insert
