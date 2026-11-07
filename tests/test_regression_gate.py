@@ -23,7 +23,14 @@ from skmemory.eval import regression_gate as gate
 
 def test_collect_metrics_shape_and_keys():
     cur = gate.collect_metrics()
-    assert set(cur) == {"metrics", "leak_count", "leak_count_unfiltered", "class_gate_failures"}
+    assert set(cur) == {
+        "metrics",
+        "leak_count",
+        "leak_count_unfiltered",
+        "class_gate_failures",
+        "sacred_leaks_by_path",
+        "sacred_vacuous",
+    }
     m = cur["metrics"]
     # Every harness contributes its expected keys.
     for key in (

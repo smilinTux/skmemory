@@ -367,7 +367,17 @@ class ReaderScope:
         """Whether a memory with this context tag and tags may reach the reader."""
         if self.allowed_tags is not None and (context_tag or "") not in self.allowed_tags:
             return False
+        if self.allowed_tags is not None and _owner_only_row(tags):
+            return False
         return not (self.exclusions and any(t in self.exclusions for t in (tags or [])))
+
+
+def _owner_only_row(tags: list[str] | None) -> bool:
+    """Owner-only stems (sacred, grief, ...) hide a row from every non-owner reader,
+    whatever its context_tag says. Never applies to the owner (allowed_tags None)."""
+    from .hooks.sensitivity import is_owner_only
+
+    return is_owner_only(tags)
 
 
 def _tags_up_to(level: AudienceLevel) -> set[str]:

@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from .agents import get_agent_paths
 from .audience import AudienceResolver, resolve_reader
 from .febs import feb_to_context, load_strongest_feb
+from .hooks.sensitivity import is_sensitive
 from .journal import Journal
 from .seeds import DEFAULT_SEED_DIR, get_germination_prompts, import_seeds
 from .soul import DEFAULT_SOUL_PATH, SoulBlueprint, load_soul
@@ -501,12 +502,22 @@ def perform_ritual(
 
     if isinstance(store.primary, SQLiteBackend):
         # Fetch extra to allow for KYA filtering
-        fetch_limit = strongest_memory_count * 3 if _audience else strongest_memory_count
-        summaries = store.primary.list_summaries(
-            limit=fetch_limit,
-            order_by="recency_weighted_intensity",
-            min_intensity=1.0,
-        )
+        # Sensitive rows are skipped, not replaced by nothing: over-fetch, drop them,
+        # and take the next strongest (skmemory.hooks.sensitivity).
+        fetch_limit = max(strongest_memory_count * 6, 12)
+        while True:
+            raw = store.primary.list_summaries(
+                limit=fetch_limit,
+                order_by="recency_weighted_intensity",
+                min_intensity=1.0,
+            )
+            summaries = [s for s in raw if not is_sensitive(s.get("tags"))]
+            # enough non-sensitive rows (with audience filtering still to come), or no more rows
+            if len(summaries) >= strongest_memory_count * 3 or len(raw) < fetch_limit:
+                break
+            fetch_limit *= 4
+        if _audience is None:
+            summaries = summaries[:strongest_memory_count]
 
         # KYA: filter summaries by audience
         if _audience is not None:
@@ -543,7 +554,7 @@ def perform_ritual(
             if len(mem_lines) > 1:
                 prompt_sections.append("\n".join(mem_lines))
     else:
-        all_memories = store.list_memories(limit=200)
+        all_memories = [m for m in store.list_memories(limit=200) if not is_sensitive(m.tags)]
 
         # KYA: filter memories by audience
         if _audience is not None:

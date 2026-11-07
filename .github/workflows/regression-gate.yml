@@ -19,6 +19,11 @@ name: Eval Regression Gate
 #     privacy filter), and groundedness uses the deterministic
 #     lexical_overlap_judge, not the live sk-default judge.
 #
+# It also runs the sacred recall bench (skmemory/eval/sacred_bench.py): sacred
+# memories must surface when the owner asks and never on any auto-inject path or
+# for any declared non-owner reader. Any sacred row on any path counts toward
+# leak_count, so a single leak fails the gate.
+#
 # This workflow is additive: it does not modify or weaken pytest.yml / ci.yml.
 
 on:
@@ -27,6 +32,13 @@ on:
     paths:
       - "skmemory/backends/pgvector_backend.py"
       - "skmemory/audience.py"
+      - "skmemory/session_context.py"
+      - "skmemory/hooks/sensitivity.py"
+      - "tests/test_sacred_bench.py"
+      - "skmemory/hooks/query_slice.py"
+      - "skmemory/ritual.py"
+      - "skmemory/store.py"
+      - "skmemory/mcp_server.py"
       - "skmemory/eval/**"
       - ".github/workflows/regression-gate.yml"
   workflow_dispatch:
