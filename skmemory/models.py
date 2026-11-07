@@ -109,6 +109,41 @@ class DecompositionResult(BaseModel):
     chunks: list[DecomposedChunk] = Field(default_factory=list)
 
 
+#: Key in ``Memory.metadata`` recording HOW ``parent_id`` relates the memory to
+#: its parent. It lives in the existing metadata dict (not a new field) so it
+#: survives the flat JSON round trip; a first-class field is a later schema card.
+PARENT_RELATION_KEY = "parent_relation"
+RELATION_PROMOTED_FROM = "promoted_from"
+RELATION_CHUNK_OF = "chunk_of"
+RELATION_SUPERSEDES = "supersedes"
+PARENT_RELATIONS = (RELATION_PROMOTED_FROM, RELATION_CHUNK_OF, RELATION_SUPERSEDES)
+
+
+def parent_relation_of(parent_id: str | None, metadata: dict | None) -> str | None:
+    """Resolve how a memory relates to its ``parent_id``.
+
+    An explicit ``metadata["parent_relation"]`` wins. Files written before the
+    key existed carry a bare ``parent_id``; the only two writers of one were
+    promotion and chunking, so such a file is a chunk when its
+    ``metadata.decomposition.parent_id`` names the same parent and a promotion
+    copy otherwise. It is never ``supersedes``: supersession must be explicit,
+    because closing a parent's validity is not something to guess.
+
+    Returns:
+        str | None: one of ``PARENT_RELATIONS``, or None without a parent.
+    """
+    if not parent_id:
+        return None
+    meta = metadata or {}
+    explicit = meta.get(PARENT_RELATION_KEY)
+    if explicit in PARENT_RELATIONS:
+        return explicit
+    decomposition = meta.get("decomposition")
+    if isinstance(decomposition, dict) and decomposition.get("parent_id") == parent_id:
+        return RELATION_CHUNK_OF
+    return RELATION_PROMOTED_FROM
+
+
 class Memory(BaseModel):
     """A single memory unit -- one polaroid in the album.
 
@@ -256,6 +291,10 @@ class Memory(BaseModel):
         data["id"] = str(uuid.uuid4())
         data["layer"] = target
         data["parent_id"] = self.id
+        data["metadata"] = {
+            **(data.get("metadata") or {}),
+            PARENT_RELATION_KEY: RELATION_PROMOTED_FROM,
+        }
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         if summary:
             data["summary"] = summary

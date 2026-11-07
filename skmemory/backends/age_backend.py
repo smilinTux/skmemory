@@ -56,7 +56,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..invalid_records import payload_memory_id, quarantine_invalid_flat_file, require_memory_id
-from ..models import Memory
+from ..models import (
+    RELATION_CHUNK_OF,
+    RELATION_PROMOTED_FROM,
+    RELATION_SUPERSEDES,
+    Memory,
+    parent_relation_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +123,14 @@ _STAMP_NEW_EDGE = (
     "WITH n, e WHERE e.valid_from IS NULL "
     "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
 )
+
+
+#: parent_relation value -> the edge written for it. SUPERSEDES is deliberately
+#: absent: it closes validity and goes through ``_merge_supersedes`` only.
+PARENT_LINEAGE_EDGES = {
+    RELATION_PROMOTED_FROM: "PROMOTED_FROM",
+    RELATION_CHUNK_OF: "CHUNK_OF",
+}
 
 
 def _graph_sync_budget_s() -> float:
@@ -794,6 +808,74 @@ class AGEGraphBackend:
         )
         return bool(rows)
 
+    def supersedes_edges(self) -> list[dict]:
+        """Every Memory-to-Memory SUPERSEDES edge with its properties. STRICT.
+
+        Returns:
+            list[dict]: ``{"child", "parent", "properties"}`` per edge.
+        """
+        rows = self._cypher_strict(
+            "MATCH (c:Memory)-[e:SUPERSEDES]->(p:Memory) RETURN c.id, p.id, e",
+            cols="c agtype, p agtype, e agtype",
+        )
+        out: list[dict] = []
+        for c, p, e in rows:
+            child, parent = self._agtype(c), self._agtype(p)
+            if isinstance(child, str) and isinstance(parent, str):
+                out.append(
+                    {"child": child, "parent": parent, "properties": self._props(self._agtype(e))}
+                )
+        return out
+
+    def convert_supersedes_to_lineage(self, child_id: str, parent_id: str, rel: str) -> bool:
+        """Delete one SUPERSEDES edge and MERGE the lineage edge in its place.
+
+        Deleting the edge is what reopens the parent: validity is only ever
+        recorded as ``valid_to`` on the incoming SUPERSEDES edge. STRICT:
+        raises :class:`GraphTransportError` on failure.
+        """
+        if rel not in PARENT_LINEAGE_EDGES.values():
+            raise ValueError(f"not a lineage edge type: {rel!r}")
+        self._cypher_strict(
+            "MATCH (c:Memory {id: $child_id})-[e:SUPERSEDES]->(p:Memory {id: $parent_id}) "
+            "DELETE e RETURN 1",
+            {"child_id": child_id, "parent_id": parent_id},
+            cols="r agtype",
+        )
+        self._cypher_strict(
+            "MATCH (c:Memory {id: $child_id}) "
+            "MATCH (p:Memory {id: $parent_id}) "
+            "MERGE (c)-[e:" + rel + "]->(p) "
+            "WITH e WHERE e.valid_from IS NULL "
+            "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
+            "RETURN 1",
+            {"child_id": child_id, "parent_id": parent_id, "now": _now_iso()},
+            cols="r agtype",
+        )
+        return True
+
+    def _merge_lineage(self, child_id: str, parent_id: str, rel: str) -> bool:
+        """MERGE a ``(child)-[:PROMOTED_FROM|CHUNK_OF]->(parent)`` edge with an
+        OPEN interval. Unlike SUPERSEDES it never sets ``valid_to``: the parent
+        stays currently valid. ``rel`` must be a ``PARENT_LINEAGE_EDGES`` value.
+        """
+        if rel not in PARENT_LINEAGE_EDGES.values():
+            raise ValueError(f"not a lineage edge type: {rel!r}")
+        query = (
+            "MATCH (c:Memory {id: $child_id}) "
+            "MERGE (p:Memory {id: $parent_id}) "
+            "MERGE (c)-[e:" + rel + "]->(p) "
+            "WITH p, e WHERE e.valid_from IS NULL "
+            "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
+            "RETURN p"
+        )
+        rows = self._cypher(
+            query,
+            {"child_id": child_id, "parent_id": parent_id, "now": _now_iso()},
+            cols="p agtype",
+        )
+        return bool(rows)
+
     def index_memory(self, memory: Memory, sync_hash: str | None = None) -> bool:
         """MERGE a memory node and all its relationships into the graph.
 
@@ -871,11 +953,18 @@ class AGEGraphBackend:
                     self._merge_related(memory.id, related_id)
 
             if memory.parent_id and memory.parent_id != memory.id:
-                # Supersession CLOSES the parent's validity: the parent edge's
-                # valid_to is set to this (superseding) memory's recorded instant.
-                self._merge_supersedes(
-                    memory.id, memory.parent_id, child_recorded_at=memory.created_at
-                )
+                relation = parent_relation_of(memory.parent_id, memory.metadata)
+                if relation == RELATION_SUPERSEDES:
+                    # Supersession CLOSES the parent's validity: the parent edge's
+                    # valid_to is set to this (superseding) memory's recorded instant.
+                    self._merge_supersedes(
+                        memory.id, memory.parent_id, child_recorded_at=memory.created_at
+                    )
+                elif relation in PARENT_LINEAGE_EDGES:
+                    # Promotion copies and chunks do NOT retire their parent.
+                    self._merge_lineage(
+                        memory.id, memory.parent_id, PARENT_LINEAGE_EDGES[relation]
+                    )
 
             self._merge_edges_to_named(
                 memory.id, "Entity", "name", self._entities_for(memory), "MENTIONS"
