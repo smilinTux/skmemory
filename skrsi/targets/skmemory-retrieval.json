@@ -1,0 +1,59 @@
+{
+  "schema": "skrsi.target.v2",
+  "target_id": "skmemory-retrieval",
+  "revision": 1,
+  "status": "active",
+  "owner": "chef",
+  "scope": {
+    "products": ["skmemory"],
+    "event_types": ["retrieval.class_bench", "retrieval.live_bench"]
+  },
+  "objective": "Production fused search retrieves the right memory at or above plain BM25 for every query type, with no privacy leak and bounded latency.",
+  "invariants": [
+    "leak_count stays 0 for a declared non-owner reader",
+    "a live measurement writes nothing to the store it measures",
+    "no gated class falls below its recorded floor in regression_gate",
+    "evaluator differs from producer",
+    "a missing or dead arm is reported as missing, never as zero or success"
+  ],
+  "metrics": [
+    "live_recall_at_5_all",
+    "live_recall_at_5_title",
+    "live_recall_at_5_rare_token",
+    "live_mrr_all",
+    "live_p95_ms",
+    "class_recall_at_5_per_class",
+    "leak_count"
+  ],
+  "stop_rules": [
+    {
+      "id": "fusion-below-bm25",
+      "condition": "After the SKMEM-P1-07 fixes, candidate live recall at 5 is still below bm25_only for any query type: simplify the arms instead of tuning further, and hold SKMEM-R-06.",
+      "action": "pause",
+      "owner": "chef"
+    },
+    {
+      "id": "privacy-regression",
+      "condition": "leak_count above 0 in any bench or review.",
+      "action": "abort",
+      "owner": "chef"
+    },
+    {
+      "id": "latency-regression",
+      "condition": "Candidate live p95 worse than baseline by more than 20 percent under comparable box load.",
+      "action": "pause",
+      "owner": "chef"
+    },
+    {
+      "id": "measurement-wrote",
+      "condition": "A live run changes the measured store.",
+      "action": "abort",
+      "owner": "chef"
+    }
+  ],
+  "expires_at": "2027-05-01T00:00:00Z",
+  "rollback": {
+    "trigger": "Any invariant failure after a retrieval change merges: revert that change and rerun the class bench.",
+    "owner": "chef"
+  }
+}

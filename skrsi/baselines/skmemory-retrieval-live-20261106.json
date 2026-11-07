@@ -1,0 +1,119 @@
+{
+  "schema": "skmemory.skrsi.baseline.v1",
+  "target_ref": "skmemory-retrieval@1",
+  "kind": "live_self_retrieval",
+  "measured_at": "2026-11-07T02:14:21Z",
+  "code_base_commit": "2eee38dc26de64d61bc9b36c67f785c45657a84a",
+  "sample": {
+    "memories": 200,
+    "queries": 398,
+    "seed": 20261106,
+    "query_source": "title and rarest tokens of the memory itself"
+  },
+  "limits": [
+    "self-retrieval favours lexical arms",
+    "rare tokens are rare relative to the sample, not the corpus",
+    "measured under heavy box load, load average about 20",
+    "predates FTS5 reaching the live index; lexical_local was not an arm in this run",
+    "not a claim about real user queries: SKMEM-P1-04 owns that set"
+  ],
+  "evidence": {
+    "table_sha256": "78904ed60a9dd0b1f350e4fcb8b296403efcc535af4b7016b91359ae1affd8c0",
+    "rows_sha256": "86b677cd3fd8d369a1d2f7cc3c8c2e5b9a0c217e3993a750838a331227599511",
+    "location": "private, skhub GTD/projects/memory-overhaul-2026-11/private/"
+  },
+  "recall_at_5": {
+    "bm25_only": {
+      "rare_token": 0.833,
+      "title": 0.625,
+      "all": 0.729
+    },
+    "vector_only": {
+      "rare_token": 0.152,
+      "title": 0.235,
+      "all": 0.193
+    },
+    "sqlite_like": {
+      "rare_token": 0.465,
+      "title": 0.895,
+      "all": 0.681
+    },
+    "graph_only": {
+      "rare_token": 0.005,
+      "title": 0.005,
+      "all": 0.005
+    },
+    "fallback_chain": {
+      "rare_token": 0.162,
+      "title": 0.235,
+      "all": 0.198
+    },
+    "candidate": {
+      "rare_token": 0.747,
+      "title": 0.455,
+      "all": 0.601
+    }
+  },
+  "mrr": {
+    "bm25_only": {
+      "rare_token": 0.691,
+      "title": 0.489,
+      "all": 0.59
+    },
+    "vector_only": {
+      "rare_token": 0.114,
+      "title": 0.191,
+      "all": 0.153
+    },
+    "sqlite_like": {
+      "rare_token": 0.39,
+      "title": 0.839,
+      "all": 0.615
+    },
+    "graph_only": {
+      "rare_token": 0.004,
+      "title": 0.001,
+      "all": 0.002
+    },
+    "fallback_chain": {
+      "rare_token": 0.12,
+      "title": 0.191,
+      "all": 0.156
+    },
+    "candidate": {
+      "rare_token": 0.497,
+      "title": 0.341,
+      "all": 0.419
+    }
+  },
+  "latency_ms": {
+    "bm25_only": {
+      "p50": 472,
+      "p95": 875
+    },
+    "vector_only": {
+      "p50": 200,
+      "p95": 468
+    },
+    "sqlite_like": {
+      "p50": 269,
+      "p95": 916
+    },
+    "graph_only": {
+      "p50": 2895,
+      "p95": 4336
+    },
+    "fallback_chain": {
+      "p50": 201,
+      "p95": 471
+    },
+    "candidate": {
+      "p50": 3612,
+      "p95": 4952
+    }
+  },
+  "missingness": [
+    "full_context has no live analogue",
+    "reimpl_fusion has no live analogue"
+  ]
+}
