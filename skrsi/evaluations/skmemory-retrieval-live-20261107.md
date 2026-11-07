@@ -13,7 +13,7 @@ Evidence class `live_self_retrieval`; production code: yes; sabotage tested: no;
 | live_recall_at_5_title | 0.455 | 0.849246 | 0.394246 | improved |
 | live_recall_at_5_rare_token | 0.747 | 0.888325 | 0.141325 | improved |
 | live_mrr_all | 0.419 | 0.597327 | 0.178327 | improved |
-| live_p95_ms | 4952 | 1674.3 | -3277.7 | improved |
+| live_p95_ms | 4952 | 1677.3 | -3274.7 | improved |
 
 Not measured by this instrument: `class_recall_at_5_per_class`, `leak_count`.
 

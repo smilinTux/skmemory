@@ -5,9 +5,9 @@
     "window_end": "1970-01-01T00:00:00Z",
     "window_start": "1970-01-01T00:00:00Z"
   },
-  "evaluation_id": "eval-skmemory-retrieval-0b9acb5e32e9",
+  "evaluation_id": "eval-skmemory-retrieval-15c79bf0c210",
   "evidence_class": "live_self_retrieval",
-  "evidence_sha256": "0b9acb5e32e919e8c93662bb7d2c97be1eb1241f2b6da9a5f0acc0d1755ae5c3",
+  "evidence_sha256": "15c79bf0c2107070cf7e1abf2873de037f2ced5762a87628171852fcded38c8a",
   "guardrails": [
     {
       "name": "independent_evaluator",
@@ -77,7 +77,7 @@
       "direction": "lower",
       "name": "live_p95_ms",
       "tolerance": 0.2,
-      "treatment": 1674.3,
+      "treatment": 1677.3,
       "unit": "ms",
       "verdict": "improved"
     },
