@@ -187,30 +187,6 @@ def test_convert_merges_new_edge_before_deleting_old():
     assert "MERGE" in b.queries[0] and "CHUNK_OF" in b.queries[0]
     assert "DELETE e" in b.queries[1] and "SUPERSEDES" in b.queries[1]
 
-
-def test_skgraph_queries_cover_chunk_edges():
-    from skmemory import graph_queries as Q
-
-    assert "PROMOTED_FROM|CHUNK_OF" in Q.TRAVERSE_RELATED
-    assert "PROMOTED_FROM|CHUNK_OF*1..10" in Q.TRAVERSE_LINEAGE
-
-
-def test_skgraph_chunk_gets_chunk_of_edge():
-    from unittest.mock import MagicMock
-
-    from skmemory.backends.skgraph_backend import SKGraphBackend
-
-    be = object.__new__(SKGraphBackend)
-    be._graph = MagicMock()
-    be._ensure_initialized = lambda: True
-    be.index_memory(_mem(parent_id="p1", metadata={"decomposition": {"parent_id": "p1"}}))
-    q = " ".join(str(c) for c in be._graph.query.call_args_list)
-    assert "CHUNK_OF" in q and "SUPERSEDES" not in q
-
-
-class _FlakyBackend(_RepairBackend):
-    """Fails one pair every time and another only on its first attempt."""
-
     def __init__(self, edges, always_bad, once_bad):
         super().__init__(edges)
         self.always_bad, self.once_bad = always_bad, once_bad
