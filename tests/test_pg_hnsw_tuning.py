@@ -78,7 +78,38 @@ def test_settings_never_below_limit_and_capped(monkeypatch):
     assert pgb.hnsw_query_settings(90)[1] is None
 
 
-def test_knn_fetch_sets_local_inside_transaction():
+def test_max_scan_tuples_default_override_and_failsafe(monkeypatch):
+    monkeypatch.delenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", raising=False)
+    assert pgb.hnsw_max_scan_tuples() == 10000
+    monkeypatch.setenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", "5000")
+    assert pgb.hnsw_max_scan_tuples() == 5000
+    monkeypatch.setenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", "0")
+    assert pgb.hnsw_max_scan_tuples() is None
+    monkeypatch.setenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", "junk")
+    assert pgb.hnsw_max_scan_tuples() == 10000
+
+
+def test_knn_fetch_max_scan_tuples_local_and_skippable(monkeypatch):
+    monkeypatch.delenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", raising=False)
+    conn = _Conn()
+    pgb.knn_fetch(conn, "SELECT 1", [], 90)
+    cfg = [(s, p) for s, p in conn.log if "max_scan_tuples" in s]
+    assert len(cfg) == 1 and cfg[0][0].rstrip().endswith("true)") and cfg[0][1] == ("10000",)
+    monkeypatch.setenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", "0")
+    conn = _Conn()
+    pgb.knn_fetch(conn, "SELECT 1", [], 90)
+    assert not [s for s, _ in conn.log if "max_scan_tuples" in s]
+    monkeypatch.delenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES")
+    monkeypatch.setenv("SKMEMORY_HNSW_ITERATIVE_SCAN", "off")
+    conn = _Conn()
+    pgb.knn_fetch(conn, "SELECT 1", [], 90)
+    assert not [s for s, _ in conn.log if "max_scan_tuples" in s]
+
+
+def test_knn_fetch_sets_local_inside_transaction(monkeypatch):
+    monkeypatch.delenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", raising=False)
+    monkeypatch.delenv("SKMEMORY_HNSW_ITERATIVE_SCAN", raising=False)
+    monkeypatch.delenv("SKMEMORY_HNSW_EF_SEARCH", raising=False)
     conn = _Conn()
     rows = pgb.knn_fetch(conn, "SELECT 1", [], 90)
     assert rows == [("row",)]
@@ -86,7 +117,7 @@ def test_knn_fetch_sets_local_inside_transaction():
     assert sqls[0] == "BEGIN" and sqls[-1] == "END"
     cfg = [(s, p) for s, p in conn.log if "set_config" in s]
     assert all(s.rstrip().endswith("true)") for s, _ in cfg), "must be transaction-local"
-    assert {p[0] for _, p in cfg} == {"200", "relaxed_order"}
+    assert {p[0] for _, p in cfg} == {"200", "relaxed_order", "10000"}
     assert sqls.index("SELECT 1") > max(i for i, s in enumerate(sqls) if "set_config" in s)
 
 
@@ -180,3 +211,16 @@ def test_untuned_filtered_hnsw_loses_true_neighbours_and_fix_restores_them(fixtu
     assert lost_tuned == 0
     # SET LOCAL leaves nothing behind on the connection.
     assert conn.execute("SHOW hnsw.ef_search").fetchone()[0] == "40"
+
+
+def test_tune_search_session_sets_max_scan_tuples(monkeypatch):
+    monkeypatch.delenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", raising=False)
+    monkeypatch.delenv("SKMEMORY_HNSW_ITERATIVE_SCAN", raising=False)
+    be = pgb.PGVectorBackend.__new__(pgb.PGVectorBackend)
+    conn = _Conn()
+    be._tune_search_session(conn)
+    assert ("SELECT set_config(%s, %s, false)", ("hnsw.max_scan_tuples", "10000")) in conn.log
+    monkeypatch.setenv("SKMEMORY_HNSW_MAX_SCAN_TUPLES", "0")
+    conn = _Conn()
+    be._tune_search_session(conn)
+    assert not [1 for _, p in conn.log if p and p[0] == "hnsw.max_scan_tuples"]

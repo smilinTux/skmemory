@@ -163,6 +163,22 @@ VECTOR_DIM = 1024
 #: pgvector's ef_search default is 40; see PGVectorBackend._tune_search_session.
 DEFAULT_HNSW_EF_SEARCH = 200
 DEFAULT_HNSW_ITERATIVE_SCAN = "relaxed_order"
+#: hnsw.max_scan_tuples bound on an iterative scan (pgvector's own default is 20000).
+DEFAULT_HNSW_MAX_SCAN_TUPLES = 10000
+
+
+def hnsw_max_scan_tuples() -> int | None:
+    """``hnsw.max_scan_tuples`` from ``SKMEMORY_HNSW_MAX_SCAN_TUPLES`` (0 skips).
+
+    Garbage falls back to the default; ``None`` means "leave it alone".
+    """
+    raw = os.environ.get("SKMEMORY_HNSW_MAX_SCAN_TUPLES", str(DEFAULT_HNSW_MAX_SCAN_TUPLES))
+    try:
+        n = int(raw.strip())
+    except ValueError:
+        logger.warning("ignoring non-integer SKMEMORY_HNSW_MAX_SCAN_TUPLES=%r", raw)
+        n = DEFAULT_HNSW_MAX_SCAN_TUPLES
+    return n if n >= 1 else None
 
 
 def knn_sql(cols: str, where: str, table: str = "memories") -> str:
@@ -228,6 +244,15 @@ def knn_fetch(conn, sql: str, params: list, limit: int) -> list:
                     cur.execute("SELECT set_config('hnsw.iterative_scan', %s, true)", (mode,))
             except Exception as exc:  # noqa: BLE001 - pgvector < 0.8
                 logger.warning("could not set hnsw.iterative_scan for this query: %s", exc)
+        max_scan = hnsw_max_scan_tuples()
+        if max_scan is not None and mode not in (None, "off"):
+            try:
+                with tx():
+                    cur.execute(
+                        "SELECT set_config('hnsw.max_scan_tuples', %s, true)", (str(max_scan),)
+                    )
+            except Exception as exc:  # noqa: BLE001 - pgvector < 0.8
+                logger.warning("could not set hnsw.max_scan_tuples for this query: %s", exc)
         cur.execute(sql, params)
         return cur.fetchall()
 
@@ -508,7 +533,7 @@ class PGVectorBackend(BaseBackend):
         an older server rejects the GUC, which is logged and not fatal.
         Override with ``SKMEMORY_HNSW_EF_SEARCH`` (0 skips) and
         ``SKMEMORY_HNSW_ITERATIVE_SCAN`` (``off``, ``strict_order``,
-        ``relaxed_order``).
+        ``relaxed_order``), ``SKMEMORY_HNSW_MAX_SCAN_TUPLES`` (0 skips).
         """
         settings: list[tuple[str, str]] = []
         raw_ef = os.environ.get("SKMEMORY_HNSW_EF_SEARCH", str(DEFAULT_HNSW_EF_SEARCH)).strip()
@@ -528,6 +553,9 @@ class PGVectorBackend(BaseBackend):
             settings.append(("hnsw.iterative_scan", mode))
         elif mode:
             logger.warning("ignoring unknown SKMEMORY_HNSW_ITERATIVE_SCAN=%r", mode)
+        max_scan = hnsw_max_scan_tuples()
+        if max_scan is not None and mode not in ("off", ""):
+            settings.append(("hnsw.max_scan_tuples", str(max_scan)))
         for name, value in settings:
             try:
                 with conn.cursor() as cur:
