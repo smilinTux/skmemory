@@ -6,7 +6,6 @@ back a verification report of what was purged where. The stores:
   * ``flat``     - the flat JSON files under ``memory/{short,mid,long}-term/``
                    (the Syncthing-synced source of truth).
   * ``index_db`` - the local ``index.db`` SQLite index (a rebuilt cache).
-  * ``chroma``   - the derived ChromaDB vector store (when wired).
   * ``skmem_pg`` - the derived Postgres (pgvector) cache. This leg is expressed
                    as a delete PLAN (SQL + params) so it is verifiable without a
                    live database, and only best-effort-executed when a live
@@ -40,7 +39,7 @@ class StorePurge:
     """Per-store outcome of a forget cascade.
 
     Args:
-        store: Store key (``flat`` | ``index_db`` | ``chroma`` | ``skmem_pg`` |
+        store: Store key (``flat`` | ``index_db`` | ``skmem_pg`` |
             ``graph`` | ``vector`` | ``skvector``).
         attached: Whether the store was wired/reachable for this cascade. A
             plan-only skmem-pg leg (no live pgvector wired) reports ``False``.

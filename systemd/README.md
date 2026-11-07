@@ -71,7 +71,7 @@ nothing is ever promoted. Found 2026-11-06 on lumina, opus and jarvis.
 
 `skmemory sync --quiet --vector --graph` targets the **live stack**:
 the node-local **skmem-pg** container (pgvector) and its **Apache AGE**
-knowledge graph. The retired ChromaDB and FalkorDB targets were removed
+knowledge graph. The retired embedded-vector and FalkorDB targets were removed
 (card 162a19eb).
 
 1. **export-flat** — writes any SQLite-only memories out as JSON

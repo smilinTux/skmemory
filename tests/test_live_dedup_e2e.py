@@ -1,11 +1,10 @@
 """Live end-to-end test for advisory dedup on the LIVE pgvector backend.
 
-Unlike ``test_chroma_dedup.py`` (mocked collection, no real embeddings),
-this test exercises the REAL path: real Postgres/pgvector (skmem-pg) +
+This test exercises the REAL path: real Postgres/pgvector (skmem-pg) +
 real mxbai-embed-large embeddings over the network. It proves
 ``PGVectorBackend.find_similar()`` actually works against the backend that
 is live in production (``SKMEMORY_VECTOR_BACKEND=pgvector``), closing the
-gap where ``find_similar`` previously only existed on the Chroma backend
+gap where ``find_similar`` previously only existed on a since-retired backend
 and dedup was silently a no-op live.
 
 Safety: writes ONLY under a throwaway ``agent`` value scoped to this

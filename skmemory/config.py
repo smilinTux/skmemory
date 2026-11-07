@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .agents import AGENTS_BASE_DIR, get_agent_paths
 
@@ -122,13 +122,63 @@ class SKSeedConfig(BaseModel):
     auto_validate: bool = False
 
 
+_RETIRED_NAME = "chroma"
+_RETIRED_PREFIX = _RETIRED_NAME + "_"
+_retired_warned = False
+
+
+def _warn_retired_once(keys: list[str], listed: bool) -> None:
+    """Log the retired-backend notice once per process (SKMEM-P5-01)."""
+    global _retired_warned
+    if _retired_warned:
+        return
+    _retired_warned = True
+    from .backend_select import CHROMA_RETIRED_MESSAGE
+
+    what = ", ".join(keys) if keys else "backends_enabled"
+    logger.warning(
+        "skmemory.yaml still names the retired backend (%s); ignoring it. %s",
+        what + (" + backends_enabled" if keys and listed else ""),
+        CHROMA_RETIRED_MESSAGE,
+    )
+
+
 class SKMemoryConfig(BaseModel):
     """Persistent configuration for SKMemory backends."""
 
-    # ChromaDB (default local vector backend)
-    chroma_persist_dir: str | None = None
-    chroma_collection: str | None = None
-    chroma_embedding_model: str | None = None
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_vector_keys(cls, data):
+        """Ignore stale retired-backend keys in old node configs (never fatal).
+
+        A yaml that still carries the retired backend's ``*_persist_dir`` /
+        ``*_collection`` / ``*_embedding_model`` keys, or lists it under
+        ``backends_enabled``, must not take down session hooks. The keys are
+        dropped and one warning is logged per process.
+        """
+        if not isinstance(data, dict):
+            return data
+        prefix = _RETIRED_PREFIX
+        stale = [k for k in data if isinstance(k, str) and k.startswith(prefix)]
+        enabled = data.get("backends_enabled")
+        listed = isinstance(enabled, list) and any(
+            isinstance(v, str) and v.strip().lower() in (_RETIRED_NAME, _RETIRED_NAME + "db")
+            for v in enabled
+        )
+        if not stale and not listed:
+            return data
+        data = {k: v for k, v in data.items() if k not in stale}
+        if listed:
+            data["backends_enabled"] = [
+                v
+                for v in enabled
+                if not (
+                    isinstance(v, str)
+                    and v.strip().lower() in (_RETIRED_NAME, _RETIRED_NAME + "db")
+                )
+            ]
+        _warn_retired_once(stale, listed)
+        return data
 
     # pgvector / skmem-pg (sovereign default vector backend — hybrid vector+BM25,
     # agent-isolated by the `agent` column). Consolidated here 2026-07-04.

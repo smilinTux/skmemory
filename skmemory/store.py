@@ -1743,15 +1743,13 @@ class MemoryStore:
     def _vector_store_key(vector: BaseBackend) -> str:
         """Label a wired vector backend for the forget report.
 
-        ``PGVectorBackend`` is the skmem-pg store; a Chroma backend is
-        ``chroma``; the legacy Qdrant backend is ``skvector``; anything else
+        ``PGVectorBackend`` is the skmem-pg store; the legacy Qdrant backend
+        is ``skvector``; anything else
         is a generic ``vector`` leg.
         """
         name = type(vector).__name__
         if name == "PGVectorBackend":
             return "skmem_pg"
-        if "Chroma" in name:
-            return "chroma"
         if "Vector" in name:
             return "skvector"
         return "vector"
@@ -1811,8 +1809,7 @@ class MemoryStore:
         """Delete a memory from EVERY store and return a verification report.
 
         Cascades the removal across the flat JSON files (source of truth), the
-        index.db SQLite index, the derived vector store (ChromaDB), and the
-        derived skmem-pg Postgres cache, plus the AGE graph when wired. Records
+        index.db SQLite index, the derived skmem-pg Postgres cache, plus the AGE graph when wired. Records
         a durable tombstone (see :mod:`skmemory.tombstones`) so a later
         reconcile refuses to resurrect the memory from a stale flat copy.
 
@@ -2918,7 +2915,7 @@ class MemoryStore:
             overall = "degraded"
         # A vector backend that is WIRED and reporting ok:false was green at the
         # top level until now. Observed 2026-10-20: two agents whose derived
-        # backend was a retired Chroma store answering "Not initialized", and
+        # backend was a retired vector store answering "Not initialized", and
         # one with 13 unparseable rows, every one of them reporting an overall
         # `status: ok`. If a backend is attached, its own verdict counts.
         if vector_ok is False:

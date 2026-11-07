@@ -3,7 +3,7 @@
 
 Ports the scoring math (``dcg`` / ``ndcg`` / recall@k) from MemPalace's
 LongMemEval harness (``mempalace/benchmarks/longmemeval_bench.py``) — that
-project's 9 retrieval-strategy variants, ephemeral-ChromaDB setup, and
+project's 9 retrieval-strategy variants, ephemeral vector-store setup, and
 live-Claude-API diary mode are intentionally NOT ported. This is a much
 smaller thing: a self-contained, CI-friendly regression check that skmemory
 retrieval quality (sanitizer/extractor/dedup tuning, etc.) hasn't regressed.

@@ -67,8 +67,7 @@ def _get_store() -> MemoryStore:
         # Contract (see backend_select): SKMEMORY_VECTOR_BACKEND names a backend
         # explicitly -> that backend is used or this raises BackendInitError.
         # Unset -> PGVector is the sovereign default; if it is unhealthy we run
-        # on the always-on SQLite/BM25 path and say so in health. ChromaDB is
-        # retired and is only ever built when explicitly requested.
+        # on the always-on SQLite/BM25 path and say so in health.
         requested = requested_vector_backend()
         want = requested if requested is not None else "pgvector"
         if want == "pgvector":
@@ -98,18 +97,6 @@ def _get_store() -> MemoryStore:
                 if requested is not None:
                     raise BackendInitError(f"pgvector backend failed to initialize: {e}") from e
                 backend_errors["vector"] = f"pgvector: {e}"
-        elif want == "chroma":
-            try:
-                from .agents import get_agent_paths
-                from .backends.chroma_backend import SKChromaBackend
-
-                base = get_agent_paths()["base"]
-                vector = SKChromaBackend(
-                    persist_dir=str(base / "memory" / "chroma"),
-                    state_path=base / "memory" / "chroma-state.json",
-                )
-            except Exception as e:
-                raise BackendInitError(f"ChromaDB backend failed to initialize: {e}") from e
         elif want == "skvector":
             raise BackendInitError(
                 "SKMEMORY_VECTOR_BACKEND=skvector is not supported by the MCP server; "
@@ -746,7 +733,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if not store.reader_can_see(memory_id, arguments.get("reader")):
                 return _error_response(f"Memory not found: {memory_id}")
             # Full forget/redaction cascade across every store, returning a
-            # per-store verification report (flat, index.db, chroma, skmem-pg,
+            # per-store verification report (flat, index.db, skmem-pg,
             # graph). ``deleted`` stays top-level for backward compatibility.
             report = store.forget_cascade(memory_id)
             return _json_response(report.to_dict())

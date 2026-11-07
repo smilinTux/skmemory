@@ -1208,7 +1208,6 @@ def _make_context_loader(monkeypatch, tmp_path, skmemory_yaml: str = ""):
         "skmemory.context_loader.SQLiteBackend", lambda *_a, **_kw: _DummyLoaderDB()
     )
     monkeypatch.setattr("skmemory.context_loader._load_skvector_config", lambda _cd: None)
-    monkeypatch.setattr("skmemory.context_loader.SKChromaBackend", None, raising=False)
     return LazyMemoryLoader("wiretest")
 
 

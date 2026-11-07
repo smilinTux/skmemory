@@ -226,7 +226,6 @@ def test_ensure_backends_loads_shared_corpora_from_structured_config(monkeypatch
         "skmemory.context_loader._build_skgraph_backend",
         lambda cfg: _DummyGraph(cfg.get("graph_name", "graph")),
     )
-    monkeypatch.setattr("skmemory.context_loader.SKChromaBackend", None, raising=False)
     loader = LazyMemoryLoader("jarvis")
     loader._ensure_backends()
     assert loader._shared_corpora == [

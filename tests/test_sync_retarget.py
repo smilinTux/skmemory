@@ -2,7 +2,7 @@
 
 `sync --vector` must reconcile flat files into skmem-pg (pgvector) via the
 vendored `skmemory.reconcile` engine, and `sync --graph` must backfill the
-Apache AGE knowledge graph — NOT the retired ChromaDB / FalkorDB backends.
+Apache AGE knowledge graph — NOT the retired embedded-vector / FalkorDB backends.
 
 These are unit-level integration tests: the Postgres-touching engines
 (`skmemory.reconcile.reconcile` and `AGEGraphBackend.sync_all`) are mocked so
@@ -61,8 +61,8 @@ def _pg_stats(**over):
 
 
 class TestSyncRetarget:
-    def test_vector_calls_reconcile_engine_not_chroma(self, runner, agent_paths, fake_store):
-        """--vector delegates to skmemory.reconcile.reconcile (pgvector), not Chroma."""
+    def test_vector_calls_reconcile_engine_not_embedded(self, runner, agent_paths, fake_store):
+        """--vector delegates to skmemory.reconcile.reconcile (pgvector), not the retired store."""
         with (
             patch("skmemory.reconcile.reconcile", return_value=_pg_stats()) as recon,
             patch("skmemory.config.load_config", return_value=None),
@@ -205,7 +205,7 @@ class TestSyncHelpText:
         assert "age" in low
 
     def test_help_drops_retired_backends_as_targets(self, runner):
-        """The old option help ('re-sync ... into ChromaDB/FalkorDB') is gone.
+        """The old option help ('re-sync ... into the retired vector store/FalkorDB') is gone.
 
         The docstring still *names* the retired backends in the removal note,
         so we assert the specific old target phrasing is absent rather than the

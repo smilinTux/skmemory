@@ -6,10 +6,10 @@ was found and removed (and any error). The four stores the cascade covers:
 
   1. flat JSON files  (source of truth, per tier)
   2. index.db SQLite  (rebuilt local index)
-  3. ChromaDB         (derived vector store)
+  3. vector backend   (derived vector store)
   4. skmem-pg         (derived Postgres cache)
 
-The flat / index.db / chroma legs are exercised live against a seeded fixture
+The flat / index.db / vector legs are exercised live against a seeded fixture
 agent in a temp home. The skmem-pg leg is validated WITHOUT a live Postgres:
 the cascade builds a delete PLAN (SQL + params) that a test asserts on, and only
 best-effort-executes when a live pgvector backend is wired. This mirrors the
@@ -29,10 +29,10 @@ from skmemory.models import MemoryLayer
 from skmemory.store import MemoryStore
 
 
-class _RecordingChromaBackend:
-    """Stand-in for SKChromaBackend: records remove() ids.
+class _RecordingDerivedBackend:
+    """Stand-in for a vector backend: records remove() ids.
 
-    Named with "Chroma" so the store labels its cascade leg ``chroma``; has the
+    Its name has no "Vector" substring, so the store labels its cascade leg ``vector``; has the
     ``save``/``remove`` surface MemoryStore touches on write/forget.
     """
 
@@ -48,18 +48,18 @@ class _RecordingChromaBackend:
 
 
 @pytest.fixture
-def seeded(tmp_path: Path) -> tuple[MemoryStore, dict[str, str], _RecordingChromaBackend]:
+def seeded(tmp_path: Path) -> tuple[MemoryStore, dict[str, str], _RecordingDerivedBackend]:
     """A fixture agent with planted memories across all three tiers.
 
     Uses a real SQLiteBackend rooted in a temp home, so both the flat JSON
-    files AND the index.db rows exist for each seed. A recording chroma stand-in
+    files AND the index.db rows exist for each seed. A recording vector stand-in
     is wired as the vector store. Returns the store, an id-by-tier map, and the
-    chroma stand-in.
+    vector stand-in.
     """
     base = tmp_path / "memory"
     primary = SQLiteBackend(base_path=str(base))
-    chroma = _RecordingChromaBackend()
-    store = MemoryStore(primary=primary, vector=chroma)
+    vector = _RecordingDerivedBackend()
+    store = MemoryStore(primary=primary, vector=vector)
 
     ids: dict[str, str] = {}
     for tier, layer in (
@@ -69,7 +69,7 @@ def seeded(tmp_path: Path) -> tuple[MemoryStore, dict[str, str], _RecordingChrom
     ):
         mem = store.snapshot(title=f"{tier} seed", content=f"content for {tier}", layer=layer)
         ids[tier] = mem.id
-    return store, ids, chroma
+    return store, ids, vector
 
 
 def _flat_exists(primary: SQLiteBackend, memory_id: str) -> bool:
@@ -137,20 +137,20 @@ def test_pg_remove_executes_the_plan(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_forget_cascade_report_shape(seeded) -> None:
-    store, ids, chroma = seeded
+    store, ids, vector = seeded
     report = store.forget_cascade(ids["mid"])
 
     assert isinstance(report, ForgetReport)
     assert report.memory_id == ids["mid"]
     stores = {s.store: s for s in report.stores}
     # All four stores accounted for.
-    assert {"flat", "index_db", "chroma", "skmem_pg"} <= set(stores)
+    assert {"flat", "index_db", "vector", "skmem_pg"} <= set(stores)
     for purge in report.stores:
         assert isinstance(purge, StorePurge)
 
 
 def test_forget_cascade_purges_every_live_store(seeded) -> None:
-    store, ids, chroma = seeded
+    store, ids, vector = seeded
     primary: SQLiteBackend = store.primary  # type: ignore[assignment]
     target = ids["mid"]
 
@@ -171,9 +171,9 @@ def test_forget_cascade_purges_every_live_store(seeded) -> None:
     assert stores["index_db"].found == 1
     assert stores["index_db"].removed == 1
 
-    # 3) chroma vector removed
-    assert target in chroma.removed
-    assert stores["chroma"].removed == 1
+    # 3) vector backend removal
+    assert target in vector.removed
+    assert stores["vector"].removed == 1
 
     # 4) skmem-pg leg reports a plan even with no live DB, and did not execute.
     pg = stores["skmem_pg"]
@@ -195,7 +195,7 @@ def test_forget_cascade_purges_every_live_store(seeded) -> None:
 
 
 def test_forget_cascade_missing_memory_is_not_deleted(seeded) -> None:
-    store, _ids, _chroma = seeded
+    store, _ids, _vector = seeded
     report = store.forget_cascade("does-not-exist")
     stores = {s.store: s for s in report.stores}
     assert report.deleted is False
@@ -208,7 +208,7 @@ def test_forget_cascade_missing_memory_is_not_deleted(seeded) -> None:
 
 def test_forget_bool_api_delegates_to_cascade(seeded) -> None:
     """The legacy forget() -> bool stays a thin shim over the cascade."""
-    store, ids, _chroma = seeded
+    store, ids, _vector = seeded
     assert store.forget(ids["short"]) is True
     assert store.forget("nope") is False
 

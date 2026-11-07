@@ -3,7 +3,7 @@
 Ports MemPalace's format-detection + parsing (``mempalace/normalize.py``)
 and exchange chunking (``mempalace/convo_miner.py``) into skmemory, wired
 through the two-gate admission pipeline the same way
-``skmemory.importers.notion`` is — NOT MemPalace's raw ChromaDB upsert.
+``skmemory.importers.notion`` is — NOT MemPalace's raw vector-store upsert.
 
 Supported export formats (first non-``None`` parser wins, mirroring
 MemPalace's try-chain):

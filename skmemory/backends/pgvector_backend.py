@@ -328,7 +328,7 @@ class PGVectorBackend(BaseBackend):
 
         Two statements, mirroring :meth:`remove`: the memory's own row, then any
         child/chunk rows whose ``memory_json.parent_id`` points at it (the
-        pgvector analogue of Chroma/Qdrant deleting chunk points by parent_id).
+        pgvector analogue of Qdrant deleting chunk points by parent_id).
 
         Args:
             memory_id: The memory to forget.
@@ -713,7 +713,7 @@ class PGVectorBackend(BaseBackend):
         """Remove a memory AND its child/chunk rows (cascade).
 
         This mirrors the chunk-cascade ``remove()`` of the other vector
-        backends (``SKChromaBackend``, ``SKVectorBackend``): delete the
+        backends (``SKVectorBackend``): delete the
         memory's own row and any child rows that reference it via
         ``parent_id``. Those backends delete chunk *points* keyed by a
         ``parent_id`` payload; the pgvector analogue is a child ``Memory``
@@ -1065,7 +1065,7 @@ class PGVectorBackend(BaseBackend):
     def find_similar(self, content: str, k: int = 5) -> list[dict]:
         """Find memories with content similar to *content* (advisory dedup check).
 
-        Mirrors ``SKChromaBackend.find_similar()`` (same signature and return
+        Implements the advisory-dedup contract (same signature and return
         shape) so ``MemoryStore.check_duplicate()`` works identically
         regardless of which vector backend is wired in. Runs the same pgvector
         cosine-distance nearest-neighbor query as ``search()``/``search_text()``,

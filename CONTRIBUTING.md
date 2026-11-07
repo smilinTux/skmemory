@@ -8,7 +8,7 @@ commit convention, the test gate, and the review path. It complements the
 
 ## Ground rules
 
-- **Flat files are the source of truth.** SQLite, ChromaDB, pgvector, and the graph
+- **Flat files are the source of truth.** SQLite, pgvector, and the graph
   are derived projections — never introduce a change that makes an index the master.
 - **Additive + safe for LIVE.** The cross-node memory/sync paths run on live boxes
   (.158/.41). New behaviour must be **gated** (flag/config) and must not break
