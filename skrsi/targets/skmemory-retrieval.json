@@ -1,7 +1,7 @@
 {
   "schema": "skrsi.target.v2",
   "target_id": "skmemory-retrieval",
-  "revision": 2,
+  "revision": 3,
   "status": "active",
   "owner": "chef",
   "scope": {
@@ -26,6 +26,7 @@
     "live_recall_at_5_title",
     "live_recall_at_5_rare_token",
     "live_mrr_all",
+    "live_recall_margin_vs_bm25",
     "live_p95_ms",
     "class_recall_at_5_per_class",
     "class_recall_margin_vs_bm25",
