@@ -658,6 +658,7 @@ Add SKMemory to any MCP client:
 | `memory_auto_context` | Relevance-ranked context for a prompt |
 | `memory_check_duplicate` | Advisory near-duplicate check before a write |
 | `memory_recall` | Recall a specific memory by its UUID |
+| `memory_expand` | Raw session JSONL slice a digest memory was made from (capped, owner only) |
 | `memory_history` | Supersession chain through a memory |
 | `memory_list` | List memories with optional layer and tag filters |
 | `memory_forget` | Delete (forget) a memory by ID |

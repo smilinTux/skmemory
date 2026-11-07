@@ -199,7 +199,7 @@ only narrow it, never widen it, so an injected tool argument cannot escalate.
 
 Which tools honour it (enforced by a test over `TOOL_READER_POLICY`):
 
-- Filtered: `memory_search`, `memory_auto_context`, `memory_recall`, `memory_history`,
+- Filtered: `memory_search`, `memory_auto_context`, `memory_recall`, `memory_expand`, `memory_history`,
   `memory_list`, `memory_context`, `memory_graph`, `memory_health`,
   `memory_check_duplicate`. `memory_store`, `memory_save_session` and
   `memory_pre_compact` never dedup against a memory the reader cannot see.
@@ -460,6 +460,7 @@ path = plugin.export()
 | `memory_auto_context` | Relevance-ranked context for a prompt |
 | `memory_check_duplicate` | Advisory near-duplicate check before a write |
 | `memory_recall` | Recall a memory by ID |
+| `memory_expand` | Raw session episode behind a digest (owner only; `memory_search detail=index` gives the cheap key first) |
 | `memory_history` | Supersession chain through a memory |
 | `memory_list` | List memories with layer and tag filters |
 | `memory_forget` | Delete a memory by ID |

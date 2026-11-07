@@ -45,6 +45,13 @@ from mcp.types import TextContent, Tool
 
 from .audience import READER_ENV, resolve_reader
 from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
+from .disclosure import (
+    EXPAND_DEFAULT_CHARS,
+    ExpandError,
+    expand_episode,
+    index_row,
+    sessions_dir,
+)
 from .models import MemoryLayer
 from .procedures import index_title
 from .store import MemoryStore
@@ -212,8 +219,37 @@ async def list_tools() -> list[Tool]:
                             "Can only narrow a SKMEMORY_READER declared for the server process."
                         ),
                     },
+                    "detail": {
+                        "type": "string",
+                        "enum": ["full", "index"],
+                        "description": (
+                            "'full' (default) returns whole memories. 'index' returns one cheap "
+                            "row per hit (id, title, date, rank score, short snippet, source_ref, "
+                            "est_tokens vs est_tokens_full); follow with memory_recall for the "
+                            "full memory or memory_expand for the raw episode."
+                        ),
+                    },
                 },
                 "required": ["query"],
+            },
+        ),
+        Tool(
+            name="memory_expand",
+            description=(
+                "Return the raw episode (session JSONL slice) a digest memory was made from, "
+                "when its source_ref resolves to a file under this agent's sessions directory. "
+                "Capped in size. Owner sessions only: raw episodes carry no audience labels."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string", "description": "The digest memory's ID."},
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Max characters returned (default 4000, hard cap 20000).",
+                    },
+                },
+                "required": ["memory_id"],
             },
         ),
         Tool(
@@ -669,6 +705,7 @@ _READER_TOOLS = frozenset(
     {
         "memory_check_duplicate",
         "memory_recall",
+        "memory_expand",
         "memory_history",
         "memory_list",
         "memory_context",
@@ -686,6 +723,10 @@ TOOL_READER_POLICY: dict[str, tuple[str, str]] = {
     "memory_search": (_FILTERED, ""),
     "memory_auto_context": (_FILTERED, ""),
     "memory_recall": (_FILTERED, ""),
+    "memory_expand": (
+        _FILTERED,
+        "hidden id is not-found; a declared reader is then refused, raw episodes are unlabeled",
+    ),
     "memory_history": (
         _FILTERED,
         "chain cut at the first hidden member; hidden start is not-found",
@@ -784,6 +825,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 {**_memory_dict(m), "superseded": m.id in sup, "superseded_by": sup.get(m.id)}
                 for m in memories
             ]
+            if arguments.get("detail") == "index":
+                rows = [
+                    index_row(
+                        m,
+                        rank,
+                        full,
+                        superseded=full["superseded"],
+                        superseded_by=full["superseded_by"],
+                    )
+                    for rank, (m, full) in enumerate(zip(memories, rows, strict=True), 1)
+                ]
             degraded = getattr(store, "last_search_degraded", lambda: None)()
             if isinstance(degraded, str) and degraded:
                 # Not a plain list: an empty list here would read as a true miss.
@@ -816,6 +868,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if memory is None:
                 return _error_response(f"Memory not found: {memory_id}")
             return _json_response(_memory_dict(memory))
+
+        elif name == "memory_expand":
+            memory_id = arguments["memory_id"]
+            reader = arguments.get("reader")
+            memory = store.recall(memory_id, reader=reader)
+            if memory is None:
+                return _error_response(f"Memory not found: {memory_id}")
+            if not resolve_reader(reader).unrestricted:
+                return _error_response(
+                    "memory_expand is owner-only for declared readers: raw episodes are unlabeled"
+                )
+            try:
+                try:
+                    max_chars = int(arguments.get("max_chars", EXPAND_DEFAULT_CHARS))
+                except (TypeError, ValueError):
+                    return _error_response("max_chars must be an integer")
+                out = expand_episode(memory.source_ref, sessions_dir(), max_chars=max_chars)
+            except ExpandError as exc:
+                return _error_response(str(exc))
+            return _json_response({"memory_id": memory_id, **out})
 
         elif name == "memory_list":
             layer_str = arguments.get("layer")
