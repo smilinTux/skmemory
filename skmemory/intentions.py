@@ -18,7 +18,8 @@ Lifecycle
 :func:`transition` is the only place state changes are decided. The table
 follows ``intention-transitions-v1.jsonl``. Decision recorded here: ``fire``
 from ``pending`` goes to ``fired`` (a due time intention fires without ever
-being armed, as int-002 does; the fixture file gained a pending+fire row).
+being armed, as int-002 does; a pending intention can also be marked done, a
+user action; the fixture file gained pending+fire and pending+done rows).
 Terminal states (done, cancelled, expired, invalidated) ignore every event.
 Cooldown, max_fires and scope gating belong to the prefilter, not here.
 
@@ -72,6 +73,7 @@ _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _TRANSITIONS: dict[tuple[str, str], str] = {
     ("pending", "arm"): "armed",
     ("pending", "fire"): "fired",
+    ("pending", "done"): "done",
     ("pending", "snooze"): "pending",
     ("pending", "cancel"): "cancelled",
     ("pending", "expire"): "expired",

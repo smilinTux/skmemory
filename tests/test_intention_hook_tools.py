@@ -95,6 +95,15 @@ def test_scope_gates_by_repo(tmp_path):
     assert prompt_context({"prompt": "fusion", "cwd": str(tmp_path / "skmemory")}, base) != ""
 
 
+def test_declared_reader_gets_nothing(tmp_path, monkeypatch):
+    _event(tmp_path, origin_memory_id="mem42")
+    monkeypatch.setenv(READER_ENV, "@public")
+    assert prompt_context({"prompt": "fusion"}, tmp_path) == ""
+    assert IntentionStore(tmp_path).get("i1").fires == 0  # and nothing was fired
+    monkeypatch.delenv(READER_ENV)
+    assert prompt_context({"prompt": "fusion"}, tmp_path) != ""
+
+
 def test_never_raises_on_broken_store(tmp_path):
     (tmp_path / "intentions").mkdir()
     (tmp_path / "index.db").write_text("not a database")
@@ -255,10 +264,108 @@ def test_installer_adds_user_prompt_submit_on_temp_home(tmp_path, monkeypatch):
     assert res["action"] == "created"
     data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     cmds = [h["command"] for g in data["hooks"]["UserPromptSubmit"] for h in g["hooks"]]
-    assert cmds == ["/opt/venv/bin/skmemory hook user-prompt --harness claude"]
+    assert len(cmds) == 1
+    assert " -S " in cmds[0] and cmds[0].endswith("user_prompt_fast.py --harness claude")
+    assert "skmemory.hook_cli" not in cmds[0]
     assert data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"] <= 10
     assert hook_install.install("claude")["claude"]["action"] == "unchanged"
     hook_install.uninstall("claude")
     assert "UserPromptSubmit" not in json.loads(
         (tmp_path / ".claude" / "settings.json").read_text()
     ).get("hooks", {})
+
+
+# -- stdlib fast path ---------------------------------------------------------
+
+import os  # noqa: E402
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+FAST = Path(hook_install.__file__).parent / "hooks" / "user_prompt_fast.py"
+
+
+def _fast(tmp_path, prompt="fusion", **env):
+    e = {k: v for k, v in os.environ.items() if not k.startswith(("SKMEMORY", "SKAGENT", "SKCAP"))}
+    e.update(SKMEMORY_HOME=str(tmp_path / "h"), XDG_RUNTIME_DIR=str(tmp_path))
+    e["PYTHONPATH"] = str(Path(hook_install.__file__).parent.parent)
+    e.update(env)
+    t = time.monotonic()
+    p = subprocess.run(
+        [sys.executable, "-S", str(FAST), "--harness", "claude"],
+        input=json.dumps({"prompt": prompt}).encode(),
+        capture_output=True,
+        env=e,
+        timeout=20,
+    )
+    return p.returncode, p.stdout.decode(), p.stderr.decode(), time.monotonic() - t
+
+
+def _agent_base(tmp_path):
+    return tmp_path / "h" / "memory"
+
+
+def test_fast_path_imports_no_skmemory_or_pydantic():
+    src = FAST.read_text()
+    assert "pydantic" not in src and "import skmemory" not in src and "from skmemory" not in src
+
+
+def test_fast_none_armed_is_silent_and_does_not_spawn(tmp_path):
+    rc, out, err, _ = _fast(tmp_path)  # no memory dir at all
+    assert (rc, out, err) == (0, "", "")
+    base = _agent_base(tmp_path)
+    s = IntentionStore(base)
+    s.save(Intention(id="p", kind="time", title="t", due_at=NOW))  # time intention only
+    s.close()
+    assert _fast(tmp_path)[:3] == (0, "", "")
+
+
+def test_fast_path_hands_over_when_armed_and_fires(tmp_path):
+    _event(_agent_base(tmp_path), origin_memory_id="m9")
+    rc, out, err, _ = _fast(tmp_path)
+    assert rc == 0, err
+    assert json.loads(out)["hookSpecificOutput"]["additionalContext"].startswith(
+        "Standing intent (from memory m9)"
+    )
+
+
+def test_fast_path_kill_switch_and_reader(tmp_path):
+    _event(_agent_base(tmp_path), origin_memory_id="m9")
+    assert _fast(tmp_path, SKMEMORY_HOOKS="off")[:3] == (0, "", "")
+    assert _fast(tmp_path, SKMEMORY_READER="@public")[:3] == (0, "", "")
+    assert IntentionStore(_agent_base(tmp_path)).get("i1").fires == 0
+
+
+def test_fast_path_unresolvable_agent_falls_through_quietly(tmp_path):
+    rc, out, err, _ = _fast(
+        tmp_path, SKMEMORY_HOME="", SKAGENT="a", SKMEMORY_AGENT="b"
+    )  # conflicting selectors
+    assert rc == 0 and out == ""
+
+
+def test_fast_base_resolution(monkeypatch, tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("upf", FAST)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    for v in ("SKMEMORY_HOME", "SKAGENT", "SKCAPSTONE_AGENT", "SKMEMORY_AGENT", "SKCAPSTONE_HOME"):
+        monkeypatch.delenv(v, raising=False)
+    assert m._base() is None
+    monkeypatch.setenv("SKCAPSTONE_HOME", str(tmp_path))
+    monkeypatch.setenv("SKAGENT", "lumina")
+    monkeypatch.setenv("SKMEMORY_AGENT", "lumina")
+    assert m._base() == str(tmp_path / "agents" / "lumina" / "memory")
+    monkeypatch.setenv("SKMEMORY_AGENT", "jarvis")
+    assert m._base() is None
+    monkeypatch.setenv("SKMEMORY_HOME", str(tmp_path / "x"))
+    assert m._base() == str(tmp_path / "x" / "memory")
+
+
+def test_fast_path_cold_latency_none_armed(tmp_path):
+    s = IntentionStore(_agent_base(tmp_path))
+    for n in range(1000):
+        s.save(Intention(id=f"t{n}", kind="time", title="t", due_at=NOW))
+    s.close()
+    best = min(_fast(tmp_path)[3] for _ in range(5))
+    assert best < 0.25  # generous CI bound; measured about 20 ms locally

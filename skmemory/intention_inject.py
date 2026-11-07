@@ -8,6 +8,7 @@ flattened to one line, stripped of control characters, quoted, and prefixed
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -64,6 +65,9 @@ def render(intentions: list) -> str:
 def prompt_context(payload: dict, base_path: str | Path | None = None) -> str:
     """Text to inject for this prompt, or "" (never raises)."""
     try:
+        # Standing intentions are owner data: any declared reader sees nothing.
+        if (os.environ.get("SKMEMORY_READER") or "").strip():
+            return ""
         prompt = payload.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip():
             return ""

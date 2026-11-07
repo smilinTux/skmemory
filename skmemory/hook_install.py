@@ -48,7 +48,9 @@ _LEGACY_PATTERNS = (
     re.compile(r"^\s*\S*skcapstone\s*$"),
     re.compile(r"skmemory\.hooks\.claude_code_hooks"),
 )
-_OURS = re.compile(r"(^|[/\s'\"])skmemory['\"]?\s+hook\s|-m\s+skmemory\.cli\s+hook\s")
+_OURS = re.compile(
+    r"(^|[/\s'\"])skmemory['\"]?\s+hook\s|-m\s+skmemory\.cli\s+hook\s|user_prompt_fast\.py"
+)
 
 
 def is_managed_command(cmd: str) -> bool:
@@ -82,6 +84,14 @@ def _cmd(event: str, harness: str, exe: str | None = None) -> str:
     parts = exe.split(" -m ", 1)
     base = shlex.quote(parts[0]) + (f" -m {parts[1]}" if len(parts) == 2 else "")
     return f"{base} hook {event} --harness {harness}"
+
+
+def _fast_cmd(harness: str, exe: str) -> str:
+    """Per-prompt command: stdlib-only script under ``python -S`` (no site, no package import)."""
+    sib = Path(exe.split(" -m ", 1)[0]).parent / "python"
+    py = str(sib) if sib.is_file() else sys.executable
+    script = Path(__file__).parent / "hooks" / "user_prompt_fast.py"
+    return f"{shlex.quote(py)} -S {shlex.quote(str(script))} --harness {harness}"
 
 
 def claude_settings_path() -> Path:
@@ -177,7 +187,12 @@ def _desired_groups(harness: str, exe: str) -> dict[str, list[dict]]:
         ],
         "Stop": [{"matcher": "", "hooks": [h("stop", 10)]}],
         # Standing intentions: fast, silent when nothing fires, never fails a prompt.
-        "UserPromptSubmit": [{"matcher": "", "hooks": [h("user-prompt", 5)]}],
+        "UserPromptSubmit": [
+            {
+                "matcher": "",
+                "hooks": [{"type": "command", "command": _fast_cmd(harness, exe), "timeout": 5}],
+            }
+        ],
     }
 
 

@@ -1,27 +1,27 @@
 """
-SKMemory MCP Server — memory tools for AI agents via Model Context Protocol.
+SKMemory MCP Server - memory tools for AI agents via Model Context Protocol.
 
 Tool-agnostic: works with Cursor, Claude Code CLI, Claude Desktop,
 Windsurf, Aider, Cline, or any MCP client that speaks stdio.
 
 Tools:
-    memory_store       — Store a new memory (snapshot with title + content)
-    memory_search      — Full-text search across memories
-    memory_check_duplicate — Advisory semantic dedup check before writing
-    memory_recall      — Recall a specific memory by ID
-    memory_list        — List memories with optional layer/tag filters
-    memory_forget      — Delete a memory by ID
-    memory_promote     — Promote a memory to a higher persistence tier
-    memory_consolidate — Compress a session's memories into one mid-term memory
-    memory_context     — Load token-efficient context for agent injection
-    memory_export      — Export all memories to a JSON backup
-    memory_import      — Restore memories from a JSON backup
-    memory_health      — Full health check across all backends
-    memory_graph       — Graph traversal, lineage, and cluster discovery
-    memory_extract     — Extract decisions/preferences/milestones from text (no storage)
-    memory_save_session — Auto-extract + save memories from a conversation transcript
-    memory_pre_compact — Emergency snapshot of current context before compression
-    memory_remind, memory_intentions, memory_intention_done — prospective memory (owner only)
+    memory_store       - Store a new memory (snapshot with title + content)
+    memory_search      - Full-text search across memories
+    memory_check_duplicate - Advisory semantic dedup check before writing
+    memory_recall      - Recall a specific memory by ID
+    memory_list        - List memories with optional layer/tag filters
+    memory_forget      - Delete a memory by ID
+    memory_promote     - Promote a memory to a higher persistence tier
+    memory_consolidate - Compress a session's memories into one mid-term memory
+    memory_context     - Load token-efficient context for agent injection
+    memory_export      - Export all memories to a JSON backup
+    memory_import      - Restore memories from a JSON backup
+    memory_health      - Full health check across all backends
+    memory_graph       - Graph traversal, lineage, and cluster discovery
+    memory_extract     - Extract decisions/preferences/milestones from text (no storage)
+    memory_save_session - Auto-extract + save memories from a conversation transcript
+    memory_pre_compact - Emergency snapshot of current context before compression
+    memory_remind, memory_intentions, memory_intention_done - prospective memory (owner only)
 
 Invocation:
     python -m skmemory.mcp_server

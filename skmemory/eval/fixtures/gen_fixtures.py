@@ -287,7 +287,7 @@ with open(f"{OUT}/intentions-v1.jsonl","w") as f:
     for d in I: f.write(json.dumps(d)+"\n")
 
 # state machine vectors: (state, event) -> expected
-TR = [("pending","arm","armed"),("armed","fire","fired"),("pending","fire","fired"),("fired","fire","fired"),("fired","done","done"),
+TR = [("pending","arm","armed"),("armed","fire","fired"),("pending","fire","fired"),("pending","done","done"),("fired","fire","fired"),("fired","done","done"),
       ("armed","cancel","cancelled"),("pending","cancel","cancelled"),("armed","expire","expired"),
       ("armed","invalidate","invalidated"),("done","fire","done"),("cancelled","fire","cancelled"),
       ("expired","fire","expired"),("invalidated","fire","invalidated"),("armed","snooze","armed"),("fired","snooze","armed")]

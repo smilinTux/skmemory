@@ -199,7 +199,7 @@ def test_claude_reinstall_with_new_binary_path_replaces_old(home, monkeypatch):
     hook_install.install("claude")
     cmds = _commands(json.loads(p.read_text()))
     assert not any(c.startswith(EXE) for c in cmds)
-    assert sum(c.startswith("/new/bin/skmemory hook") for c in cmds) == 6
+    assert sum(c.startswith("/new/bin/skmemory hook") for c in cmds) == 5
 
 
 def test_dry_run_writes_nothing_and_returns_diff(home):
