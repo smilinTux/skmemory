@@ -466,8 +466,10 @@ async def list_tools() -> list[Tool]:
             name="memory_auto_context",
             description=(
                 "Search all memory layers for context related to keywords. "
-                "Deduplicates results and ranks by relevance + emotional intensity + importance. "
-                "Returns results within a token budget. Use this for contextual auto-search."
+                "Runs one search per keyword (max 10), deduplicates, and ranks by fused search "
+                "relevance (reciprocal-rank sum across keywords); emotional intensity is only a "
+                "tiebreak. Returns results within a token budget. Background tool: it does not "
+                "count as a read, so it never reinforces memories. Use this for contextual auto-search."
             ),
             inputSchema={
                 "type": "object",
@@ -835,12 +837,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             keywords = keywords_str.split()
 
             # Search for each keyword and collect results
+            # store.search returns each keyword's hits in fused-relevance order
+            # (no score is exposed), so fuse the keywords by reciprocal rank.
             seen_ids: set[str] = set()
             all_results: list[dict] = []
+            rrf: dict[str, float] = {}
 
             for kw in keywords[:10]:  # cap at 10 keywords
                 results = store.search(kw, limit=10, reader=arguments.get("reader"))
-                for m in results:
+                for rank, m in enumerate(results):
+                    rrf[m.id] = rrf.get(m.id, 0.0) + 1.0 / (60 + rank)
                     if m.id not in seen_ids:
                         seen_ids.add(m.id)
                         all_results.append(
@@ -855,8 +861,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                             }
                         )
 
-            # Rank by intensity (higher = more relevant emotional context)
-            all_results.sort(key=lambda r: r["intensity"], reverse=True)
+            # Fused relevance first, emotional intensity only as a tiebreak.
+            # sorted() is stable, so remaining ties keep first-seen order.
+            all_results.sort(key=lambda r: (-rrf[r["id"]], -r["intensity"]))
 
             # Trim to token budget (estimate: title + summary per entry)
             trimmed: list[dict] = []
