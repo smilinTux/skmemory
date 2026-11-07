@@ -70,7 +70,7 @@ def test_unknown_channel_raises():
 @pytest.mark.parametrize(
     "raw,want",
     [
-        (None, "affect_weighted"),
+        (None, None),
         ("1", "affect_weighted"),
         ("on", "affect_weighted"),
         ("0", None),
@@ -167,7 +167,9 @@ def _two(store, backend):
 
 def test_rerank_prefers_fresh_on_near_tie():
     now = datetime(2026, 11, 1, tzinfo=timezone.utc)
-    old = Memory(id="a", title="a", content="a", created_at=(now - timedelta(days=400)).isoformat())
+    old = Memory(
+        id="a", title="a", content="a", created_at=(now - timedelta(days=400)).isoformat()
+    )
     new = Memory(id="b", title="b", content="b", created_at=(now - timedelta(days=1)).isoformat())
     out = decay.rerank([old, new], {"a": {}, "b": {}}, "reinforcement", as_of=now)
     assert [m.id for m in out] == ["b", "a"]
@@ -186,9 +188,9 @@ def test_rerank_never_drops_or_adds():
 
 def test_search_off_leaves_order_untouched(store, backend, monkeypatch):
     _two(store, backend)
-    monkeypatch.setenv("SKMEMORY_DECAY", "off")
+    monkeypatch.delenv("SKMEMORY_DECAY", raising=False)
     off = [m.id for m in store.search("zebra stripes")]
-    monkeypatch.delenv("SKMEMORY_DECAY")
+    monkeypatch.setenv("SKMEMORY_DECAY", "on")
     on = [m.id for m in store.search("zebra stripes")]
     assert sorted(off) == sorted(on) and len(on) == 2
     # the stale (400 day old, unreinforced) memory is never ranked above fresh when on

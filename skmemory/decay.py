@@ -129,12 +129,14 @@ def order_by_score(items: Sequence[dict], scores: dict[str, float]) -> list[str]
 def configured_channel(default: str = DEFAULT_CHANNEL) -> str | None:
     """Channel named by ``SKMEMORY_DECAY``; ``None`` when decay is off.
 
-    Unset or "1/on/true" selects ``default``; "0/off/false" disables; a channel
-    name selects it. An unrecognised value disables decay rather than guess.
+    Unset or "0/off/false" disables (DEFAULT OFF: the fusion_bench A/B lowers
+    semantic-class MRR with decay on, see ``eval/decay_bench.py``); "1/on/true"
+    selects ``default``; a channel name selects it. An unrecognised value
+    disables decay rather than guess.
     """
     raw = os.environ.get("SKMEMORY_DECAY")
     if raw is None:
-        return default
+        return None
     val = raw.strip().lower()
     if val in _OFF:
         return None
