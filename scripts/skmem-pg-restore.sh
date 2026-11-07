@@ -91,7 +91,8 @@ docker run -d --name "$CONTAINER" \
 log "waiting up to ${READY_TIMEOUT}s for postgres to be ready"
 ready=0
 for _ in $(seq 1 "$READY_TIMEOUT"); do
-  if docker exec "$CONTAINER" pg_isready -U postgres -d "$DB" >/dev/null 2>&1; then
+  # a real query, not pg_isready: initdb's temp server answers pg_isready before the DB exists
+  if docker exec "$CONTAINER" psql -X -U postgres -d "$DB" -At -c "select 1" >/dev/null 2>&1; then
     ready=1; break
   fi
   sleep 1
@@ -135,6 +136,26 @@ else
   docker exec "$CONTAINER" psql -X -U postgres -d "$DB" -v ON_ERROR_STOP=0 -f /tmp/restore.dump >/dev/null 2>&1 || true
 fi
 
+# --- 4b. Repair the AGE graph registry (pg_restore does not) ---
+# graphid and ag_label.graph carry the source server's namespace oids; re-point
+# them at this server's. See docs/RUNBOOK-restore.md step 4. No-op when the
+# registry is absent or already consistent.
+age_stale=$(pex -c "SELECT count(*) FILTER (WHERE graphid <> namespace::oid) FROM ag_catalog.ag_graph;" 2>/dev/null || echo 0)
+if [ "${age_stale:-0}" -gt 0 ]; then
+  log "repairing AGE graph oids ($age_stale stale)"
+  FKDEF=$(pex -c "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='fk_graph_oid';" 2>/dev/null || echo "")
+  [ -n "$FKDEF" ] || die "AGE repair: fk_graph_oid constraint not found"
+  docker exec -i "$CONTAINER" psql -X -U postgres -d "$DB" -v ON_ERROR_STOP=1 >/dev/null <<SQL || die "AGE oid repair failed"
+BEGIN;
+CREATE TEMP TABLE gmap AS SELECT graphid AS old, namespace::oid AS new FROM ag_catalog.ag_graph;
+ALTER TABLE ag_catalog.ag_label DROP CONSTRAINT fk_graph_oid;
+UPDATE ag_catalog.ag_label l SET graph = m.new FROM gmap m WHERE l.graph = m.old;
+UPDATE ag_catalog.ag_graph g SET graphid = m.new FROM gmap m WHERE g.graphid = m.old;
+ALTER TABLE ag_catalog.ag_label ADD CONSTRAINT fk_graph_oid $FKDEF;
+COMMIT;
+SQL
+fi
+
 # --- 5. VERIFY ---
 log "verifying restored stack"
 fail=0
@@ -173,14 +194,33 @@ else
   fi
 fi
 
-# 5d. AGE graph present
+# 5d. AGE graphs: registry row count is NOT proof. After pg_restore the registry
+# keeps the SOURCE server's namespace oids, so every Cypher query fails with
+# "graph with oid N does not exist" while counts look perfect. Execute a real
+# Cypher query against every registered graph and fail on any error.
 graphs=$(pex -c "SELECT count(*) FROM ag_catalog.ag_graph;" 2>/dev/null || echo ERR)
 if [ "$graphs" = "ERR" ]; then
-  echo "  WARN: ag_catalog.ag_graph not queryable (AGE registry not restored - see restore-drill-log caveat)" >&2
+  echo "  WARN: ag_catalog.ag_graph not queryable (AGE registry not restored)" >&2
 else
   graph_names=$(pex -c "SELECT string_agg(name,',') FROM ag_catalog.ag_graph;" 2>/dev/null || echo "")
   log "  AGE graphs: $graphs [$graph_names]"
   [ "${graphs:-0}" -ge 1 ] || echo "  WARN: no AGE graphs registered (schema-only dump; re-register with ag_catalog.create_graph or restore a data dump)" >&2
+  stale=$(pex -c "SELECT count(*) FILTER (WHERE graphid <> namespace::oid) FROM ag_catalog.ag_graph;" 2>/dev/null || echo ERR)
+  log "  AGE graphs with stale oid after repair: $stale (expect 0)"
+  [ "$stale" = "0" ] || { echo "  FAIL: AGE graph oids still stale ($stale)" >&2; fail=1; }
+  for g in $(pex -c "SELECT name FROM ag_catalog.ag_graph ORDER BY name;" 2>/dev/null); do
+    # A graph name is an identifier from our own registry; still refuse odd ones.
+    case "$g" in *[!A-Za-z0-9_]*) echo "  FAIL: unexpected graph name '$g'" >&2; fail=1; continue;; esac
+    out=$(docker exec "$CONTAINER" psql -X -U postgres -d "$DB" -At -v ON_ERROR_STOP=1 \
+      -c "LOAD 'age'" -c "SET search_path=ag_catalog,public" \
+      -c "SELECT * FROM cypher('$g', \$\$ MATCH (n) RETURN count(n) \$\$) AS (c agtype)" 2>&1) \
+      && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ] || printf '%s' "$out" | grep -q 'does not exist'; then
+      echo "  FAIL: Cypher query on graph '$g' failed: $(printf '%s' "$out" | tail -1)" >&2; fail=1
+    else
+      log "  cypher MATCH (n) on '$g' -> $(printf '%s' "$out" | tail -1) node(s)"
+    fi
+  done
 fi
 
 END=$(date +%s)
