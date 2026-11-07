@@ -308,6 +308,10 @@ _LAST_WEEKDAY_RE = re.compile(r"\blast\s+(" + "|".join(_WEEKDAYS) + r")\b")
 # the query makes the intent unambiguous (see _month_match).
 _AMBIGUOUS_MONTHS = {"may", "march"}
 _MONTH_PREPS = r"(?:in|during|since|until|from|of)"
+# "March on Friday", "march up the hill": a capitalized March at the start of a
+# query is a month unless the next word makes it the verb.
+_MARCH_VERB_NEXT = {"on", "to", "up", "down", "in", "into", "through", "with", "forward", "toward"}
+_PAST_UNIT_RE = re.compile(r"\bpast\s+(day|week|month)\b")
 _DAY = r"(\d{1,2})(?:st|nd|rd|th)?"
 
 
@@ -373,11 +377,21 @@ def _month_match(query: str, text: str):
         if d and not re.match(r"\s*,?\s*20\d{2}\b", after):
             day = int(d.group(1))
         elif d2:
-            day = int(d2.group(1))
+            # "step 3 may fail": a bare number before an ambiguous word is not
+            # a day unless the date reading is closed off ("5 may", "5 may
+            # 2026", "5th of may", "5 may,").
+            closed = re.match(r"\s*(?:,|\.|;|$|20\d{2}\b)", after)
+            ordinal = re.search(r"\d(?:st|nd|rd|th)\s+(?:of\s+)?$|\bof\s+$", before)
+            if name not in _AMBIGUOUS_MONTHS or closed or ordinal:
+                day = int(d2.group(1))
         y = re.match(r"\s*,?\s*(20\d{2})\b", after)
         has_number = day is not None or y is not None
         if name in _AMBIGUOUS_MONTHS and not has_number:
-            capitalized = query[a : a + 1].isupper() and a > 0 and query[:a].strip() != ""
+            at_start = query[:a].strip() == ""
+            capitalized = query[a : a + 1].isupper() and not at_start
+            if name == "march" and at_start and query[a : a + 1].isupper():
+                nxt = _WORD_RE.search(text, b)
+                capitalized = nxt is None or nxt.group(0) not in _MARCH_VERB_NEXT
             prep = re.search(rf"\b{_MONTH_PREPS}\s+$", before)
             if not (capitalized or prep):
                 continue
@@ -455,8 +469,9 @@ def parse_time_window(query: str, *, now: datetime | None = None) -> tuple[str, 
         return _month_bounds(y, mo, tz)
 
     m = _LAST_N_RE.search(text)
-    if m:
-        n, unit = _count(m.group(1)), m.group(2)
+    pm = None if m else _PAST_UNIT_RE.search(text)  # "the past month" == last 1 month
+    if m or pm:
+        n, unit = (_count(m.group(1)), m.group(2)) if m else (1, pm.group(1))
         if unit == "month":
             y, mo = _shift_month(today.year, today.month, -n)
             try:
@@ -474,9 +489,9 @@ def parse_time_window(query: str, *, now: datetime | None = None) -> tuple[str, 
         back = (today.weekday() - _WEEKDAYS[m.group(1)]) % 7 or 7
         return _day_span(today - timedelta(days=back), tz)
 
-    if re.search(r"\bthis\s+week\b", text):
+    if re.search(r"\bthis\s+week\b(?!\s+of\b)", text):
         return _week_span(today, tz)
-    if re.search(r"\blast\s+week\b", text):
+    if re.search(r"\blast\s+week\b(?!\s+of\b)", text):
         return _week_span(today - timedelta(days=7), tz)
     if re.search(r"\bthis\s+month\b", text):
         return _month_bounds(today.year, today.month, tz)
