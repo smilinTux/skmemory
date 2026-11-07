@@ -1070,7 +1070,8 @@ class AGEGraphBackend:
     def get_related(self, memory_id: str, depth: int = 2) -> list[dict]:
         """Traverse Memory-to-Memory relationship edges only, up to ``depth`` hops.
 
-        Constrained to ``RELATED_TO``, ``SUPERSEDES``, ``PROMOTED_FROM`` and ``CHUNK_OF`` — the only edge
+        Constrained to the ``MEMORY_LINK_EDGES`` types (``RELATED_TO``,
+        ``SUPERSEDES``, ``PROMOTED_FROM``, ``CHUNK_OF``), the only edge
         types that connect ``(:Memory)-(:Memory)`` (see the graph schema
         docstring at the top of this module). Deliberately excludes
         ``TAGGED_WITH`` / ``FROM_SOURCE`` / ``MENTIONS``, which connect a
@@ -1277,7 +1278,8 @@ class AGEGraphBackend:
         ``as_of`` reaches that instant. So an ``as_of`` *before* a supersession
         still sees the then-valid link, and *after* it does not.
 
-        Constrained to the Memory-to-Memory edge types (``MEMORY_LINK_EDGES``) exactly like :meth:`get_related`, deliberately excluding
+        Constrained to the Memory-to-Memory edge types (``MEMORY_LINK_EDGES``)
+        exactly like :meth:`get_related`, deliberately excluding
         the ``TAGGED_WITH`` / ``FROM_SOURCE`` / ``MENTIONS`` hub edges (walking
         those explodes through shared-tag/source/entity hubs). AGE 1.7.x cannot
         do relationship-type alternation in a pattern, so each edge type is
