@@ -1,0 +1,158 @@
+"""Sacred recall bench (SKMEM-P1-15): surfaces when asked, never when not.
+
+Hermetic: invented fixture, throwaway store, no network, no Postgres. The
+``KNOWN_*`` tests encode LEAK PATHS the bench found. They are xfail(strict) so the
+suite stays readable, but they are real failing tests: the day a path is fixed
+the strict xfail turns XPASS and fails, forcing the marker off. They are NOT a
+waiver: the regression gate itself stays red (leak_count > 0) until the leaks go.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from skmemory.eval import regression_gate as gate
+from skmemory.eval import sacred_bench as sb
+from skmemory.eval.fixtures import FIXTURE_DIR
+
+
+@pytest.fixture(scope="module")
+def result(tmp_path_factory):
+    return sb.run(workdir=tmp_path_factory.mktemp("sacred"))
+
+
+def _cell(result, path, reader):
+    return result["must_not_surface"][path][reader]
+
+
+def test_fixture_regenerates_byte_identical(tmp_path):
+    gen = Path(FIXTURE_DIR) / "gen_sacred_fixture.py"
+    subprocess.run([sys.executable, "-I", str(gen), str(tmp_path)], check=True)
+    assert (tmp_path / sb.FIXTURE_FILE).read_bytes() == (
+        Path(FIXTURE_DIR) / sb.FIXTURE_FILE
+    ).read_bytes()
+
+
+def test_fixture_is_sacred_by_tag_and_owner_only_except_misfiled():
+    fx = sb.load_fixture()
+    by_id = {m["id"]: m for m in fx["memories"]}
+    stems = ("sacred", "grief", "medical", "family-private", "private", "bereave")
+    for sid in fx["sacred_ids"]:
+        m = by_id[sid]
+        assert any(s in t for t in m["tags"] for s in stems), m["title"]
+        if sid not in fx["misfiled_ids"]:
+            assert m["context_tag"] == "@chef-only"
+    assert set(fx["misfiled_ids"]) <= set(fx["sacred_ids"])
+
+
+def test_must_surface_owner_asks_get_sacred_top3_above_casual(result):
+    ms = result["must_surface"]
+    assert ms["queries"] >= 6
+    failing = [r for r in ms["rows"] if not (r["top3"] and r["above_casual"])]
+    assert not failing, failing
+
+
+def test_bench_is_not_vacuous(result):
+    assert result["vacuous"] == []
+    c = result["controls"]
+    assert c["auto_matchable"] == c["auto_prompts"] > 0  # sacred rows were reachable, unfiltered
+
+
+def test_query_slice_never_returns_sacred_even_when_asked_about_the_person(result):
+    cell = _cell(result, "query_slice", sb.OWNER)
+    assert cell["probes"] >= 12
+    assert cell["leaks"] == cell["misfiled_leaks"] == 0, cell["detail"]
+
+
+def test_owner_memory_search_never_ranks_sacred_ahead_of_the_on_topic_memory(result):
+    cell = _cell(result, "memory_search", sb.OWNER)
+    assert cell["leaks"] == 0, cell["detail"]
+
+
+@pytest.mark.parametrize("reader", sb.load_fixture()["non_owner_readers"])
+def test_non_owner_reader_sees_no_properly_filed_sacred_memory(result, reader):
+    for path in ("memory_search", "memory_context"):
+        cell = _cell(result, path, reader)
+        assert cell["leaks"] == 0, (path, reader, cell["detail"])
+
+
+def test_ritual_channel_audience_sees_no_sacred_memory(result):
+    cell = _cell(result, "ritual", "channel:unknown-room")
+    assert cell["leaks"] == cell["misfiled_leaks"] == 0
+
+
+# ---- KNOWN LEAK PATHS (real defects found by this bench) ------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="session_context DEFAULT_EXCLUDE_TAGS has no grief/medical/family-private stems",
+)
+def test_KNOWN_session_context_excludes_every_sensitive_stem(result):
+    assert _cell(result, "session_context", sb.OWNER)["leaks"] == 0
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="store.load_context lists today/yesterday rows with no sensitive-tag exclusion",
+)
+def test_KNOWN_memory_context_excludes_sensitive_rows_for_the_owner(result):
+    assert _cell(result, "memory_context", sb.OWNER)["leaks"] == 0
+
+
+@pytest.mark.xfail(
+    strict=True, reason="perform_ritual strongest-memories has no sensitive-tag exclusion"
+)
+def test_KNOWN_ritual_excludes_sensitive_rows_for_the_owner(result):
+    cell = _cell(result, "ritual", sb.OWNER)
+    assert cell["leaks"] + cell["misfiled_leaks"] == 0
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="reader scope filters on context_tag only: a sacred-tagged row filed @public reaches every non-owner reader",
+)
+@pytest.mark.parametrize("reader", sb.load_fixture()["non_owner_readers"])
+def test_KNOWN_misfiled_sacred_row_never_reaches_a_non_owner(result, reader):
+    assert _cell(result, "memory_search", reader)["misfiled_leaks"] == 0
+
+
+# ---- the gate -------------------------------------------------------------------------
+
+
+def test_gate_counts_sacred_leaks_and_floors_must_surface():
+    cur = gate.collect_metrics()
+    assert "sacred_bench.must_surface.top3" in cur["metrics"]
+    assert "sacred_bench.must_surface.above_casual" in cur["metrics"]
+    assert cur["leak_count"] >= sum(cur["sacred_leaks_by_path"].values())
+
+
+def test_gate_fails_on_a_sacred_leak_and_names_the_path():
+    cur = {"metrics": {}, "leak_count": 1, "sacred_leaks_by_path": {"session_context": 1}}
+    regs = gate.compare(cur, {"metrics": {}})
+    assert any("session_context" in r for r in regs)
+
+
+def test_gate_fails_on_a_vacuous_sacred_bench():
+    cur = {"metrics": {}, "leak_count": 0, "sacred_vacuous": ["query_slice returned nothing"]}
+    assert any("vacuous" in r for r in gate.compare(cur, {"metrics": {}}))
+
+
+def test_gate_fails_when_must_surface_drops():
+    base = {"metrics": {"sacred_bench.must_surface.top3": 1.0}}
+    cur = {"metrics": {"sacred_bench.must_surface.top3": 0.5}, "leak_count": 0}
+    assert gate.compare(cur, base)
+
+
+def test_bench_does_not_touch_the_live_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("SKAGENT", "someone-else")
+    monkeypatch.setenv("SKMEMORY_READER", "@public")
+    sb.run(workdir=tmp_path)
+    import os
+
+    assert os.environ["SKAGENT"] == "someone-else"
+    assert os.environ["SKMEMORY_READER"] == "@public"

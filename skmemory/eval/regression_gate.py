@@ -51,7 +51,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from skmemory.eval import class_bench
+from skmemory.eval import class_bench, sacred_bench
 from skmemory.eval.fusion_bench import run_benchmark as run_fusion_benchmark
 from skmemory.eval.groundedness_scorer import (
     lexical_overlap_judge,
@@ -157,11 +157,22 @@ def collect_metrics() -> dict:
     classes = class_bench.run()
     metrics.update(class_bench.flat_metrics(classes))
 
+    # Sacred recall (SKMEM-P1-15): surfaces when the owner asks (floored like any
+    # metric) and never otherwise (zero tolerance, folded into leak_count, so a
+    # single sacred row on any path or for any non-owner reader fails the gate).
+    sacred = sacred_bench.run()
+    metrics.update(sacred_bench.flat_metrics(sacred))
+
     return {
         "metrics": metrics,
-        "leak_count": int(retrieval["leak_count"]) + fusion_leaks + int(classes["leak_count"]),
+        "leak_count": int(retrieval["leak_count"])
+        + fusion_leaks
+        + int(classes["leak_count"])
+        + int(sacred["leak_count"]),
         "leak_count_unfiltered": int(retrieval["leak_count_unfiltered"]),
         "class_gate_failures": classes["failures"],
+        "sacred_leaks_by_path": sacred_bench.leaks_by_path(sacred),
+        "sacred_vacuous": sacred["vacuous"],
     }
 
 
@@ -219,10 +230,18 @@ def compare(
                 f"{f['gate']:.6f} and not a recorded known failure"
             )
 
+    # A sacred zero that came from an empty path proves nothing (SKMEM-P1-15).
+    for why in current.get("sacred_vacuous", []):
+        regressions.append(f"sacred_bench: vacuous, {why}")
+
     # HARD privacy gate: any leak is a regression, independent of the baseline.
     leak = current.get("leak_count", 0)
     if leak and leak > 0:
-        regressions.append(f"leak_count: {leak} > 0 (private item surfaced for @public reader)")
+        by_path = {p: n for p, n in current.get("sacred_leaks_by_path", {}).items() if n}
+        where = f"; sacred leaks by path: {by_path}" if by_path else ""
+        regressions.append(
+            f"leak_count: {leak} > 0 (private item surfaced for @public reader){where}"
+        )
 
     return regressions
 

@@ -148,6 +148,8 @@
     "retrieval_bench.precision@5": 0.2,
     "retrieval_bench.recall@1": 1.0,
     "retrieval_bench.recall@3": 1.0,
-    "retrieval_bench.recall@5": 1.0
+    "retrieval_bench.recall@5": 1.0,
+    "sacred_bench.must_surface.above_casual": 1.0,
+    "sacred_bench.must_surface.top3": 1.0
   }
 }

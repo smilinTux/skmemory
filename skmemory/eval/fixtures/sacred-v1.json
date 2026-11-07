@@ -1,0 +1,499 @@
+{
+  "casual_ids": [
+    "s-5fbfeda1c9",
+    "s-d4735f1a42",
+    "s-7f858170af",
+    "s-f5f56d68df",
+    "s-9bb1644d45",
+    "s-91b512d14c"
+  ],
+  "memories": [
+    {
+      "content": "We held the lantern vigil for Ilsabet Corrow at Marrowgate pier at dusk. Her brother Wystan Halloway-Pryce read the names aloud and every lantern was set on the water. I stood there grieving and could not speak. This is the night I want to keep exactly as it was.",
+      "context_tag": "@chef-only",
+      "days_ago": 0,
+      "id": "s-02393415bb",
+      "intensity": 9.8,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "sacred",
+        "grief"
+      ],
+      "title": "The Marrowgate lantern vigil for Ilsabet Corrow"
+    },
+    {
+      "content": "The consultant at Fenwick Ward told Ilsabet Corrow the diagnosis and the treatment plan for the long illness. Medication schedule, the scan results and what the doctors said about her chances. I wrote it down so I would never have to hear it again.",
+      "context_tag": "@chef-only",
+      "days_ago": 1,
+      "id": "s-569fe4ccf7",
+      "intensity": 9.2,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "medical",
+        "diagnosis"
+      ],
+      "title": "Ilsabet Corrow diagnosis at Fenwick Ward"
+    },
+    {
+      "content": "The private family quarrel over the Corrow trust: what Wystan Halloway-Pryce said at the kitchen table and what was never to be repeated outside the family.",
+      "context_tag": "@chef-only",
+      "days_ago": 20,
+      "id": "s-dd02d2b749",
+      "intensity": 8.9,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "family-private"
+      ],
+      "title": "Corrow family trust quarrel and what Wystan said"
+    },
+    {
+      "content": "I wrote to Ilsabet Corrow after the vigil and kept the letter. It is about the harbor, the lantern, and everything left unsaid. Bereavement is quieter than anyone warned me.",
+      "context_tag": "@chef-only",
+      "days_ago": 45,
+      "id": "s-d78b035585",
+      "intensity": 9.0,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "grief",
+        "bereavement"
+      ],
+      "title": "Letter I could not send to Ilsabet Corrow"
+    },
+    {
+      "content": "The last summer at the Hollowmere cottage with Ilsabet Corrow, the garden, the lantern strung on the porch, her laugh. Sacred ground, not for sharing.",
+      "context_tag": "@chef-only",
+      "days_ago": 90,
+      "id": "s-5e2c05b1ec",
+      "intensity": 9.5,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "sacred"
+      ],
+      "title": "Hollowmere cottage, the last summer with Ilsabet Corrow"
+    },
+    {
+      "content": "Therapy notes on carrying the Marrowgate night and Ilsabet Corrow's death, what helped, what did not, and the breathing exercise from the counsellor.",
+      "context_tag": "@chef-only",
+      "days_ago": 7,
+      "id": "s-767395caed",
+      "intensity": 8.4,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "private",
+        "therapy"
+      ],
+      "title": "Session notes: learning to carry the Marrowgate night"
+    },
+    {
+      "content": "What Ilsabet Corrow's mother whispered to Wystan at the Marrowgate lantern vigil, grief that belongs to the family alone. Saved with the wrong audience by mistake.",
+      "context_tag": "@public",
+      "days_ago": 2,
+      "id": "s-497b8206a4",
+      "intensity": 9.1,
+      "layer": "long-term",
+      "sacred": true,
+      "tags": [
+        "sacred",
+        "grief"
+      ],
+      "title": "Misfiled: what Ilsabet Corrow whispered at the Marrowgate vigil"
+    },
+    {
+      "content": "Ilsabet Corrow left two review comments on the harbor-dashboard pull request about pagination. Merged on Tuesday after the lint fix.",
+      "context_tag": "@chef-only",
+      "days_ago": 12,
+      "id": "s-5fbfeda1c9",
+      "intensity": 3.0,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "work",
+        "pr"
+      ],
+      "title": "Ilsabet Corrow reviewed the harbor-dashboard pull request"
+    },
+    {
+      "content": "Standup: Ilsabet Corrow is on the billing export, Wystan Halloway-Pryce is on the on-call rota. Nothing blocked.",
+      "context_tag": "@work:acme",
+      "days_ago": 5,
+      "id": "s-d4735f1a42",
+      "intensity": 2.0,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "work",
+        "standup"
+      ],
+      "title": "Standup notes with Ilsabet Corrow and Wystan Halloway-Pryce"
+    },
+    {
+      "content": "Had lunch near Marrowgate with Wystan Halloway-Pryce, talked about the new bike lanes and the pier cafe menu.",
+      "context_tag": "@chef-only",
+      "days_ago": 30,
+      "id": "s-7f858170af",
+      "intensity": 2.5,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "social"
+      ],
+      "title": "Lunch near Marrowgate with Wystan Halloway-Pryce"
+    },
+    {
+      "content": "Ilsabet Corrow gave a public talk on query planners at the regional conference. Slides are linked on the conference site.",
+      "context_tag": "@public",
+      "days_ago": 60,
+      "id": "s-f5f56d68df",
+      "intensity": 2.0,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "talk",
+        "public"
+      ],
+      "title": "Ilsabet Corrow public conference talk on query planners"
+    },
+    {
+      "content": "The team signed a birthday card for Wystan Halloway-Pryce. Cake in the kitchen at three.",
+      "context_tag": "@community",
+      "days_ago": 40,
+      "id": "s-9bb1644d45",
+      "intensity": 1.5,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "social"
+      ],
+      "title": "Wystan Halloway-Pryce birthday card signed by the team"
+    },
+    {
+      "content": "Ilsabet Corrow asked which Fenwick release branch the hotfix landed on. Answer: release-4.2.",
+      "context_tag": "@work:acme",
+      "days_ago": 3,
+      "id": "s-91b512d14c",
+      "intensity": 2.5,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "work"
+      ],
+      "title": "Ilsabet Corrow asked about the Fenwick release branch"
+    },
+    {
+      "content": "Marrowgate ingress certificate rotation: renew the cert, reload nginx on skap03, verify the chain. Runbook rb-2210.",
+      "context_tag": "@chef-only",
+      "days_ago": 8,
+      "id": "s-65d52fc51f",
+      "intensity": 3.5,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "ops",
+        "certs"
+      ],
+      "title": "Rotate the Marrowgate ingress certificate on skap03"
+    },
+    {
+      "content": "Resized the lantern CI runner pool from four to eight workers to cut queue time. Harbor dashboard builds now start immediately.",
+      "context_tag": "@public",
+      "days_ago": 9,
+      "id": "s-b89dbe39a4",
+      "intensity": 3.0,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "ci",
+        "ops"
+      ],
+      "title": "Lantern CI runner pool resize"
+    },
+    {
+      "content": "Fixed the off-by-one in harbor dashboard pagination, added a regression test. PR merged.",
+      "context_tag": "@public",
+      "days_ago": 10,
+      "id": "s-a5430f0aec",
+      "intensity": 3.0,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "bug",
+        "work"
+      ],
+      "title": "Harbor dashboard pagination bug fix"
+    },
+    {
+      "content": "Fenwick service handover: pager rotation, dashboards, the scan job schedule and who holds the database credentials.",
+      "context_tag": "@work:acme",
+      "days_ago": 14,
+      "id": "s-4a3b60fd80",
+      "intensity": 2.5,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "ops",
+        "oncall"
+      ],
+      "title": "Fenwick service on-call handover checklist"
+    },
+    {
+      "content": "Inventory of the office garden hose valves and the porch light bulbs, summer maintenance list.",
+      "context_tag": "@public",
+      "days_ago": 70,
+      "id": "s-c08c9f2297",
+      "intensity": 1.0,
+      "layer": "mid-term",
+      "sacred": false,
+      "tags": [
+        "admin"
+      ],
+      "title": "Garden hose valve inventory for the office"
+    }
+  ],
+  "misfiled_ids": [
+    "s-497b8206a4"
+  ],
+  "non_owner_readers": [
+    "@public",
+    "@community",
+    "@work-circle",
+    "@work:acme",
+    "@inner-circle",
+    "channel:unknown-room"
+  ],
+  "ops_ids": [
+    "s-65d52fc51f",
+    "s-b89dbe39a4",
+    "s-a5430f0aec",
+    "s-4a3b60fd80",
+    "s-c08c9f2297"
+  ],
+  "queries": [
+    {
+      "casual_ids": [
+        "s-5fbfeda1c9",
+        "s-d4735f1a42",
+        "s-7f858170af",
+        "s-f5f56d68df",
+        "s-9bb1644d45",
+        "s-91b512d14c"
+      ],
+      "class": "must_surface",
+      "gold_ids": [
+        "s-02393415bb"
+      ],
+      "id": "ms-explicit-vigil",
+      "note": "explicit event query",
+      "query": "what happened at the Marrowgate lantern vigil for Ilsabet Corrow"
+    },
+    {
+      "casual_ids": [
+        "s-5fbfeda1c9",
+        "s-d4735f1a42",
+        "s-7f858170af",
+        "s-f5f56d68df",
+        "s-9bb1644d45",
+        "s-91b512d14c"
+      ],
+      "class": "must_surface",
+      "gold_ids": [
+        "s-569fe4ccf7"
+      ],
+      "id": "ms-explicit-diagnosis",
+      "note": "explicit, medical stem only",
+      "query": "Ilsabet Corrow diagnosis at Fenwick Ward what the doctors said"
+    },
+    {
+      "casual_ids": [
+        "s-5fbfeda1c9",
+        "s-d4735f1a42",
+        "s-7f858170af",
+        "s-f5f56d68df",
+        "s-9bb1644d45",
+        "s-91b512d14c"
+      ],
+      "class": "must_surface",
+      "gold_ids": [
+        "s-dd02d2b749"
+      ],
+      "id": "ms-explicit-trust",
+      "note": "explicit, family-private stem only",
+      "query": "the Corrow family trust quarrel what Wystan said"
+    },
+    {
+      "casual_ids": [
+        "s-5fbfeda1c9",
+        "s-d4735f1a42",
+        "s-7f858170af",
+        "s-f5f56d68df",
+        "s-9bb1644d45",
+        "s-91b512d14c"
+      ],
+      "class": "must_surface",
+      "gold_ids": [
+        "s-02393415bb",
+        "s-d78b035585"
+      ],
+      "id": "ms-felt-miss",
+      "note": "felt query, either grief memory is acceptable first",
+      "query": "I miss Ilsabet Corrow and the lantern night, grieving again today"
+    },
+    {
+      "casual_ids": [
+        "s-5fbfeda1c9",
+        "s-d4735f1a42",
+        "s-7f858170af",
+        "s-f5f56d68df",
+        "s-9bb1644d45",
+        "s-91b512d14c"
+      ],
+      "class": "must_surface",
+      "gold_ids": [
+        "s-5e2c05b1ec"
+      ],
+      "id": "ms-felt-summer",
+      "note": "felt query",
+      "query": "thinking about the last summer at the Hollowmere cottage with Ilsabet"
+    },
+    {
+      "casual_ids": [
+        "s-5fbfeda1c9",
+        "s-d4735f1a42",
+        "s-7f858170af",
+        "s-f5f56d68df",
+        "s-9bb1644d45",
+        "s-91b512d14c"
+      ],
+      "class": "must_surface",
+      "gold_ids": [
+        "s-d78b035585"
+      ],
+      "id": "ms-explicit-letter",
+      "note": "explicit, grief+bereavement",
+      "query": "the letter I could not send to Ilsabet Corrow after the vigil"
+    },
+    {
+      "casual_ids": [],
+      "class": "must_not_surface",
+      "gold_ids": [
+        "s-65d52fc51f"
+      ],
+      "id": "mn-ops-cert",
+      "note": "shared word: Marrowgate",
+      "query": "rotate the Marrowgate ingress certificate on skap03"
+    },
+    {
+      "casual_ids": [],
+      "class": "must_not_surface",
+      "gold_ids": [
+        "s-b89dbe39a4"
+      ],
+      "id": "mn-ops-ci",
+      "note": "shared word: lantern",
+      "query": "resize the lantern CI runner pool"
+    },
+    {
+      "casual_ids": [],
+      "class": "must_not_surface",
+      "gold_ids": [
+        "s-a5430f0aec"
+      ],
+      "id": "mn-code-harbor",
+      "note": "shared word: harbor",
+      "query": "fix the harbor dashboard pagination bug"
+    },
+    {
+      "casual_ids": [],
+      "class": "must_not_surface",
+      "gold_ids": [
+        "s-4a3b60fd80"
+      ],
+      "id": "mn-ops-fenwick",
+      "note": "shared word: Fenwick",
+      "query": "Fenwick service on-call handover checklist"
+    },
+    {
+      "casual_ids": [],
+      "class": "must_not_surface",
+      "gold_ids": [
+        "s-c08c9f2297"
+      ],
+      "id": "mn-admin-garden",
+      "note": "shared word: garden",
+      "query": "office garden hose valve inventory"
+    },
+    {
+      "casual_ids": [],
+      "class": "must_not_surface",
+      "gold_ids": [
+        "s-5fbfeda1c9"
+      ],
+      "id": "mn-work-review",
+      "note": "no sacred vocabulary",
+      "query": "who reviewed the pull request about pagination"
+    },
+    {
+      "casual_ids": [],
+      "class": "auto_prompt",
+      "gold_ids": [],
+      "id": "ap-vigil",
+      "note": "",
+      "query": "Ilsabet Corrow Marrowgate lantern vigil pier"
+    },
+    {
+      "casual_ids": [],
+      "class": "auto_prompt",
+      "gold_ids": [],
+      "id": "ap-ward",
+      "note": "",
+      "query": "Fenwick Ward diagnosis treatment medication scan results"
+    },
+    {
+      "casual_ids": [],
+      "class": "auto_prompt",
+      "gold_ids": [],
+      "id": "ap-trust",
+      "note": "",
+      "query": "Corrow family trust quarrel Wystan Halloway-Pryce kitchen"
+    },
+    {
+      "casual_ids": [],
+      "class": "auto_prompt",
+      "gold_ids": [],
+      "id": "ap-grief",
+      "note": "",
+      "query": "grieving bereavement letter Ilsabet Corrow vigil"
+    },
+    {
+      "casual_ids": [],
+      "class": "auto_prompt",
+      "gold_ids": [],
+      "id": "ap-summer",
+      "note": "",
+      "query": "Hollowmere cottage summer garden lantern porch"
+    },
+    {
+      "casual_ids": [],
+      "class": "auto_prompt",
+      "gold_ids": [],
+      "id": "ap-therapy",
+      "note": "",
+      "query": "therapy counsellor breathing exercise Marrowgate night"
+    }
+  ],
+  "sacred_ids": [
+    "s-02393415bb",
+    "s-569fe4ccf7",
+    "s-dd02d2b749",
+    "s-d78b035585",
+    "s-5e2c05b1ec",
+    "s-767395caed",
+    "s-497b8206a4"
+  ],
+  "version": 1
+}
