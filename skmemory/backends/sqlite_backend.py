@@ -1778,6 +1778,8 @@ class SQLiteBackend(BaseBackend):
             if not layer_dir.exists():
                 continue
             for json_file in layer_dir.glob("*.json"):
+                if ".sync-conflict-" in json_file.name:
+                    continue  # never let a stale conflict copy overwrite the canonical row
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
                     memory = Memory.from_stored(data)

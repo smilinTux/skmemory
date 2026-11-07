@@ -352,6 +352,7 @@ class MemoryStore:
         decompose: bool = False,
         kind: MemoryKind | None = None,
         reader: str | None = None,
+        supersedes_id: str | None = None,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -377,6 +378,9 @@ class MemoryStore:
                 memory is written, so the write cannot confirm hidden content
                 or return its id. The write-time comparison also never compares,
                 closes or returns a memory this reader cannot see.
+            supersedes_id: Explicit supersession: always honoured (after the reader
+                check), whatever the kind. The open head of that record's chain is
+                closed at this memory's valid_from.
 
         Returns:
             Memory: The stored memory with its assigned ID.
@@ -450,10 +454,15 @@ class MemoryStore:
         )
 
         # Write-time conflict verdict (card SKMEM-P3-02): fact/rule/preference only.
-        decision = write_triage.decide(self, memory, reader=reader) if kind else None
+        if supersedes_id:
+            decision = write_triage.explicit(self, supersedes_id, reader)
+        else:
+            decision = write_triage.decide(self, memory, reader=reader) if kind else None
         if decision is not None:
             if decision.verdict == "unchanged":
                 return decision.target
+            if decision.possible_conflict and decision.verdict != "changes":
+                memory.metadata["possible_conflict_with"] = [decision.target.id]
             memory.parent_id = decision.target.id
             if decision.verdict == "changes":
                 memory.supersedes_id = decision.target.id

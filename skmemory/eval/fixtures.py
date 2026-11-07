@@ -142,6 +142,9 @@ class ConflictCase(_Strict):
     existing: str
     expected_verdict: str
     expected_edge: str | None
+    # True when only an LLM judge can reach expected_verdict (rules never say changes/unchanged
+    # on their own); without an LLM the write resolves to extends.
+    needs_llm: bool = False
 
 
 class Supersession(_Strict):

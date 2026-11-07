@@ -244,6 +244,8 @@ class FileBackend(BaseBackend):
             if not layer_dir.exists():
                 continue
             for json_file in layer_dir.glob("*.json"):
+                if ".sync-conflict-" in json_file.name:
+                    continue  # a conflict copy is not a live record (write_triage heals it)
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
                     mem = Memory.from_stored(data)

@@ -1,36 +1,35 @@
 """Write-time conflict verdict for ``MemoryStore.snapshot`` (card SKMEM-P3-02).
 
-For a new fact, rule or preference, compare it with the top-5 similar memories of
-the SAME kind that the writer is allowed to see, and decide:
+For a new fact, rule or preference, compare it with the strongest of the top-5
+similar OPEN memories of the SAME kind the writer may see, and decide:
 
-``unchanged``  an agreed restatement: no write, the existing memory is returned.
+``unchanged``  dedupe-safe restatement: no write, the existing memory is returned.
 ``extends``    related and still true: write, with an EXTENDS edge to the target.
-``changes``    the new fact makes the old one false: write with ``supersedes_id``
-               and a SUPERSEDES edge, then close the old record's ``valid_to``.
-anything else  a plain write.
+``changes``    write with ``supersedes_id`` and a SUPERSEDES edge, then close the
+               old record's ``valid_to``. Only from an explicit ``supersedes_id``
+               passed by the caller, or an LLM verdict that survives every guard
+               (see :func:`skmemory.triage.judge_relation`). Rules never do it.
+anything else  a plain write. A doubtful one is logged in
+               ``metadata.possible_conflict_with`` for a human or the sweep.
 
-Safety rules, in priority order:
-
-* A false ``changes`` closes a true fact, so every doubt resolves to ``extends``
-  or a plain write (see :func:`skmemory.triage.judge_relation`).
-* A write must never be lost: any failure here returns "no decision" and the
-  caller writes normally.
-* The reader is respected: candidates come from ``store.search(reader=...)`` and
-  are re-checked against the reader scope, so a memory the reader cannot see is
-  never compared, never closed, and never returned.
-* Episodes, procedures and unkinded writes are never triaged.
+Safety: a false ``changes`` closes a true fact, so every doubt resolves to
+``extends``; a triage failure never loses the write; a reader never has a memory
+it cannot see compared, closed or returned.
 
 Closing the old record rewrites its flat file. ``integrity_hash`` covers id,
 title, content and the emotional signature only, so ``valid_to`` does not touch
-it and the record is NOT re-sealed; a detached signature sidecar, when one is
-configured, is re-signed by ``FileBackend.save``. The edit is recorded in the
-old record's ``metadata["superseded_by"]`` and in the WAL. Like reweave and
-reinforcement it is a whole-file rewrite, so the value written is deterministic
-(``new.valid_from``) and the close is skipped when ``valid_to`` is already set.
+it and the record is not re-sealed; ``FileBackend.save`` re-signs a detached
+signature sidecar when one is configured. The edit is recorded in
+``metadata.superseded_by`` and the WAL. The new record is written FIRST and the
+old one closed second, so a crash between them leaves the old record open with a
+new record pointing at it: :func:`heal_supersessions` (run from the promotion
+sweep) closes it. It also adopts a closure found only in a Syncthing conflict
+copy, so a stale open copy cannot resurrect a closed fact.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -52,6 +51,7 @@ logger = logging.getLogger(__name__)
 TRIAGE_KINDS = frozenset({"fact", "rule", "preference"})
 TOP_K = 5
 _OFF = {"0", "off", "false", "no"}
+CONFLICT_MARK = ".sync-conflict-"
 
 
 @dataclass(frozen=True)
@@ -60,11 +60,42 @@ class WriteDecision:
     target: Memory
     tier: str
     status: str
+    possible_conflict: bool = False
 
 
 def enabled() -> bool:
     """``SKMEMORY_WRITE_TRIAGE=off`` is the kill switch (default on)."""
     return os.environ.get("SKMEMORY_WRITE_TRIAGE", "on").strip().casefold() not in _OFF
+
+
+def _open_head(store: MemoryStore, start: Memory, scope) -> Memory | None:
+    """Follow ``superseded_by`` from a closed record to the open head of its chain."""
+    cur = start
+    for _ in range(16):
+        if cur.valid_to is None:
+            return cur
+        nxt_id = (cur.metadata.get("superseded_by") or {}).get("id")
+        nxt = store.primary.load(nxt_id) if nxt_id else None
+        if nxt is None or not scope.allows(nxt.context_tag, nxt.tags):
+            return cur
+        cur = nxt
+    return cur
+
+
+def explicit(store: MemoryStore, supersedes_id: str, reader: str | None) -> WriteDecision | None:
+    """Honour a caller-supplied ``supersedes_id`` (after the reader check)."""
+    try:
+        scope = resolve_reader(reader)
+        target = store.primary.load(supersedes_id)
+        if target is None or not scope.allows(target.context_tag, target.tags):
+            logger.warning("explicit supersedes_id ignored: not found or not visible")
+            return None
+        return WriteDecision(
+            "changes", _open_head(store, target, scope) or target, "explicit", "ok"
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("explicit supersedes_id ignored: %s", type(exc).__name__)
+        return None
 
 
 def decide(
@@ -88,40 +119,41 @@ def decide(
             if m.id != memory.id
             and m.kind == memory.kind
             and m.valid_to is None
+            and CONFLICT_MARK not in m.id
             and scope.allows(m.context_tag, m.tags)
-        ][:TOP_K]
+        ]
+        # A record some pool member already supersedes is stale (crash window): skip it.
+        stale = {m.supersedes_id for m in pool if m.supersedes_id}
+        pool = [m for m in pool if m.id not in stale][:TOP_K]
         if not pool:
             return None
-        # The strongest topical match is the only one judged: one LLM call at most.
         target = max(pool, key=lambda m: _lexical_similarity(memory.content, m.content))
         result = judge_relation(memory.content, target.content, use_llm=use_llm, llm_call=llm_call)
         if result.verdict == "unrelated":
             return None
-        return WriteDecision(result.verdict, target, result.tier, result.status)
+        return WriteDecision(
+            result.verdict, target, result.tier, result.status, result.possible_conflict
+        )
     except Exception as exc:  # noqa: BLE001 - triage must never lose the write
         logger.warning("write triage skipped: %s", type(exc).__name__)
         return None
 
 
-def close_superseded(store: MemoryStore, old_id: str, new: Memory) -> bool:
-    """Close ``old_id``'s validity at ``new.valid_from``. Idempotent, best effort."""
+def _close(store: MemoryStore, old_id: str, valid_to: str, by_id: str, via: str) -> bool:
     old = store.primary.load(old_id)
     if old is None or old.valid_to is not None:
         return False
     sealed_ok = old.verify_integrity()
     now = datetime.now(timezone.utc).isoformat()
-    old.valid_to = new.valid_from or new.created_at
+    old.valid_to = valid_to
     old.updated_at = now
-    old.metadata = {
-        **old.metadata,
-        "superseded_by": {"id": new.id, "at": now, "via": "write_time_triage"},
-    }
+    old.metadata = {**old.metadata, "superseded_by": {"id": by_id, "at": now, "via": via}}
     store._wal.log_pending(
-        "supersede_close", old.id, old.title, old.layer.value, {"superseded_by": new.id}
+        "supersede_close", old.id, old.title, old.layer.value, {"superseded_by": by_id}
     )
     store.primary.save(old)
     store._wal.log_done("supersede_close", old.id)
-    if sealed_ok and not old.verify_integrity():  # pragma: no cover - guard, hash ignores valid_to
+    if sealed_ok and not old.verify_integrity():  # pragma: no cover - hash ignores valid_to
         logger.error("closing %s broke its integrity hash", old.id)
     for backend, method in ((store.vector, "save"), (store.graph, "index_memory")):
         if backend is None:
@@ -131,3 +163,52 @@ def close_superseded(store: MemoryStore, old_id: str, new: Memory) -> bool:
         except Exception as exc:  # noqa: BLE001
             logger.warning("reindex of closed %s failed: %s", old.id, type(exc).__name__)
     return True
+
+
+def close_superseded(store: MemoryStore, old_id: str, new: Memory) -> bool:
+    """Close ``old_id``'s validity at ``new.valid_from``. Idempotent, best effort."""
+    return _close(store, old_id, new.valid_from or new.created_at, new.id, "write_time_triage")
+
+
+def heal_supersessions(store: MemoryStore) -> dict:
+    """Close every open record that a live record's ``supersedes_id`` points at.
+
+    Self-heals the crash window between the new write and the old close, and adopts
+    a closure that exists only in a Syncthing conflict copy. Oldest supersessor
+    first, so with two writers the earliest closes the record. Never raises.
+    """
+    report = {"closed": 0, "adopted_from_conflict": 0, "errors": 0}
+    try:
+        mems = store.primary.list_memories(limit=10**7)
+        for m in sorted((m for m in mems if m.supersedes_id), key=lambda x: x.valid_from or ""):
+            try:
+                if _close(
+                    store,
+                    m.supersedes_id,
+                    m.valid_from or m.created_at,
+                    m.id,
+                    "heal_supersessions",
+                ):
+                    report["closed"] += 1
+            except Exception as exc:  # noqa: BLE001
+                report["errors"] += 1
+                logger.warning("heal: close failed: %s", type(exc).__name__)
+        base = getattr(store.primary, "base_path", None)
+        if base is not None:
+            for path in sorted(base.glob(f"*/*{CONFLICT_MARK}*.json")):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    cid, vto = data.get("id"), data.get("valid_to")
+                    by = (data.get("metadata") or {}).get("superseded_by") or {}
+                    if (
+                        cid
+                        and vto
+                        and _close(store, cid, vto, by.get("id", "conflict-copy"), "conflict_copy")
+                    ):
+                        report["adopted_from_conflict"] += 1
+                except Exception:  # noqa: BLE001
+                    report["errors"] += 1
+    except Exception as exc:  # noqa: BLE001
+        report["errors"] += 1
+        logger.warning("heal_supersessions failed: %s", type(exc).__name__)
+    return report

@@ -192,6 +192,13 @@ class PromotionEngine:
             result=result,
         )
 
+        try:  # self-heal a crash between a supersession's new write and its old close
+            from .write_triage import heal_supersessions
+
+            heal_supersessions(self._store)
+        except Exception as exc:  # noqa: BLE001 - never fail a promotion sweep
+            logger.warning("supersession heal skipped: %s", type(exc).__name__)
+
         logger.info(result.summary())
         return result
 
