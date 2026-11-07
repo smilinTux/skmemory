@@ -186,3 +186,38 @@ def test_convert_merges_new_edge_before_deleting_old():
     b.convert_supersedes_to_lineage("c", "p", "CHUNK_OF")
     assert "MERGE" in b.queries[0] and "CHUNK_OF" in b.queries[0]
     assert "DELETE e" in b.queries[1] and "SUPERSEDES" in b.queries[1]
+
+
+class _FlakyBackend(_RepairBackend):
+    """Fails one pair every time and another only on its first attempt."""
+
+    def __init__(self, edges, always_bad, once_bad):
+        super().__init__(edges)
+        self.always_bad, self.once_bad = always_bad, once_bad
+        self.attempts, self.resets = {}, 0
+
+    def reset_connection(self):
+        self.resets += 1
+
+    def convert_supersedes_to_lineage(self, child, parent, rel):
+        from skmemory.backends.age_backend import GraphTransportError
+
+        n = self.attempts[child] = self.attempts.get(child, 0) + 1
+        if child == self.always_bad or (child == self.once_bad and n == 1):
+            raise GraphTransportError('AGE cypher failed: relation "lumina_knowledge.48:03"')
+        super().convert_supersedes_to_lineage(child, parent, rel)
+
+
+def test_repair_continues_past_a_failing_row_and_counts_it(tmp_path):
+    mem_dir = tmp_path / "memory"
+    parent = _mem()
+    kids = [_mem(parent_id=parent.id) for _ in range(4)]
+    for m in (parent, *kids):
+        _flat(mem_dir, m)
+    edges = [{"child": m.id, "parent": parent.id, "properties": {}} for m in kids]
+    b = _FlakyBackend(edges, always_bad=kids[1].id, once_bad=kids[2].id)
+    stats = repair_lineage_edges(b, mem_dir, dry_run=False)
+    assert stats["errors"] == 1 and stats["rewritten"] == 3
+    assert [s["child"] for s in stats["error_samples"]] == [kids[1].id]
+    assert {c[0] for c in b.converted} == {kids[0].id, kids[2].id, kids[3].id}
+    assert b.resets >= 2  # fresh connection before each retry
