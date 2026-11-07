@@ -56,7 +56,7 @@ docker run -d --name "$SRC" \
 
 ready=0
 for _ in $(seq 1 120); do
-  docker exec "$SRC" pg_isready -U postgres -d skmemory >/dev/null 2>&1 && { ready=1; break; }
+  docker exec "$SRC" psql -X -U postgres -d skmemory -At -c "select 1" >/dev/null 2>&1 && { ready=1; break; }
   sleep 1
 done
 [ "$ready" = "1" ] || die "source postgres did not become ready"
@@ -94,6 +94,11 @@ cat > "$AGE_SEED" <<'SQL'
 CREATE EXTENSION IF NOT EXISTS age;
 LOAD 'age';
 SET search_path = ag_catalog, "$user", public;
+-- Pad graphs first so the source's namespace oids differ from a fresh target's:
+-- that is what makes a restored registry stale (graph with oid N does not exist).
+SELECT create_graph('drillpad_a');
+SELECT create_graph('drillpad_b');
+SELECT create_graph('drillpad_c');
 SELECT create_graph('drilltest_knowledge');
 SELECT * FROM cypher('drilltest_knowledge', $$
   CREATE (a:Concept {name:'restore'})-[:RELATES]->(b:Concept {name:'recovery'})
