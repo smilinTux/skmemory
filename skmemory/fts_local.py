@@ -4,7 +4,9 @@ The ``memories`` table only holds a 150-char ``content_preview``; the full
 text lives in the flat JSON files. An FTS5 table over the preview would be a
 weak arm, so the full title, content, summary and tags are indexed instead,
 as a *contentless* FTS5 table (``content=''``, ``contentless_delete=1``). That
-stores the inverted index only, never a second copy of the text, and rows are
+stores the inverted index only, never a second copy of the text (measured
+0.59x of raw text bytes on Zipf-like prose, 0.95x on worst-case random
+vocabulary; ``detail=column``/``none`` shrink it but make bm25() return 0), and rows are
 removed by rowid. A small sidecar ``fts_meta`` table records which rows are
 indexed (and their ``context_tag``, which has no column in ``memories``), so
 filters push down into SQL and backfill can tell what is still missing.
