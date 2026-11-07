@@ -1,0 +1,1 @@
+Rebuild a record: `python3 skrsi/live_bench_metrics.py <baseline or rows.json> <out>` for each side, then `build_evaluation.py` from smilinTux/skrsi with the flags in the record's notes. `evaluation_id` and `evidence_sha256` hash the exact inputs, the notes included, so a rebuild with different notes or a different `--now` gets a different id with the same table.
