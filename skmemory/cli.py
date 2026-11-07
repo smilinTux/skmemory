@@ -4010,12 +4010,54 @@ def ledger_group() -> None:
     """Skill outcome ledger (served, followed, effect)."""
 
 
+@ledger_group.command("import-hermes")
+@click.option(
+    "--usage",
+    "usage",
+    default="~/.hermes/skills/.usage.json",
+    show_default=True,
+    help="Hermes skill usage file (read only, never modified)",
+)
+@click.option("--base", "base", default=None, help="Memory base dir (default: agent memories)")
+def ledger_import_hermes(usage: str, base: str | None) -> None:
+    """Import Hermes skill usage counters as served/followed events (idempotent)."""
+    import os
+
+    from .ledger import Ledger
+    from .ledger_sidecar import import_hermes_usage
+
+    if (os.environ.get("SKMEMORY_READER") or "").strip():
+        click.echo("owner-only: unavailable while SKMEMORY_READER declares a non-owner.", err=True)
+        raise SystemExit(1)
+    if base is None:
+        from .agents import get_agent_paths
+
+        try:
+            base = str(get_agent_paths()["base"] / "memory")
+        except ValueError as exc:
+            click.echo(f"No active agent memory profile: {exc}", err=True)
+            raise SystemExit(1) from exc
+    try:
+        st = import_hermes_usage(Path(usage).expanduser(), Ledger(base))
+    except (OSError, ValueError) as exc:
+        click.echo(f"Cannot read {usage}: {exc}", err=True)
+        raise SystemExit(1) from exc
+    click.echo(
+        f"Imported {st['served']} served + {st['followed']} followed events "
+        f"from {st['skills']} skills ({st['skipped']} skipped)."
+    )
+
+
 @ledger_group.command("top")
 @click.option("--limit", default=20, show_default=True, help="Rows to show")
 @click.option("--as-of", default=None, help="ISO timestamp to score at (default: now)")
 @click.option("--base", "base", default=None, help="Memory base dir (default: agent memories)")
 def ledger_top(limit: int, as_of: str | None, base: str | None) -> None:
-    """Rank skill versions by decayed net effect (harm weighted 4x)."""
+    """Rank skill versions by decayed net effect (harm weighted 4x).
+
+    follow and srv are first-party events only; "imp f/s" is imported Hermes counters
+    (followed/served), shown apart and never used for rates or flags.
+    """
     from .ledger import Ledger
 
     if base is None:
@@ -4030,12 +4072,14 @@ def ledger_top(limit: int, as_of: str | None, base: str | None) -> None:
     if not rows:
         click.echo("No ledger events.")
         return
-    click.echo(f"{'#':>2}  {'skill@version':<34} {'net':>7} {'follow':>6} {'srv':>4}  flags")
+    click.echo(
+        f"{'#':>2}  {'skill@version':<34} {'net':>7} {'follow':>6} {'srv':>4} {'imp f/s':>8}  flags"
+    )
     for s in rows:
         flags = ["anti-pattern"] if s.anti_pattern else []
         if s.flag:
             flags.append(s.flag)
         click.echo(
-            f"{s.rank:>2}  {s.key:<34} {s.net:>+7.2f} {s.follow_rate:>6.2f} {s.served:>4}  "
-            + ",".join(flags)
+            f"{s.rank:>2}  {s.key:<34} {s.net:>+7.2f} {s.follow_rate:>6.2f} {s.served:>4} "
+            f"{f'{s.imported_followed}/{s.imported_served}':>8}  " + ",".join(flags)
         )
