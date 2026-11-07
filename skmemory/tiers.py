@@ -64,18 +64,31 @@ def tier_for_source(source: str | None) -> SourceTier:
     return "self-generated"
 
 
-def tier_for_explicit_store(source: str | None) -> SourceTier:
-    """Tier for an explicit ``memory_store`` call: the caller chose to keep it.
+_RANK = {"user-stated": 3, "tool-output": 2, "web": 1, "self-generated": 0}
 
-    ``user-stated`` unless the label says the content came from the web, a tool
-    or a generator. An unrecognised label is NOT demoted here (the card's rule:
-    an explicit store from a session is user-stated).
+
+def tier_for_explicit_store(source: str | None, *, owner: bool = True) -> SourceTier:
+    """Tier for an explicit store, decided by TRUSTED ORIGIN, never the label.
+
+    ``owner`` is True only for an owner session (no declared reader, see
+    ``audience.resolve_reader(...).unrestricted``): that is the card's
+    "explicit memory_store from a session" and is ``user-stated``. Under a
+    declared reader the tier is ``self-generated`` whatever the arguments say.
+    The ``source`` label is model-supplied and can only LOWER the tier (a web,
+    tool or generator label); an unknown label changes nothing and no label
+    can raise it.
     """
-    t = tier_for_source(source)
-    known = (source or "").strip().lower() in _GENERATED_SOURCES
-    if t == "self-generated" and not known:
-        return "user-stated"
-    return t
+    base: SourceTier = "user-stated" if owner else "self-generated"
+    label = (source or "").strip().lower()
+    if label in _GENERATED_SOURCES:
+        cand: SourceTier = "self-generated"
+    elif label in _TOOL_SOURCES:
+        cand = "tool-output"
+    elif label.startswith(("web", "http", "fetch", "browser", "search")):
+        cand = "web"
+    else:
+        return base
+    return cand if _RANK[cand] < _RANK[base] else base
 
 
 def effective_tier(mem: Any) -> str | None:

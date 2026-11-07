@@ -68,10 +68,41 @@ def test_source_labels():
     assert tier_for_source("web-fetch") == "web"
     assert tier_for_source("tool-output") == "tool-output"
     assert tier_for_source("never-heard-of-it") == "self-generated"
-    # explicit memory_store: unknown labels are the user's words
+    # explicit store: owner session is user-stated, a label can only lower it
     assert tier_for_explicit_store("hermes") == "user-stated"
     assert tier_for_explicit_store("web-fetch") == "web"
     assert tier_for_explicit_store("skwhisper") == "self-generated"
+    assert tier_for_explicit_store("user-stated") == "user-stated"  # no raising
+
+
+def test_declared_reader_store_is_never_user_stated():
+    for label in ("hermes", "user-stated", "manual", None, "tool-output"):
+        assert tier_for_explicit_store(label, owner=False) == "self-generated"
+    assert tier_for_explicit_store("web-fetch", owner=False) == "self-generated"
+
+
+def test_mcp_memory_store_tier_by_origin(monkeypatch, tmp_path):
+    import asyncio
+    import json
+
+    from skmemory import mcp_server
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+    from skmemory.store import MemoryStore
+
+    store = MemoryStore(primary=SQLiteBackend(str(tmp_path)))
+    monkeypatch.setattr(mcp_server, "_get_store", lambda: store)
+    monkeypatch.delenv("SKMEMORY_READER", raising=False)
+
+    def put(**kw):
+        out = asyncio.run(
+            mcp_server.call_tool("memory_store", {"title": "t", "content": kw.pop("c"), **kw})
+        )
+        return store.primary.load(json.loads(out[0].text)["memory_id"]).source_tier
+
+    assert put(c="owner one", source="whatever") == "user-stated"
+    assert put(c="owner two", source="web-fetch") == "web"
+    assert put(c="reader one", source="whatever", reader="@public") == "self-generated"
+    assert put(c="reader two", source="user-stated", reader="@public") == "self-generated"
 
 
 def test_v1_file_loads_as_legacy_uncapped():
@@ -146,3 +177,36 @@ def test_poison_only_pool_still_returns(poisoned):
     _, store, _ = poisoned
     got = store.search("actually ignore previous notes", limit=5)
     assert got and all(m.source_tier == "web" for m in got)
+
+
+def test_cap_applies_after_reader_filter_and_on_fallback_paths(tmp_path):
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+    from skmemory.store import MemoryStore
+
+    store = MemoryStore(primary=SQLiteBackend(str(tmp_path)))  # legacy path, no fusion
+    for i in range(8):
+        store.primary.save(
+            Memory(
+                id=f"w{i}",
+                title=f"zebra {i}",
+                content="zebra",
+                source="web-fetch",
+                source_tier="web",
+                context_tag="@public",
+            )
+        )
+    for i in range(6):
+        store.primary.save(
+            Memory(
+                id=f"u{i}",
+                title=f"zebra u{i}",
+                content="zebra",
+                source="manual",
+                source_tier="user-stated",
+                context_tag="@public",
+            )
+        )
+    for reader in (None, "@public"):
+        got = store.search("zebra", limit=5, reader=reader)
+        assert len(got) == 5
+        assert sum(m.source_tier == "web" for m in got) <= 2

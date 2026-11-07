@@ -743,7 +743,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 layer=layer,
                 tags=tags,
                 source=source,
-                source_tier=tier_for_explicit_store(source),
+                source_tier=tier_for_explicit_store(
+                    source, owner=resolve_reader(arguments.get("reader")).unrestricted
+                ),
                 reader=arguments.get("reader"),
             )
             return _json_response({"memory_id": memory.id, "stored": True})

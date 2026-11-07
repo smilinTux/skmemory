@@ -1193,28 +1193,38 @@ class MemoryStore:
         """
         as_of = normalize_as_of(as_of)
         scope = resolve_reader(reader)
+        # Over-fetch a pool so the tier cap has higher-tier hits to promote, then
+        # cap ONCE here: every path (fused, degraded, fallback, legacy) and every
+        # reader filter has already run, so the cap sees exactly what is returned.
+        pool = max(limit, limit * 3)
         if not scope.unrestricted:
-            return self._search_as_reader(
+            rows = self._search_as_reader(
                 query,
                 scope,
-                limit,
+                pool,
                 tags=tags,
                 layer=layer,
                 source=source,
                 context_tag=context_tag,
-                record_access=record_access,
+                record_access=False,
                 as_of=as_of,
             )
-        return self._search_unscoped(
-            query,
-            limit,
-            tags=tags,
-            layer=layer,
-            source=source,
-            context_tag=context_tag,
-            record_access=record_access,
-            as_of=as_of,
-        )
+        else:
+            rows = self._search_unscoped(
+                query,
+                pool,
+                tags=tags,
+                layer=layer,
+                source=source,
+                context_tag=context_tag,
+                record_access=False,
+                as_of=as_of,
+            )
+        by_id = {m.id: m for m in rows}
+        kept = [by_id[i] for i in apply_tier_cap([m.id for m in rows], by_id, limit)]
+        if record_access:
+            self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
+        return kept
 
     def _search_unscoped(
         self, query, limit, *, tags, layer, source, context_tag, record_access=False, as_of=None
