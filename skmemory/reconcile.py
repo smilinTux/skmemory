@@ -156,6 +156,25 @@ def is_archived_id(memory_id: str, archived: set[str]) -> bool:
     return str(memory_id)[:12].replace("-", "") in archived
 
 
+def short_id(memory_id: str) -> str:
+    """The shortform the drift checks use: first 12 chars with hyphens removed."""
+    return str(memory_id)[:12].replace("-", "")
+
+
+def is_form_backed(memory_id: str, stems: set[str], stems_short: set[str]) -> bool:
+    """True when ``memory_id`` matches a file stem in EITHER id form.
+
+    A pg row id and its flat filename do not always agree on full uuid versus
+    shortform. Matches when the id equals a stem, its shortform equals a stem,
+    or it equals the shortform of a stem. Deliberately permissive: this guards a
+    destructive prune, so an ambiguous shortform (several stems sharing it)
+    counts as backed and the row is kept.
+    """
+    if not memory_id:
+        return False
+    return memory_id in stems or short_id(memory_id) in stems or memory_id in stems_short
+
+
 def _resolve_embed_urls() -> list[str]:
     """Embed endpoints for the reconcile path, in failover order.
 
@@ -1100,9 +1119,19 @@ def reconcile(
     # resurrection guard above deliberately drops tombstoned ids from `flat` so
     # that "forgotten" also leaves the derived index, and an archived copy must
     # not resurrect it. Tombstone beats archive.
-    unbacked_ids = pg_ids - set(flat.keys())
+    # A row whose id differs from the flat stem only in full-vs-shortform is
+    # backed too (same tolerance as drift_check); erring toward keeping rows.
+    flat_short = {short_id(k) for k in flat}
+    archived_short = {short_id(k) for k in archived}
+    unbacked_ids = {
+        i
+        for i in pg_ids - set(flat.keys())
+        if i in tombstoned or not is_form_backed(i, set(flat.keys()), flat_short)
+    }
     archived_pg_ids = {
-        i for i in unbacked_ids if i not in tombstoned and is_archived_id(i, archived)
+        i
+        for i in unbacked_ids
+        if i not in tombstoned and (is_archived_id(i, archived) or i in archived_short)
     }
     orphan_ids = unbacked_ids - archived_pg_ids
     would_prune = len(orphan_ids)

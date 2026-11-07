@@ -1491,8 +1491,14 @@ class SQLiteBackend(BaseBackend):
 
         # flat_only = files whose stem isn't in SQLite (allow shortform → fullform match)
         sqlite_short = {sid[:12].replace("-", "") for sid in sqlite_ids}
+        # Both directions: a row may store the shortform while the file carries
+        # the full uuid (or the reverse). Either is the same memory, not drift.
         flat_only = sum(
-            1 for stem in flat_ids if stem not in sqlite_ids and stem not in sqlite_short
+            1
+            for stem in flat_ids
+            if stem not in sqlite_ids
+            and stem not in sqlite_short
+            and stem[:12].replace("-", "") not in sqlite_ids
         )
 
         return {
