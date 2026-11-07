@@ -604,3 +604,40 @@ def test_main_arms_watchdog_that_exits_zero(tmp_path):
     code = "import time, skmemory.hook_cli as h\nh._arm_watchdog(0.3)\ntime.sleep(30)\n"
     r = subprocess.run([sys.executable, "-c", code], timeout=10, capture_output=True)
     assert r.returncode == 0
+
+
+def test_flush_recorded_only_after_successful_spawn(env, monkeypatch, tmp_path):
+    _make_agent(env)
+    monkeypatch.setattr(hook_cli.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setenv("SKAGENT", "alice")
+    tr = tmp_path / "t.jsonl"
+    _transcript(tr, [("user", "real request text"), ("assistant", "assistant work done here ok")])
+    payload = json.dumps({"session_id": "fail1234", "transcript_path": str(tr)})
+    sent = []
+    monkeypatch.setattr(hook_cli, "_spawn_persist", lambda p: False)
+    _run("pre-compact", "claude", payload)
+    monkeypatch.setattr(hook_cli, "_spawn_persist", lambda p: sent.append(p) or True)
+    _run("pre-compact", "claude", payload)
+    assert len(sent) == 1
+
+
+def test_mcp_pre_compact_single_memory_and_replay_guard(tmp_path, monkeypatch):
+    import asyncio
+
+    from skmemory import mcp_server
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+    from skmemory.store import MemoryStore
+
+    monkeypatch.setattr(hook_cli.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.delenv("SKMEMORY_READER", raising=False)
+    store = MemoryStore(primary=SQLiteBackend(base_path=str(tmp_path / "m")))
+    monkeypatch.setattr(mcp_server, "_get_store", lambda: store)
+    args = {"context": "word " * 800, "session_id": "mcpsess1234"}
+
+    def call():
+        return asyncio.run(mcp_server.call_tool("memory_pre_compact", args))[0].text
+
+    assert "memory_id" in call()
+    assert "skipped" in call()
+    assert len(store.list_memories(limit=50)) == 1
+    assert store.decompose_min_length < 10**9

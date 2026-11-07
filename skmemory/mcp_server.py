@@ -1129,20 +1129,41 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
             tail_chars = int(arguments.get("tail_chars", 4000))
             content = context[-tail_chars:] if len(context) > tail_chars else context
-            memory = store.snapshot(
-                title=f"Pre-compact session snapshot ({session_id[:8]})",
-                content=content,
-                layer=MemoryLayer.SHORT,
-                tags=["pre-compact", "auto-save", f"session:{session_id}"],
-                source="mcp:memory_pre_compact",
-                source_ref=f"session:{session_id}",
-                reader=arguments.get("reader"),
-                metadata={
-                    "tool": "memory_pre_compact",
-                    "original_length": len(context),
-                    "saved_length": len(content),
-                },
-            )
+            from . import hook_cli
+
+            guard_agent = os.environ.get("SKMEMORY_AGENT") or os.environ.get("SKAGENT") or "mcp"
+            guard_sid = session_id[:8]
+            if hook_cli._is_flush_replay(content) or hook_cli._flush_seen(
+                guard_agent, guard_sid, content
+            ):
+                return _json_response(
+                    {
+                        "skipped": "replay of an earlier flush",
+                        "session_id": session_id,
+                        "original_length": len(context),
+                    }
+                )
+            # one memory per flush: never a parent plus chunk children
+            _prev_min = store.decompose_min_length
+            store.decompose_min_length = 10**9
+            try:
+                memory = store.snapshot(
+                    title=f"Pre-compact session snapshot ({session_id[:8]})",
+                    content=content,
+                    layer=MemoryLayer.SHORT,
+                    tags=["pre-compact", "auto-save", f"session:{session_id}"],
+                    source="mcp:memory_pre_compact",
+                    source_ref=f"session:{session_id}",
+                    reader=arguments.get("reader"),
+                    metadata={
+                        "tool": "memory_pre_compact",
+                        "original_length": len(context),
+                        "saved_length": len(content),
+                    },
+                )
+            finally:
+                store.decompose_min_length = _prev_min
+            hook_cli._flush_record(guard_agent, guard_sid, content)
             return _json_response(
                 {
                     "memory_id": memory.id,

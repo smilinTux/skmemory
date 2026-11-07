@@ -319,21 +319,32 @@ def _skwhisper_digest(agent: str) -> None:
 # ── events ───────────────────────────────────────────────────────────────────
 
 
-def _flush_seen(agent: str, short: str, content: str) -> bool:
-    """Record this flush's hash per agent+session; True when it was already recorded."""
+def _flush_path(agent: str, short: str) -> str:
+    return os.path.join(tempfile.gettempdir(), f"skmemory-flush-{agent}-{short}.seen")
+
+
+def _flush_digest(content: str) -> str:
     import hashlib
 
-    digest = hashlib.sha256(content.encode()).hexdigest()[:16]
-    path = os.path.join(tempfile.gettempdir(), f"skmemory-flush-{agent}-{short}.seen")
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+
+def _flush_seen(agent: str, short: str, content: str) -> bool:
+    """True when this exact flush was already recorded for the agent+session."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            if digest in fh.read().split():
-                return True
+        with open(_flush_path(agent, short), encoding="utf-8") as fh:
+            return _flush_digest(content) in fh.read().split()
     except OSError:
-        pass
-    with contextlib.suppress(OSError), open(path, "a", encoding="utf-8") as fh:
-        fh.write(digest + "\n")
-    return False
+        return False
+
+
+def _flush_record(agent: str, short: str, content: str) -> None:
+    """Record a flush as done. Call only after the write was handed off."""
+    with (
+        contextlib.suppress(OSError),
+        open(_flush_path(agent, short), "a", encoding="utf-8") as fh,
+    ):
+        fh.write(_flush_digest(content) + "\n")
 
 
 def _short(sid: str | None, n: int = 8) -> str:
@@ -401,7 +412,7 @@ def _save_event(event: str, harness: str, agent: str | None, payload: dict, args
         )
         if (tr["user"] or tr["assistant"]) and _flush_seen(name, short, content):
             return  # verbatim replay of an earlier flush: write nothing
-        _spawn_persist(
+        spawned = _spawn_persist(
             {
                 "agent": name,
                 "snapshot": {
@@ -429,6 +440,8 @@ def _save_event(event: str, harness: str, agent: str | None, payload: dict, args
                 },
             }
         )
+        if spawned and (tr["user"] or tr["assistant"]):
+            _flush_record(name, short, content)
         return
 
     # session-end
