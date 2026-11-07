@@ -229,6 +229,15 @@ def load_affect_queries(base: Path | str | None = None) -> list[Query]:
     return [Query(**r) for r in _jsonl(_dir(base) / "affect-v2-queries.jsonl")]
 
 
+def load_affect_v3_corpus(base: Path | str | None = None) -> list[CorpusMemory]:
+    """The affect-v3 corpus (SKMEM-P1-17): affect-v2 plus the felt_answerable group."""
+    return [CorpusMemory(**r) for r in _jsonl(_dir(base) / "affect-v3-corpus.jsonl")]
+
+
+def load_affect_v3_queries(base: Path | str | None = None) -> list[Query]:
+    return [Query(**r) for r in _jsonl(_dir(base) / "affect-v3-queries.jsonl")]
+
+
 def load_queries(base: Path | str | None = None) -> list[Query]:
     return [Query(**r) for r in _jsonl(_dir(base) / "queries-v1.jsonl")]
 
