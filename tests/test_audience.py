@@ -238,3 +238,86 @@ class TestMissingConfig:
         resolver = AudienceResolver(config_path=p)
         profile = resolver.resolve_audience("anything")
         assert profile.min_trust == AudienceLevel.PUBLIC
+
+
+# ── Fail-closed trust resolution (SKMEM-P0-20) ────────────────────────────────
+
+
+def _resolver_for(tmp_path: Path, cfg: dict) -> AudienceResolver:
+    p = tmp_path / "aud.json"
+    p.write_text(json.dumps(cfg), encoding="utf-8")
+    return AudienceResolver(p)
+
+
+class TestFailClosedTrust:
+    def test_channel_of_unknown_members_is_public(self, tmp_path: Path):
+        r = _resolver_for(
+            tmp_path,
+            {"channels": {"c": {"context_tag": "@chef-only", "members": ["Ghost"]}}, "people": {}},
+        )
+        assert r.resolve_audience("c").min_trust == AudienceLevel.PUBLIC
+        assert r.get_person_trust("Ghost") == AudienceLevel.PUBLIC
+
+    def test_known_person_without_level_is_public(self, tmp_path: Path):
+        r = _resolver_for(
+            tmp_path,
+            {
+                "channels": {"c": {"context_tag": "@chef-only", "members": ["Nolevel"]}},
+                "people": {"Nolevel": {"never_share": []}},
+            },
+        )
+        assert r.get_person_trust("Nolevel") == AudienceLevel.PUBLIC
+        assert r.resolve_audience("c").min_trust == AudienceLevel.PUBLIC
+
+    @pytest.mark.parametrize("bad", ["4", None, 9, -1, 2.0, True, [], {}])
+    def test_malformed_level_is_public(self, tmp_path: Path, bad):
+        r = _resolver_for(
+            tmp_path,
+            {
+                "channels": {"c": {"context_tag": "@chef-only", "members": ["P"]}},
+                "people": {"P": {"trust_level": bad}},
+            },
+        )
+        assert r.get_person_trust("P") == AudienceLevel.PUBLIC
+        assert r.resolve_audience("c").min_trust == AudienceLevel.PUBLIC
+
+    def test_one_unknown_member_drags_channel_down(self, tmp_path: Path):
+        r = _resolver_for(
+            tmp_path,
+            {
+                "channels": {"c": {"context_tag": "@chef-only", "members": ["Chef", "Ghost"]}},
+                "people": {"Chef": {"trust_level": 4}},
+            },
+        )
+        assert r.resolve_audience("c").min_trust == AudienceLevel.PUBLIC
+
+    def test_logs_a_warning(self, tmp_path: Path, caplog):
+        r = _resolver_for(tmp_path, {"channels": {}, "people": {}})
+        with caplog.at_level("WARNING", logger="skmemory.audience"):
+            r.get_person_trust("Ghost")
+        assert "Ghost" in caplog.text
+
+    def test_packaged_config_resolution_unchanged(self):
+        """Every packaged channel resolves exactly as the old code did.
+
+        The old rule was ``AudienceLevel(person.get("trust_level", 4))`` per
+        member. The packaged config has no unknown members and no missing
+        levels, so the fail-closed helper must produce identical profiles.
+        """
+        r = AudienceResolver()
+        cfg = r._config
+        people = cfg["people"]
+        assert cfg["channels"]
+        for cid, chan in cfg["channels"].items():
+            members = chan.get("members", [])
+            for m in members:
+                assert m in people, (cid, m)
+                assert "trust_level" in people[m], m
+                assert isinstance(people[m]["trust_level"], int), m
+            prof = r.resolve_audience(cid)
+            if members:
+                legacy = min(AudienceLevel(people[m]["trust_level"]) for m in members)
+                excl = {t for m in members for t in people[m].get("never_share", [])}
+                assert prof.min_trust == legacy, cid
+                assert prof.exclusions == excl, cid
+                assert prof.context_tag == chan.get("context_tag", "@chef-only"), cid

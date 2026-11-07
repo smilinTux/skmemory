@@ -200,7 +200,7 @@ class AudienceResolver:
             all_exclusions: set[str] = set()
             for member_name in members:
                 person = self._get_person(member_name)
-                trust_levels.append(AudienceLevel(person.get("trust_level", 4)))
+                trust_levels.append(self.get_person_trust(member_name))
                 all_exclusions.update(person.get("never_share", []))
             min_trust = min(trust_levels)
             exclusions = all_exclusions
@@ -218,13 +218,17 @@ class AudienceResolver:
 
     def _get_person(self, name: str) -> dict[str, Any]:
         """Return a person's config dict, or an empty dict if unknown."""
-        return self._config.get("people", {}).get(name, {})
+        person = self._config.get("people", {}).get(name, {})
+        return person if isinstance(person, dict) else {}
 
     def get_person_trust(self, name: str) -> AudienceLevel:
-        """Get the trust level for a named person.
+        """Get the trust level for a named person (fails closed).
 
-        Unknown persons default to PUBLIC (lowest trust — most conservative
-        in terms of what they are *allowed* to receive).
+        This is the ONE place a person's level is decided; ``resolve_audience``
+        goes through it too. An unknown person, a known person with no
+        ``trust_level``, and a malformed ``trust_level`` (not an integer 0 to 4,
+        booleans included) all resolve to PUBLIC, the lowest ceiling, and log a
+        warning. A level is never invented upward.
 
         Args:
             name: Person's name as it appears in audience_config.json.
@@ -234,9 +238,18 @@ class AudienceResolver:
         """
         person = self._get_person(name)
         if not person:
-            logger.debug("Unknown person '%s', defaulting to PUBLIC trust", name)
+            logger.warning("Unknown person '%s', defaulting to PUBLIC trust", name)
             return AudienceLevel.PUBLIC
-        return AudienceLevel(person.get("trust_level", 4))
+        if "trust_level" not in person:
+            logger.warning("Person '%s' has no trust_level, defaulting to PUBLIC trust", name)
+            return AudienceLevel.PUBLIC
+        raw = person["trust_level"]
+        if isinstance(raw, int) and not isinstance(raw, bool) and 0 <= raw <= 4:
+            return AudienceLevel(raw)
+        logger.warning(
+            "Person '%s' has malformed trust_level %r, defaulting to PUBLIC trust", name, raw
+        )
+        return AudienceLevel.PUBLIC
 
     # ── Memory access check ───────────────────────────────────────────────────
 
