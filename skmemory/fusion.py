@@ -61,7 +61,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
@@ -145,6 +145,8 @@ class ArmOutcome:
     ids: tuple[str, ...] = ()
     status: ArmStatus = "ok"
     detail: str = ""
+    #: wall-clock the arm took (0.0 when it never ran or the time is unknown)
+    elapsed_s: float = 0.0
 
     @property
     def contributed(self) -> bool:
@@ -372,6 +374,11 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _timed_arm(name, fn, cap) -> ArmOutcome:
+    t0 = time.monotonic()
+    return replace(run_arm(name, fn, cap=cap), elapsed_s=time.monotonic() - t0)
+
+
 def run_arms_concurrent(
     specs: Sequence[tuple[str, Callable[[], Sequence[str]] | None, str | None]],
     *,
@@ -404,13 +411,13 @@ def run_arms_concurrent(
 
             def call(name=name, fn=fn):
                 try:
-                    return run_arm(name, fn, cap=cap)
+                    return _timed_arm(name, fn, cap)
                 finally:
                     guard.finished(name)
 
             futures[name] = executor.submit(call)
         else:
-            futures[name] = executor.submit(run_arm, name, fn, cap=cap)
+            futures[name] = executor.submit(_timed_arm, name, fn, cap)
     if futures:
         wait(list(futures.values()), timeout=deadline_s)
     for name, fut in futures.items():
@@ -427,6 +434,7 @@ def run_arms_concurrent(
                 status="timeout",
                 detail=f"no answer within {deadline_s:.2f}s deadline "
                 f"({time.monotonic() - started:.2f}s elapsed)",
+                elapsed_s=time.monotonic() - started,
             )
             logger.warning("retrieval arm %r timed out after %.2fs", name, deadline_s)
     return [outcomes[name] for name, _, _ in specs]
