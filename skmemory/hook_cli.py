@@ -103,7 +103,9 @@ def _text_blocks(content) -> list[str]:
     return out
 
 
-def parse_transcript(path: str | None, max_bytes: int = 3_000_000) -> dict:
+def parse_transcript(
+    path: str | None, max_bytes: int = 3_000_000, drop_flush_replays: bool = False
+) -> dict:
     """Return {"user": [...], "assistant": [...], "files": [...], "turns": n, "commits": [...]}."""
     res: dict = {"user": [], "assistant": [], "files": [], "turns": 0, "commits": []}
     if not path:
@@ -116,9 +118,21 @@ def parse_transcript(path: str | None, max_bytes: int = 3_000_000) -> dict:
             fh.seek(0, os.SEEK_END)
             size = fh.tell()
             fh.seek(max(0, size - max_bytes))
+            # One bounded read into memory is the private copy: the live transcript
+            # is never held open or re-read while the host appends to it.
             data = fh.read().decode("utf-8", errors="replace")
     except OSError:
         return res
+    return _parse_transcript_text(data, res, drop_flush_replays)
+
+
+def _is_flush_replay(text: str) -> bool:
+    """True when *text* is an earlier flush echoed back into the transcript."""
+    head = text.lstrip()[:200]
+    return head.startswith("TURNS:") and ("USER REQUESTS:" in text or "WORK DONE:" in text)
+
+
+def _parse_transcript_text(data: str, res: dict, drop_flush_replays: bool) -> dict:
     files: list[str] = []
     for line in data.splitlines():
         try:
@@ -154,6 +168,8 @@ def parse_transcript(path: str | None, max_bytes: int = 3_000_000) -> dict:
                 re.findall(r"\*\*\* (?:Update|Add) File: (\S+)", str(msg.get("arguments", "")))
             )
         texts = [t for t in _text_blocks(content) if t.strip()]
+        if drop_flush_replays:
+            texts = [t for t in texts if not _is_flush_replay(t)]
         if role == "user":
             human = [t for t in texts if not t.lstrip().startswith("<")]
             if human:
@@ -246,6 +262,9 @@ def persist(path: str) -> int:
             from .models import MemoryLayer, MemoryRole
 
             store = _get_store(None, None, None, None, no_vector=True)
+            if snap.get("no_decompose"):
+                # a flush is one memory, not a parent plus chunk children
+                store.decompose_min_length = 10**9
             store.snapshot(
                 title=snap["title"],
                 content=snap["content"],
@@ -300,6 +319,23 @@ def _skwhisper_digest(agent: str) -> None:
 # ── events ───────────────────────────────────────────────────────────────────
 
 
+def _flush_seen(agent: str, short: str, content: str) -> bool:
+    """Record this flush's hash per agent+session; True when it was already recorded."""
+    import hashlib
+
+    digest = hashlib.sha256(content.encode()).hexdigest()[:16]
+    path = os.path.join(tempfile.gettempdir(), f"skmemory-flush-{agent}-{short}.seen")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if digest in fh.read().split():
+                return True
+    except OSError:
+        pass
+    with contextlib.suppress(OSError), open(path, "a", encoding="utf-8") as fh:
+        fh.write(digest + "\n")
+    return False
+
+
 def _short(sid: str | None, n: int = 8) -> str:
     return (sid or "unknown")[:n]
 
@@ -345,13 +381,15 @@ def _emit_context(text: str, harness: str, out, hook_event: str = "SessionStart"
 def _save_event(event: str, harness: str, agent: str | None, payload: dict, args: dict) -> None:
     from .session_context import resolve_agent
 
+    if event == "pre-compact" and (os.environ.get("SKMEMORY_READER") or "").strip():
+        return  # a declared reader never writes
     info = resolve_agent(agent)
     name = info.name or "unknown"
     sid = payload.get("session_id") or args.get("session_id") or "unknown"
     short = _short(sid)
     cwd = payload.get("cwd") or os.getcwd()
     transcript = payload.get("transcript_path") or args.get("transcript")
-    tr = parse_transcript(transcript)
+    tr = parse_transcript(transcript, drop_flush_replays=(event == "pre-compact"))
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M")
 
     if event == "pre-compact":
@@ -361,10 +399,13 @@ def _save_event(event: str, harness: str, agent: str | None, payload: dict, args
             if (tr["user"] or tr["assistant"])
             else f"Session {short} compacting ({trigger}). Agent: {name}. CWD: {cwd}. Time: {stamp}. (No transcript content extracted)"
         )
+        if (tr["user"] or tr["assistant"]) and _flush_seen(name, short, content):
+            return  # verbatim replay of an earlier flush: write nothing
         _spawn_persist(
             {
                 "agent": name,
                 "snapshot": {
+                    "no_decompose": True,
                     "title": f"Pre-compact session content ({name}, {short})",
                     "content": content,
                     "layer": "short-term",
@@ -562,6 +603,28 @@ def run_hook(
     return 0
 
 
+HOOK_BUDGET_SECONDS = 10.0
+
+
+def _arm_watchdog(budget: float = HOOK_BUDGET_SECONDS - 2.0):
+    """Hard exit 0 when the budget lapses, even if a call below never returns.
+
+    A daemon timer thread owns the deadline, so it does not depend on the stuck
+    call cooperating. Detached persist children are unaffected.
+    """
+    import threading
+
+    def _bail() -> None:
+        with contextlib.suppress(Exception):
+            sys.stdout.flush()
+        os._exit(0)
+
+    t = threading.Timer(budget, _bail)
+    t.daemon = True
+    t.start()
+    return t
+
+
 def main(argv: list[str] | None = None) -> int:
     """`python -m skmemory.hook_cli persist <file>` (internal) or `<event> [--harness h]`."""
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -575,6 +638,8 @@ def main(argv: list[str] | None = None) -> int:
         i = argv.index("--harness")
         if i + 1 < len(argv):
             harness = argv[i + 1]
+    with contextlib.suppress(Exception):
+        _arm_watchdog()
     return run_hook(event, harness)
 
 

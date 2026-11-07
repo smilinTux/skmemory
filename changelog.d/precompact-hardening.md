@@ -1,0 +1,1 @@
+- Pre-compact hook: parses a private bounded copy of the transcript tail, drops replayed earlier flushes, skips a verbatim repeat per session, stores each flush as one memory (no parent plus chunk children), writes nothing under a declared SKMEMORY_READER, and a daemon-timer watchdog forces exit 0 inside the 10 second budget.
