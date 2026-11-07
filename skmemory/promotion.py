@@ -64,6 +64,12 @@ class PromotionCriteria(BaseModel):
     )
     cloud9_auto_promote: bool = True
     max_promotions_per_sweep: int = Field(default=50, ge=1)
+    max_observations_per_sweep: int = Field(
+        default=5,
+        ge=0,
+        description="Cap on new observations written per sweep; 0 disables the step. "
+        "SKMEMORY_OBSERVATIONS=0 is the operator kill switch.",
+    )
 
     source_auto_promote: list[str] = Field(
         default_factory=lambda: ["dreaming-engine", "journal-synthesis"],
@@ -107,6 +113,7 @@ class PromotionResult(BaseModel):
     mid_to_long: int = 0
     skipped: int = 0
     errors: int = 0
+    observations_written: int = 0
     promoted_ids: list[str] = Field(default_factory=list)
 
     @property
@@ -199,8 +206,23 @@ class PromotionEngine:
         except Exception as exc:  # noqa: BLE001 - never fail a promotion sweep
             logger.warning("supersession heal skipped: %s", type(exc).__name__)
 
+        self._sweep_observations(result)
+
         logger.info(result.summary())
         return result
+
+    def _sweep_observations(self, result: PromotionResult) -> None:
+        """Write citation-gated observations; a failure here never fails the sweep."""
+        try:
+            from .observations import observations_enabled, sweep_observations
+
+            cap = self._criteria.max_observations_per_sweep
+            if cap < 1 or not observations_enabled():
+                return
+            out = sweep_observations(self._store, max_new=cap)
+            result.observations_written = out["written"]
+        except Exception as exc:  # noqa: BLE001 - never fail a promotion sweep
+            logger.warning("observation step skipped: %s", type(exc).__name__)
 
     def evaluate(self, memory: Memory) -> MemoryLayer | None:
         """Evaluate whether a memory qualifies for promotion.
@@ -211,6 +233,8 @@ class PromotionEngine:
         Returns:
             Optional[MemoryLayer]: Target tier if it qualifies, None otherwise.
         """
+        if memory.source == "observation":
+            return None  # self-generated tier cap: a derived belief stays at mid-term
         if memory.layer == MemoryLayer.SHORT and self._qualifies_short_to_mid(memory):
             return MemoryLayer.MID
         elif memory.layer == MemoryLayer.MID and self._qualifies_mid_to_long(memory):
