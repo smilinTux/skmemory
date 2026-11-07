@@ -14,7 +14,13 @@ vector_only      hashed offline embedding alone
 full_context     ORACLE: gold first, then everything else. Reported with its
                  token cost (the whole corpus), which is what it buys recall with
 fallback_chain   old production: vector, text only if vector is empty
-candidate        the shipped fusion (``interleave_rerank``)
+candidate        PRODUCTION code: a real ``MemoryStore`` over a tmp home, real
+                 SQLiteBackend primary, a hashed vector backend and a tag-derived
+                 graph backend implementing the real interfaces, queried with
+                 ``store.search`` so ``skmemory/fusion.py`` + ``rerank.py`` run.
+                 The gate floors key on this.
+reimpl_fusion    ``fusion_bench``'s OFFLINE REIMPLEMENTATION of the same idea.
+                 Comparison column only, never gated.
 
 Abstain
 -------
@@ -32,14 +38,21 @@ the system behaves today and tagged ``expected_fail`` (never skipped).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import tempfile
+import urllib.request
 from collections.abc import Callable, Sequence
 from statistics import mean
 
+from skmemory.backends.base import BaseBackend
+from skmemory.backends.sqlite_backend import SQLiteBackend
 from skmemory.eval import fusion_bench as fb
 from skmemory.eval.fixtures import Query, load_corpus, load_queries
 from skmemory.eval.recall_benchmark import recall_at_k
+from skmemory.models import EmotionalSnapshot, Memory, MemoryLayer
+from skmemory.store import MemoryStore
 
 K = 5
 DEFAULT_ABSTAIN = 0.30
@@ -60,14 +73,20 @@ def abstain_threshold() -> float:
 
 
 def _strat_grep(query: str, docs: Sequence[dict], k: int) -> list[str]:
-    needle = query.casefold()
+    """Per-token substring over the flat JSON text.
+
+    Rank by total matched-token count (every occurrence of every query token),
+    ties by distinct-token coverage, then id.
+    """
+    tokens = fb._tokenize(query)
     scored = []
     for d in docs:
-        hits = d["_flat"].count(needle)
-        if hits:
-            scored.append((d["id"], hits))
-    scored.sort(key=lambda p: (-p[1], p[0]))
-    return [i for i, _ in scored[:k]]
+        counts = [d["_flat"].count(t) for t in tokens]
+        total, distinct = sum(counts), sum(1 for c in counts if c)
+        if total:
+            scored.append((d["id"], total, distinct))
+    scored.sort(key=lambda p: (-p[1], -p[2], p[0]))
+    return [i for i, _, _ in scored[:k]]
 
 
 STRATEGIES: dict[str, Strategy] = {
@@ -75,10 +94,175 @@ STRATEGIES: dict[str, Strategy] = {
     "grep_substring": _strat_grep,
     "vector_only": fb.strat_vector_only,
     "fallback_chain": fb.strat_fallback_chain,
-    CANDIDATE: fb.strat_interleave_rerank,
+    "reimpl_fusion": fb.strat_interleave_rerank,
 }
 ORACLE = "full_context"
-ALL_STRATEGIES = [*STRATEGIES, ORACLE]
+ALL_STRATEGIES = [*STRATEGIES, CANDIDATE, ORACLE]
+SCORED = [*STRATEGIES, CANDIDATE]  # everything with a real ranking (not the oracle)
+EMBED_URL_ENV = "SKMEMORY_EVAL_EMBED_URL"
+EMBED_MODEL_ENV = "SKMEMORY_EVAL_EMBED_MODEL"
+
+
+def embed_mode() -> str:
+    """ "real" only when SKMEMORY_EVAL_EMBED_URL is set (never in CI)."""
+    return "real" if os.environ.get(EMBED_URL_ENV) else "hashed"
+
+
+# ---------------------------------------------------------------------------
+# Production candidate wiring
+# ---------------------------------------------------------------------------
+
+
+def _embed_text(text: str) -> list[float]:
+    """Dense vector for ``text``: hashed bag of concepts, or a real endpoint."""
+    url = os.environ.get(EMBED_URL_ENV)
+    if not url:
+        return fb._concept_vector(text)
+    body = json.dumps(
+        {"model": os.environ.get(EMBED_MODEL_ENV, "mxbai-embed-large"), "input": text}
+    ).encode()
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - opt-in, local
+        data = json.load(resp)
+    vec = (data.get("embeddings") or [data.get("embedding")])[0]
+    return [float(x) for x in vec]
+
+
+def _match(mem: Memory, layer, tags, context_tag, source) -> bool:
+    from skmemory.store import _passes_filters
+
+    return _passes_filters(mem, layer, tags, context_tag, source)
+
+
+class EvalVectorBackend(BaseBackend):
+    """Dense backend implementing the real vector interface (``search_semantic``).
+
+    Hashed bag-of-concepts offline. NOT a semantic embedding: see the table
+    header. Reads memories from the real primary so it stays a pure index.
+    """
+
+    def __init__(self, primary: SQLiteBackend) -> None:
+        self._primary = primary
+        self._vecs: dict[str, list[float]] = {}
+
+    def index(self, mem: Memory) -> None:
+        self._vecs[mem.id] = _embed_text(f"{mem.title} {mem.content} {' '.join(mem.tags)}")
+
+    def search_semantic(
+        self, query, limit=10, *, layer=None, tags=None, context_tag=None, source=None
+    ):
+        qv = _embed_text(query)
+        scored = []
+        for mem in self._primary.list_memories(limit=100000):
+            if not _match(mem, layer, tags, context_tag, source):
+                continue
+            sim = fb._cosine(qv, self._vecs[mem.id])
+            if sim > 0.0:
+                scored.append((sim, mem.id, mem))
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return [m for _, _, m in scored[:limit]]
+
+    def search_text(self, query: str, limit: int = 10) -> list[Memory]:
+        return self.search_semantic(query, limit)
+
+    def save(self, memory: Memory) -> str:
+        self.index(memory)
+        return memory.id
+
+    def load(self, memory_id: str):
+        return self._primary.load(memory_id)
+
+    def delete(self, memory_id: str) -> bool:
+        return self._vecs.pop(memory_id, None) is not None
+
+    def list_memories(self, *args, **kwargs):
+        return self._primary.list_memories(*args, **kwargs)
+
+    def health_check(self) -> dict:
+        return {"ok": True, "backend": "eval-vector"}
+
+
+class EvalTagGraph:
+    """Graph arm stand-in. The fixtures have no ``entities`` field, so a memory's
+    ENTITIES ARE ITS TAGS and the lookup is per query token, like the production
+    ``search_by_entity_tokens``. A derived stand-in, not the AGE graph."""
+
+    def __init__(self, primary: SQLiteBackend) -> None:
+        self._primary = primary
+
+    def search_by_entity_tokens(
+        self, query, limit=20, *, layer=None, tags=None, context_tag=None, source=None
+    ):
+        toks = set(fb._tokenize(query))
+        hits = []
+        for mem in self._primary.list_memories(limit=100000):
+            if not _match(mem, layer, tags, context_tag, source):
+                continue
+            n = sum(1 for t in mem.tags if t.casefold() in toks)
+            if n:
+                hits.append((-n, mem.id))
+        hits.sort()
+        return [{"id": i} for _, i in hits[:limit]]
+
+
+def _to_memory(c) -> Memory:
+    return Memory(
+        id=c.id,
+        title=c.title,
+        content=c.content,
+        layer=MemoryLayer(c.layer),
+        tags=list(c.tags),
+        created_at=c.created_at,
+        updated_at=c.created_at,
+        context_tag=c.context_tag,
+        emotional=EmotionalSnapshot(intensity=c.emotional.intensity, valence=c.emotional.valence),
+        metadata={"kind": c.kind, "event_at": c.event_at, "source_tier": c.source_tier},
+    )
+
+
+def build_production_store(home: str, corpus) -> MemoryStore:
+    """A real MemoryStore over ``home`` loaded from the fixture corpus."""
+    primary = SQLiteBackend(home)
+    vector = EvalVectorBackend(primary)
+    for c in corpus:
+        mem = _to_memory(c)
+        primary.save(mem)
+        vector.index(mem)
+    return MemoryStore(primary=primary, vector=vector, graph=EvalTagGraph(primary))
+
+
+FIXTURE_NOW = "2026-11-01T12:00:00+00:00"
+
+
+@contextlib.contextmanager
+def _fusion_env():
+    """Force fusion + rerank on and pin the wall clock the temporal arm reads.
+
+    ``store._temporal`` calls ``parse_time_window(query)`` with no ``now``, so a
+    run would otherwise drift with the date. Only the clock argument is pinned
+    (to the fixture clock); the parsing logic is production code.
+    """
+    import functools
+    from datetime import datetime
+
+    import skmemory.store as store_mod
+
+    orig_ptw = store_mod.parse_time_window
+    store_mod.parse_time_window = functools.partial(
+        orig_ptw, now=datetime.fromisoformat(FIXTURE_NOW)
+    )
+    keep = {k: os.environ.get(k) for k in ("SKMEMORY_SEARCH_FUSION", "SKMEMORY_SEARCH_RERANK")}
+    os.environ["SKMEMORY_SEARCH_FUSION"] = "on"
+    os.environ["SKMEMORY_SEARCH_RERANK"] = "on"
+    try:
+        yield
+    finally:
+        store_mod.parse_time_window = orig_ptw
+        for k, v in keep.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def _prep(corpus: list[dict]) -> list[dict]:
@@ -113,7 +297,14 @@ def _oracle(q: Query, docs: Sequence[dict]) -> list[str]:
 
 def run(corpus_dir=None) -> dict:
     """Score every strategy on every query. Returns per-query rows + per-class rollups."""
-    docs = _prep([d.model_dump() for d in load_corpus(corpus_dir)])
+    with tempfile.TemporaryDirectory(prefix="class-bench-") as home, _fusion_env():
+        return _run(corpus_dir, home)
+
+
+def _run(corpus_dir, home: str) -> dict:
+    corpus = load_corpus(corpus_dir)
+    store = build_production_store(home, corpus)
+    docs = _prep([d.model_dump() for d in corpus])
     queries = load_queries(corpus_dir)
     by_id = {d["id"]: d for d in docs}
     resolver = fb.AudienceResolver()
@@ -133,6 +324,11 @@ def run(corpus_dir=None) -> dict:
                 got = _oracle(q, visible)
                 cost = sum(_tokens(d["_text"]) for d in visible)
                 sig = None
+            elif name == CANDIDATE:
+                ctx = None if q.reader == "@chef" else "@public"
+                got = [m.id for m in store.search(q.query, limit=10, context_tag=ctx)]
+                cost = None
+                sig = _signal(q.query, got, by_id)
             else:
                 got = STRATEGIES[name](q.query, visible, 10)
                 cost = None
@@ -149,6 +345,7 @@ def run(corpus_dir=None) -> dict:
         if q.query_class == "privacy" and q.reader != "@chef":
             for fn in STRATEGIES.values():
                 unfiltered += sum(1 for i in fn(q.query, docs, 10) if i in must_not)
+            unfiltered += sum(1 for m in store.search(q.query, limit=10) if m.id in must_not)
         rows.append(
             {
                 "id": q.id,
@@ -218,6 +415,7 @@ def run(corpus_dir=None) -> dict:
     priv = by_class.get("privacy", {}).get("strategies", {})
     return {
         "threshold": thr,
+        "embed_mode": embed_mode(),
         "corpus_tokens": corpus_tokens,
         "rows": rows,
         "by_class": by_class,
@@ -252,9 +450,23 @@ def _f(v) -> str:
 
 
 def format_table(res: dict) -> str:
+    if res["embed_mode"] == "real":
+        dense = f"vector backend uses a REAL embedding endpoint ({EMBED_URL_ENV}); not a CI number"
+    else:
+        dense = (
+            "the offline vector backend is a HASHED BAG OF WORDS with a synonym map, NOT a "
+            "semantic embedding: the 'semantic' class is NOT a measure of semantic retrieval offline"
+        )
     out = [
-        f"skmemory per-class baselines | abstain threshold {res['threshold']} "
-        f"(cosine of top-1) | full_context cost {res['corpus_tokens']} tokens (whole corpus)\n"
+        "skmemory per-class baselines",
+        "- candidate = PRODUCTION MemoryStore.search (real SQLite primary + fusion.py + rerank.py); "
+        "reimpl_fusion = fusion_bench's offline reimplementation (comparison only, not gated)",
+        f"- {dense}",
+        "- graph arm: fixtures have no entities, so entities are derived from TAGS "
+        "(stand-in graph backend, not AGE)",
+        f"- abstain threshold {res['threshold']} (cosine of top-1) is BENCH-ONLY: production has "
+        "no abstain path and no SKMEMORY_ABSTAIN",
+        f"- full_context cost {res['corpus_tokens']} tokens (whole corpus)\n",
     ]
     for metric in ("recall@5", "mrr"):
         hdr = f"{metric:<12}" + "".join(f"{n:>16}" for n in ALL_STRATEGIES)
@@ -265,14 +477,14 @@ def format_table(res: dict) -> str:
                 + "".join(f"{_f(entry['strategies'][n][metric]):>16}" for n in ALL_STRATEGIES)
             )
         out.append("")
-    hdr = f"{'abstain':<12}" + "".join(f"{n:>16}" for n in STRATEGIES)
+    hdr = f"{'abstain':<12}" + "".join(f"{n:>16}" for n in SCORED)
     out += [hdr, "-" * len(hdr)]
     a = res["by_class"]["absent"]["strategies"]
     out.append(
-        f"{'absent ok':<12}" + "".join(f"{_f(a[n]['abstain_correct']):>16}" for n in STRATEGIES)
+        f"{'absent ok':<12}" + "".join(f"{_f(a[n]['abstain_correct']):>16}" for n in SCORED)
     )
     fa = []
-    for n in STRATEGIES:
+    for n in SCORED:
         vals = [
             e["strategies"][n]["false_abstain"]
             for e in res["by_class"].values()
@@ -291,7 +503,8 @@ def format_table(res: dict) -> str:
         out.append(f"  {f['id']:<16}{f['metric']:<16}{f['value']:.3f} < gate {f['gate']:.3f}{tag}")
     if res["expected_fail_passing_today"]:
         out.append(
-            "as_of queries passing today anyway: " + ", ".join(res["expected_fail_passing_today"])
+            "as_of queries that already pass (floored, not flagged): "
+            + ", ".join(res["expected_fail_passing_today"])
         )
     return "\n".join(out)
 

@@ -86,3 +86,87 @@ def test_gate_fails_on_unrecorded_below_gate_query():
     base["class_gate_failures"] = []
     msgs = regression_gate.compare(cur, base)
     assert any("not a recorded known failure" in m for m in msgs)
+
+
+def test_candidate_runs_production_fusion(monkeypatch):
+    import skmemory.store as store_mod
+
+    calls = []
+    real = store_mod.fuse
+
+    def spy(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(store_mod, "fuse", spy)
+    class_bench.run()
+    assert calls, "candidate did not go through skmemory.fusion.fuse"
+
+
+def test_sabotaged_production_fusion_turns_gate_red(monkeypatch):
+    import skmemory.store as store_mod
+
+    base = regression_gate.load_baseline()
+    real = store_mod.fuse
+
+    def broken(*a, **k):
+        rep = real(*a, **k)
+        rep.ids = list(reversed(rep.ids))[:1]
+        return rep
+
+    monkeypatch.setattr(store_mod, "fuse", broken)
+    res = class_bench.run()
+    cur = {
+        "metrics": class_bench.flat_metrics(res),
+        "leak_count": res["leak_count"],
+        "class_gate_failures": res["failures"],
+    }
+    base_cls = {
+        "metrics": {k: v for k, v in base["metrics"].items() if k.startswith("class_bench.")},
+        "class_gate_failures": base["class_gate_failures"],
+    }
+    assert regression_gate.compare(cur, base_cls)
+
+
+def test_grep_is_per_token_not_whole_query():
+    docs = class_bench._prep(
+        [
+            {"id": "a", "title": "alpha beta", "content": "x", "tags": []},
+            {"id": "b", "title": "beta", "content": "y", "tags": []},
+        ]
+    )
+    assert class_bench._strat_grep("alpha gamma beta", docs, 5) == ["a", "b"]
+
+
+def test_table_discloses_instrument_limits(res):
+    t = class_bench.format_table(res)
+    assert "HASHED BAG OF WORDS" in t
+    assert "BENCH-ONLY" in t
+    assert "PRODUCTION" in t
+
+
+def test_expected_fail_starting_to_pass_is_flagged():
+    base = {"class_gate_failures": [{"id": "q-x", "expected_fail": "needs as_of"}]}
+    assert regression_gate.expected_fail_now_passing({"class_gate_failures": []}, base) == ["q-x"]
+    assert (
+        regression_gate.expected_fail_now_passing({"class_gate_failures": [{"id": "q-x"}]}, base)
+        == []
+    )
+
+
+def test_strict_flag_fails_on_expected_fail_passing(tmp_path, monkeypatch):
+    base = copy.deepcopy(regression_gate.load_baseline())
+    base["class_gate_failures"].append(
+        {
+            "id": "q-ghost",
+            "class": "temporal",
+            "metric": "recall@5",
+            "value": 0.0,
+            "gate": 1.0,
+            "expected_fail": "needs as_of",
+        }
+    )
+    path = tmp_path / "b.json"
+    regression_gate.write_json(base, path)
+    assert regression_gate.main(["--baseline", str(path)]) == 0
+    assert regression_gate.main(["--baseline", str(path), "--strict"]) == 1

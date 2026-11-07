@@ -232,6 +232,16 @@ def compare(
 # =============================================================================
 
 
+def expected_fail_now_passing(current: Mapping, baseline: Mapping) -> list[str]:
+    """Baseline expected_fail queries that no longer fail in the current run."""
+    failing = {f["id"] for f in current.get("class_gate_failures", [])}
+    return [
+        f["id"]
+        for f in baseline.get("class_gate_failures", [])
+        if f.get("expected_fail") and f["id"] not in failing
+    ]
+
+
 def load_baseline(path: str | os.PathLike = BASELINE_PATH) -> dict:
     """Load a baseline JSON file."""
     with open(path, encoding="utf-8") as fh:
@@ -307,6 +317,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Collect + print (and optionally --output) but do not gate.",
     )
     parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Also fail when an expected_fail query has started passing "
+        "(its tag must then be removed).",
+    )
+    parser.add_argument(
         "--epsilon",
         type=float,
         default=DEFAULT_EPSILON,
@@ -346,6 +362,14 @@ def main(argv: list[str] | None = None) -> int:
     regressions = compare(current, baseline, epsilon=args.epsilon)
 
     print()
+    passing = expected_fail_now_passing(current, baseline)
+    if passing:
+        print(
+            "REQUIRED ACTION: these expected_fail (as_of) queries now pass; drop their "
+            "expected_fail status and re-record the baseline: " + ", ".join(passing)
+        )
+        if args.strict:
+            regressions.append("--strict: expected_fail queries passing: " + ", ".join(passing))
     if regressions:
         print(f"REGRESSION GATE: FAIL ({len(regressions)} regression(s))")
         for line in regressions:
