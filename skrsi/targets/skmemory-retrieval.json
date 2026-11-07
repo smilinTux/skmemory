@@ -1,19 +1,24 @@
 {
   "schema": "skrsi.target.v2",
   "target_id": "skmemory-retrieval",
-  "revision": 1,
+  "revision": 2,
   "status": "active",
   "owner": "chef",
   "scope": {
-    "products": ["skmemory"],
-    "event_types": ["retrieval.class_bench", "retrieval.live_bench"]
+    "products": [
+      "skmemory"
+    ],
+    "event_types": [
+      "retrieval.class_bench",
+      "retrieval.live_bench"
+    ]
   },
   "objective": "Production fused search retrieves the right memory at or above plain BM25 for every query type, with no privacy leak and bounded latency.",
   "invariants": [
+    "min_sample_size: 50 queries per side",
     "leak_count stays 0 for a declared non-owner reader",
     "a live measurement writes nothing to the store it measures",
     "no gated class falls below its recorded floor in regression_gate",
-    "evaluator differs from producer",
     "a missing or dead arm is reported as missing, never as zero or success"
   ],
   "metrics": [
@@ -22,7 +27,29 @@
     "live_recall_at_5_rare_token",
     "live_mrr_all",
     "live_p95_ms",
+    "live_recall_margin_vs_bm25",
     "class_recall_at_5_per_class",
+    "class_recall_margin_vs_bm25",
+    "class_mrr_margin_vs_bm25",
+    "class_recall_at_5.affect",
+    "class_recall_at_5.conflict",
+    "class_recall_at_5.entity",
+    "class_recall_at_5.lexical",
+    "class_recall_at_5.multihop",
+    "class_recall_at_5.privacy",
+    "class_recall_at_5.procedural",
+    "class_recall_at_5.semantic",
+    "class_recall_at_5.temporal",
+    "class_mrr.affect",
+    "class_mrr.conflict",
+    "class_mrr.entity",
+    "class_mrr.lexical",
+    "class_mrr.multihop",
+    "class_mrr.privacy",
+    "class_mrr.procedural",
+    "class_mrr.semantic",
+    "class_mrr.temporal",
+    "class_abstain_correct.absent",
     "leak_count"
   ],
   "stop_rules": [

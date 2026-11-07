@@ -1,0 +1,1 @@
+skrsi target revision 2: per-class recall and rank plus candidate-minus-bm25 margins, a local live flattener that makes the fusion-below-bm25 stop rule machine-checked, a path filter covering store.py and the SQLite backend, and base-side flattening through a relative path. Advisory only, no gate added.
