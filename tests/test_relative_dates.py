@@ -148,3 +148,55 @@ def test_snapshot_sets_event_at(tmp_path, monkeypatch):
     assert m.event_at == "2026-03-13T15:00:00+00:00"
     m2 = s.snapshot("t2", "another unique body")
     assert m2.event_at == m2.created_at
+
+
+def test_weekday_phrase_with_extra_whitespace():
+    assert "last  Monday (2026-03-09)" in resolve_relative_dates("Met last  Monday.", EVENT)
+    assert "next\nMonday (2026-03-16)" in resolve_relative_dates("See you next\nMonday.", EVENT)
+    assert "on \t Tuesday (2026-03-10)" in resolve_relative_dates(
+        "They called on \t Tuesday.", EVENT
+    )
+
+
+def test_save_session_resolver_failure_still_saves_original(monkeypatch):
+    import skmemory.dates as dates
+
+    def boom(*a, **k):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(dates, "resolve_relative_dates", boom)
+    store, out = _save(monkeypatch, conversation=SESSION, event_at="2026-03-13T15:00:00Z")
+    assert out["saved"] == out["extracted"] >= 1
+    for kw in store.calls:
+        assert "(2026" not in kw["content"]
+
+
+def _real_store(tmp_path):
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+    from skmemory.store import MemoryStore
+
+    return MemoryStore(primary=SQLiteBackend(base_path=str(tmp_path)))
+
+
+def test_event_at_carried_through_ingest_path(tmp_path):
+    s = _real_store(tmp_path)
+    body = "Alpha beta gamma delta. " * 70  # >= 1200, <= 10000
+    assert 1200 <= len(body) <= 10000
+    ev = "2026-03-13T15:00:00+00:00"
+    parent = s.snapshot("long", body, event_at=ev)
+    assert parent.event_at == ev
+    kids = [s.primary.load(i) for i in parent.metadata["chunk_memory_ids"]]
+    assert kids and all(k.event_at == ev for k in kids)
+
+
+def test_event_at_carried_through_split_path(tmp_path):
+    s = _real_store(tmp_path)
+    s.content_overflow_strategy = "split"
+    s.decompose_min_length = 10**9
+    s.max_content_length = 500
+    body = "Alpha beta gamma delta. " * 100
+    ev = "2026-03-13T15:00:00+00:00"
+    parent = s.snapshot("huge", body, event_at=ev)
+    assert parent.event_at == ev
+    kids = [s.primary.load(i) for i in parent.metadata["split_children"]]
+    assert len(kids) > 1 and all(k.event_at == ev for k in kids)

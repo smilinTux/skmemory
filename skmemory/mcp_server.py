@@ -1180,7 +1180,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             saved_memories = []
             for mem in extracted:
                 try:
-                    content = resolve_relative_dates(mem.content, event_dt)
+                    try:
+                        content = resolve_relative_dates(mem.content, event_dt)
+                    except Exception as exc:  # a resolver bug must never drop a memory
+                        logger.warning(
+                            "memory_save_session: date resolution failed, saving original: %s",
+                            exc,
+                        )
+                        content = mem.content
                     memory = store.snapshot(
                         title=f"[auto-{mem.type}] {mem.content[:60]}",
                         content=content,

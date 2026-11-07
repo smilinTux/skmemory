@@ -83,7 +83,7 @@ def _weekday_date(base, wd: int, mode: str, sentence: str):
 
 
 def _resolve(phrase: str, base, sentence: str) -> str | None:
-    p = phrase.lower()
+    p = " ".join(phrase.lower().split())
     day = {
         "yesterday": -1,
         "last night": -1,
