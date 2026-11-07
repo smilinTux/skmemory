@@ -126,7 +126,9 @@ def test_failed_matched_call_is_explicit_harm(tmp_path, home):
     _, led, *_ = _record(tmp_path, home, lines)
     f = _ev(led, "followed")
     assert (
-        f["effect"] == "harm" and f["source"] == sc.SRC_ERROR and "not the skill" in f["missing"]
+        f["effect"] == "harm"
+        and f["source"] == sc.SRC_ERROR
+        and "may not be the skill" in f["missing"]
     )
 
 
