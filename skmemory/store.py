@@ -925,20 +925,36 @@ class MemoryStore:
                 "This memory may have been tampered with."
             )
 
-        # Update LRU tracking
-        if isinstance(self.primary, SQLiteBackend):
-            try:
-                conn = self.primary._get_conn()
-                conn.execute(
-                    "UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?",
-                    (datetime.now(timezone.utc).isoformat(), memory_id),
-                )
-                conn.commit()
-            except Exception as e:
-                logger.warning("store.py: %s", e)
-                pass
+        # Reinforce: a recall is a hit. Same batched path search() uses.
+        self._reinforce([memory_id])
 
         return memory
+
+    def _reinforce(self, memory_ids: Sequence[str]) -> None:
+        """Bump access_count / last_accessed for memories returned to a caller.
+
+        One batched UPDATE on the SQLite index, best effort: a primary without
+        usage counters is skipped, and a failure is logged and swallowed so it
+        can never fail the read that triggered it.
+        """
+        bump = getattr(self.primary, "bump_access", None)
+        if bump is None or not memory_ids:
+            return
+        try:
+            bump(list(memory_ids))
+        except Exception as exc:
+            logger.debug("access bump skipped: %s", exc)
+
+    def usage_counts(self, memory_ids: Sequence[str]) -> dict[str, dict] | None:
+        """Usage counters (``access_count``, ``last_accessed``) for ids.
+
+        Returns ``None`` when the primary keeps no such counters, so a caller
+        can tell "no counters here" from "counted zero".
+        """
+        get_usage = getattr(self.primary, "get_usage", None)
+        if get_usage is None:
+            return None
+        return get_usage(list(memory_ids))
 
     def search(
         self,
@@ -999,11 +1015,14 @@ class MemoryStore:
                     )
                 )
                 if results:
+                    self._reinforce([m.id for m in results])
                     return results
             except Exception as exc:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
-        return _ctx(self.primary.search_text(query, limit=fetch))
+        results = _ctx(self.primary.search_text(query, limit=fetch))
+        self._reinforce([m.id for m in results])
+        return results
 
     def _fusion_enabled(self) -> bool:
         """Whether multi-arm fusion should handle ``search()``.
@@ -1168,7 +1187,8 @@ class MemoryStore:
                     continue
                 row_id = str(row_id)
                 if row_id not in found:
-                    loaded = self.recall(row_id)
+                    # load, not recall: a graph candidate is not a hit
+                    loaded = self.primary.load(row_id)
                     if loaded is None:
                         # The graph is a derived projection and can name a row
                         # the source of truth no longer has. Skip it rather
@@ -1241,6 +1261,8 @@ class MemoryStore:
             return (None, report) if return_report else None
 
         ordered = [found[i] for i in report.ids if i in found]
+        # Only what is returned counts as a hit, not every arm candidate.
+        self._reinforce([m.id for m in ordered])
         return (ordered, report) if return_report else ordered
 
     def check_duplicate(

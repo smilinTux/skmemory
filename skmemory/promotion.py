@@ -235,7 +235,9 @@ class PromotionEngine:
             promoted.tags = list(set(promoted.tags + ["auto-promoted"]))
             promoted.metadata["promoted_from"] = memory.layer.value
             promoted.metadata["promoted_at"] = now_iso
-            promoted.metadata["promotion_reason"] = self._promotion_reason(memory)
+            promoted.metadata["promotion_reason"] = self._promotion_reason(
+                memory, self._access_count(memory)
+            )
             self._store.primary.save(promoted)
 
             # Mark the source so it won't be re-promoted on the next sweep
@@ -307,6 +309,7 @@ class PromotionEngine:
             Memory: Each memory in the tier.
         """
         page_size = max(self._criteria.max_promotions_per_sweep * 2, 500)
+        self._usage: dict[str, dict] = {}
         cursor: str | None = None
         seen: set[str] = set()
         while True:
@@ -314,12 +317,29 @@ class PromotionEngine:
             fresh = [m for m in page if m.id not in seen]
             if not fresh:
                 return
+            self._usage = self._store.usage_counts([m.id for m in fresh]) or {}
             for memory in fresh:
                 seen.add(memory.id)
                 yield memory
             if len(page) < page_size:
                 return
             cursor = page[-1].created_at
+
+    def _access_count(self, memory: Memory) -> int:
+        """Access count from the index column that search/recall bump.
+
+        Falls back to ``metadata`` only when the primary keeps no counters at
+        all (non-SQLite backend). When the column exists it wins, even at 0.
+        """
+        usage = getattr(self, "_usage", {}).get(memory.id)
+        if usage is None:
+            counts = self._store.usage_counts([memory.id])
+            if counts is None:
+                return int(memory.metadata.get("access_count", 0) or 0)
+            usage = counts.get(memory.id)
+            if usage is None:
+                return int(memory.metadata.get("access_count", 0) or 0)
+        return int(usage["access_count"])
 
     def _qualifies_short_to_mid(self, memory: Memory) -> bool:
         """Check if a short-term memory qualifies for mid-term.
@@ -344,7 +364,7 @@ class PromotionEngine:
 
         age_hours = self._age_hours(memory)
         if age_hours >= c.short_to_mid_age_hours:
-            access = memory.metadata.get("access_count", 0)
+            access = self._access_count(memory)
             if access >= c.short_to_mid_access_count:
                 return True
 
@@ -418,7 +438,7 @@ class PromotionEngine:
         return f"{memory.title}: {content_preview} [{emotional_sig}] [{tags_str}]"
 
     @staticmethod
-    def _promotion_reason(memory: Memory) -> str:
+    def _promotion_reason(memory: Memory, access_count: int = 0) -> str:
         """Generate a human-readable reason for the promotion.
 
         Args:
@@ -432,8 +452,8 @@ class PromotionEngine:
             reasons.append(f"high intensity ({memory.emotional.intensity:.1f})")
         if memory.emotional.cloud9_achieved:
             reasons.append("Cloud 9 achieved")
-        if memory.metadata.get("access_count", 0) >= 3:
-            reasons.append(f"frequently accessed ({memory.metadata.get('access_count')}x)")
+        if access_count >= 3:
+            reasons.append(f"frequently accessed ({access_count}x)")
 
         qualifying_tags = ["cloud9:achieved", "milestone", "breakthrough"]
         matching = [t for t in memory.tags if t in qualifying_tags]

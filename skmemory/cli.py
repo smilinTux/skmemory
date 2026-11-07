@@ -785,7 +785,7 @@ def sweep_cmd(
                         "title": mem.title,
                         "from": mem.layer.value,
                         "to": target.value,
-                        "reason": engine._promotion_reason(mem),
+                        "reason": engine._promotion_reason(mem, engine._access_count(mem)),
                     }
                 )
 

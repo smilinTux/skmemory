@@ -132,6 +132,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
         Returns:
             int: Number of memories re-indexed.
         """
+        usage = self._snapshot_usage()
         conn = self._get_conn()
         conn.execute("DELETE FROM memories")
         conn.commit()
@@ -150,6 +151,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
                 except Exception as e:
                     logger.warning("vaulted_backend.py: %s", e)
                     continue
+        self._restore_usage(usage)
         return count
 
     def export_all(self, output_path: str | None = None) -> str:

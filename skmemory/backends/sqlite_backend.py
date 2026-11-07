@@ -29,8 +29,8 @@ import functools
 import json
 import logging
 import sqlite3
-from collections.abc import Callable
-from datetime import datetime
+from collections.abc import Callable, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..atomic_io import atomic_write_text
@@ -450,6 +450,114 @@ class SQLiteBackend(BaseBackend):
                 except Exception as rec_err:  # pragma: no cover - defensive
                     logger.error("sqlite_backend: recovery failed: %s", rec_err)
             return False
+
+    # ------------------------------------------------------------------
+    # Usage counters (access_count / last_accessed / importance)
+    # ------------------------------------------------------------------
+
+    _BUMP_BUSY_MS = 200
+    _BUMP_CHUNK = 500
+
+    def bump_access(self, memory_ids: Sequence[str], now: str | None = None) -> int:
+        """Reinforce memories that were returned to a caller.
+
+        One batched ``UPDATE ... WHERE id IN (...)`` per call (chunked only to
+        stay under SQLite's variable limit), setting ``access_count + 1`` and
+        ``last_accessed`` together. This is a hot-path write, so it uses a
+        short busy timeout instead of the connection's 5s one and NEVER
+        raises: under lock contention or a broken index the bump is skipped
+        and the caller's read is unaffected.
+
+        Args:
+            memory_ids: Ids to bump (duplicates are collapsed).
+            now: ISO timestamp for ``last_accessed`` (defaults to now, UTC).
+
+        Returns:
+            int: Rows updated (0 on failure or no match).
+        """
+        ids = list(dict.fromkeys(str(i) for i in memory_ids if i))
+        if not ids:
+            return 0
+        stamp = now or datetime.now(timezone.utc).isoformat()
+        updated = 0
+        conn = None
+        try:
+            conn = self._get_conn()
+            conn.execute(f"PRAGMA busy_timeout={self._BUMP_BUSY_MS}")
+            for i in range(0, len(ids), self._BUMP_CHUNK):
+                chunk = ids[i : i + self._BUMP_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                cur = conn.execute(
+                    "UPDATE memories SET access_count = access_count + 1, "
+                    f"last_accessed = ? WHERE id IN ({marks})",
+                    [stamp, *chunk],
+                )
+                updated += max(cur.rowcount, 0)
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.debug("sqlite_backend: access bump skipped: %s", e)
+            with contextlib.suppress(Exception):
+                if conn is not None:
+                    conn.rollback()
+            return 0
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_S * 1000)}")
+        return updated
+
+    def get_usage(self, memory_ids: Sequence[str]) -> dict[str, dict]:
+        """Read ``access_count`` / ``last_accessed`` for ids, in one query per chunk.
+
+        Ids with no index row are absent from the result, so a caller can tell
+        "zero accesses" from "not indexed".
+        """
+        ids = list(dict.fromkeys(str(i) for i in memory_ids if i))
+        out: dict[str, dict] = {}
+        try:
+            conn = self._get_conn()
+            for i in range(0, len(ids), self._BUMP_CHUNK):
+                chunk = ids[i : i + self._BUMP_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                for row in conn.execute(
+                    f"SELECT id, access_count, last_accessed FROM memories WHERE id IN ({marks})",
+                    chunk,
+                ):
+                    out[row["id"]] = {
+                        "access_count": row["access_count"] or 0,
+                        "last_accessed": row["last_accessed"],
+                    }
+        except sqlite3.Error as e:
+            logger.warning("sqlite_backend: usage read failed: %s", e)
+        return out
+
+    def _snapshot_usage(self) -> list[tuple]:
+        """Capture usage state before a rebuild deletes the index rows."""
+        try:
+            rows = (
+                self._get_conn()
+                .execute("SELECT id, access_count, last_accessed, importance FROM memories")
+                .fetchall()
+            )
+        except sqlite3.Error as e:
+            logger.warning("sqlite_backend: usage snapshot failed, counters will reset: %s", e)
+            return []
+        return [(r["id"], r["access_count"], r["last_accessed"], r["importance"]) for r in rows]
+
+    def _restore_usage(self, snapshot: list[tuple]) -> None:
+        """Put snapshotted usage state back on rows that survived the rebuild."""
+        if not snapshot:
+            return
+        try:
+            conn = self._get_conn()
+            conn.executemany(
+                "UPDATE memories SET access_count = ?, last_accessed = ?, importance = ? "
+                "WHERE id = ?",
+                [(c, la, imp, i) for (i, c, la, imp) in snapshot],
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.warning("sqlite_backend: usage restore failed: %s", e)
 
     def _row_to_memory_summary(self, row: sqlite3.Row) -> dict:
         """Convert a database row to a lightweight memory summary dict.
@@ -1328,6 +1436,7 @@ class SQLiteBackend(BaseBackend):
         Returns:
             int: Number of memories indexed.
         """
+        usage = self._snapshot_usage()
         keep: list[str] = []
         if not force:
             orphan_stats = self.export_orphans_to_flat(
@@ -1363,6 +1472,7 @@ class SQLiteBackend(BaseBackend):
                 except (json.JSONDecodeError, Exception):
                     continue
 
+        self._restore_usage(usage)
         return count
 
     def stats(self) -> dict:
