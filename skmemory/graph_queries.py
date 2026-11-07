@@ -196,7 +196,7 @@ TRAVERSE_RELATED = """
 MATCH (start:Memory {{id: $id}})
 MATCH path = (start)-[*1..{depth}]-(related:Memory)
 WHERE related.id <> $id
-OPTIONAL MATCH (related)-[:PROMOTED_FROM]->(parent:Memory)
+OPTIONAL MATCH (related)-[:PROMOTED_FROM|CHUNK_OF]->(parent:Memory)
 RETURN DISTINCT related.id AS id,
        related.title AS title,
        related.layer AS layer,
@@ -211,10 +211,10 @@ ORDER BY distance ASC, related.intensity DESC
 LIMIT 20
 """
 
-#: Walk PROMOTED_FROM chain upward to find ancestor memories.
+#: Walk PROMOTED_FROM / CHUNK_OF chain upward to find ancestor memories.
 TRAVERSE_LINEAGE = """
 MATCH (start:Memory {id: $id})
-MATCH path = (start)-[:PROMOTED_FROM*1..10]->(ancestor:Memory)
+MATCH path = (start)-[:PROMOTED_FROM|CHUNK_OF*1..10]->(ancestor:Memory)
 RETURN ancestor.id AS id,
        ancestor.title AS title,
        ancestor.layer AS layer,
@@ -284,7 +284,7 @@ LIMIT $limit
 SEARCH_BY_ENTITY = """
 MATCH (m:Memory)-[:MENTIONS]->(e:Entity)
 WHERE toLower(e.name) CONTAINS toLower($query)
-OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM|CHUNK_OF]->(parent:Memory)
 RETURN m.id AS id,
        m.title AS title,
        m.layer AS layer,
@@ -302,7 +302,7 @@ LIMIT $limit
 SEARCH_BY_CITATION = """
 MATCH (m:Memory)-[:CITES]->(c:Citation)
 WHERE toLower(c.text) CONTAINS toLower($query)
-OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM|CHUNK_OF]->(parent:Memory)
 RETURN m.id AS id,
        m.title AS title,
        m.layer AS layer,
@@ -320,7 +320,7 @@ LIMIT $limit
 SEARCH_BY_CLAIM = """
 MATCH (m:Memory)-[:ASSERTS]->(c:Claim)
 WHERE toLower(c.text) CONTAINS toLower($query)
-OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM|CHUNK_OF]->(parent:Memory)
 RETURN m.id AS id,
        m.title AS title,
        m.layer AS layer,
@@ -338,7 +338,7 @@ LIMIT $limit
 SEARCH_BY_SECTION = """
 MATCH (m:Memory)-[:IN_SECTION]->(s:Section)
 WHERE toLower(s.title) CONTAINS toLower($query)
-OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM|CHUNK_OF]->(parent:Memory)
 RETURN m.id AS id,
        m.title AS title,
        m.layer AS layer,
@@ -357,7 +357,7 @@ RELATED_CLAIMS_BY_ENTITY = """
 MATCH (m:Memory)-[:MENTIONS]->(e:Entity)
 WHERE toLower(e.name) CONTAINS toLower($query)
 MATCH (m)-[:ASSERTS]->(c:Claim)
-OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM|CHUNK_OF]->(parent:Memory)
 WITH c, e,
      collect(DISTINCT coalesce(parent.id, m.id)) AS memory_ids,
      collect(DISTINCT coalesce(parent.title, m.title)) AS memory_titles
@@ -374,7 +374,7 @@ RELATED_CLAIMS_BY_CITATION = """
 MATCH (m:Memory)-[:CITES]->(cite:Citation)
 WHERE toLower(cite.text) CONTAINS toLower($query)
 MATCH (m)-[:ASSERTS]->(c:Claim)
-OPTIONAL MATCH (m)-[:PROMOTED_FROM]->(parent:Memory)
+OPTIONAL MATCH (m)-[:PROMOTED_FROM|CHUNK_OF]->(parent:Memory)
 WITH c, cite,
      collect(DISTINCT coalesce(parent.id, m.id)) AS memory_ids,
      collect(DISTINCT coalesce(parent.title, m.title)) AS memory_titles

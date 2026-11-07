@@ -30,7 +30,8 @@ def _backend() -> AGEGraphBackend:
 
     def cypher(query, params=None, cols="v agtype", timeout_ms=None):
         b.queries.append(query)
-        return [("x",)]
+        # path walks get no rows; everything else a truthy row
+        return [] if "path =" in query else [("x",)]
 
     b._cypher = cypher
     return b
@@ -141,10 +142,67 @@ def test_repair_apply_backs_up_then_rewrites_only_misclassified(tmp_path):
     assert again["rewritten"] == 0
 
 
-def test_chunking_path_stamps_chunk_relation():
-    import inspect
+def test_ingest_document_chunks_record_chunk_relation(tmp_path):
+    from skmemory.backends.file_backend import FileBackend
+    from skmemory.store import MemoryStore
 
-    from skmemory import store
+    store = MemoryStore(primary=FileBackend(base_path=str(tmp_path / "mem")))
+    content = "The Internal Revenue Service shall respond promptly. Chef claims it. " * 60
+    parent = store.ingest_document("Long doc", content)
+    chunk_ids = parent.metadata["chunk_memory_ids"]
+    assert len(chunk_ids) >= 2
+    for cid in chunk_ids:
+        chunk = store.recall(cid)
+        assert chunk.parent_id == parent.id
+        assert chunk.metadata[PARENT_RELATION_KEY] == "chunk_of"
+    assert PARENT_RELATION_KEY not in parent.metadata
 
-    src = inspect.getsource(store)
-    assert "child.metadata[PARENT_RELATION_KEY] = RELATION_CHUNK_OF" in src
+
+def test_walks_follow_lineage_edges_but_chain_stays_supersedes_only():
+    b = _backend()
+    b.get_related("m1")
+    b.get_lineage("m1")
+    b.neighbors("m1")
+    walked = _edge_queries(b)
+    for rel in ("RELATED_TO", "SUPERSEDES", "PROMOTED_FROM", "CHUNK_OF"):
+        assert f"[:{rel}*" in walked or f"[e:{rel}]" in walked, rel
+    b.queries.clear()
+    b.supersedes_chain("m1")
+    chain = _edge_queries(b)
+    assert "SUPERSEDES" in chain
+    assert "PROMOTED_FROM" not in chain and "CHUNK_OF" not in chain
+
+
+def test_lineage_walk_per_edge_type_queries():
+    b = _backend()
+    b.get_lineage("m1")
+    for rel in ("PROMOTED_FROM", "CHUNK_OF", "SUPERSEDES"):
+        assert any(f"[:{rel}*1..10]" in q for q in b.queries), rel
+
+
+def test_convert_merges_new_edge_before_deleting_old():
+    b = _backend()
+    b._cypher_strict = lambda q, *a, **k: b.queries.append(q) or []
+    b.convert_supersedes_to_lineage("c", "p", "CHUNK_OF")
+    assert "MERGE" in b.queries[0] and "CHUNK_OF" in b.queries[0]
+    assert "DELETE e" in b.queries[1] and "SUPERSEDES" in b.queries[1]
+
+
+def test_skgraph_queries_cover_chunk_edges():
+    from skmemory import graph_queries as Q
+
+    assert "PROMOTED_FROM|CHUNK_OF" in Q.TRAVERSE_RELATED
+    assert "PROMOTED_FROM|CHUNK_OF*1..10" in Q.TRAVERSE_LINEAGE
+
+
+def test_skgraph_chunk_gets_chunk_of_edge():
+    from unittest.mock import MagicMock
+
+    from skmemory.backends.skgraph_backend import SKGraphBackend
+
+    be = object.__new__(SKGraphBackend)
+    be._graph = MagicMock()
+    be._ensure_initialized = lambda: True
+    be.index_memory(_mem(parent_id="p1", metadata={"decomposition": {"parent_id": "p1"}}))
+    q = " ".join(str(c) for c in be._graph.query.call_args_list)
+    assert "CHUNK_OF" in q and "SUPERSEDES" not in q
