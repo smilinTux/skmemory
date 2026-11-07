@@ -454,9 +454,11 @@ def test_cli_search_prints_degraded_to_stderr(store, monkeypatch):
 
     monkeypatch.setenv("SKMEMORY_SEARCH_DEADLINE_S", "0.4")
     store.vector = _Hung()
-    res = CliRunner(mix_stderr=False).invoke(
-        cli, ["search", "skgateway routing"], obj={"store": store}
-    )
+    try:
+        runner = CliRunner(mix_stderr=False)  # click < 8.2
+    except TypeError:
+        runner = CliRunner()  # click >= 8.2 always captures stderr separately
+    res = runner.invoke(cli, ["search", "skgateway routing"], obj={"store": store})
     assert "degraded: arms timed out" in res.stderr
 
 
