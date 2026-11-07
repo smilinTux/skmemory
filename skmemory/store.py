@@ -18,8 +18,10 @@ import time
 from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 
 from . import decay as _decay
+from . import retrieval_log
 from . import write_triage
 from .agents import get_agent_paths
 from .audience import ReaderScope, resolve_reader
@@ -1420,6 +1422,34 @@ class MemoryStore:
         mode = os.environ.get(cls.GRAPH_ARM_ENV, "off").strip().casefold()
         return mode in ("on", "1", "true", "yes")
 
+    def _retrieval_log_dir(self):
+        """``<agent>/logs`` next to the primary's memory dir, or None when unknown."""
+        base = getattr(self.primary, "base_path", None)
+        return None if base is None else Path(base).parent / "logs"
+
+    def _log_retrieval(self, query: str, report) -> None:
+        """Queue one retrieval record. Best effort: never raises, never blocks."""
+        try:
+            retrieval_log.record(
+                self._retrieval_log_dir(), retrieval_log.build_record(query, report)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("retrieval log skipped: %s", exc)
+
+    def arm_liveness(self, status: dict) -> dict:
+        """Arm liveness from the last 100 logged searches (shared across processes)."""
+        backend_ok = {
+            role: (status.get(role) or {}).get("ok")
+            if isinstance(status.get(role), dict)
+            else None
+            for role in ("primary", "vector", "graph")
+        }
+        records = retrieval_log.read_window(self._retrieval_log_dir())
+        return {
+            "window": len(records),
+            "arms": retrieval_log.arm_liveness(records, self.search_arm_states(), backend_ok),
+        }
+
     def search_arm_states(self) -> dict[str, dict]:
         """Per search arm: ``enabled`` plus ``state`` and, when off, the reason."""
         graph_on = self.graph_arm_enabled()
@@ -1734,6 +1764,7 @@ class MemoryStore:
             else:
                 report.ids = pool_ids
         report.ids = _demote_superseded(report.ids, found)[:limit]
+        self._log_retrieval(query, report)
 
         if report.failed_arms or report.timed_out_arms:
             logger.warning(
@@ -3353,6 +3384,19 @@ class MemoryStore:
         status["profile"] = profile
         if profile["is_template"] or not profile["resolved"]:
             overall = "red"
+
+        # Arm liveness from the retrieval log. Only errors and timeouts (or a
+        # zero-hit streak with a failing backend probe) degrade: a disabled arm,
+        # or one that legitimately finds nothing, does not.
+        try:
+            liveness = self.arm_liveness(status)
+            status["retrieval"] = liveness
+            if overall == "ok" and any(
+                a["state"] == "degraded" for a in liveness["arms"].values()
+            ):
+                overall = "degraded"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("store.py: arm liveness read failed: %s", e)
 
         status["status"] = overall
         status["sqlite_only"] = sqlite_only
