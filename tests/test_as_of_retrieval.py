@@ -500,3 +500,64 @@ def test_class_bench_must_not_ranks_below_gold():
                     assert all(ids.index(g) < ids.index(bad) for g in q.gold_ids if g in ids), q.id
                     checked += 1
         assert checked >= 2
+
+
+# ------------------------------------------------------------- Z vs +00:00 boundary
+
+BOUND = "2026-10-29T12:00:00"
+
+
+@pytest.mark.parametrize("stored", ["+00:00", "Z"])
+@pytest.mark.parametrize("bound", ["+00:00", "Z"])
+def test_created_bounds_are_inclusive_exclusive_in_both_forms(tmp_path, stored, bound):
+    s = _store(
+        tmp_path,
+        _mem("edge", "edge row", BOUND + "+00:00"),
+        _mem("before", "before row", "2026-10-29T11:59:59+00:00"),
+    )
+    conn = s.primary._get_conn()
+    conn.execute("UPDATE memories SET created_at = replace(created_at, '+00:00', ?)", (stored,))
+    conn.commit()
+    lo = BOUND + bound
+    ids = lambda **k: {m.id for m in s.primary.list_memories(limit=10, **k)}  # noqa: E731
+    assert ids(created_after=lo) == {"edge"}  # inclusive lower bound keeps the boundary row
+    assert ids(created_before=lo) == {"before"}  # exclusive upper bound drops it
+
+
+@pytest.mark.parametrize("form", ["+00:00", "Z"])
+def test_as_of_boundary_with_either_stored_or_bound_form(tmp_path, form):
+    s = _chain_store(tmp_path)
+    conn = s.primary._get_conn()
+    conn.execute(
+        "UPDATE memories SET valid_to = replace(valid_to, '+00:00', ?) WHERE valid_to IS NOT NULL",
+        (form,),
+    )
+    conn.commit()
+    at_close = "2026-06-01T00:00:00" + form
+    got = {
+        m.id
+        for m in s.primary.search_lexical_local("gateway port", as_of=normalize_as_of(at_close))
+    }
+    assert got == {"new"}  # old closed AT the boundary
+    got = {m.id for m in s.search("gateway port", as_of=at_close)}
+    assert got == {"new"}
+
+
+def test_temporal_arm_keeps_row_on_the_window_bound(tmp_path, monkeypatch):
+    """parse_time_window emits 'Z' bounds; a row stamped exactly on one is inside."""
+    import functools
+    from datetime import datetime
+
+    import skmemory.store as store_mod
+
+    monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", "on")
+    monkeypatch.setattr(
+        store_mod,
+        "parse_time_window",
+        functools.partial(
+            store_mod.parse_time_window, now=datetime.fromisoformat("2026-11-01T12:00:00+00:00")
+        ),
+    )
+    s = _store(tmp_path, _mem("edge", "unrelated words", "2026-10-29T12:00:00+00:00"))
+    got = s.search_fused("what changed in the last 3 days")
+    assert got and [m.id for m in got] == ["edge"]

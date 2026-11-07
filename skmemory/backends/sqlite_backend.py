@@ -43,6 +43,7 @@ from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_write_allowed
 from ..stub_markers import STUB_METADATA_KEY, TRUNCATED_PREVIEW_SUFFIX
 from ..tombstones import load_tombstones
+from ..validity import normalize_as_of
 from .base import BaseBackend
 from .file_backend import is_hidden_conflict_copy, scan_conflict_copies
 
@@ -196,6 +197,14 @@ def _is_legacy_importance(importance, access_count) -> bool:
     computed as 0.5 recomputes to 0.5.
     """
     return importance is not None and abs(float(importance) - 0.5) < 1e-9 and not access_count
+
+
+def _norm_bound(value: str) -> str:
+    """A created_at bound in the stored UTC '+00:00' form (unparseable: unchanged)."""
+    try:
+        return normalize_as_of(value) or value
+    except ValueError:
+        return value
 
 
 class SQLiteBackend(BaseBackend):
@@ -992,12 +1001,17 @@ class SQLiteBackend(BaseBackend):
             params.append(source)
 
         if created_after:
-            conditions.append("created_at >= ?")
-            params.append(created_after)
+            # Bounds arrive as 'Z' (parse_time_window) while rows are stored
+            # '+00:00', and '+' sorts before 'Z', so a row created exactly on the
+            # bound was dropped. Normalize the bind to the stored form and read
+            # a stored 'Z' as '+00:00'. Still an exact (microsecond) string
+            # compare, so created_before paging cursors do not skip rows.
+            conditions.append("replace(created_at, 'Z', '+00:00') >= ?")
+            params.append(_norm_bound(created_after))
 
         if created_before:
-            conditions.append("created_at < ?")
-            params.append(created_before)
+            conditions.append("replace(created_at, 'Z', '+00:00') < ?")
+            params.append(_norm_bound(created_before))
 
         if as_of:
             conditions.append(fts_local.as_of_sql(""))
