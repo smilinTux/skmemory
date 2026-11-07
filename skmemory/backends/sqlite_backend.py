@@ -39,6 +39,7 @@ from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_write_allowed
 from ..stub_markers import STUB_METADATA_KEY, TRUNCATED_PREVIEW_SUFFIX
+from ..tombstones import load_tombstones
 from .base import BaseBackend
 
 logger = logging.getLogger("skmemory.sqlite_backend")
@@ -1321,9 +1322,12 @@ class SQLiteBackend(BaseBackend):
         Returns:
             dict: ``{"exported": N, "skipped": M, "errors": K,
             "recovered_full": F, "orphan_ids": [...], "preview_only": P,
-            "preview_only_ids": [...]}``, where ``F`` is how many of the
-            exported orphans got real full content from
-            ``full_content_lookup`` rather than the lossy preview.
+            "preview_only_ids": [...], "tombstoned": T}``, where ``F`` is how
+            many of the exported orphans got real full content from the
+            record/content lookup rather than the lossy preview, and ``T`` is
+            how many resurrections of deliberately forgotten memories were
+            refused. ``T`` is counted apart from ``skipped`` so "nothing to
+            do" stays distinguishable from "a forget was enforced".
         """
         from .file_backend import FileBackend
 
@@ -1344,11 +1348,21 @@ class SQLiteBackend(BaseBackend):
             "orphan_ids": [],
             "preview_only": 0,
             "preview_only_ids": [],
+            "tombstoned": 0,
         }
         tier_dirs = [self.base_path / ml.value for ml in MemoryLayer]
         # Memories moved to the archive tree are intentional cold storage —
         # never resurrect them into an active tier as a truncated preview stub.
         archived_stems = self._archived_stems()
+        # Deliberately forgotten ids. forget_cascade() writes these exactly so
+        # a later rescue refuses to resurrect the memory, but nothing here ever
+        # read one, so a delete could not hold in a replicated store: the flat
+        # delete propagates, the peer index row becomes an orphan THERE, and
+        # that peer next sync writes the file back and syncs it home. 2,387 of
+        # 7,675 deletes returned that way (noroc2027, 2026-11-06). Tombstones
+        # live under the memory dir, so honouring them here makes a forget
+        # stick on every node that syncs.
+        tombstoned = load_tombstones(self.base_path)
 
         for row in rows:
             (
@@ -1382,6 +1396,12 @@ class SQLiteBackend(BaseBackend):
                 # Archived (cold storage); the full-content flat file already
                 # lives under memory/archive/ — leave it there.
                 stats["skipped"] += 1
+                continue
+            if memory_id in tombstoned or short in tombstoned:
+                # Deliberately forgotten. Counted apart from "skipped" so an
+                # operator can tell "nothing to do" from "a resurrection was
+                # refused".
+                stats["tombstoned"] += 1
                 continue
 
             full_content = None
