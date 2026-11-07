@@ -308,10 +308,22 @@ _LAST_WEEKDAY_RE = re.compile(r"\blast\s+(" + "|".join(_WEEKDAYS) + r")\b")
 # the query makes the intent unambiguous (see _month_match).
 _AMBIGUOUS_MONTHS = {"may", "march"}
 _MONTH_PREPS = r"(?:in|during|since|until|from|of)"
-# "March on Friday", "march up the hill": a capitalized March at the start of a
-# query is a month unless the next word makes it the verb.
-_MARCH_VERB_NEXT = {"on", "to", "up", "down", "in", "into", "through", "with", "forward", "toward"}
-_PAST_UNIT_RE = re.compile(r"\bpast\s+(day|week|month)\b")
+# A bare capitalized "March" at query start is a month only with a date cue
+# (day or year) or when the next word is an event noun ("March outage").
+_MARCH_EVENT_NOUNS = {
+    "outage",
+    "incident",
+    "review",
+    "report",
+    "deploy",
+    "meeting",
+    "notes",
+    "update",
+}
+_PAST_UNIT_RE = re.compile(
+    r"\bpast\s+(day|week|month)\b"
+    r"(?=\s*(?:[.,;:!?]|$)|\s+(?:or|and|to|on|in|for|about|with|but|from|we|i)\b)"
+)
 _DAY = r"(\d{1,2})(?:st|nd|rd|th)?"
 
 
@@ -380,9 +392,10 @@ def _month_match(query: str, text: str):
             # "step 3 may fail": a bare number before an ambiguous word is not
             # a day unless the date reading is closed off ("5 may", "5 may
             # 2026", "5th of may", "5 may,").
-            closed = re.match(r"\s*(?:,|\.|;|$|20\d{2}\b)", after)
-            ordinal = re.search(r"\d(?:st|nd|rd|th)\s+(?:of\s+)?$|\bof\s+$", before)
-            if name not in _AMBIGUOUS_MONTHS or closed or ordinal:
+            date_only = re.fullmatch(r"[\s.,!?]*\d{1,2}\s+[a-z]+[\s.,!?]*", text)
+            year_next = re.match(r"\s*,?\s*20\d{2}\b", after)
+            ordinal = re.search(r"\d(?:st|nd|rd|th)\s+(?:of\s+)?$", before)
+            if name not in _AMBIGUOUS_MONTHS or date_only or year_next or ordinal:
                 day = int(d2.group(1))
         y = re.match(r"\s*,?\s*(20\d{2})\b", after)
         has_number = day is not None or y is not None
@@ -390,8 +403,8 @@ def _month_match(query: str, text: str):
             at_start = query[:a].strip() == ""
             capitalized = query[a : a + 1].isupper() and not at_start
             if name == "march" and at_start and query[a : a + 1].isupper():
-                nxt = _WORD_RE.search(text, b)
-                capitalized = nxt is None or nxt.group(0) not in _MARCH_VERB_NEXT
+                nxt = _WORD_RE.match(text, b + 1) if text[b : b + 1] == " " else None
+                capitalized = nxt is not None and nxt.group(0).rstrip("s") in _MARCH_EVENT_NOUNS
             prep = re.search(rf"\b{_MONTH_PREPS}\s+$", before)
             if not (capitalized or prep):
                 continue
