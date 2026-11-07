@@ -368,6 +368,17 @@ class TestShortformTolerantPrune:
         orphan = str(uuid.uuid4())
         fake = _FakePsql(kept + list(pg_extra) + [orphan], delete_count=1)
         monkeypatch.setattr(reconcile_mod.subprocess, "run", fake.run)
+
+        class _R:
+            def __init__(self, n):
+                self.n = n
+
+            def json(self):
+                return {"embeddings": [[0.0, 0.0, 0.0]] * self.n}
+
+        monkeypatch.setattr(
+            reconcile_mod.requests, "post", lambda *a, **k: _R(len(k["json"]["input"]))
+        )
         mem = tmp_path / "memory"
         for mid in kept:
             _write_flat(mem, "mid-term", mid)
@@ -415,3 +426,16 @@ class TestShortformTolerantPrune:
 
         deletes, _ = self._run(monkeypatch, tmp_path, [gone], setup)
         assert gone in deletes[0]
+
+    def test_tombstoned_full_id_prunes_its_shortform_pg_row(self, monkeypatch, tmp_path):
+        from skmemory.tombstones import write_tombstone
+
+        full = str(uuid.uuid4())
+        short = reconcile_mod.short_id(full)
+
+        def setup(m):
+            _write_flat(m, "short-term", full)
+            write_tombstone(m, full)
+
+        deletes, _ = self._run(monkeypatch, tmp_path, [short], setup)
+        assert short in deletes[0]
