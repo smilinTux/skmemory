@@ -21,6 +21,7 @@ from skmemory.store import MemoryStore
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     """A store on an isolated SQLite primary, no derived backends."""
+    monkeypatch.setenv("SKMEMORY_GRAPH_ARM", "on")  # these tests exercise the graph arm
     monkeypatch.setenv("SKCAPSTONE_HOME", str(tmp_path))
     monkeypatch.delenv("SKMEMORY_SEARCH_FUSION", raising=False)
     s = MemoryStore()

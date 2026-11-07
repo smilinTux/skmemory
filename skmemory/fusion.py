@@ -55,8 +55,12 @@ No class regresses against the current behaviour.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import threading
+import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -78,7 +82,52 @@ RRF_K = 60
 #: out of the merged pool.
 DEFAULT_ARM_CAP = 25
 
-ArmStatus = Literal["ok", "abstained", "unavailable", "failed"]
+#: ``disabled`` is a CONFIGURED-off arm (it never ran, on purpose) and ``timeout``
+#: is an arm that did not answer before the search deadline. Neither is "empty":
+#: a reader of the report must be able to tell "had nothing" from "was not
+#: asked" from "was too slow".
+ArmStatus = Literal["ok", "abstained", "unavailable", "failed", "disabled", "timeout"]
+
+#: Pinned head of the default fusion: this many top lexical hits go first.
+DEFAULT_PIN = 3
+#: Lexical arms in pin-preference order. The first one that contributed is the
+#: pinned arm (the ParadeDB BM25 arm when skmem-pg is attached, else local FTS).
+LEXICAL_ARMS = ("lexical", "lexical_local")
+#: Default total wall-clock budget for all arms of one search.
+DEFAULT_DEADLINE_S = 4.0
+
+STRATEGY_ENV = "SKMEMORY_FUSION_STRATEGY"
+DEADLINE_ENV = "SKMEMORY_SEARCH_DEADLINE_S"
+
+
+def fusion_strategy() -> str:
+    """``pinned_rrf`` (default) or the previous ``interleave`` / ``rrf`` by env."""
+    raw = os.environ.get(STRATEGY_ENV, "").strip().casefold().replace("-", "_")
+    if raw in ("interleave", "rank_interleave", "old", "legacy"):
+        return "interleave"
+    if raw in ("rrf", "plain_rrf"):
+        return "rrf"
+    return "pinned_rrf"
+
+
+def fusion_pin() -> int:
+    """How many lexical hits the default fusion pins (``SKMEMORY_FUSION_PIN``, default 3)."""
+    raw = os.environ.get("SKMEMORY_FUSION_PIN", "").strip()
+    try:
+        return max(0, int(raw)) if raw else DEFAULT_PIN
+    except ValueError:
+        logger.warning("ignoring non-integer SKMEMORY_FUSION_PIN=%r", raw)
+        return DEFAULT_PIN
+
+
+def search_deadline_s() -> float:
+    raw = os.environ.get(DEADLINE_ENV, "").strip()
+    try:
+        value = float(raw) if raw else DEFAULT_DEADLINE_S
+    except ValueError:
+        logger.warning("ignoring non-numeric %s=%r", DEADLINE_ENV, raw)
+        value = DEFAULT_DEADLINE_S
+    return value if value > 0 else DEFAULT_DEADLINE_S
 
 
 @dataclass(frozen=True)
@@ -119,6 +168,14 @@ class FusionResult:
     def failed_arms(self) -> list[str]:
         return [a.name for a in self.arms if a.status == "failed"]
 
+    @property
+    def timed_out_arms(self) -> list[str]:
+        return [a.name for a in self.arms if a.status == "timeout"]
+
+    @property
+    def disabled_arms(self) -> list[str]:
+        return [a.name for a in self.arms if a.status == "disabled"]
+
     def summary(self) -> str:
         """One line fit for a log or a debug header."""
         parts = [f"{a.name}={a.status}:{len(a.ids)}" for a in self.arms]
@@ -137,6 +194,7 @@ def run_arm(
     fn: Callable[[], Sequence[str]] | None,
     *,
     cap: int = DEFAULT_ARM_CAP,
+    disabled: str | None = None,
 ) -> ArmOutcome:
     """Execute one arm and classify the outcome instead of swallowing it.
 
@@ -144,7 +202,11 @@ def run_arm(
     an empty return means the arm ran and had nothing to say (``abstained``),
     and a raise is caught, logged, and recorded (``failed``) so one dead backend
     cannot take down the whole search. The caller can tell all three apart.
+    ``disabled`` (a reason string) marks an arm switched off by configuration:
+    it is not called and is reported as ``disabled``, never as dead or empty.
     """
+    if disabled is not None:
+        return ArmOutcome(name=name, status="disabled", detail=disabled)
     if fn is None:
         return ArmOutcome(name=name, status="unavailable", detail="backend not attached")
     try:
@@ -204,12 +266,105 @@ def rank_interleave(
     return out
 
 
+def pinned_rrf(
+    arm_results: dict[str, Sequence[str]],
+    k: int = RRF_K,
+    *,
+    pin: int | None = None,
+    pin_arms: Sequence[str] = LEXICAL_ARMS,
+) -> list[tuple[str, float, dict[str, int]]]:
+    """Pin the lexical arm's top ``pin`` hits, then fill by plain RRF.
+
+    Why: with :func:`rank_interleave` every arm's champion takes a head slot, so
+    on a self-retrieval run the lexical rank 2-5 hit was pushed past rank 5 by
+    the top picks of the vector, graph and temporal arms (20 of 20 traced
+    cases, recall@5 0.601 fused against 0.729 for BM25 alone). Pinning keeps
+    the strongest single arm's head intact; the RRF fill still lets the other
+    arms add what lexical missed and lets agreement order the rest.
+
+    The pinned arm is the first of ``pin_arms`` that contributed. When none did
+    this is plain RRF.
+    """
+    if pin is None:
+        pin = fusion_pin()
+    fused = reciprocal_rank_fusion(arm_results, k)
+    if os.environ.get("SKMEMORY_FUSION_FILL", "rrf").strip().casefold() == "interleave":
+        # Comparison knob: fill after the pinned head by rank-depth interleaving
+        # instead of RRF, which protects every other arm's champion.
+        fused = rank_interleave(arm_results, k)
+    by_id = {doc_id: (score, prov) for doc_id, score, prov in fused}
+    head: list[str] = []
+    for name in pin_arms:
+        ids = arm_results.get(name)
+        if ids:
+            head = list(ids[:pin])
+            break
+    pinned = set(head)
+    ordered = head + [doc_id for doc_id, _, _ in fused if doc_id not in pinned]
+    return [(d, by_id[d][0], by_id[d][1]) for d in ordered]
+
+
+def run_arms_concurrent(
+    specs: Sequence[tuple[str, Callable[[], Sequence[str]] | None, str | None]],
+    *,
+    deadline_s: float,
+    cap: int = DEFAULT_ARM_CAP,
+    executor: ThreadPoolExecutor,
+) -> list[ArmOutcome]:
+    """Run every arm at once and wait at most ``deadline_s`` TOTAL.
+
+    ``specs`` is ``(name, fn, disabled_reason)`` in the order the outcomes are
+    returned. A disabled or unattached arm is classified without a thread. An
+    arm still running at the deadline is reported as ``timeout`` (with how long
+    it was given), NOT as ``abstained``: the ranking was produced without it
+    and the report says so. The abandoned thread is left to finish on its own
+    (Python cannot kill it); its result is discarded.
+    """
+    outcomes: dict[str, ArmOutcome] = {}
+    futures = {}
+    started = time.monotonic()
+    for name, fn, disabled in specs:
+        if disabled is not None or fn is None:
+            outcomes[name] = run_arm(name, fn, cap=cap, disabled=disabled)
+            continue
+        futures[name] = executor.submit(run_arm, name, fn, cap=cap)
+    if futures:
+        wait(list(futures.values()), timeout=deadline_s)
+    for name, fut in futures.items():
+        if fut.done():
+            outcomes[name] = fut.result()
+        else:
+            fut.cancel()
+            outcomes[name] = ArmOutcome(
+                name=name,
+                status="timeout",
+                detail=f"no answer within {deadline_s:.2f}s deadline "
+                f"({time.monotonic() - started:.2f}s elapsed)",
+            )
+            logger.warning("retrieval arm %r timed out after %.2fs", name, deadline_s)
+    return [outcomes[name] for name, _, _ in specs]
+
+
+_POOL: ThreadPoolExecutor | None = None
+_POOL_LOCK = threading.Lock()
+
+
+def arm_executor() -> ThreadPoolExecutor:
+    """Process-wide arm pool, so per-thread DB connections are reused across searches."""
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is None:
+            _POOL = ThreadPoolExecutor(max_workers=12, thread_name_prefix="skmem-arm")
+        return _POOL
+
+
 def fuse(
     arms: Sequence[ArmOutcome],
     *,
     limit: int = 10,
     k: int = RRF_K,
     strategy: str = "interleave",
+    pin_arms: Sequence[str] = LEXICAL_ARMS,
 ) -> FusionResult:
     """Merge executed arms into one ranking.
 
@@ -222,7 +377,15 @@ def fuse(
     if not contributing:
         return FusionResult(ids=[], arms=list(arms), provenance={})
 
-    merge = rank_interleave if strategy == "interleave" else reciprocal_rank_fusion
+    if strategy == "pinned_rrf":
+
+        def merge(results, kk):
+            return pinned_rrf(results, kk, pin_arms=pin_arms)
+
+    elif strategy == "interleave":
+        merge = rank_interleave
+    else:
+        merge = reciprocal_rank_fusion
     ranked = merge(contributing, k)
     return FusionResult(
         ids=[doc_id for doc_id, _, _ in ranked[:limit]],
@@ -424,7 +587,34 @@ def _month_match(query: str, text: str):
     return None
 
 
-def parse_time_window(query: str, *, now: datetime | None = None) -> tuple[str, str] | None:
+# A calendar date (ISO day or month, a month name, a bare year) is only TIME
+# INTENT when something in the query asks about that time: a time preposition
+# directly before it ("what did we decide in june", "since 2025-10", "on may 5").
+# The same tokens inside a title ("Postmortem 2026-10-16 sqlite orphans",
+# "Q3 2026 roadmap", "June 5 notes") are part of the thing being named, and
+# firing the temporal arm on them listed the wrong month's memories into the
+# fused pool: measured on a live self-retrieval run the arm fired on 125 of 397
+# title-derived queries, none of which asked about a time.
+_DATE_EXPR = (
+    r"(?:20\d{2}-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?|20\d{2}|"
+    + "|".join(sorted(_MONTHS, key=len, reverse=True))
+    + r")\b"
+)
+_DATE_CUE_RE = re.compile(
+    r"\b(?:in|during|since|until|till|before|after|from|on|by|around|throughout|"
+    r"between|as of|back in|early|late|mid)\s+(?:the\s+)?(?:(?:month|year)\s+of\s+)?"
+    r"(?:(?:early|late|mid)[\s-]+)?" + _DATE_EXPR
+)
+
+
+def has_time_intent(query: str, *, now: datetime | None = None) -> bool:
+    """True when *query* asks about a time rather than merely containing a date token."""
+    return parse_time_window(query, now=now, strict=True) is not None
+
+
+def parse_time_window(
+    query: str, *, now: datetime | None = None, strict: bool = False
+) -> tuple[str, str] | None:
     """Extract an explicit time window from *query*, or ``None``.
 
     Returns ``(created_after, created_before)`` as inclusive ISO 8601 UTC
@@ -452,6 +642,11 @@ def parse_time_window(query: str, *, now: datetime | None = None) -> tuple[str, 
       "the rollout may halt" is not a date.
     * a bare year
 
+    ``strict=True`` (what the temporal ARM uses) keeps every relative phrase
+    (yesterday, N ago, last/past N, this/last week or month) but accepts the
+    calendar forms (ISO date or month, a month name, a bare year) only with a
+    time preposition directly before them, see :data:`_DATE_CUE_RE`.
+
     Anything else returns ``None`` so the temporal arm ABSTAINS rather than
     guessing. An arm that always has an opinion adds noise to every fusion,
     and a recency sort masquerading as a date filter is how ``synthesize_*``
@@ -467,14 +662,17 @@ def parse_time_window(query: str, *, now: datetime | None = None) -> tuple[str, 
     tz = now.tzinfo
     today = now.date()
 
-    iso_day = _ISO_DATE_RE.search(text)
+    # Calendar forms need a cue under strict; relative phrases never do.
+    dated_ok = not strict or _DATE_CUE_RE.search(text) is not None
+
+    iso_day = _ISO_DATE_RE.search(text) if dated_ok else None
     if iso_day:
         y, mo, d = (int(g) for g in iso_day.groups())
         try:
             return _day_span(today.replace(year=y, month=mo, day=d), tz)
         except ValueError:
             return None
-    iso = _ISO_MONTH_RE.search(text)
+    iso = _ISO_MONTH_RE.search(text) if dated_ok else None
     if iso:
         return _month_bounds(int(iso.group(1)), int(iso.group(2)), tz)
 
@@ -523,6 +721,9 @@ def parse_time_window(query: str, *, now: datetime | None = None) -> tuple[str, 
     if re.search(r"\blast\s+month\b", text):
         y, mo = _shift_month(today.year, today.month, -1)
         return _month_bounds(y, mo, tz)
+
+    if not dated_ok:
+        return None
 
     hit = _month_match(query, text)
     year_match = _YEAR_RE.search(text)

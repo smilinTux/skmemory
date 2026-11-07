@@ -13,6 +13,7 @@ import inspect
 import logging
 import os
 import re
+import threading
 from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -30,9 +31,12 @@ from .forget import ForgetReport, StorePurge, resolve_agent
 from .fusion import (
     DEFAULT_ARM_CAP,
     FusionResult,
+    arm_executor,
     fuse,
+    fusion_strategy,
     parse_time_window,
-    run_arm,
+    run_arms_concurrent,
+    search_deadline_s,
 )
 from .models import (
     PARENT_RELATION_KEY,
@@ -245,6 +249,12 @@ class MemoryStore:
             self.primary = FileBackend()
         self.vector = vector
         self.graph = graph
+        # Search arms run on worker threads. The SQLite primary and the pg
+        # vector backend hand each worker thread its OWN connection (one
+        # sqlite3 connection used by two threads at once raises "API misuse").
+        # AGE keeps one psycopg connection and wraps statement_timeout in a
+        # transaction on it, so concurrent graph calls are serialised too.
+        self._graph_lock = threading.Lock()
         # Backends that were CONFIGURED but failed to construct, by role
         # ("vector"/"graph") -> the real error text. health() reports these as
         # ok:false with the message; without this a configured-and-broken
@@ -1315,7 +1325,38 @@ class MemoryStore:
             return False
         if mode in ("on", "1", "true", "yes"):
             return True
-        return self.vector is not None or self.graph is not None
+        return self.vector is not None or (self.graph is not None and self.graph_arm_enabled())
+
+    GRAPH_ARM_ENV = "SKMEMORY_GRAPH_ARM"
+
+    @classmethod
+    def graph_arm_enabled(cls) -> bool:
+        """Whether the graph arm takes part in ``search()``. OFF by default.
+
+        ``SKMEMORY_GRAPH_ARM=on`` (or ``1``/``true``/``yes``) opts in. The arm was
+        measured at recall@5 0.005 on self-queries and cost 0.3 to 2.3 s a call
+        (a ``DISTINCT`` over every Memory node forces a sequential scan and
+        returns arbitrary unranked rows), 67 percent of total arm time. This
+        switches off ONLY the search arm: the graph backend, lineage, related and
+        cluster tools, and graph indexing on write are untouched.
+        """
+        mode = os.environ.get(cls.GRAPH_ARM_ENV, "off").strip().casefold()
+        return mode in ("on", "1", "true", "yes")
+
+    def search_arm_states(self) -> dict[str, dict]:
+        """Per search arm: ``enabled`` plus ``state`` and, when off, the reason."""
+        graph_on = self.graph_arm_enabled()
+        if self.graph is None:
+            graph_state = {"enabled": False, "state": "unavailable", "reason": "no graph backend"}
+        elif graph_on:
+            graph_state = {"enabled": True, "state": "enabled", "reason": None}
+        else:
+            graph_state = {
+                "enabled": False,
+                "state": "disabled",
+                "reason": f"disabled by config ({self.GRAPH_ARM_ENV} is off, the default)",
+            }
+        return {"graph": graph_state}
 
     def _reranker(self):
         """The reranker for the fused path.
@@ -1360,13 +1401,15 @@ class MemoryStore:
         nothing about readers. Reader enforcement lives in :meth:`search`; a
         caller serving a non-owner must go through that, not here.
 
-        Four arms, run independently and merged by rank-depth interleaving
-        (see :mod:`skmemory.fusion` for the measurements behind that choice):
+        Arms run concurrently under one deadline and are merged by pinning the
+        lexical arm's top 3 then RRF fill (``SKMEMORY_FUSION_STRATEGY=interleave``
+        restores the previous rank-depth interleaving, see :mod:`skmemory.fusion`):
 
         ``semantic``  dense cosine over the vector backend.
         ``lexical``   the primary backend's text search (SQLite LIKE, or
                       Postgres BM25 when skmem-pg is the primary).
-        ``graph``     one-hop entity expansion over the graph backend.
+        ``graph``     one-hop entity expansion over the graph backend. OFF by
+                      default (``SKMEMORY_GRAPH_ARM=on`` opts in).
         ``temporal``  a date-bounded listing, which only runs when the query
                       actually names a time window.
 
@@ -1382,6 +1425,8 @@ class MemoryStore:
         can see which arm produced which hit.
         """
         found: dict[str, Memory] = {}
+        # Arms run on worker threads: `found` is shared, so guard its writes.
+        found_lock = threading.Lock()
 
         def asof_kw(fn) -> dict:
             # Sent only when set AND the arm's method takes it: a backend or fake
@@ -1410,7 +1455,8 @@ class MemoryStore:
                 # the fast path, this is the guarantee for a backend that ignored it.
                 if as_of and not valid_at(mem, as_of):
                     continue
-                found.setdefault(str(mem_id), mem)
+                with found_lock:
+                    found.setdefault(str(mem_id), mem)
                 ids.append(str(mem_id))
             return ids
 
@@ -1504,12 +1550,16 @@ class MemoryStore:
                 "source": source,
                 **asof_kw(search_by_entity),
             }
-            for row in search_by_entity(query, limit=arm_limit, **graph_filters) or []:
+            with self._graph_lock:
+                graph_rows = search_by_entity(query, limit=arm_limit, **graph_filters) or []
+            for row in graph_rows:
                 row_id = row.get("id") if isinstance(row, dict) else getattr(row, "id", None)
                 if not row_id:
                     continue
                 row_id = str(row_id)
-                if row_id not in found:
+                with found_lock:
+                    known = row_id in found
+                if not known:
                     # load, not recall: a graph candidate is not a hit
                     loaded = self.primary.load(row_id)
                     if loaded is None:
@@ -1523,14 +1573,18 @@ class MemoryStore:
                     # the bulk of the work; this is the safety net.
                     if not _passes_filters(loaded, layer, tags, context_tag, source, as_of):
                         continue
-                    found[row_id] = loaded
+                    with found_lock:
+                        found.setdefault(row_id, loaded)
                 ids.append(row_id)
             return ids
 
         def _temporal() -> list[str]:
-            window = parse_time_window(query)
+            # strict: a date token inside a title ("... 2026-10-16 ...", a bare
+            # year) is not time intent, so the arm abstains instead of listing
+            # that month's memories into the pool.
+            window = parse_time_window(query, strict=True)
             if window is None:
-                return []  # no date in the query: this arm has no opinion
+                return []  # no time intent in the query: this arm has no opinion
             after, before = window
             return _collect(
                 self.primary.list_memories(
@@ -1545,23 +1599,45 @@ class MemoryStore:
                 check_ctx=True,
             )
 
-        arms = [
-            run_arm("semantic", _semantic if self.vector is not None else None),
-            run_arm("lexical", _lexical),
-            run_arm(
-                "lexical_local",
-                _lexical_local
-                if getattr(self.primary, "search_lexical_local", None) is not None
-                else None,
-            ),
-            run_arm("graph", _graph if self.graph is not None else None),
-            run_arm("temporal", _temporal),
-        ]
+        graph_off = (
+            None
+            if self.graph is None or self.graph_arm_enabled()
+            else f"disabled by config ({self.GRAPH_ARM_ENV} is off, the default)"
+        )
+        # All arms run at once under ONE total deadline, so the slowest cannot
+        # dominate; a late arm is reported `timeout`, never as an empty result.
+        arms = run_arms_concurrent(
+            [
+                ("semantic", _semantic if self.vector is not None else None, None),
+                ("lexical", _lexical, None),
+                (
+                    "lexical_local",
+                    _lexical_local
+                    if getattr(self.primary, "search_lexical_local", None) is not None
+                    else None,
+                    None,
+                ),
+                ("graph", _graph if self.graph is not None else None, graph_off),
+                ("temporal", _temporal, None),
+            ],
+            deadline_s=search_deadline_s(),
+            executor=arm_executor(),
+        )
         # Fuse the WHOLE pool, then rerank, then truncate. Reranking a list
         # already cut to `limit` could never promote the candidate it exists to
         # promote: measured on the real backend, the correct answer for an
         # identifier query sits at fused rank 8.
-        report = fuse(arms, limit=max(limit, DEFAULT_ARM_CAP))
+        # Pin the strongest lexical engine attached: ParadeDB BM25 on the vector
+        # backend when there is one, else the local FTS5 bm25. The plain
+        # `lexical` arm is SQLite LIKE without a pg backend, which is not a
+        # ranking worth pinning.
+        has_pg_bm25 = getattr(self.vector, "search_lexical", None) is not None
+        report = fuse(
+            arms,
+            limit=max(limit, DEFAULT_ARM_CAP),
+            strategy=fusion_strategy(),
+            pin_arms=("lexical", "lexical_local") if has_pg_bm25 else ("lexical_local", "lexical"),
+        )
 
         if report.ids:
             pool_texts = [
@@ -1578,10 +1654,11 @@ class MemoryStore:
                 report.ids = pool_ids
         report.ids = _demote_superseded(report.ids, found)[:limit]
 
-        if report.failed_arms:
+        if report.failed_arms or report.timed_out_arms:
             logger.warning(
-                "search fusion ran with %d arm(s) failed: %s",
+                "search fusion ran with %d arm(s) failed and %d timed out: %s",
                 len(report.failed_arms),
+                len(report.timed_out_arms),
                 report.summary(),
             )
         else:
@@ -3069,6 +3146,11 @@ class MemoryStore:
                 logger.warning("store.py: pg drift check failed: %s", e)
 
         status["graph"] = self._probe_backend("graph", self.graph)
+        # The graph SEARCH ARM being off by config is not the backend being dead:
+        # the backend probe above is untouched and lineage/related keep working.
+        status["arms"] = self.search_arm_states()
+        if self.graph is not None and isinstance(status["graph"], dict):
+            status["graph"]["search_arm"] = status["arms"]["graph"]["state"]
 
         # The sync-failure table had NO readers. `snapshot()` records a row
         # every time vector/graph indexing fails on a write, which is exactly

@@ -55,7 +55,10 @@ class _FakePsql:
         if low.startswith("select id from memories;"):
             return _CP(stdout="\n".join(self.all_ids) + ("\n" if self.all_ids else ""))
         if "embedding is null" in low:
-            rows = "\n".join(f"{i}\tsome content" for i in self.null_ids)
+            # reconcile asks for id TAB json(title, content, summary): the embed
+            # text formula is applied in Python (skmemory.embed_text), not in SQL.
+            blob = json.dumps({"t": "a title", "c": "some content", "s": ""})
+            rows = "\n".join(f"{i}\t{blob}" for i in self.null_ids)
             return _CP(stdout=rows)
         if "count(*) filter" in low:
             n = len(self.pg_ids)

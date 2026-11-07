@@ -54,6 +54,7 @@ import os
 import random
 import re
 import sqlite3
+import threading
 import time
 import urllib.parse
 from collections import Counter
@@ -622,9 +623,13 @@ def _make_read_only(cls, names: Sequence[str]) -> None:
 
 
 def _set_session_read_only(self, conn):
-    if getattr(self, "_ro_conn_id", None) != id(conn):
+    # Marked ON THE CONNECTION, not by id(): the fused search runs its arms on
+    # worker threads and each gets its own connection, so a single remembered id
+    # (or a recycled one after a connection is dropped) could let a fresh
+    # connection through without the read-only characteristic.
+    if not getattr(conn, "_skmem_read_only", False):
         conn.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
-        self._ro_conn_id = id(conn)
+        conn._skmem_read_only = True
     return conn
 
 
@@ -648,6 +653,7 @@ def make_backends(dsn: str | None, agent: str, sqlite_dir: str):
             self.base_path = Path(base_path)
             self._db_path = self.base_path / "index.db"
             self._conn = None
+            self._tls = threading.local()
             self._unloadable_seen: set[str] = set()
             self.last_import_report = None
             self.fts_enabled = True
@@ -670,13 +676,20 @@ def make_backends(dsn: str | None, agent: str, sqlite_dir: str):
             return None
 
         def _get_conn(self):
-            if self._conn is None:
+            # One read-only connection PER THREAD: the fused search runs its arms
+            # concurrently and one sqlite3 connection must not be shared by two
+            # running threads.
+            conn = getattr(self._tls, "conn", None)
+            if conn is None:
                 uri = f"file:{urllib.parse.quote(str(self._db_path))}?mode=ro"
-                self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
-                self._conn.row_factory = sqlite3.Row
-                self._conn.execute("PRAGMA busy_timeout=30000")
-                self._conn.execute("PRAGMA query_only=ON")
-            return self._conn
+                conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout=30000")
+                conn.execute("PRAGMA query_only=ON")
+                self._tls.conn = conn
+                if self._conn is None:
+                    self._conn = conn
+            return conn
 
         def _recover_from_corruption(self, err):
             raise ReadOnlyViolation(f"index needs repair, refusing to rebuild live: {err}")

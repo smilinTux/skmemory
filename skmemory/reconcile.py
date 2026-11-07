@@ -99,6 +99,7 @@ import sys
 
 import requests
 
+from skmemory.embed_text import embed_text
 from skmemory.invalid_records import payload_memory_id, quarantine_invalid_flat_file
 from skmemory.stub_markers import is_stub_payload
 from skmemory.tombstones import load_tombstones
@@ -879,7 +880,12 @@ def reconcile(
             if dry_run:
                 loaded += len(pairs)
                 continue
-            embs = embed([(o.get("content") or o.get("title") or " ")[:1100] for _, o in pairs])
+            embs = embed(
+                [
+                    embed_text(o.get("title"), o.get("content"), o.get("summary")) or " "
+                    for _, o in pairs
+                ]
+            )
             buf = io.StringIO()
             w = csv.writer(buf)
             for (mid, o), e in zip(pairs, embs, strict=False):
@@ -1067,7 +1073,12 @@ def reconcile(
             # Content changed, so the embedding MUST be recomputed. This is the
             # part a null-embedding backfill can never do: the old vector is
             # present and wrong.
-            embs = embed([(o.get("content") or o.get("title") or " ")[:1100] for _, o in pairs])
+            embs = embed(
+                [
+                    embed_text(o.get("title"), o.get("content"), o.get("summary")) or " "
+                    for _, o in pairs
+                ]
+            )
             buf = io.StringIO()
             w = csv.writer(buf)
             for (mid, o), e in zip(pairs, embs, strict=False):
@@ -1187,15 +1198,23 @@ def reconcile(
             pass
 
     # 3. embed any null-vector rows (dry_run: report the count, update nothing)
-    nulls = [
-        r.split("\t", 1)
-        for r in psql(
-            "select id, left(regexp_replace(coalesce(content,title,' '),E'[\\n\\r\\t]',' ','g'),"
-            f"1100) from memories where embedding is null and agent='{agent}';",
-            True,
-        ).splitlines()
-        if "\t" in r
-    ]
+    # json_build_object escapes tabs and newlines, so one row is one line, and the
+    # shared formula (title, content, summary) is applied in Python, not in SQL.
+    nulls = []
+    for line in psql(
+        "select id || E'\\t' || json_build_object('t', left(title, 1400), 'c', left(content, 1400), "
+        "'s', left(summary, 1400))::text "
+        f"from memories where embedding is null and agent='{agent}';",
+        True,
+    ).splitlines():
+        if "\t" not in line:
+            continue
+        mid, blob = line.split("\t", 1)
+        try:
+            f = json.loads(blob)
+        except ValueError:
+            continue
+        nulls.append([mid, embed_text(f.get("t"), f.get("c"), f.get("s"))])
     if not dry_run:
         for i in range(0, len(nulls), 12):
             ch = nulls[i : i + 12]

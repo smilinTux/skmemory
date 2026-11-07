@@ -33,11 +33,13 @@ import contextlib
 import json
 import logging
 import os
+import threading
 import time
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ..embed_text import embed_text
 from ..invalid_records import payload_memory_id, require_memory_id
 from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_pg_write_allowed
@@ -158,6 +160,25 @@ DEFAULT_DSN = os.environ.get(
 DEFAULT_EMBED_URL = os.environ.get("SKMEMORY_EMBED_URL", "http://localhost:11434/api/embed")
 DEFAULT_EMBED_MODEL = os.environ.get("SKMEMORY_EMBED_MODEL", "mxbai-embed-large")
 VECTOR_DIM = 1024
+#: pgvector's ef_search default is 40; see PGVectorBackend._tune_search_session.
+DEFAULT_HNSW_EF_SEARCH = 200
+DEFAULT_HNSW_ITERATIVE_SCAN = "relaxed_order"
+
+
+def knn_sql(cols: str, where: str) -> str:
+    """Nearest-neighbour SELECT whose output is exactly ordered by distance.
+
+    ``hnsw.iterative_scan = relaxed_order`` may hand rows back slightly out of
+    order, so the index scan runs inside a materialised CTE (kept from being
+    inlined, which would let the planner drop the re-sort) and the outer query
+    sorts by the real distance. Parameters, in order: query vector, the
+    ``where`` parameters, query vector, limit. The distance is exposed as ``_d``.
+    """
+    return (
+        f"WITH knn AS MATERIALIZED (SELECT {cols}, embedding <=> %s::vector AS _d "
+        f"FROM memories WHERE {where} ORDER BY embedding <=> %s::vector LIMIT %s) "
+        f"SELECT {cols}, _d FROM knn ORDER BY _d"
+    )
 
 
 def _parse_float_env(name: str, default: float) -> float:
@@ -405,16 +426,77 @@ class PGVectorBackend(BaseBackend):
         self._embed_fn = embed_fn
         self._conn = None
         self._v2_columns: bool | None = None
+        # The search arms run on worker threads. A psycopg connection runs one
+        # statement at a time, so sharing the owner's connection would serialise
+        # the arms (and a rollback in one arm would hit another's statement).
+        # Every thread other than the one that built this backend therefore
+        # gets its OWN connection (see _connection). An injected connection
+        # (tests set ``_conn``) is shared as before.
+        self._owner_thread = threading.get_ident()
+        self._owns_conn = False
+        self._tls = threading.local()
 
     # --- infra ---------------------------------------------------------------
-    def _connection(self):
+    def _connect(self):
         import psycopg
         from pgvector.psycopg import register_vector
 
-        if self._conn is None or self._conn.closed:
-            self._conn = psycopg.connect(self.dsn, autocommit=True)
-            register_vector(self._conn)
-        return self._conn
+        conn = psycopg.connect(self.dsn, autocommit=True)
+        register_vector(conn)
+        self._tune_search_session(conn)
+        return conn
+
+    def _tune_search_session(self, conn) -> None:
+        """Raise ``hnsw.ef_search`` and turn on iterative scans for this session.
+
+        One global HNSW index serves every agent and the ``agent=`` filter is
+        applied AFTER the index scan, so with the default ``ef_search`` of 40 a
+        filtered query could get back a handful of rows (measured as few as 4 of
+        a requested 75). ``hnsw.iterative_scan = relaxed_order`` makes pgvector
+        keep scanning until the filter is satisfied. Needs pgvector 0.8.0+;
+        an older server rejects the GUC, which is logged and not fatal.
+        Override with ``SKMEMORY_HNSW_EF_SEARCH`` (0 skips) and
+        ``SKMEMORY_HNSW_ITERATIVE_SCAN`` (``off``, ``strict_order``,
+        ``relaxed_order``).
+        """
+        settings: list[tuple[str, str]] = []
+        raw_ef = os.environ.get("SKMEMORY_HNSW_EF_SEARCH", str(DEFAULT_HNSW_EF_SEARCH)).strip()
+        try:
+            ef = int(raw_ef)
+        except ValueError:
+            logger.warning("ignoring non-integer SKMEMORY_HNSW_EF_SEARCH=%r", raw_ef)
+            ef = DEFAULT_HNSW_EF_SEARCH
+        if 1 <= ef <= 1000:
+            settings.append(("hnsw.ef_search", str(ef)))
+        mode = (
+            os.environ.get("SKMEMORY_HNSW_ITERATIVE_SCAN", DEFAULT_HNSW_ITERATIVE_SCAN)
+            .strip()
+            .casefold()
+        )
+        if mode in ("off", "strict_order", "relaxed_order"):
+            settings.append(("hnsw.iterative_scan", mode))
+        elif mode:
+            logger.warning("ignoring unknown SKMEMORY_HNSW_ITERATIVE_SCAN=%r", mode)
+        for name, value in settings:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT set_config(%s, %s, false)", (name, value))
+            except Exception as exc:  # noqa: BLE001 - older pgvector: not fatal
+                logger.warning("could not set %s=%s on the search session: %s", name, value, exc)
+
+    def _connection(self):
+        if self._conn is not None and not self._owns_conn:
+            return self._conn  # injected connection: shared, as before
+        if threading.get_ident() == self._owner_thread:
+            if self._conn is None or self._conn.closed:
+                self._conn = self._connect()
+                self._owns_conn = True
+            return self._conn
+        conn = getattr(self._tls, "conn", None)
+        if conn is None or conn.closed:
+            conn = self._connect()
+            self._tls.conn = conn
+        return conn
 
     def _has_v2_columns(self, conn) -> bool:
         """True when the schema-v2 typed columns exist.
@@ -585,7 +667,7 @@ class PGVectorBackend(BaseBackend):
 
     @staticmethod
     def _searchable(memory: Memory) -> str:
-        return f"{memory.title}\n{memory.content}\n{memory.summary or ''}".strip()
+        return embed_text(memory.title, memory.content, memory.summary)
 
     # --- BaseBackend ---------------------------------------------------------
     def save(self, memory: Memory, *, force: bool = False) -> str:
@@ -858,9 +940,8 @@ class PGVectorBackend(BaseBackend):
         if qvec:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"SELECT memory_json FROM memories WHERE {where} "
-                    f"AND embedding IS NOT NULL ORDER BY embedding <=> %s::vector LIMIT %s",
-                    params + [qvec, limit],
+                    knn_sql("memory_json", f"{where} AND embedding IS NOT NULL"),
+                    [qvec, *params, qvec, limit],
                 )
                 rows = cur.fetchall()
             if rows:
@@ -1049,9 +1130,8 @@ class PGVectorBackend(BaseBackend):
         conn = self._connection()
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT memory_json FROM memories WHERE agent=%s AND embedding IS NOT NULL "
-                "ORDER BY embedding <=> %s::vector LIMIT %s",
-                (self.agent, qvec, limit),
+                knn_sql("memory_json", "agent=%s AND embedding IS NOT NULL"),
+                (qvec, self.agent, qvec, limit),
             )
             return self._rows_to_memories(cur.fetchall())
 
@@ -1109,11 +1189,7 @@ class PGVectorBackend(BaseBackend):
             params.extend(binds)
         where = " AND ".join(clauses)
         with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT memory_json FROM memories WHERE {where} "
-                "ORDER BY embedding <=> %s::vector LIMIT %s",
-                params + [qvec, limit],
-            )
+            cur.execute(knn_sql("memory_json", where), [qvec, *params, qvec, limit])
             return self._rows_to_memories(cur.fetchall())
 
     def find_similar(self, content: str, k: int = 5) -> list[dict]:
