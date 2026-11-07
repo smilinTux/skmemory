@@ -15,6 +15,12 @@ from skmemory.intentions import (
     transition,
 )
 
+
+@pytest.fixture(autouse=True)
+def _local_lock_dir(tmp_path_factory, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path_factory.mktemp("run")))
+
+
 NOW = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
 
 
@@ -171,19 +177,133 @@ def test_sweep_reads_valid_to_in_metadata(tmp_path):
     assert store.sweep_supersession(now=NOW) == ["a"]
 
 
-def test_reindex_skips_conflict_copies_and_canonical_wins(tmp_path):
+CONFLICT = "a1.sync-conflict-20261101-120000-ABCDEFG.json"
+
+
+def test_reindex_merges_conflict_copy_terminal_beats_live(tmp_path):
     store = IntentionStore(tmp_path)
-    store.save(Intention(id="a1", kind="time", title="canonical", state="done"))
-    conflict = Intention(id="a1", kind="time", title="conflict", state="pending")
-    (tmp_path / "intentions" / "a1.sync-conflict-20261101-120000-ABCDEFG.json").write_text(
-        conflict.model_dump_json()
-    )
+    store.save(Intention(id="a1", kind="time", title="canon", state="armed"))
+    d = Intention(id="a1", kind="time", title="copy", state="done")
+    (tmp_path / "intentions" / CONFLICT).write_text(d.model_dump_json())
     assert store.reindex() == 1
-    assert store.last_reindex_report["conflicts"] == [
-        "a1.sync-conflict-20261101-120000-ABCDEFG.json"
+    assert store.last_reindex_report["conflicts"] == [CONFLICT]
+    assert [(i.id, i.state) for i in store.list()] == [("a1", "done")]
+    assert store.get("a1").state == "done"  # written to the canonical file
+    assert not (tmp_path / "intentions" / CONFLICT).exists()
+
+
+def test_reindex_promotes_conflict_only_file(tmp_path):
+    store = IntentionStore(tmp_path)
+    c = Intention(id="a1", kind="time", title="only", state="armed")
+    (tmp_path / "intentions" / CONFLICT).write_text(c.model_dump_json())
+    assert store.reindex() == 1
+    assert store.get("a1").title == "only"
+    assert not (tmp_path / "intentions" / CONFLICT).exists()
+
+
+def test_conflict_copy_kept_if_merged_write_fails(tmp_path, monkeypatch):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="a1", kind="time", title="canon", state="armed"))
+    d = Intention(id="a1", kind="time", title="copy", state="done")
+    (tmp_path / "intentions" / CONFLICT).write_text(d.model_dump_json())
+    import skmemory.intentions as mod
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mod, "atomic_write_text", boom)
+    with pytest.raises(OSError):
+        store.reindex()
+    assert (tmp_path / "intentions" / CONFLICT).exists()
+
+
+def test_merge_policy_order_and_convergence():
+    from itertools import permutations
+
+    from skmemory.intentions import merge_intentions
+
+    def mk(state, fires=0, title="t", last=None):
+        return Intention(
+            id="x", kind="event", title=title, state=state, fires=fires, last_fired_at=last
+        )
+
+    states = ["pending", "armed", "fired", "expired", "invalidated", "cancelled", "done"]
+    for lo, hi in zip(states, states[1:], strict=False):
+        assert merge_intentions(mk(lo, 9), mk(hi)).state == hi
+        assert merge_intentions(mk(hi), mk(lo, 9)).state == hi
+    a, b = mk("armed", 1, "A"), mk("armed", 3, "B", NOW)
+    assert merge_intentions(a, b) == merge_intentions(b, a)
+    assert merge_intentions(a, b).fires == 3
+    tie1, tie2 = mk("armed", 1, "A"), mk("armed", 1, "B")  # fully tied: text breaks it
+    assert merge_intentions(tie1, tie2) == merge_intentions(tie2, tie1)
+    reps = [
+        mk("fired", 2, "A"),
+        mk("armed", 5, "B"),
+        mk("cancelled", 1, "C"),
+        mk("pending", 0, "D"),
     ]
-    got = store.list()
-    assert [(i.id, i.title, i.state) for i in got] == [("a1", "canonical", "done")]
+    outs = set()
+    for perm in permutations(reps):
+        r = perm[0]
+        for x in perm[1:]:
+            r = merge_intentions(r, x)
+        outs.add(r.model_dump_json())
+    assert len(outs) == 1
+
+
+def test_two_hosts_converge_through_reindex(tmp_path):
+    """Host 1 and host 2 hold the same replicas under swapped canonical/conflict names."""
+    reps = [
+        Intention(id="a1", kind="time", title="h1", state="armed", fires=1),
+        Intention(id="a1", kind="time", title="h2", state="cancelled", fires=0),
+    ]
+    results = []
+    for n, order in enumerate((reps, reps[::-1])):
+        base = tmp_path / f"h{n}"
+        store = IntentionStore(base)
+        (base / "intentions" / "a1.json").write_text(order[0].model_dump_json())
+        (base / "intentions" / CONFLICT).write_text(order[1].model_dump_json())
+        store.reindex()
+        results.append((base / "intentions" / "a1.json").read_text())
+        store.close()
+    assert json.loads(results[0]) == json.loads(results[1])
+    assert json.loads(results[0])["state"] == "cancelled"
+
+
+def _race(base, event, q):
+    IntentionStore(base).apply("a", event, now=NOW)
+
+
+def test_concurrent_done_and_fire_never_leave_fired(tmp_path):
+    import multiprocessing as mp
+
+    ctx = mp.get_context("fork")
+    bad = 0
+    for n in range(12):
+        base = tmp_path / f"t{n}"
+        store = IntentionStore(base)
+        store.save(Intention(id="a", kind="time", title="t", state="armed"))
+        store.close()
+        ps = [ctx.Process(target=_race, args=(base, ev, None)) for ev in ("fire", "done")]
+        for p in ps:
+            p.start()
+        for p in ps:
+            p.join()
+        if IntentionStore(base).get("a").state != "done":
+            bad += 1
+    assert bad == 0
+
+
+def test_lock_failure_degrades_to_unlocked(tmp_path, monkeypatch):
+    import skmemory.intentions as mod
+
+    def boom(*a, **k):
+        raise OSError("no flock here")
+
+    monkeypatch.setattr(mod.fcntl, "flock", boom)
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="a", kind="time", title="t"))
+    assert store.apply("a", "arm").state == "armed"
 
 
 def test_sweep_rereads_flat_file_when_index_is_stale(tmp_path):

@@ -25,15 +25,25 @@ Cooldown, max_fires and scope gating belong to the prefilter (P2-02), not here.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import logging
+import os
 import re
 import sqlite3
+import tempfile
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+try:  # POSIX only; without it locking degrades to a warning
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore[assignment]
 
 from .atomic_io import atomic_write_text
 
@@ -154,6 +164,51 @@ def _parse_dt(v: Any) -> datetime | None:
         return None
 
 
+#: Merge precedence when two replicas disagree. Terminal beats live; among
+#: terminal states done > cancelled > invalidated > expired; among live states
+#: fired > armed > pending. A higher fires count wins next, then the later
+#: last_fired_at, then the canonical JSON text as a total-order tie-break, so
+#: every host picks the same winner regardless of merge order.
+_STATE_RANK = {
+    "pending": 0, "armed": 1, "fired": 2,
+    "expired": 10, "invalidated": 11, "cancelled": 12, "done": 13,
+}  # fmt: skip
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _merge_key(i: Intention) -> tuple:
+    return (
+        _STATE_RANK[i.state],
+        i.fires,
+        i.last_fired_at or _EPOCH,
+        i.model_dump_json(),
+    )
+
+
+def merge_intentions(a: Intention, b: Intention) -> Intention:
+    """Deterministic, commutative merge of two replicas of one intention.
+
+    The winner (by :func:`_merge_key`) supplies the record; ``fires`` and
+    ``last_fired_at`` are the maxima of both so no fire is forgotten.
+    """
+    win = max((a, b), key=_merge_key)
+    lasts = [d for d in (a.last_fired_at, b.last_fired_at) if d]
+    return win.model_copy(
+        update={"fires": max(a.fires, b.fires), "last_fired_at": max(lasts) if lasts else None}
+    )
+
+
+def _lock_root() -> Path:
+    """Host-local, never-synced directory for lock files.
+
+    ``$XDG_RUNTIME_DIR`` (a per-user tmpfs, not under any Syncthing folder)
+    when set, else the system temp dir. Lock files must not live in the
+    synced memory dir: they would replicate and mean nothing on other hosts.
+    """
+    root = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    return Path(root) / f"skmemory-intent-locks-{os.getuid() if hasattr(os, 'getuid') else 0}"
+
+
 class IntentionStore:
     """Flat-file store (source of truth) with a derived ``intentions`` table in index.db."""
 
@@ -165,6 +220,9 @@ class IntentionStore:
         self._conn: sqlite3.Connection | None = None
         #: Count of unreadable files/rows skipped by this store instance.
         self.unreadable = 0
+        self._lock_dir = (
+            _lock_root() / hashlib.sha1(str(self.base_path.resolve()).encode()).hexdigest()[:16]
+        )
         self.last_reindex_report: dict[str, Any] = {}
         self._ensure_table()
 
@@ -232,6 +290,41 @@ class IntentionStore:
         logger.warning("unreadable intention file %s: %s", p.name, err)
         return None
 
+    @contextlib.contextmanager
+    def _lock(self, intention_id: str) -> Iterator[None]:
+        """Exclusive flock on a per-intention, host-local lock file.
+
+        Held across read, transition and atomic write so two local processes
+        cannot interleave. Cross-host races are not covered by a lock; they are
+        resolved by :func:`merge_intentions` at reindex. If locking is
+        unavailable (no fcntl, unwritable lock dir, flock error) this logs and
+        proceeds unlocked rather than blocking the write.
+        """
+        fd = None
+        if fcntl is not None:
+            try:
+                self._lock_dir.mkdir(parents=True, exist_ok=True)
+                fd = os.open(
+                    self._lock_dir / f"{_check_id(intention_id)}.lock",
+                    os.O_CREAT | os.O_RDWR,
+                    0o600,
+                )
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError as e:
+                logger.warning(
+                    "intention lock unavailable for %s, proceeding unlocked: %s", intention_id, e
+                )
+                if fd is not None:
+                    os.close(fd)
+                    fd = None
+        try:
+            yield
+        finally:
+            if fd is not None:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+
     def _write(self, intention: Intention) -> None:
         body = intention.model_dump_json(indent=2)
         atomic_write_text(self._path(intention.id), body)
@@ -244,13 +337,14 @@ class IntentionStore:
         existing intention is refused (use :meth:`apply`), so a dead intention
         cannot be revived by writing a stale copy. Flat file first, then index.
         """
-        on_disk = self._read(intention.id)
-        if on_disk is not None and on_disk.state != intention.state:
-            raise ValueError(
-                f"refusing state change {on_disk.state!r} -> {intention.state!r} for "
-                f"{intention.id!r} via save(); use apply() so transition() decides"
-            )
-        self._write(intention)
+        with self._lock(intention.id):
+            on_disk = self._read(intention.id)
+            if on_disk is not None and on_disk.state != intention.state:
+                raise ValueError(
+                    f"refusing state change {on_disk.state!r} -> {intention.state!r} for "
+                    f"{intention.id!r} via save(); use apply() so transition() decides"
+                )
+            self._write(intention)
 
     def apply(
         self,
@@ -263,16 +357,18 @@ class IntentionStore:
         """Re-read the flat file, apply :func:`transition`, write. The only state-change path.
 
         Returns the resulting intention, or None if the file is missing or
-        unreadable. Terminal states stay terminal. Not locked: two hosts racing
-        on the same intention resolve last-writer-wins at the Syncthing level.
+        unreadable. Terminal states stay terminal. Serialised between local
+        processes by a flock; hosts racing through Syncthing are reconciled by the
+        merge in :meth:`reindex`.
         """
-        cur = self._read(intention_id)
-        if cur is None:
-            return None
-        new = transition(cur, event, now=now, snooze_until=snooze_until)
-        if new != cur:
-            self._write(new)
-        return new
+        with self._lock(intention_id):
+            cur = self._read(intention_id)
+            if cur is None:
+                return None
+            new = transition(cur, event, now=now, snooze_until=snooze_until)
+            if new != cur:
+                self._write(new)
+            return new
 
     def get(self, intention_id: str) -> Intention | None:
         """Read from the flat file (source of truth); a corrupt file reads as None."""
@@ -295,13 +391,17 @@ class IntentionStore:
     def reindex(self) -> int:
         """Rebuild the table from the flat files in one transaction; returns rows indexed.
 
-        Only ``<id>.json`` whose stem equals the id inside is indexed. Anything
-        else (``a1.sync-conflict-*.json``, renamed copies) is a conflict copy:
-        the canonical file always wins, the copy is never indexed, and its name
-        is listed in ``last_reindex_report["conflicts"]`` and logged.
-        Unreadable files are listed under ``unreadable``.
+        Syncthing conflict copies (``a1.sync-conflict-*.json``, any file whose
+        stem is not the id inside) are merged, not dropped: all replicas of an
+        id are combined with :func:`merge_intentions` (terminal beats live,
+        fired > armed > pending, higher fires wins), the result is written
+        atomically to the canonical ``<id>.json``, and only then are the
+        conflict copies removed. A conflict-only id is promoted to canonical.
+        The merge is deterministic, so two hosts converge. Details of what was
+        merged and any unreadable files are in ``last_reindex_report``.
         """
-        rows, conflicts, bad = [], [], []
+        groups: dict[str, list[Path]] = {}
+        bad: list[str] = []
         for p in sorted(self.dir.glob("*.json")):
             try:
                 i = Intention(**json.loads(p.read_text(encoding="utf-8")))
@@ -310,11 +410,17 @@ class IntentionStore:
                 logger.warning("skipping unreadable intention file %s: %s", p.name, e)
                 bad.append(p.name)
                 continue
-            if p.stem != i.id:
-                logger.warning("intention conflict copy %s (id %s) not indexed", p.name, i.id)
-                conflicts.append(p.name)
+            groups.setdefault(i.id, []).append(p)
+        rows, merged = [], []
+        for iid, paths in groups.items():
+            if len(paths) == 1 and paths[0].stem == iid:
+                rows.append(self._row(*self._row_args(paths[0])))
                 continue
-            rows.append(self._row(i, i.model_dump_json(indent=2)))
+            with self._lock(iid):
+                res = self._merge_group(iid)
+            if res is not None:
+                merged.append({"id": iid, "files": [p.name for p in paths if p.stem != iid]})
+                rows.append(self._row(res, res.model_dump_json(indent=2)))
         db = self._db()
         with db:  # one transaction: readers never see an empty table
             db.execute("DELETE FROM intentions")
@@ -322,10 +428,52 @@ class IntentionStore:
         self.unreadable += len(bad)
         self.last_reindex_report = {
             "indexed": len(rows),
-            "conflicts": conflicts,
+            "merged": merged,
+            "conflicts": [n for m in merged for n in m["files"]],
             "unreadable": bad,
         }
         return len(rows)
+
+    @staticmethod
+    def _row_args(p: Path) -> tuple[Intention, str]:
+        i = Intention(**json.loads(p.read_text(encoding="utf-8")))
+        return i, i.model_dump_json(indent=2)
+
+    def _merge_group(self, iid: str) -> Intention | None:
+        """Merge canonical + conflict copies of ``iid`` (caller holds the lock).
+
+        Re-reads every file under the lock. The canonical file is rewritten
+        only if the merge differs from it; conflict copies are unlinked only
+        after that write landed.
+        """
+        canon = self._path(iid)
+        replicas: list[Intention] = []
+        copies: list[Path] = []
+        canon_val: Intention | None = None
+        for p in sorted(self.dir.glob("*.json")):
+            try:
+                i = Intention(**json.loads(p.read_text(encoding="utf-8")))
+            except Exception:  # noqa: BLE001 - reported by the caller's scan
+                continue
+            if i.id != iid:
+                continue
+            replicas.append(i)
+            if p == canon:
+                canon_val = i
+            else:
+                copies.append(p)
+        if not replicas:
+            return None
+        result = replicas[0]
+        for r in replicas[1:]:
+            result = merge_intentions(result, r)
+        if canon_val is None or result != canon_val:
+            self._write(result)  # atomic; raises before any copy is removed
+        for p in copies:
+            logger.warning("merged intention conflict copy %s into %s.json", p.name, iid)
+            with contextlib.suppress(OSError):
+                p.unlink()
+        return result
 
     # -- supersession sweep -------------------------------------------
     def _origin_valid_to(self, memory_id: str) -> datetime | None:
