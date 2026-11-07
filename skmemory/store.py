@@ -38,6 +38,7 @@ from .fusion import (
     fuse,
     fusion_strategy,
     parse_time_window,
+    route_query,
     run_arms_concurrent,
     search_deadline_s,
 )
@@ -1775,11 +1776,14 @@ class MemoryStore:
         # `lexical` arm is SQLite LIKE without a pg backend, which is not a
         # ranking worth pinning.
         has_pg_bm25 = getattr(self.vector, "search_lexical", None) is not None
+        df_fn = getattr(self.primary, "term_doc_freq", None)
+        route = route_query(query, df_fn) if fusion_strategy() == "pinned_rrf" else None
         report = fuse(
             arms,
             limit=max(limit, DEFAULT_ARM_CAP),
             strategy=fusion_strategy(),
             pin_arms=("lexical", "lexical_local") if has_pg_bm25 else ("lexical_local", "lexical"),
+            route=route,
         )
         report.elapsed_s = time.monotonic() - started_at
         report.deadline_s = search_deadline_s()

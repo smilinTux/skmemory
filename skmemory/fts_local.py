@@ -209,6 +209,20 @@ def backfill(
 #: Validity window over ``m`` (see skmemory.validity). julianday() makes the
 #: comparison format-proof; a null result (unparseable) lower bound falls back
 #: to created_at, then to "include", and an unparseable valid_to stays open.
+def term_df(conn: sqlite3.Connection, token: str) -> int:
+    """Number of indexed documents containing ``token`` (0 on any FTS error). Read-only."""
+    cleaned = token.replace('"', " ").strip()
+    if not cleaned:
+        return 0
+    try:
+        row = conn.execute(
+            "SELECT count(*) FROM memory_fts WHERE memory_fts MATCH ?", (f'"{cleaned}"',)
+        ).fetchone()
+        return int(row[0])
+    except sqlite3.Error:
+        return 0
+
+
 def as_of_sql(alias: str = "m") -> str:
     """SQL predicate for ``as_of`` over ``alias`` (two ``?`` binds, both as_of)."""
     a = f"{alias}." if alias else ""

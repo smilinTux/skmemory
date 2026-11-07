@@ -1252,6 +1252,12 @@ class SQLiteBackend(BaseBackend):
                 results.append(mem)
         return results
 
+    def term_doc_freq(self, token: str) -> int:
+        """Document frequency of ``token`` in the local FTS index (0 when FTS is off)."""
+        if not self._fts_ok:
+            return 0
+        return fts_local.term_df(self._get_conn(), token)
+
     #: Seconds between anti-join rechecks once the index is fully backfilled.
     _FTS_RECHECK_S = 60.0
     #: Lock wait for the lazy backfill; it skips rather than stalling a search.
