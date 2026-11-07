@@ -162,10 +162,19 @@ def can_close(store: MemoryStore, old: Memory) -> bool:
         return False
 
 
-def _close(store: MemoryStore, old_id: str, valid_to: str, by_id: str, via: str) -> bool:
+def _close(
+    store: MemoryStore,
+    old_id: str,
+    valid_to: str,
+    by_id: str,
+    via: str,
+    not_edited_after: str | None = None,
+) -> bool:
     old = store.primary.load(old_id)
     if old is None or old.valid_to is not None:
         return False
+    if not_edited_after and (old.updated_at or "") > not_edited_after:
+        return False  # edited (reopened) after the superseding record: leave it valid
     if not can_close(store, old):
         logger.warning("not closing a sealed record: this store cannot re-seal its sidecar")
         return False
@@ -233,6 +242,7 @@ def heal_supersessions(store: MemoryStore) -> dict:
                     m.valid_from or m.created_at,
                     m.id,
                     "heal_supersessions",
+                    not_edited_after=m.updated_at or m.created_at,
                 ):
                     report["closed"] += 1
             except Exception as exc:  # noqa: BLE001

@@ -497,3 +497,15 @@ def test_heal_uses_index_on_sqlite(tmp_path, monkeypatch):
     monkeypatch.setattr(be, "list_memories", lambda **k: pytest.fail("full scan"))
     assert write_triage.heal_supersessions(s)["closed"] == 1
     assert be.load(a.id).valid_to == b.valid_from
+
+
+def test_heal_does_not_reclose_a_record_reopened_after_its_successor(store):
+    a = store.snapshot("a", "skap08 listens on 22", kind="fact", layer=MemoryLayer.MID)
+    b = store.snapshot("b", "unrelated text", kind="fact", supersedes_id=a.id)
+    assert store.primary.load(a.id).valid_to == b.valid_from  # A superseded by B, closed
+    reopened = store.primary.load(a.id)
+    reopened.valid_to = None
+    reopened.updated_at = "2999-01-01T00:00:00+00:00"  # reopened later than B
+    store.primary.save(reopened)
+    assert write_triage.heal_supersessions(store)["closed"] == 0
+    assert store.primary.load(a.id).valid_to is None
