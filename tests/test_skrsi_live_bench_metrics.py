@@ -59,3 +59,9 @@ def test_write_guard_invariant_only_from_evidence():
 
 def test_sabotage_not_claimed():
     assert lbm.flatten(_rows(["all"]))["instrument"]["sabotage_tested"] is False
+
+
+def test_noise_floor_declared_on_every_metric():
+    m = lbm.flatten(_rows(["all"]))["metrics"]
+    assert all(spec["noise"] > 0 for spec in m.values())
+    assert m["live_p95_ms"]["noise"] == lbm.NOISE_P95_MS
