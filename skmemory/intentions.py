@@ -215,6 +215,12 @@ def merge_intentions(a: Intention, b: Intention) -> Intention:
 _SEP = "\x1f"
 _WORD = re.compile(r"\w+")
 _FIRST_TOKEN = _WORD
+_TRAIL_WORD = re.compile(r"\w+$")
+_LEAD_WORD = re.compile(r"^\w+")
+
+
+def _is_word(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
 
 
 def _env_num(name: str, default: Any, cast: Any) -> Any:
@@ -692,7 +698,9 @@ class IntentionStore:
         3, ``SKMEMORY_PREFILTER_MAX_FIRES``) intentions fire; the fire path only
         try-locks, so a locked intention is skipped this prompt; only the head
         and tail of ``SKMEMORY_PREFILTER_MAX_CHARS`` (default 16384) of a long
-        prompt is scanned. Run :meth:`sweep_supersession` first when
+        prompt is scanned (a token split by a cut is dropped, so ``fusion`` never
+        fires on the tail of ``confusion``). Multi-word terms match only with
+        exactly one space between words (no whitespace normalisation). Run :meth:`sweep_supersession` first when
         invalidation must be honoured.
         """
         t0 = _t0 if _t0 is not None else time.monotonic()
@@ -703,7 +711,12 @@ class IntentionStore:
         text = text or ""
         if len(text) > limit:  # head and tail; NUL cannot join two words into a phrase
             half = max(limit // 2, 1)
-            text = text[:half] + "\x00" + text[-half:]
+            head, tail = text[:half], text[-half:]
+            if _is_word(text[half - 1]) and _is_word(text[half]):
+                head = _TRAIL_WORD.sub("", head)  # the cut split a token: drop its stub
+            if _is_word(text[-half - 1]) and _is_word(text[-half]):
+                tail = _LEAD_WORD.sub("", tail)
+            text = head + "\x00" + tail
         low = text.lower()
         if not low.strip() or cap <= 0:
             return []

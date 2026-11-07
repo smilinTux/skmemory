@@ -19,6 +19,13 @@ from skmemory.intentions import (
 
 
 @pytest.fixture(autouse=True)
+def _generous_deadline(monkeypatch):
+    # fsynced fires on a loaded box can exceed the 50 ms production deadline; tests that
+    # assert deadline behaviour set their own value
+    monkeypatch.setenv("SKMEMORY_PREFILTER_DEADLINE_S", "5")
+
+
+@pytest.fixture(autouse=True)
 def _local_lock_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path_factory.mktemp("run")))
 
@@ -713,7 +720,6 @@ def test_matcher_cache_follows_index_changes(tmp_path):
 
 
 def test_overlapping_and_prefix_terms_both_match(tmp_path, monkeypatch):
-    monkeypatch.setenv("SKMEMORY_PREFILTER_DEADLINE_S", "5")  # three fsynced fires on a loaded box
     store = IntentionStore(tmp_path)
     store.save(
         Intention(id="a", kind="event", title="t", state="armed", trigger_terms=["rollout"])
@@ -726,3 +732,22 @@ def test_overlapping_and_prefix_terms_both_match(tmp_path, monkeypatch):
     )
     got = sorted(i.id for i in store.prefilter("the rollout ring now", {}, NOW, max_fires=9))
     assert got == ["a", "b", "c"]
+
+
+def test_cut_inside_a_word_never_matches_partial_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_PREFILTER_MAX_CHARS", "20")
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="f", kind="event", title="t", state="armed", trigger_terms=["fusion"]))
+    # tail cut lands inside "confusion" leaving "fusion"; head cut leaves "fusi"/"fusion" stub
+    assert store.prefilter("a" * 40 + " confusion", {}, NOW) == []
+    assert store.prefilter("xxxfusion " + "a" * 40, {}, NOW) == []
+    assert [i.id for i in store.prefilter("fusion " + "a" * 40, {}, NOW)] == ["f"]
+    assert [i.id for i in store.prefilter("a" * 40 + " fusion", {}, NOW)] == ["f"]
+
+
+def test_head_cut_stub_does_not_match(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_PREFILTER_MAX_CHARS", "40")
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="s", kind="event", title="t", state="armed", trigger_terms=["fusi"]))
+    text = "a" * 15 + " fusion " + "b" * 60  # head (20 chars) ends exactly inside "fusion"
+    assert store.prefilter(text, {}, NOW) == []
