@@ -132,10 +132,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
         Returns:
             int: Number of memories re-indexed.
         """
-        usage = self._snapshot_usage()
-        conn = self._get_conn()
-        conn.execute("DELETE FROM memories")
-        conn.commit()
+        usage = self._snapshot_and_clear()
 
         count = 0
         for layer in MemoryLayer:

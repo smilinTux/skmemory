@@ -47,7 +47,7 @@ def test_search_bumps_only_returned_hits(store, backend):
     a = store.snapshot(title="zebra one", content="zebra stripes")
     b = store.snapshot(title="zebra two", content="zebra herd")
     c = store.snapshot(title="unrelated", content="nothing here")
-    got = store.search("zebra", limit=10)
+    got = store.search("zebra", limit=10, record_access=True)
     assert {m.id for m in got} == {a.id, b.id}
     assert _row(backend, a.id)["access_count"] == 1
     assert _row(backend, b.id)["access_count"] == 1
@@ -55,22 +55,50 @@ def test_search_bumps_only_returned_hits(store, backend):
     assert _row(backend, a.id)["last_accessed"]
 
 
-def test_search_uses_one_batched_update(store, backend):
+def test_search_defaults_to_no_bump(store, backend):
+    a = store.snapshot(title="zebra one", content="zebra stripes")
+    store.search("zebra")
+    store.search_fused("zebra")
+    assert _row(backend, a.id)["access_count"] == 0
+
+
+def test_search_uses_one_bump_call(store, backend, monkeypatch):
     for i in range(5):
-        store.snapshot(title=f"zebra {i}", content=f"zebra number {i}")
-    stmts = []
-    backend._get_conn().set_trace_callback(stmts.append)
-    store.search("zebra", limit=10)
-    backend._get_conn().set_trace_callback(None)
-    updates = [
-        s for s in stmts if s.lstrip().upper().startswith("UPDATE MEMORIES SET ACCESS_COUNT")
-    ]
-    assert len(updates) == 1
+        store.snapshot(title=f"zebra {i}", content=f"zebra n{i}")
+    calls = []
+    real = backend.bump_access
+    monkeypatch.setattr(backend, "bump_access", lambda *a, **k: calls.append(a) or real(*a, **k))
+    store.search("zebra", limit=10, record_access=True)
+    assert len(calls) == 1 and len(calls[0][0]) == 5
+
+
+def test_search_hit_debounced_within_hour(store, backend):
+    a = store.snapshot(title="zebra one", content="zebra stripes")
+    for _ in range(4):
+        store.search("zebra", record_access=True)
+    assert _row(backend, a.id)["access_count"] == 1
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    c = backend._get_conn()
+    c.execute("UPDATE memories SET last_accessed = ? WHERE id = ?", (old, a.id))
+    c.commit()
+    store.search("zebra", record_access=True)
+    assert _row(backend, a.id)["access_count"] == 2
+    # recall by id is never debounced
+    store.recall(a.id)
+    store.recall(a.id)
+    assert _row(backend, a.id)["access_count"] == 4
+
+
+def test_bump_does_not_touch_shared_connection_timeout(backend):
+    m = _mem()
+    backend.save(m)
+    backend.bump_access([m.id])
+    assert backend._get_conn().execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
 
 def test_fused_candidates_not_returned_are_not_bumped(store, backend):
     ids = [store.snapshot(title=f"zebra {i}", content=f"zebra number {i}").id for i in range(4)]
-    got = store.search_fused("zebra", limit=2)
+    got = store.search_fused("zebra", limit=2, record_access=True)
     returned = {m.id for m in got}
     assert len(returned) == 2
     for i in ids:
@@ -84,7 +112,7 @@ def test_bump_failure_never_fails_search(store, monkeypatch):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(store.primary, "bump_access", boom)
-    assert len(store.search("zebra")) == 1
+    assert len(store.search("zebra", record_access=True)) == 1
     assert store.recall(store.search("zebra")[0].id) is not None
 
 
@@ -142,8 +170,13 @@ def test_sweep_promotes_after_searches_and_keeps_count(store, backend):
         emotional=EmotionalSnapshot(intensity=1.0),
     )
     store.primary.save(m)
-    for _ in range(3):
-        store.search("quokka")
+    for _d in range(3):
+        store.search("quokka", record_access=True)
+        c = backend._get_conn()
+        c.execute(
+            "UPDATE memories SET last_accessed = '2026-01-01T00:00:00+00:00' WHERE id = ?", (m.id,)
+        )
+        c.commit()
     res = PromotionEngine(store=store).sweep()
     assert res.short_to_mid == 1
     assert _row(backend, m.id)["access_count"] == 3  # promote neither bumps nor resets
@@ -204,3 +237,19 @@ def test_vaulted_reindex_preserves_counters(tmp_path):
     assert _counters(vb, m.id) == (4, 0.7, "2026-01-01T00:00:00+00:00")
     assert vb.bump_access([m.id]) == 1
     assert _counters(vb, m.id)[0] == 5
+
+
+def test_reindex_keeps_bump_that_lands_during_rebuild(backend):
+    m = _mem()
+    backend.save(m)
+    _set_counters(backend, m.id)
+    real = backend._index_memory
+
+    def bump_then_index(mem, path):
+        r = real(mem, path)
+        backend.bump_access([mem.id])  # a concurrent reader hitting the fresh row
+        return r
+
+    backend._index_memory = bump_then_index
+    backend.reindex(force=True)
+    assert _counters(backend, m.id)[0] == 5

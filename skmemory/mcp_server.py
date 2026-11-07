@@ -619,7 +619,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             tags = arguments.get("tags") or None
             layer = arguments.get("layer") or None
             source = arguments.get("source") or None
-            memories = store.search(query, limit=limit, tags=tags, layer=layer, source=source)
+            memories = store.search(
+                query, limit=limit, tags=tags, layer=layer, source=source, record_access=True
+            )
             return _json_response([_memory_dict(m) for m in memories])
 
         elif name == "memory_check_duplicate":

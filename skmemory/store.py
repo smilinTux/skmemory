@@ -49,6 +49,9 @@ from .validation import (
 )
 from .wal import WriteAheadLog
 
+# A search hit on the same memory counts once per this many seconds.
+SEARCH_HIT_DEBOUNCE_S = 3600.0
+
 logger = logging.getLogger("skmemory.store")
 
 MAX_CONTENT_LENGTH = 10000
@@ -930,7 +933,7 @@ class MemoryStore:
 
         return memory
 
-    def _reinforce(self, memory_ids: Sequence[str]) -> None:
+    def _reinforce(self, memory_ids: Sequence[str], *, debounce_s: float | None = None) -> None:
         """Bump access_count / last_accessed for memories returned to a caller.
 
         One batched UPDATE on the SQLite index, best effort: a primary without
@@ -941,7 +944,10 @@ class MemoryStore:
         if bump is None or not memory_ids:
             return
         try:
-            bump(list(memory_ids))
+            if debounce_s is None:
+                bump(list(memory_ids))
+            else:
+                bump(list(memory_ids), debounce_s=debounce_s)
         except Exception as exc:
             logger.debug("access bump skipped: %s", exc)
 
@@ -965,6 +971,7 @@ class MemoryStore:
         layer: str | None = None,
         source: str | None = None,
         context_tag: str | list[str] | None = None,
+        record_access: bool = False,
     ) -> list[Memory]:
         """Search memories by text.
 
@@ -981,6 +988,12 @@ class MemoryStore:
                 text path; NOT an access-control check by itself, see
                 ``audience.py`` for the resolver that decides what a reader
                 may see.
+            record_access: Count the returned memories as read by a person or
+                agent (bumps ``access_count``, debounced to once per hour per
+                memory). Only explicit caller-facing retrieval passes True.
+                Background searches (auto-context, novelty, briefs, hooks)
+                must leave it False so search popularity never drives
+                promotion.
 
         Returns:
             list[Memory]: Matching memories ranked by relevance.
@@ -995,6 +1008,7 @@ class MemoryStore:
                 layer=layer,
                 source=source,
                 context_tag=context_tag,
+                record_access=record_access,
             )
             if fused is not None:
                 return fused
@@ -1015,13 +1029,15 @@ class MemoryStore:
                     )
                 )
                 if results:
-                    self._reinforce([m.id for m in results])
+                    if record_access:
+                        self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
                     return results
             except Exception as exc:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
         results = _ctx(self.primary.search_text(query, limit=fetch))
-        self._reinforce([m.id for m in results])
+        if record_access:
+            self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         return results
 
     def _fusion_enabled(self) -> bool:
@@ -1073,6 +1089,7 @@ class MemoryStore:
         source: str | None = None,
         context_tag: str | list[str] | None = None,
         return_report: bool = False,
+        record_access: bool = False,
     ) -> list[Memory] | tuple[list[Memory], FusionResult] | None:
         """Search by fusing every retrieval arm this store actually has.
 
@@ -1261,8 +1278,9 @@ class MemoryStore:
             return (None, report) if return_report else None
 
         ordered = [found[i] for i in report.ids if i in found]
-        # Only what is returned counts as a hit, not every arm candidate.
-        self._reinforce([m.id for m in ordered])
+        # Only what is returned, and only on explicit request, counts as a hit.
+        if record_access:
+            self._reinforce([m.id for m in ordered], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         return (ordered, report) if return_report else ordered
 
     def check_duplicate(
