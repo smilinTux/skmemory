@@ -199,7 +199,7 @@ def test_claude_reinstall_with_new_binary_path_replaces_old(home, monkeypatch):
     hook_install.install("claude")
     cmds = _commands(json.loads(p.read_text()))
     assert not any(c.startswith(EXE) for c in cmds)
-    assert sum(c.startswith("/new/bin/skmemory hook") for c in cmds) == 5
+    assert sum(c.startswith("/new/bin/skmemory hook") for c in cmds) == 6
 
 
 def test_dry_run_writes_nothing_and_returns_diff(home):
@@ -299,7 +299,7 @@ def test_codex_hooks_json_shape_and_trust(home):
     cfg = (codex / "config.toml").read_text()
     assert cfg.startswith('model = "gpt-5"')
     entries = codex_trust.our_trust_entries(codex / "hooks.json")
-    assert len(entries) == 5
+    assert len(entries) == 6
     for key, digest in entries.items():
         assert f'[hooks.state.{json.dumps(key)}]\ntrusted_hash = "{digest}"' in cfg
     # user's own Stop hook is not trusted by us
