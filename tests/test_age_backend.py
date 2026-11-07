@@ -1369,3 +1369,101 @@ class TestEntityArmAsOf:
         # the same instant written as +02:00 gives the same answer
         got = {r["id"] for r in backend.search_by_entity(word, as_of="2026-06-01T02:00:00+02:00")}
         assert got == {m.id for m in keep.values()}
+
+
+@requires_skmem_pg
+class TestPointInTimeOffsets:
+    """Edge/node validity is decided on parsed INSTANTS, never as text (real AGE).
+
+    Stored values use Z, +00:00, +02:00 and -05:00; each is probed exactly on
+    the boundary instant. The text compare used to leave a +02:00 closed edge
+    open against a Z as_of.
+    """
+
+    T = "2026-06-01T00:00:00+00:00"
+    # (stored string, the instant it denotes relative to T)
+    FORMS = {
+        "Z_at": "2026-06-01T00:00:00Z",
+        "utc_at": "2026-06-01T00:00:00+00:00",
+        "p2_at": "2026-06-01T02:00:00+02:00",
+        "m5_at": "2026-05-31T19:00:00-05:00",
+        "Z_after": "2026-06-01T00:00:01Z",
+        "p2_after": "2026-06-01T02:00:01+02:00",
+        "m5_after": "2026-05-31T19:00:01-05:00",
+        "p2_before": "2026-06-01T01:59:59+02:00",
+        "m5_before": "2026-05-31T18:59:59-05:00",
+    }
+
+    def _edge(self, backend, rel, vf, vt):
+        a = make_memory(title="pit-a", content="short")
+        b = make_memory(title="pit-b", content="short")
+        backend.index_memory(a)
+        backend.index_memory(b)
+        backend._cypher(
+            f"MATCH (a:Memory {{id: $a}}), (b:Memory {{id: $b}}) "
+            f"MERGE (a)-[e:{rel}]->(b) SET e.valid_from = $vf, e.valid_to = $vt RETURN e",
+            {"a": a.id, "b": b.id, "vf": vf, "vt": vt},
+        )
+        return a, b
+
+    @pytest.mark.parametrize("name", list(FORMS))
+    def test_neighbors_and_chain_at_the_boundary(self, backend, name):
+        stored = self.FORMS[name]
+        closed_at_or_before = name.endswith(("_at", "_before"))
+        # valid_to = stored: edge is valid at T only when valid_to is AFTER T
+        a, b = self._edge(backend, "SUPERSEDES", "2026-01-01T00:00:00Z", stored)
+        n = {r["id"] for r in backend.neighbors(a.id, as_of=self.T)}
+        chain = {r["id"] for r in backend.supersedes_chain(a.id, as_of=self.T)}
+        assert (b.id in n) is (not closed_at_or_before), (name, n)
+        assert (b.id in chain) is (not closed_at_or_before), (name, chain)
+        # the same instant spelled with another offset gives the same answer
+        n2 = {r["id"] for r in backend.neighbors(a.id, as_of="2026-06-01T02:00:00+02:00")}
+        assert n2 == n
+        # valid_from = stored: edge has started at T when valid_from <= T
+        a2, b2 = self._edge(backend, "RELATED_TO", stored, None)
+        started = name.endswith(("_at", "_before"))
+        assert (b2.id in {r["id"] for r in backend.neighbors(a2.id, as_of=self.T)}) is started
+
+    @pytest.mark.parametrize("name", list(FORMS))
+    def test_currently_valid_and_superseded_at_the_boundary(self, backend, name):
+        stored = self.FORMS[name]
+        closed = name.endswith(("_at", "_before"))
+        parent = make_memory(title="cv-parent", content="short")
+        child = make_memory(title="cv-child", content="short", parent_id=parent.id)
+        parent.created_at = "2026-01-01T00:00:00Z"
+        child.created_at = "2026-01-02T00:00:00Z"
+        backend.index_memory(parent)
+        backend.index_memory(child)
+        backend._cypher(
+            "MATCH (c:Memory {id: $c})-[e:SUPERSEDES]->(p:Memory {id: $p}) "
+            "SET e.valid_to = $vt RETURN e",
+            {"c": child.id, "p": parent.id, "vt": stored},
+        )
+        assert backend.is_currently_valid(parent.id, as_of=self.T) is (not closed), name
+        ids = {r["id"] for r in backend.currently_valid_memories(as_of=self.T, limit=100000)}
+        assert (parent.id in ids) is (not closed), name
+        assert backend.is_currently_valid(parent.id, as_of="2026-06-01T02:00:00+02:00") is (
+            not closed
+        )
+
+    @pytest.mark.parametrize("name", ["Z_at", "p2_at", "m5_at", "Z_after", "p2_before"])
+    def test_created_at_gate_and_entity_arm(self, backend, name):
+        stored = self.FORMS[name]
+        born = name.endswith(("_at", "_before"))
+        m = make_memory(title="born", content="short")
+        m.created_at = stored
+        backend.index_memory(m)
+        ids = {r["id"] for r in backend.currently_valid_memories(as_of=self.T, limit=100000)}
+        assert (m.id in ids) is born, name
+        assert backend.is_currently_valid(m.id, as_of=self.T) is born
+        word = f"PitEnt{uuid.uuid4().hex[:6]}"
+        e = make_memory(
+            title="ent", content="short", metadata={"decomposition": {"entities": [word]}}
+        )
+        e.created_at = stored
+        e.valid_from = stored
+        e.valid_to = None
+        backend.index_memory(e)
+        for fn in ("search_by_entity", "search_by_entity_tokens"):
+            got = {r["id"] for r in getattr(backend, fn)(word, as_of=self.T)}
+            assert (e.id in got) is born, (name, fn)

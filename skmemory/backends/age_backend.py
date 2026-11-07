@@ -66,7 +66,7 @@ from ..models import (
     Memory,
     parent_relation_of,
 )
-from ..validity import parse_ts, valid_at
+from ..validity import normalize_as_of, parse_ts, valid_at
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +231,25 @@ def _default_agent() -> str:
     from ..agents import require_memory_profile
 
     return require_memory_profile().profile_id
+
+
+def _window_open(valid_from, valid_to, ts: str) -> bool:
+    """Whether ``[valid_from, valid_to)`` contains ``ts``, compared as INSTANTS.
+
+    Stored values are free-form ISO strings (``Z``, ``+00:00``, ``+02:00``,
+    ``-05:00``), so comparing them as text in Cypher is wrong at and near the
+    boundary. Every point-in-time read therefore returns the raw columns and
+    decides here. A missing or unparseable ``valid_from`` counts as started and a
+    missing or unparseable ``valid_to`` as open (never hide on bad data).
+    """
+    t = parse_ts(ts)
+    start, end = parse_ts(valid_from), parse_ts(valid_to)
+    return not ((start is not None and start > t) or (end is not None and end <= t))
+
+
+def _norm_ts(as_of: str | None) -> str:
+    """Canonical UTC ISO form of ``as_of`` (now when None). ValueError if unparseable."""
+    return normalize_as_of(as_of) or _now_iso()
 
 
 def _now_iso() -> str:
@@ -1210,15 +1229,17 @@ class AGEGraphBackend:
             return set()
         rows = self._cypher(
             "MATCH (:Memory)-[e:SUPERSEDES]->(p:Memory) "
-            "WHERE e.valid_to IS NOT NULL AND e.valid_to <= $ts "
-            "RETURN DISTINCT p.id",
-            {"ts": ts},
-            cols="id agtype",
+            "WHERE e.valid_to IS NOT NULL "
+            "RETURN p.id, e.valid_to",
+            {},
+            cols="id agtype, valid_to agtype",
         )
+        t = parse_ts(ts)
         out: set[str] = set()
         for row in rows:
             pid = self._agtype(row[0])
-            if pid:
+            end = parse_ts(self._agtype(row[1]))
+            if pid and end is not None and end <= t:
                 out.add(pid)
         return out
 
@@ -1249,21 +1270,30 @@ class AGEGraphBackend:
         """
         if self.graph is None:
             return []
-        ts = as_of or _now_iso()
+        ts = _norm_ts(as_of)
         superseded = self._superseded_ids_as_of(ts)
-        rows = self._cypher(
-            "MATCH (m:Memory) "
-            "WHERE m.created_at IS NULL OR m.created_at <= $ts "
-            "RETURN m.id, m.title, m.layer, m.created_at "
-            "LIMIT $limit",
-            {"ts": ts, "limit": int(limit)},
-            cols="id agtype, title agtype, layer agtype, created_at agtype",
-        )
+        t = parse_ts(ts)
         out: list[dict] = []
-        for row in self._rows_to_dicts(rows, ["id", "title", "layer", "created_at"]):
-            if row["id"] in superseded:
-                continue
-            out.append(row)
+        skip, page = 0, max(int(limit), 200)
+        # Paged so the exact (instant) check runs on every candidate: a LIMIT
+        # applied before it could drop valid memories.
+        while len(out) < int(limit):
+            rows = self._cypher(
+                "MATCH (m:Memory) RETURN m.id, m.title, m.layer, m.created_at "
+                "ORDER BY m.id SKIP $skip LIMIT $page",
+                {"skip": skip, "page": page},
+                cols="id agtype, title agtype, layer agtype, created_at agtype",
+            )
+            if not rows:
+                break
+            for row in self._rows_to_dicts(rows, ["id", "title", "layer", "created_at"]):
+                born = parse_ts(row["created_at"])
+                if row["id"] in superseded or (born is not None and born > t):
+                    continue
+                out.append(row)
+                if len(out) >= int(limit):
+                    break
+            skip += page
         return out
 
     def is_currently_valid(self, memory_id: str, as_of: str | None = None) -> bool:
@@ -1275,17 +1305,16 @@ class AGEGraphBackend:
         """
         if self.graph is None:
             return False
-        ts = as_of or _now_iso()
+        ts = _norm_ts(as_of)
         if memory_id in self._superseded_ids_as_of(ts):
             return False
         rows = self._cypher(
-            "MATCH (m:Memory {id: $id}) "
-            "WHERE m.created_at IS NULL OR m.created_at <= $ts "
-            "RETURN m.id",
-            {"id": memory_id, "ts": ts},
-            cols="id agtype",
+            "MATCH (m:Memory {id: $id}) RETURN m.id, m.created_at",
+            {"id": memory_id},
+            cols="id agtype, created_at agtype",
         )
-        return bool(rows)
+        t = parse_ts(ts)
+        return any((born := parse_ts(self._agtype(r[1]))) is None or born <= t for r in rows)
 
     def neighbors(self, memory_id: str, as_of: str | None = None) -> list[dict]:
         """Direct (1-hop) Memory-to-Memory neighbourhood valid as of ``as_of``.
@@ -1326,23 +1355,23 @@ class AGEGraphBackend:
         """
         if self.graph is None:
             return []
-        ts = as_of or _now_iso()
+        ts = _norm_ts(as_of)
         merged: dict[str, dict] = {}
         for rel_type in MEMORY_LINK_EDGES:
             query = (
                 "MATCH (start:Memory {id: $id})-[e:" + rel_type + "]-(n:Memory) "
                 "WHERE n.id <> $id "
-                "AND (e.valid_from IS NULL OR e.valid_from <= $ts) "
-                "AND (e.valid_to IS NULL OR e.valid_to > $ts) "
-                "RETURN n.id, n.title, n.layer"
+                "RETURN n.id, n.title, n.layer, e.valid_from, e.valid_to"
             )
             rows = self._cypher(
                 query,
-                {"id": memory_id, "ts": ts},
-                cols="id agtype, title agtype, layer agtype",
+                {"id": memory_id},
+                cols="id agtype, title agtype, layer agtype, vf agtype, vt agtype",
             )
-            for row in self._rows_to_dicts(rows, ["id", "title", "layer"]):
+            for row in self._rows_to_dicts(rows, ["id", "title", "layer", "vf", "vt"]):
                 rid = row["id"]
+                if not _window_open(row.pop("vf", None), row.pop("vt", None), ts):
+                    continue
                 if rid and rid not in merged:
                     row["distance"] = 1
                     merged[rid] = row
@@ -1392,7 +1421,7 @@ class AGEGraphBackend:
         """
         if self.graph is None:
             return []
-        ts = as_of or _now_iso()
+        ts = _norm_ts(as_of)
         chain: dict[str, dict] = {}
         visited: set[str] = {memory_id}
         frontier: list[tuple[str, int]] = [(memory_id, 0)]
@@ -1402,17 +1431,17 @@ class AGEGraphBackend:
                 continue
             query = (
                 "MATCH (c:Memory {id: $id})-[e:SUPERSEDES]->(p:Memory) "
-                "WHERE (e.valid_from IS NULL OR e.valid_from <= $ts) "
-                "AND (e.valid_to IS NULL OR e.valid_to > $ts) "
-                "RETURN p.id, p.title, p.layer"
+                "RETURN p.id, p.title, p.layer, e.valid_from, e.valid_to"
             )
             rows = self._cypher(
                 query,
-                {"id": current, "ts": ts},
-                cols="id agtype, title agtype, layer agtype",
+                {"id": current},
+                cols="id agtype, title agtype, layer agtype, vf agtype, vt agtype",
             )
-            for row in self._rows_to_dicts(rows, ["id", "title", "layer"]):
+            for row in self._rows_to_dicts(rows, ["id", "title", "layer", "vf", "vt"]):
                 pid = row["id"]
+                if not _window_open(row.pop("vf", None), row.pop("vt", None), ts):
+                    continue
                 if not pid or pid in visited:
                     continue
                 visited.add(pid)
