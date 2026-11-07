@@ -248,7 +248,7 @@ def test_parse_error_unjudged(tmp_path):
         return 200, LOCAL, json.dumps({"choices": [{"message": {"content": body}}]})
 
     meta = _run(tmp_path, bad)
-    assert meta["unjudged_reasons"] == {"parse_error:a_nojson_stop": 1}
+    assert meta["unjudged_reasons"] == {"parse_error:a_nojson_None": 1}
 
 
 # ---- live_bench --labelled ------------------------------------------------
@@ -300,3 +300,10 @@ def test_self_retrieval_table_still_tagged():
 def test_labelled_dir_must_be_private(tmp_path):
     with pytest.raises(ValueError):
         lb.load_labelled(lab.Path(lab.__file__).resolve().parents[2] / "x")
+
+
+def test_parse_json_repairs_missing_closers_only():
+    assert lab.parse_json('{"gold":[{"m":"M1","quote":"abc"}')["gold"][0]["m"] == "M1"
+    assert lab.parse_json('<think>x</think>{"gold":[]}') == {"gold": []}
+    assert lab.parse_json("no braces") is None
+    assert lab.parse_json('{"gold": [oops]}') is None

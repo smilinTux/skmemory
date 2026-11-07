@@ -167,11 +167,16 @@ def parse_json(text: str) -> dict | None:
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
         return None
-    try:
-        obj = json.loads(text[start : end + 1])
-    except ValueError:
-        return None
-    return obj if isinstance(obj, dict) else None
+    body = text[start : end + 1]
+    # The judge sometimes drops closing brackets at the end. Adding ONLY closers
+    # cannot change any value, so it cannot alter a quote.
+    for tail in ("", "]", "}", "]}", "}]}", "]}}"):
+        try:
+            obj = json.loads(body + tail)
+        except ValueError:
+            continue
+        return obj if isinstance(obj, dict) else None
+    return None
 
 
 # ---------------------------------------------------------------------------
