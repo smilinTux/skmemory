@@ -355,3 +355,87 @@ class TestArchiveAwarePrune:
         assert stats["archived"] == 0, "a tombstoned id must not be spared as archived"
         assert stats["pruned"] == 1
         assert fake.delete_issued is True
+
+
+class TestShortformTolerantPrune:
+    """pg id and flat/archive stem may disagree on full uuid vs shortform.
+
+    The prune is destructive, so any such pairing keeps the row (SKMEM-P0-10).
+    """
+
+    def _run(self, monkeypatch, tmp_path, pg_extra, setup):
+        kept = [str(uuid.uuid4()) for _ in range(20)]
+        orphan = str(uuid.uuid4())
+        fake = _FakePsql(kept + list(pg_extra) + [orphan], delete_count=1)
+        monkeypatch.setattr(reconcile_mod.subprocess, "run", fake.run)
+
+        class _R:
+            def __init__(self, n):
+                self.n = n
+
+            def json(self):
+                return {"embeddings": [[0.0, 0.0, 0.0]] * self.n}
+
+        monkeypatch.setattr(
+            reconcile_mod.requests, "post", lambda *a, **k: _R(len(k["json"]["input"]))
+        )
+        mem = tmp_path / "memory"
+        for mid in kept:
+            _write_flat(mem, "mid-term", mid)
+        setup(mem)
+        reconcile_mod.reconcile("test-agent", mem_dir=str(mem), psql_cmd=["psql"], verbose=False)
+        deletes = [s for s in fake.statements if "delete from memories" in s.lower()]
+        return deletes, orphan
+
+    def test_pg_shortform_row_backed_by_full_uuid_flat_is_kept(self, monkeypatch, tmp_path):
+        full = str(uuid.uuid4())
+        short = reconcile_mod.short_id(full)
+        deletes, orphan = self._run(
+            monkeypatch, tmp_path, [short], lambda m: _write_flat(m, "short-term", full)
+        )
+        assert len(deletes) == 1 and orphan in deletes[0]
+        assert short not in deletes[0]
+
+    def test_pg_full_row_backed_by_shortform_flat_is_kept(self, monkeypatch, tmp_path):
+        full = str(uuid.uuid4())
+        short = reconcile_mod.short_id(full)
+        deletes, orphan = self._run(
+            monkeypatch, tmp_path, [full], lambda m: _write_flat(m, "short-term", short)
+        )
+        assert len(deletes) == 1 and orphan in deletes[0]
+        assert full not in deletes[0]
+
+    def test_pg_shortform_row_backed_by_full_uuid_archive_is_kept(self, monkeypatch, tmp_path):
+        full = str(uuid.uuid4())
+        short = reconcile_mod.short_id(full)
+        deletes, orphan = self._run(
+            monkeypatch, tmp_path, [short], lambda m: _write_archived(m, full)
+        )
+        assert len(deletes) == 1 and orphan in deletes[0]
+        assert short not in deletes[0]
+
+    def test_tombstoned_shortform_still_pruned_when_flat_removed(self, monkeypatch, tmp_path):
+        """Tombstone still beats a matching form: the id itself is tombstoned."""
+        from skmemory.tombstones import write_tombstone
+
+        gone = str(uuid.uuid4())
+
+        def setup(m):
+            _write_flat(m, "short-term", gone)
+            write_tombstone(m, gone)
+
+        deletes, _ = self._run(monkeypatch, tmp_path, [gone], setup)
+        assert gone in deletes[0]
+
+    def test_tombstoned_full_id_prunes_its_shortform_pg_row(self, monkeypatch, tmp_path):
+        from skmemory.tombstones import write_tombstone
+
+        full = str(uuid.uuid4())
+        short = reconcile_mod.short_id(full)
+
+        def setup(m):
+            _write_flat(m, "short-term", full)
+            write_tombstone(m, full)
+
+        deletes, _ = self._run(monkeypatch, tmp_path, [short], setup)
+        assert short in deletes[0]

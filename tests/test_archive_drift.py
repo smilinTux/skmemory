@@ -220,3 +220,29 @@ class TestPgDriftArchiveAware:
 
         assert drift["pg_only"] == 0
         assert drift["pg_archived"] == 1
+
+
+class TestFlatOnlyShortform:
+    def test_full_uuid_file_with_shortform_row_is_not_flat_only(self, backend):
+        """SKMEM-P0-10: row id is the shortform, file stem is the full uuid."""
+        m = _mem("shortform-row")
+        backend.save(m)
+        full = m.id
+        short = full[:12].replace("-", "")
+        conn = backend._get_conn()
+        conn.execute("UPDATE memories SET id=? WHERE id=?", (short, full))
+        conn.commit()
+
+        drift = backend.drift_check()
+
+        assert drift["flat_only"] == 0
+        assert drift["sqlite_only"] == 0
+
+    def test_unindexed_file_is_still_flat_only(self, backend):
+        m = _mem("unindexed")
+        backend.save(m)
+        conn = backend._get_conn()
+        conn.execute("DELETE FROM memories WHERE id=?", (m.id,))
+        conn.commit()
+
+        assert backend.drift_check()["flat_only"] == 1
