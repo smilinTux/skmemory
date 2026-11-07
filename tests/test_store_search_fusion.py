@@ -42,7 +42,7 @@ class _FakeVector:
         self._raises = raises
         self.seen_kwargs = {}
 
-    def search_semantic(self, query, limit=10):
+    def search_semantic(self, query, limit=10, **filters):
         if self._raises:
             raise RuntimeError("no embed server")
         self.seen_kwargs = {"query": query, "limit": limit}
@@ -138,7 +138,7 @@ def test_search_falls_through_to_legacy_when_fusion_finds_nothing(store, monkeyp
     """
 
     class _TextOnlyVector:
-        def search_semantic(self, query, limit=10):
+        def search_semantic(self, query, limit=10, **filters):
             return []
 
         def search_text(self, query, limit=10, layer=None, tags=None, source=None):
@@ -177,7 +177,7 @@ def test_graph_rows_missing_from_the_source_of_truth_are_skipped(store):
     propagated."""
 
     class _GhostGraph:
-        def search_by_entity(self, query, limit=10):
+        def search_by_entity(self, query, limit=10, **filters):
             return [{"id": "row-that-no-longer-exists"}]
 
     store.graph = _GhostGraph()
@@ -214,7 +214,7 @@ class _LexicalVector:
     def __init__(self):
         self.lexical_calls = []
 
-    def search_semantic(self, query, limit=10):
+    def search_semantic(self, query, limit=10, **filters):
         return []
 
     def search_lexical(self, query, limit=10, layer=None, tags=None, source=None):
@@ -254,7 +254,7 @@ def test_lexical_arm_falls_back_to_the_primary_when_no_engine_is_exposed(store):
     """A backend without search_lexical must still get a lexical arm."""
 
     class _PlainVector:
-        def search_semantic(self, query, limit=10):
+        def search_semantic(self, query, limit=10, **filters):
             return []
 
     store.vector = _PlainVector()
@@ -277,11 +277,11 @@ class _TokenGraph:
         self.whole_calls = []
         self.token_calls = []
 
-    def search_by_entity(self, query, limit=20):
+    def search_by_entity(self, query, limit=20, **filters):
         self.whole_calls.append(query)
         return []
 
-    def search_by_entity_tokens(self, query, limit=20):
+    def search_by_entity_tokens(self, query, limit=20, **filters):
         self.token_calls.append(query)
         return []
 
@@ -290,7 +290,7 @@ class _WholeOnlyGraph:
     def __init__(self):
         self.whole_calls = []
 
-    def search_by_entity(self, query, limit=20):
+    def search_by_entity(self, query, limit=20, **filters):
         self.whole_calls.append(query)
         return []
 

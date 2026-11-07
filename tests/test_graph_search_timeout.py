@@ -124,7 +124,7 @@ class TestTokenFanoutBudget:
         calls: list[str] = []
 
         class _Slow(_RecordingBackend):
-            def search_by_entity(self, query, limit=20):
+            def search_by_entity(self, query, limit=20, **filters):
                 calls.append(query)
                 import time
 
@@ -142,7 +142,7 @@ class TestTokenFanoutBudget:
         calls: list[str] = []
 
         class _Fast(_RecordingBackend):
-            def search_by_entity(self, query, limit=20):
+            def search_by_entity(self, query, limit=20, **filters):
                 calls.append(query)
                 return []
 
@@ -156,7 +156,7 @@ class TestTokenFanoutBudget:
         calls: list[str] = []
 
         class _Slow(_RecordingBackend):
-            def search_by_entity(self, query, limit=20):
+            def search_by_entity(self, query, limit=20, **filters):
                 calls.append(query)
                 import time
 
