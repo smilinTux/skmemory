@@ -1,0 +1,1 @@
+- fix(fusion): `parse_time_window` no longer reads "step 3 may fail" as May 3, accepts a capitalized "March" at query start ("March outage details"), handles "the past month/week/day", and treats "last week of March" as March instead of the ISO week (SKMEM-P0-17).

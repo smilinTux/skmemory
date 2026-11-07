@@ -308,6 +308,27 @@ _LAST_WEEKDAY_RE = re.compile(r"\blast\s+(" + "|".join(_WEEKDAYS) + r")\b")
 # the query makes the intent unambiguous (see _month_match).
 _AMBIGUOUS_MONTHS = {"may", "march"}
 _MONTH_PREPS = r"(?:in|during|since|until|from|of)"
+# A bare capitalized "March" at query start is a month only with a date cue
+# (day or year) or when the next word is an event noun ("March outage").
+_MARCH_EVENT_NOUNS = {
+    "outage",
+    "incident",
+    "review",
+    "report",
+    "deploy",
+    "meeting",
+    "notes",
+    "update",
+}
+_MODAL_SUBJECTS = {"i", "we", "you", "they", "it", "he", "she", "people", "who"}
+_MODAL_FOLLOWERS = {
+    "times", "time", "miles", "mile", "minutes", "minute", "hours", "hour",
+    "days", "day", "weeks", "week", "go", "be",
+}  # fmt: skip
+_PAST_UNIT_RE = re.compile(
+    r"\bpast\s+(day|week|month)\b"
+    r"(?=\s*(?:[.,;:!?]|$)|\s+(?:or|and|to|on|in|for|about|with|but|from|we|i)\b)"
+)
 _DAY = r"(\d{1,2})(?:st|nd|rd|th)?"
 
 
@@ -371,13 +392,31 @@ def _month_match(query: str, text: str):
         d = re.match(rf"\s*,?\s*{_DAY}\b(?!\s*:)", after)
         d2 = re.search(rf"{_DAY}\s+(?:of\s+)?$", before)
         if d and not re.match(r"\s*,?\s*20\d{2}\b", after):
+            if name in _AMBIGUOUS_MONTHS:
+                prev = re.search(r"(\w+)\s+$", before)
+                nxt = re.match(r"\s*([a-z]+)", after[d.end() :])
+                if (prev and prev.group(1) in _MODAL_SUBJECTS) or (
+                    nxt and nxt.group(1) in _MODAL_FOLLOWERS
+                ):
+                    continue  # "we may 3 times", "people march 4 hours"
             day = int(d.group(1))
         elif d2:
-            day = int(d2.group(1))
+            # "step 3 may fail": a bare number before an ambiguous word is not
+            # a day unless the date reading is closed off ("5 may", "5 may
+            # 2026", "5th of may", "5 may,").
+            date_only = re.fullmatch(r"[\s.,!?]*\d{1,2}\s+[a-z]+[\s.,!?]*", text)
+            year_next = re.match(r"\s*,?\s*20\d{2}\b", after)
+            ordinal = re.search(r"\d(?:st|nd|rd|th)\s+(?:of\s+)?$", before)
+            if name not in _AMBIGUOUS_MONTHS or date_only or year_next or ordinal:
+                day = int(d2.group(1))
         y = re.match(r"\s*,?\s*(20\d{2})\b", after)
         has_number = day is not None or y is not None
         if name in _AMBIGUOUS_MONTHS and not has_number:
-            capitalized = query[a : a + 1].isupper() and a > 0 and query[:a].strip() != ""
+            at_start = query[:a].strip() == ""
+            capitalized = query[a : a + 1].isupper() and not at_start
+            if name == "march" and at_start and query[a : a + 1].isupper():
+                nxt = _WORD_RE.match(text, b + 1) if text[b : b + 1] == " " else None
+                capitalized = nxt is not None and nxt.group(0).rstrip("s") in _MARCH_EVENT_NOUNS
             prep = re.search(rf"\b{_MONTH_PREPS}\s+$", before)
             if not (capitalized or prep):
                 continue
@@ -455,8 +494,9 @@ def parse_time_window(query: str, *, now: datetime | None = None) -> tuple[str, 
         return _month_bounds(y, mo, tz)
 
     m = _LAST_N_RE.search(text)
-    if m:
-        n, unit = _count(m.group(1)), m.group(2)
+    pm = None if m else _PAST_UNIT_RE.search(text)  # "the past month" == last 1 month
+    if m or pm:
+        n, unit = (_count(m.group(1)), m.group(2)) if m else (1, pm.group(1))
         if unit == "month":
             y, mo = _shift_month(today.year, today.month, -n)
             try:
@@ -474,9 +514,9 @@ def parse_time_window(query: str, *, now: datetime | None = None) -> tuple[str, 
         back = (today.weekday() - _WEEKDAYS[m.group(1)]) % 7 or 7
         return _day_span(today - timedelta(days=back), tz)
 
-    if re.search(r"\bthis\s+week\b", text):
+    if re.search(r"\bthis\s+week\b(?!\s+of\b)", text):
         return _week_span(today, tz)
-    if re.search(r"\blast\s+week\b", text):
+    if re.search(r"\blast\s+week\b(?!\s+of\b)", text):
         return _week_span(today - timedelta(days=7), tz)
     if re.search(r"\bthis\s+month\b", text):
         return _month_bounds(today.year, today.month, tz)

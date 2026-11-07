@@ -415,3 +415,92 @@ def test_no_wall_clock_dependency():
     assert _win("last month") == _win(
         "last month", datetime(2026, 11, 6, 15, 30, tzinfo=timezone.utc)
     )
+
+
+# ---------------------------------------------------------------------------
+# parse_time_window: edge cases left by SKMEM-P0-08 (SKMEM-P0-17)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("query", ["step 3 may fail", "retry 2 may not help", "we saw 12 may be"])
+def test_number_before_modal_may_is_not_a_date(query):
+    assert _win(query) is None
+
+
+@pytest.mark.parametrize(
+    "query", ["5 may", "5th of may", "5 may 2026", "what happened 5th of may"]
+)
+def test_number_before_may_closed_off_is_a_date(query):
+    after, _ = _win(query)
+    assert after.startswith("2026-05-05")
+
+
+def test_march_at_query_start_is_a_month():
+    assert _win("March outage details")[0].startswith("2026-03-01")
+    assert _win("March on Friday") is None
+    assert _win("march outage details") is None
+
+
+def test_past_unit_without_number_is_rolling():
+    a, b = _win("the past month")
+    assert a.startswith("2026-10-06T15:30:00") and b.startswith("2026-11-06T15:30:00")
+    a, _ = _win("the past week")
+    assert a.startswith("2026-10-30T15:30:00")
+    a, _ = _win("past day")
+    assert a.startswith("2026-11-05T15:30:00")
+
+
+def test_last_week_of_month_is_the_month_not_the_iso_week():
+    a, b = _win("last week of March")
+    assert a.startswith("2026-03-01") and b.startswith("2026-03-31")
+    assert _win("last week of may")[0].startswith("2026-05-01")
+    assert _win("last week")[0].startswith("2026-10-26")
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "March madness bracket",
+        "March of the Penguins",
+        "March for Life",
+        "chapter 4 may",
+        "room 12 may",
+        "scored 9 may",
+        "I scored 90 may",
+        "we may 3 times a week",
+        "you may 5 minutes later",
+        "it may 2 weeks",
+        "we may 10 days",
+        "I may 2 go later",
+        "we march 5 miles",
+        "people march 4 hours",
+        "it may 4th be fine",
+        "past day trading",
+        "past month rent roll",
+    ],
+)
+def test_edge_false_positives_abstain(query):
+    assert _win(query) is None
+
+
+def test_week_n_of_march_is_march_not_day():
+    a, b = _win("week 3 of march")
+    assert a.startswith("2026-03-01") and b.startswith("2026-03-31")
+
+
+def test_march_event_nouns_at_start_narrow():
+    assert _win("March incident review")[0].startswith("2026-03-01")
+    assert _win("March 2025 notes")[0].startswith("2025-03-01")
+
+
+@pytest.mark.parametrize(
+    "query,start",
+    [
+        ("may 5", "2026-05-05"),
+        ("march 5", "2026-03-05"),
+        ("in may 2026", "2026-05-01"),
+        ("may 5 outage", "2026-05-05"),
+    ],
+)
+def test_month_then_number_still_parses(query, start):
+    assert _win(query)[0].startswith(start)
