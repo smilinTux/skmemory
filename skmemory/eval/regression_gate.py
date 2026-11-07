@@ -51,6 +51,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from skmemory.eval import class_bench
 from skmemory.eval.fusion_bench import run_benchmark as run_fusion_benchmark
 from skmemory.eval.groundedness_scorer import (
     lexical_overlap_judge,
@@ -151,10 +152,16 @@ def collect_metrics() -> dict:
     # so this is re-proved rather than inherited.
     fusion_leaks = sum(int(d["leak_count"]) for d in fusion["strategies"].values())
 
+    # Per-class baselines over corpus-v1/queries-v1 (SKMEM-P1-02). Gated per
+    # class AND per query against each query's own gate_recall_at_5.
+    classes = class_bench.run()
+    metrics.update(class_bench.flat_metrics(classes))
+
     return {
         "metrics": metrics,
-        "leak_count": int(retrieval["leak_count"]) + fusion_leaks,
+        "leak_count": int(retrieval["leak_count"]) + fusion_leaks + int(classes["leak_count"]),
         "leak_count_unfiltered": int(retrieval["leak_count_unfiltered"]),
+        "class_gate_failures": classes["failures"],
     }
 
 
@@ -200,6 +207,18 @@ def compare(
                 f"{name}: {cur_val:.6f} < baseline {base_val:.6f} (drop {base_val - cur_val:.6f})"
             )
 
+    # Per-query gate (gate_recall_at_5): a candidate query below its gate is a
+    # regression unless the baseline records it as a KNOWN failure with its real
+    # number. Known failures stay protected by the per-query metric floor above,
+    # so they cannot get worse either.
+    known = {f["id"] for f in baseline.get("class_gate_failures", [])}
+    for f in current.get("class_gate_failures", []):
+        if f["id"] not in known:
+            regressions.append(
+                f"{f['id']} ({f['class']}): {f['metric']} {f['value']:.6f} < gate "
+                f"{f['gate']:.6f} and not a recorded known failure"
+            )
+
     # HARD privacy gate: any leak is a regression, independent of the baseline.
     leak = current.get("leak_count", 0)
     if leak and leak > 0:
@@ -211,6 +230,16 @@ def compare(
 # =============================================================================
 # IO
 # =============================================================================
+
+
+def expected_fail_now_passing(current: Mapping, baseline: Mapping) -> list[str]:
+    """Baseline expected_fail queries that no longer fail in the current run."""
+    failing = {f["id"] for f in current.get("class_gate_failures", [])}
+    return [
+        f["id"]
+        for f in baseline.get("class_gate_failures", [])
+        if f.get("expected_fail") and f["id"] not in failing
+    ]
 
 
 def load_baseline(path: str | os.PathLike = BASELINE_PATH) -> dict:
@@ -230,6 +259,7 @@ def _baseline_document(metrics: dict) -> dict:
         "metrics": metrics["metrics"],
         "leak_count": metrics["leak_count"],
         "leak_count_unfiltered": metrics["leak_count_unfiltered"],
+        "class_gate_failures": metrics.get("class_gate_failures", []),
     }
 
 
@@ -287,6 +317,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Collect + print (and optionally --output) but do not gate.",
     )
     parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Also fail when an expected_fail query has started passing "
+        "(its tag must then be removed).",
+    )
+    parser.add_argument(
         "--epsilon",
         type=float,
         default=DEFAULT_EPSILON,
@@ -326,6 +362,14 @@ def main(argv: list[str] | None = None) -> int:
     regressions = compare(current, baseline, epsilon=args.epsilon)
 
     print()
+    passing = expected_fail_now_passing(current, baseline)
+    if passing:
+        print(
+            "REQUIRED ACTION: these expected_fail (as_of) queries now pass; drop their "
+            "expected_fail status and re-record the baseline: " + ", ".join(passing)
+        )
+        if args.strict:
+            regressions.append("--strict: expected_fail queries passing: " + ", ".join(passing))
     if regressions:
         print(f"REGRESSION GATE: FAIL ({len(regressions)} regression(s))")
         for line in regressions:

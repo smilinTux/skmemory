@@ -23,7 +23,7 @@ from skmemory.eval import regression_gate as gate
 
 def test_collect_metrics_shape_and_keys():
     cur = gate.collect_metrics()
-    assert set(cur) == {"metrics", "leak_count", "leak_count_unfiltered"}
+    assert set(cur) == {"metrics", "leak_count", "leak_count_unfiltered", "class_gate_failures"}
     m = cur["metrics"]
     # Every harness contributes its expected keys.
     for key in (
@@ -58,6 +58,7 @@ def test_compare_green_against_self():
         "metrics": cur["metrics"],
         "leak_count": cur["leak_count"],
         "leak_count_unfiltered": cur["leak_count_unfiltered"],
+        "class_gate_failures": cur["class_gate_failures"],
     }
     assert gate.compare(cur, baseline) == []
 
@@ -77,7 +78,11 @@ def test_compare_red_on_lowered_metric():
 
 def test_compare_red_on_groundedness_drop():
     cur = gate.collect_metrics()
-    baseline = {"metrics": cur["metrics"], "leak_count": 0}
+    baseline = {
+        "metrics": cur["metrics"],
+        "leak_count": 0,
+        "class_gate_failures": cur["class_gate_failures"],
+    }
     regressed = copy.deepcopy(cur)
     regressed["metrics"]["groundedness.score"] = 0.0
     reg = gate.compare(regressed, baseline)
@@ -86,7 +91,11 @@ def test_compare_red_on_groundedness_drop():
 
 def test_tiny_drop_below_epsilon_is_regression():
     cur = gate.collect_metrics()
-    baseline = {"metrics": cur["metrics"], "leak_count": 0}
+    baseline = {
+        "metrics": cur["metrics"],
+        "leak_count": 0,
+        "class_gate_failures": cur["class_gate_failures"],
+    }
     regressed = copy.deepcopy(cur)
     regressed["metrics"]["recall_bench.recall@1"] -= 1e-6  # above epsilon noise floor
     assert gate.compare(regressed, baseline, epsilon=gate.DEFAULT_EPSILON)
@@ -94,7 +103,11 @@ def test_tiny_drop_below_epsilon_is_regression():
 
 def test_float_noise_within_epsilon_is_not_regression():
     cur = gate.collect_metrics()
-    baseline = {"metrics": cur["metrics"], "leak_count": 0}
+    baseline = {
+        "metrics": cur["metrics"],
+        "leak_count": 0,
+        "class_gate_failures": cur["class_gate_failures"],
+    }
     jittered = copy.deepcopy(cur)
     jittered["metrics"]["recall_bench.recall@1"] -= 1e-12  # below epsilon
     assert gate.compare(jittered, baseline, epsilon=gate.DEFAULT_EPSILON) == []
@@ -105,7 +118,11 @@ def test_float_noise_within_epsilon_is_not_regression():
 
 def test_compare_red_on_leak():
     cur = gate.collect_metrics()
-    baseline = {"metrics": cur["metrics"], "leak_count": 0}
+    baseline = {
+        "metrics": cur["metrics"],
+        "leak_count": 0,
+        "class_gate_failures": cur["class_gate_failures"],
+    }
     leaked = copy.deepcopy(cur)
     leaked["leak_count"] = 1
     reg = gate.compare(leaked, baseline)
