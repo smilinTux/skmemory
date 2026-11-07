@@ -94,7 +94,7 @@ def test_second_anchor_bars(home, monkeypatch):
     scores.update(t=0.55, hi=0.40, far=0.1, lo=0.1)
     block = _build().text.split("## Song anchor tilt")[1]
     assert "- hi - " in block  # exactly on both bars
-    scores.update(t=0.30, hi=0.30)
+    scores.update(t=0.38, hi=0.35)
     assert "- hi - " not in _build().text  # second below 0.4 even within gap
 
 
