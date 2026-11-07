@@ -49,7 +49,9 @@ _DDL = (
 def fts5_available(conn: sqlite3.Connection) -> bool:
     """Whether this SQLite build has FTS5 with contentless delete (3.43+)."""
     try:
-        conn.execute("CREATE VIRTUAL TABLE temp._fts_probe USING fts5(a, content='', contentless_delete=1)")
+        conn.execute(
+            "CREATE VIRTUAL TABLE temp._fts_probe USING fts5(a, content='', contentless_delete=1)"
+        )
         conn.execute("DROP TABLE temp._fts_probe")
         return True
     except sqlite3.Error:

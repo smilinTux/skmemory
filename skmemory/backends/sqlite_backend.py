@@ -511,7 +511,9 @@ class SQLiteBackend(BaseBackend):
                     fts_local.index_memory(conn, memory, content_hash)
                 except sqlite3.Error as fts_err:
                     # The FTS arm is derived; never fail the index write for it.
-                    logger.warning("sqlite_backend: fts index failed for %s: %s", memory.id, fts_err)
+                    logger.warning(
+                        "sqlite_backend: fts index failed for %s: %s", memory.id, fts_err
+                    )
             conn.commit()
             return True
         except sqlite3.Error as e:
@@ -1901,6 +1903,7 @@ class SQLiteBackend(BaseBackend):
                 "total_memories": s["total"],
                 "by_layer": s["by_layer"],
                 "index_size_bytes": s["index_size_bytes"],
+                "fts": self.fts_status(),
                 "sync": {
                     "in_sync": drift["in_sync"],
                     "sqlite_only": drift["sqlite_only"],

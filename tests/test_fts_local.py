@@ -25,9 +25,10 @@ def backend(tmp_path):
 def test_indexes_full_content_not_just_preview(backend):
     m = _mem("alpha", LONG_TAIL + "zebrafishneedle")
     backend.save(m)
-    assert "zebrafishneedle" not in backend._get_conn().execute(
-        "SELECT content_preview FROM memories"
-    ).fetchone()[0]
+    assert (
+        "zebrafishneedle"
+        not in backend._get_conn().execute("SELECT content_preview FROM memories").fetchone()[0]
+    )
     assert [r.id for r in backend.search_lexical_local("zebrafishneedle")] == [m.id]
 
 
@@ -41,7 +42,19 @@ def test_bm25_ranks_better_match_first(backend):
 
 @pytest.mark.parametrize(
     "q",
-    ['prb-6f069c5e', 'say "hello', 'tag:foo', 'a AND', 'NEAR(', '(((', '"', '*', "it's", "-x", "a:b:c d-e"],
+    [
+        "prb-6f069c5e",
+        'say "hello',
+        "tag:foo",
+        "a AND",
+        "NEAR(",
+        "(((",
+        '"',
+        "*",
+        "it's",
+        "-x",
+        "a:b:c d-e",
+    ],
 )
 def test_hostile_queries_never_raise(backend, q):
     backend.save(_mem("prb-6f069c5e", "note about prb-6f069c5e"))
@@ -61,8 +74,12 @@ def test_sanitize_empty():
 
 
 def test_filters_layer_tags_and_source_context(backend):
-    a = _mem("a", "needle", layer=MemoryLayer.LONG, tags=["x", "y"], source="s1", context_tag="@public")
-    b = _mem("b", "needle", layer=MemoryLayer.SHORT, tags=["x"], source="s2", context_tag="@chef-only")
+    a = _mem(
+        "a", "needle", layer=MemoryLayer.LONG, tags=["x", "y"], source="s1", context_tag="@public"
+    )
+    b = _mem(
+        "b", "needle", layer=MemoryLayer.SHORT, tags=["x"], source="s2", context_tag="@chef-only"
+    )
     backend.save(a)
     backend.save(b)
     ids = lambda **kw: {m.id for m in backend.search_lexical_local("needle", **kw)}  # noqa: E731
@@ -141,17 +158,12 @@ def test_vaulted_backend_writes_no_fts(tmp_path):
     plain.close()
     v = VaultedSQLiteBackend(passphrase="EXAMPLE-DO-NOT-USE", base_path=base)
     v.save(_mem("t2", LONG_TAIL + "anothersecretword"))
-    names = {
-        r[0]
-        for r in v._get_conn().execute("SELECT name FROM sqlite_master").fetchall()
-    }
+    names = {r[0] for r in v._get_conn().execute("SELECT name FROM sqlite_master").fetchall()}
     assert not any("fts" in n for n in names)
     assert v.fts_status() == {"enabled": False}
     assert v.search_lexical_local("anothersecretword") == []
     v.close()
-    raw = b"".join(
-        p.read_bytes() for p in (tmp_path / "v").glob("index.db*") if p.is_file()
-    )
+    raw = b"".join(p.read_bytes() for p in (tmp_path / "v").glob("index.db*") if p.is_file())
     assert b"anothersecretword" not in raw and b"secretplaintext" not in raw
     with pytest.raises(sqlite3.OperationalError):
         sqlite3.connect(str(tmp_path / "v" / "index.db")).execute("SELECT * FROM memory_fts")
@@ -180,3 +192,21 @@ def test_fused_adds_local_arm_alongside_pg_style_arm(tmp_path):
     assert [h.id for h in hits] == [m.id]
     status = {a.name: a.status for a in report.arms}
     assert status["lexical"] == "failed" and status["lexical_local"] == "ok"
+
+
+def test_cli_fts_backfill(tmp_path):
+    from click.testing import CliRunner
+
+    from skmemory.cli import cli
+
+    backend = SQLiteBackend(base_path=str(tmp_path / "m"))
+    backend.save(_mem("t", "cliterm"))
+    c = backend._get_conn()
+    c.execute("DELETE FROM memory_fts")
+    c.execute("DELETE FROM fts_meta")
+    c.commit()
+    store = MemoryStore(primary=backend, use_sqlite=False)
+    res = CliRunner().invoke(cli, ["fts-backfill"], obj={"store": store})
+    assert res.exit_code == 0, res.output
+    assert "Indexed 1" in res.output and "complete=True" in res.output
+    assert backend.fts_status()["missing"] == 0
