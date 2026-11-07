@@ -444,6 +444,7 @@ class MemoryStore:
         supersedes_id: str | None = None,
         source_tier: SourceTier | None = None,
         outcome: MemoryOutcome | None = None,
+        event_at: str | None = None,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -474,6 +475,9 @@ class MemoryStore:
                 ``self-generated``, the capped, conservative choice).
             outcome: Schema v2 outcome (success, failure, lesson). None leaves it
                 unset. Not carried through the decompose and split paths.
+            event_at: When the event happened (ISO 8601). None keeps the
+                default (created_at). Carried to every chunk and parent on the
+                decompose and split paths.
             supersedes_id: Explicit supersession: always honoured (after the reader
                 check), whatever the kind. The open head of that record's chain is
                 closed at this memory's valid_from.
@@ -510,6 +514,7 @@ class MemoryStore:
                 source_ref=source_ref,
                 related_ids=related_ids,
                 metadata=metadata,
+                event_at=event_at,
             )
 
         # Handle content overflow
@@ -527,6 +532,7 @@ class MemoryStore:
                     source_ref=source_ref,
                     related_ids=related_ids,
                     metadata=metadata,
+                    event_at=event_at,
                 )
             else:
                 logger.info(
@@ -551,6 +557,7 @@ class MemoryStore:
             metadata=metadata,
             **({"kind": kind} if kind else {}),
             **({"outcome": outcome} if outcome else {}),
+            **({"event_at": event_at} if event_at else {}),
         )
 
         # Write-time conflict verdict (card SKMEM-P3-02): fact/rule/preference only.
@@ -849,6 +856,7 @@ class MemoryStore:
         chunk_target: int = CHUNK_TARGET,
         chunk_overlap: int = CHUNK_OVERLAP,
         source_tier: SourceTier | None = None,
+        event_at: str | None = None,
     ) -> Memory:
         """Store a long-form document with decomposition-aware child chunks."""
         metadata = self._enrich_metadata(title, source, source_ref, tags, metadata)
@@ -889,6 +897,7 @@ class MemoryStore:
                 source_tier=source_tier or tier_for_source(source),
                 source_ref=source_ref,
                 related_ids=[],
+                **({"event_at": event_at} if event_at else {}),
                 metadata={
                     **prepared_metadata,
                     "decomposition": {
@@ -923,6 +932,7 @@ class MemoryStore:
             source_tier=source_tier or tier_for_source(source),
             source_ref=source_ref,
             related_ids=all_related,
+            **({"event_at": event_at} if event_at else {}),
             metadata={
                 **prepared_metadata,
                 "decomposition": decomposition.model_dump(exclude={"chunks"}),
@@ -989,6 +999,7 @@ class MemoryStore:
         related_ids: list[str] | None = None,
         metadata: dict | None = None,
         source_tier: SourceTier | None = None,
+        event_at: str | None = None,
     ) -> Memory:
         """Split oversized content into parent (summary) + child (chunk) memories.
 
@@ -1021,6 +1032,7 @@ class MemoryStore:
                 source=source,
                 source_tier=source_tier or tier_for_source(source),
                 source_ref=source_ref,
+                **({"event_at": event_at} if event_at else {}),
                 metadata={
                     **(metadata or {}),
                     "chunk_index": i,
@@ -1048,6 +1060,7 @@ class MemoryStore:
             source_tier=source_tier or tier_for_source(source),
             source_ref=source_ref,
             related_ids=all_related,
+            **({"event_at": event_at} if event_at else {}),
             metadata={
                 **(metadata or {}),
                 "split_children": child_ids,
