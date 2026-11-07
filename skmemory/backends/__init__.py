@@ -1,10 +1,25 @@
 """
 Storage backends for SKMemory.
 
-Level 0 (sqlite)   - SQLite index, zero infrastructure.
-Level 0.5 (vault)  - SQLite + transparent AES-256-GCM at-rest encryption.
-Level 1 (pgvector) - Postgres + pgvector: syncable, hybrid (vector+BM25), remote embedding.
-Level 2 (age)      - Apache AGE graph relationship traversal (in skmem-pg).
+There are exactly two storage tiers. Flat JSON files are the source of truth in both and
+every index is derived and rebuildable.
+
+Local tier (always on, offline capable, no services):
+    FileBackend            - plain JSON files, no index.
+    SQLiteBackend          - SQLite ``index.db`` beside the files, with an FTS5 lexical
+                             index (the ``lexical_local`` search arm). The default primary.
+    VaultedSQLiteBackend   - SQLite plus transparent AES-256-GCM at-rest encryption
+                             (FTS is disabled for it).
+
+Shared tier (skmem-pg, one Postgres container per node, optional):
+    PGVectorBackend        - pgvector semantic search (``mxbai-embed-large``, 1024
+                             dimensions) and pg_search BM25 (the ``semantic`` and
+                             ``lexical`` arms).
+    AGEGraphBackend        - Apache AGE graph, ``<agent>_knowledge`` (``age_backend``).
+                             Supplementary: never the primary store, and a search arm
+                             only when ``SKMEMORY_GRAPH_ARM=on``.
+
+ChromaDB, Qdrant (skvector) and FalkorDB (skgraph) are retired and removed.
 """
 
 from .base import BaseBackend

@@ -1,17 +1,17 @@
 """
-AGE — graph relationship backend (Level 2), powered by Apache AGE.
+AGE - graph relationship backend (shared tier), powered by Apache AGE.
 
 Apache AGE is a Postgres extension providing a Cypher-queryable property
 graph on top of the same `skmem-pg` Postgres instance that already hosts
 `PGVectorBackend`. It is the only graph backend (the FalkorDB skgraph backend
 was retired, SKMEM-P5-02) and targets the **live, populated per-agent graphs** (``lumina_knowledge``,
 ``opus_knowledge``, ``personal_history``, ...) that already exist in
-skmem-pg with the shared ontology described in
-``docs/superpowers/specs/2026-07-03-age-graph-backend-design.md``.
+skmem-pg with the shared ontology listed below.
 
 Connection: ``SKMEMORY_PG_DSN`` (defaults to the local skmem-pg container).
 Graph selection: ``f"{agent}_knowledge"`` where agent comes from
-``SKAGENT`` / ``SKMEMORY_AGENT`` / ``SKCAPSTONE_AGENT`` (default ``lumina``).
+the active agent (``skmemory.agents.get_active_agent``: the selectors must agree, then
+``SK_DEFAULT_AGENT``, then a sole installed agent; there is no implicit default).
 
 This backend is SUPPLEMENTARY — it indexes relationships alongside the
 primary backend. For CRUD of full memory content, always use the primary
@@ -288,7 +288,7 @@ class AGEGraphBackend:
         dsn: Postgres DSN. Defaults to ``SKMEMORY_PG_DSN`` env var, then the
             local skmem-pg container DSN.
         agent: Agent name used to derive the default graph. Defaults to
-            ``SKAGENT`` / ``SKMEMORY_AGENT`` / ``SKCAPSTONE_AGENT`` / ``"lumina"``.
+            the active agent (selectors must agree; there is no implicit default).
         graph: Explicit graph name. Defaults to ``f"{agent}_knowledge"``.
     """
 

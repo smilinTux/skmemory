@@ -1,330 +1,289 @@
 # SKMemory Architecture
 
-> **Flat JSON files are the source of truth.** Two active indexes sit over them: a
-> **relational/recency** layer (SQLite) and a **semantic + graph** layer (skmem-pg).
+This document describes `main` as it is, verified against the code. Where a number or a
+default appears, it is the one the code uses. A short version of the storage story is in
+[`LOCAL-PG-STACK-ARCHITECTURE.md`](../LOCAL-PG-STACK-ARCHITECTURE.md); the operational
+procedures are in [`SOP.md`](../SOP.md).
 
-> ### ⚠️ CURRENT ARCHITECTURE (2026-07) - read this first
-> The tier diagrams below are historical and list retired backends. **What's actually
-> live:**
->
-> | Layer | Store | Answers | |
-> |---|---|---|---|
-> | **Relational / recency** (always on) | **SQLite** `index.db` | *"what's here by layer/tag/recency; latest sessions"* | the `skmemory` CLI read path **+ skwhisper's recency feed**; local, zero-dep, works if pg is down |
-> | **Semantic + graph** (default) | **skmem-pg** (Postgres) | *"what's relevant / how memories relate"* | pgvector + pg_search **BM25** + Apache **AGE** - one container ("Plan A: one Postgres for everything") |
->
-> 💤 **Removed (SKMEM-P5-01, SKMEM-P5-02):** **SKChroma** (embedded ChromaDB), **SKVector**
-> (Qdrant) and the **FalkorDB** SKGraph backend are deleted from the code; the vector tier is
-> pgvector only and the graph is AGE only. Sections below that mention them (including the
-> multi-endpoint HA selector, which was deleted with them) are historical reference only.
-> Sync: flat→SQLite via `skmemory reindex`; flat→skmem-pg via `skmemory/reconcile.py` (both cronned daily).
-> Full store-location map: `~/.skcapstone/docs/MEMORY_STORES.md`.
->
-> **Topology - skmem-pg is LOCAL, per-node, and rebuildable from source.** It is NOT
-> streaming-replicated, NOT a central/shared system of record, and NOT a SPOF. Each node
-> runs its OWN writable skmem-pg Postgres on `localhost:5432` (fleet-wide uniform port,
-> env-free); agents connect only to `localhost` (per-node override `SKMEMORY_PG_DSN`).
-> The `memories` table is a DERIVED cache, the same class as `index.db`: rebuilt from the
-> Syncthing-synced flat JSON by `reconcile.py` (idempotent, agent-scoped), and embeddings
-> are a deterministic function of flat content + mxbai on .100, so any node regenerates
-> them locally. `docs`/`file_locations` is wiki-canon built per-node by skingest (interim:
-> pulled from the .158 primary until skingest runs locally on each node), so it is canon-
-> sourced, not agent flat-file-sourced. There is NO primary/replica/failover for skmem-pg:
-> HA/DR = node self-sufficiency + rebuild-from-source (flat files + git wiki, both
-> replicated) + a daily `pg_dump` backup in the synced tree. Background: streaming
-> replication (.158 -> .41 standby on :5433) was abandoned because ParadeDB Community
-> cannot serve `pg_search` reads in recovery (prb-6f069c5e; hardened in 0.11.3).
+> **Flat JSON files are the source of truth.** Two tiers sit over them: a **local** tier
+> (SQLite `index.db` with FTS5, always on) and a **shared** tier (skmem-pg: pgvector,
+> pg_search, Apache AGE). Every index is derived and rebuildable.
 
-## Storage Tiers (historical - see the callout above for what's live)
+## Contents
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                      Agent / CLI                              │
-│            skmemory context --max-tokens 3000                 │
-├──────────────────────────────────────────────────────────────┤
-│                     MemoryStore                               │
-│           (facade - delegates to backends)                    │
-├──────────┬───────────────────────────┬───────────────────────┤
-│ Level 0  │        Level 1            │       Level 2         │
-│ SQLite   │  SKChroma  │  SKVector    │       SKGraph         │
-│ (always) │  (local,   │  (remote,   │       (optional)      │
-│          │  default)  │  optional)  │                       │
-│ Index +  │ Embedded   │  Qdrant     │  Graph traversal      │
-│ JSON     │ ChromaDB   │  cloud/     │  Lineage chains       │
-│ files    │ zero deps  │  self-host  │  Memory clusters      │
-├──────────┼────────────┼─────────────┼───────────────────────┤
-│ 0 deps   │ pip chroma │ Docker or   │  Docker or            │
-│ Ships    │ in-process │ cloud       │  managed              │
-│ w/Python │ per-agent  │ qdrant.io   │  service              │
-└──────────┴────────────┴─────────────┴───────────────────────┘
-```
+1. [Storage: two tiers](#storage-two-tiers)
+2. [Memory model: schema v2](#memory-model-schema-v2)
+3. [Search: fusion, routing, deadlines](#search-fusion-routing-deadlines)
+4. [Time: as_of and supersession](#time-as_of-and-supersession)
+5. [Prospective memory: intentions](#prospective-memory-intentions)
+6. [Outcome ledger](#outcome-ledger)
+7. [Reader audience (KYA)](#know-your-audience-kya--audience-aware-memory-filtering)
+8. [Write safety, hooks, loading](#memory-write-safety--retrieval-infrastructure)
+9. [Eval tooling and SKRSI](#eval-tooling-and-skrsi)
 
-```mermaid
-graph TB
-    Agent["Agent / CLI"] --> MS["MemoryStore"]
-    MS --> WAL["Write-Ahead Log\nAudit trail + crash recovery"]
-    MS --> QS["Query Sanitizer\n4-step cascade"]
-    MS --> D["Decomposition Engine\nchunk + citation + entity + claim extraction"]
-    MS --> L0["Level 0: SQLite\nAlways on, zero deps"]
-    MS --> L1a["Level 1a: SKChroma\nLocal embedded ChromaDB\nDefault semantic search\nZero infrastructure"]
-    MS --> L1b["Level 1b: SKVector\nRemote Qdrant\nOptional - cloud/self-host"]
-    MS --> L2["Level 2: SKGraph\nGraph traversal\nFalkorDB + structure nodes"]
-    MS --> L3["Level 3: HA Routing\nEndpointSelector"]
-    WAL --> L0
-    QS --> L1a
-    QS --> L1b
-    D --> L0
-    D --> L1a
-    D --> L1b
-    D --> L2
-    style L0 fill:#bfb,stroke:#333
-    style L1a fill:#bbf,stroke:#333
-    style L1b fill:#aad,stroke:#333,stroke-dasharray:5
-    style L2 fill:#fbf,stroke:#333
-    style L3 fill:#fbb,stroke:#333
-    style D fill:#ffd,stroke:#333
-    style WAL fill:#ffe,stroke:#333
-    style QS fill:#efe,stroke:#333
-```
+---
 
-### Level 0: SQLite Index (always on)
-
-**Zero infrastructure. Ships with Python.**
-
-The SQLite backend replaces the old file-scanning approach:
-
-| Operation | Old (FileBackend) | New (SQLiteBackend) |
-|---|---|---|
-| List 1000 memories | Read 1000 files, parse JSON, build objects | 1 SQL query, ~2ms |
-| Search | Scan all files, substring match | SQL LIKE on indexed columns |
-| Boot ritual | Load 200 full objects, sort by intensity | Query top-N from index, summaries only |
-| Filter by layer/tags | Read all, filter in Python | WHERE clause on index |
-
-Data layout:
-```
-~/.skcapstone/agents/<agent>/memory/
-├── index.db              # SQLite index (metadata, summaries, previews)
-├── short-term/
-│   └── {uuid}.json       # Full memory JSON
-├── mid-term/
-│   └── ...
-└── long-term/
-    └── ...
-```
-
-The JSON files remain the source of truth. The index is rebuildable:
-```bash
-skmemory reindex
-```
-
-The **skmem-pg `memories` table is rebuildable in exactly the same way** - it is a
-node-local derived cache, not a replicated system of record. On each node, `reconcile.py`
-backfills every flat memory into that node's `localhost:5432` skmem-pg (embedding via mxbai
-on .100), prunes rows whose flat file is gone, and is idempotent, so a wiped or fresh pg is
-restored from the synced flat files alone. `docs`/`file_locations` rebuilds per-node via
-skingest from the git wiki (canon-sourced). Delete any of these indexes on any node and
-rebuild locally; there is no primary/replica and no failover.
-
-### Level 1a: SKChroma (💤 RETIRED - superseded by skmem-pg)
-
-> **Not the default anymore.** The semantic backend is **skmem-pg** (pgvector + pg_search
-> BM25 + Apache AGE - see the CURRENT ARCHITECTURE callout at the top). ChromaDB is removed
-> from all agents; this section is kept for reference / if someone re-enables `vector_backend = "chromadb"`.
-
-**Zero-config embedded vector search. Works out of the box, no Docker required.**
-
-SKChroma uses [ChromaDB](https://www.trychroma.com/) in embedded (in-process) mode.
-It runs inside the same Python process as the agent - no server, no Docker, no config.
-Each agent gets its own collection scoped to their agent name. The collection is built
-from the Syncthing-synced flat JSON files, same source of truth as SQLite.
+## Storage: two tiers
 
 ```mermaid
 flowchart TD
-    QS["Query Sanitizer\nsanitize_query(raw)"]
-    QS --> CLEAN["Cleaned query\n≤200 chars\nreal intent only"]
-    CLEAN --> CHR["ChromaDB Collection\n<agent>_memories"]
-    CHR --> EMB["all-MiniLM-L6-v2\n(sentence-transformers)"]
-    EMB --> VEC["Cosine similarity\nn_results=10"]
-    VEC --> TIER["Tier filter\nshort/mid/long"]
-    TIER --> OUT["Ranked results\n+ distance scores"]
+    CLI["skmemory CLI"] --> Store
+    MCP["skmemory-mcp\n(stdio, 25 tools)"] --> Store
+    API["Python API"] --> Store
+    Store["MemoryStore"] --> Flat
+    subgraph Truth["Source of truth"]
+        Flat["Flat JSON files\nshort / mid / long-term,\nintentions/, ledger/"]
+    end
+    subgraph Local["Local tier (always on, offline)"]
+        SQLite["SQLite index.db\nmemories + FTS5\nintentions, ledger_events"]
+    end
+    subgraph Shared["Shared tier: skmem-pg (optional)"]
+        PGV["pgvector\nsemantic arm"]
+        BM25["pg_search BM25\nlexical arm"]
+        AGE["Apache AGE\n<agent>_knowledge graph"]
+    end
+    Flat -->|reindex| SQLite
+    Flat -->|sync --vector| PGV
+    Flat -->|sync --vector| BM25
+    Flat -->|sync --graph| AGE
+    Store --> SQLite
+    Store --> PGV
+    Store --> AGE
 ```
 
-Query sanitization prevents system-prompt pollution in embeddings.
-Raw AI queries are often bloated with rules and instructions - the sanitizer
-strips them to the actual intent before embedding.
+**Local tier.** `SQLiteBackend` keeps `index.db` beside the flat files. It is the primary
+read path for list, recall and recency, and it owns the FTS5 index behind the
+`lexical_local` arm (bm25 over title, content, summary and tags). It needs nothing but
+Python, so `skmemory search` works with no Postgres and no embed endpoint. New saves are
+indexed at once; existing rows backfill lazily in small slices or with
+`skmemory fts-backfill`. The encrypted `VaultedSQLiteBackend` disables FTS and scrubs any
+FTS tables. `FileBackend` is the plain-files variant with no index.
 
-Install:
-```bash
-pip install skmemory[chroma]
-# or for everything:
-pip install skmemory[all]
-```
+**Shared tier.** `PGVectorBackend` talks to the node-local skmem-pg container: pgvector
+for `mxbai-embed-large` embeddings (1024 dimensions, from `SKMEMORY_EMBED_URL`),
+pg_search for BM25, and AGE (`AGEGraphBackend`) for the per-agent knowledge graph. The
+`memories` rows are a derived cache: `skmemory sync --vector --graph` (the
+`skmemory-sync@<agent>` timer, every 6 hours) rebuilds them from the flat files through
+`skmemory/reconcile.py`, idempotently and agent-scoped, with a guarded orphan prune that
+refuses a cold-boot wipe.
 
-No other config needed. Collection auto-initializes on first use.
+**Topology.** skmem-pg is per node. Each node runs its OWN writable instance on loopback
+and agents connect only to it (`SKMEMORY_PG_DSN`). It is not streaming-replicated, not a
+central system of record and not a single point of failure: disaster recovery is node
+self-sufficiency plus rebuild from the synced flat files. Streaming replication was tried
+and abandoned because ParadeDB Community cannot serve `pg_search` reads in recovery.
+`docs` and `file_locations` are corpus tables built per node by the separate skingest
+service, scoped logically, not stored centrally.
 
-Resource cost: ~50MB RAM, ~30MB disk per agent (idle).
+**Retired.** ChromaDB, Qdrant (skvector), FalkorDB (skgraph), the setup wizard and the HA
+endpoint selector are deleted. Naming one in `SKMEMORY_VECTOR_BACKEND` fails fast; stale
+yaml keys are ignored with a one-time warning (`skmemory/backend_select.py`,
+`skmemory/config.py`).
 
-### Level 1b: SKVector (powered by Qdrant) (optional - remote semantic search)
+**Failure behavior.** A backend that cannot be reached is reported, not hidden: the
+search arm says `unavailable` or `failed`, `skmemory health` goes red or `degraded`, and
+the always-on local arm still answers. The embed path never stores a null or zero vector.
 
-**"Find the memory about that feeling we had" - even if those words aren't in it.**
+### Sync and drift
 
-Uses the sovereign HammerTime embedding model by default:
-`mxbai-embed-large` when the local model is available, falling back to
-`mixedbread-ai/mxbai-embed-large-v1`.
+`skmemory health` reports `sync.{in_sync, sqlite_only, flat_only}`. `skmemory sync`
+exports SQLite-only memories to flat files, then reindexes, then (with `--vector` and
+`--graph`) reconciles skmem-pg and AGE. `skmemory reindex` is safe by default (it
+exports orphans first); `--force` skips that and is destructive. Writes go flat file
+first, index second. A forget writes a tombstone so the deletion holds on every node.
 
-SKVector stores the embeddings and enables cosine similarity search across
-a remote Qdrant cluster. Use this when you need multi-machine search,
-higher index capacity than ChromaDB's embedded mode, or **shared
-collections that multiple agents query (cross-agent recall)**.
+### SQLite WAL bound
 
-Install:
-```bash
-pip install skmemory[skvector]
+`index.db` runs in WAL mode. Without a size limit SQLite never shrinks `-wal`, so one
+burst or one long reader leaves a multi-GB file behind a small database.
+`skmemory/wal_guard.py` sets `journal_size_limit` (64 MB) and `wal_autocheckpoint` (1000
+pages) on every connection the index opens (backend, FTS, intentions, access bump), runs a
+throttled passive checkpoint after index writes (at most every 300 s per process), and
+`memory_health` reports the WAL size and returns `degraded` at 256 MB. (This is the
+SQLite journal, not the write-audit log described under "Write safety" below.)
 
-# Local Docker:
-docker compose up -d skvector
+---
 
-# Or use Qdrant Cloud (free tier: 1GB):
-export SKMEMORY_SKVECTOR_URL=https://your-cluster.qdrant.io
-export SKMEMORY_SKVECTOR_KEY=your-api-key
-```
+## Memory model: schema v2
 
-Resource cost: ~200MB RAM, ~100MB disk idle.
+| Field | Values | Meaning |
+|---|---|---|
+| `kind` | `episode` (default), `fact`, `procedure`, `preference`, `rule` | what sort of memory |
+| `outcome` | `success`, `failure`, `lesson`, or unset | result of an episode or procedure |
+| `event_at` | ISO instant | when the thing happened (distinct from `created_at`) |
+| `valid_from`, `valid_to` | ISO instants | validity window; unset `valid_to` is open |
+| `supersedes_id` | memory id | the memory this one closes |
+| `source_tier` | `user-stated`, `tool-output`, `web`, `self-generated` | provenance |
+| `schema_version` | 2 | v1 files report 1 |
 
-#### Cross-collection recall (`recall_collections`)
+- v1 files load unchanged. Defaults apply in memory only, nothing is rewritten on load,
+  and seals and `integrity_hash` are unaffected (the hash covers id, title, content and the
+  emotional signature only).
+- **Lenient read, strict construct.** A stored memory with an unknown `kind`, `outcome` or
+  `source_tier` falls back to the default and keeps the raw value in
+  `metadata["schema_v2_unknown"]`, so a file written by a newer node is never silently
+  dropped. Building a `Memory` directly with a bad value still raises. Unknown extra
+  fields survive a load and re-save.
+- SQLite gains the columns by `ALTER` on open; the AGE `Memory` node mirrors them; skmem-pg
+  gets nullable typed columns from `deploy/skmem-pg/06-memory-schema-v2.sql`
+  (`skmemory pg migrate`). An unmigrated node keeps working because `memory_json` carries
+  every field.
+- **Write-time conflict verdict.** `snapshot(kind=fact|rule|preference, ...)` compares the
+  new memory with similar open ones the reader can see. A pure restatement is not written
+  (the existing memory is returned); a related fact is written with an `EXTENDS` edge. A
+  record is closed (`supersedes_id`, `valid_to`) only for an explicit `supersedes_id` or an
+  LLM verdict (`SKMEMORY_TRIAGE_USE_LLM`) that returns verbatim quotes from both sides and
+  passes same-subject and declarative-text guards. Every doubt resolves to `extends` or a
+  plain write and is logged in `metadata.possible_conflict_with`.
+  `SKMEMORY_WRITE_TRIAGE=off` disables triage.
+- The promotion sweep (`skmemory sweep`) heals half-finished supersessions and writes
+  citation-gated observations (every evidence memory exists, quotes are verbatim; the
+  observation inherits the most restrictive `context_tag`; `SKMEMORY_OBSERVATIONS=0` is the
+  kill switch).
 
-When ChromaDB is the local primary, SKVector still loads in parallel as the
-**recall backend** for shared/cross-agent collections. Configure per-agent
-in `~/.skcapstone/agents/<agent>/config/skmemory.yaml`:
+---
 
-```yaml
-recall_collections:
-- lumina-memory
-- jarvis-memory
-- sovereign-memory
-- chef-docs
-```
+## Search: fusion, routing, deadlines
 
-`LazyMemoryLoader.deep_search()` queries the local ChromaDB **plus** every
-collection listed in `recall_collections` (via the SKVector Qdrant client),
-dedupes by memory ID, and tags results with `source_backend` (`sqlite`,
-`skvector`, `skvector:<collection>`). A missing collection logs `404` and
-is skipped - never breaks the search.
+`MemoryStore.search` (behind `memory_search` and `skmemory search`) runs independent arms
+concurrently and fuses them. Each arm reports its own outcome (`ok`, `abstained`,
+`unavailable`, `failed`, `disabled`, `timeout`); nothing is swallowed into a fallback path.
 
-### Sync & drift (v0.9.6+)
+| Arm | Backend | Runs when |
+|---|---|---|
+| `semantic` | pgvector cosine | skmem-pg and an embed endpoint are up |
+| `lexical` | pg_search BM25 (else primary text search) | skmem-pg is up |
+| `lexical_local` | SQLite FTS5 | always (unless the vault backend disables it) |
+| `temporal` | date-bounded listing | the query names a real time window |
+| `graph` | AGE one-hop entity expansion | `SKMEMORY_GRAPH_ARM=on` (default OFF) |
 
-Because flat files are the source of truth and SQLite is the index, drift is
-possible if importers write one side without the other. The sync surface:
+Filters (`layer`, `tags`, `source`, `context_tag`, `as_of`, the reader's allowed tag set)
+are pushed into each arm's own query, because a predicate applied after a limit silently
+returns fewer rows and hides the difference between filtered-empty and empty.
 
-- **`skmemory health`** - embeds a `sync` block: `{in_sync, sqlite_only,
-  flat_only, hint}`. Run anytime to check.
-- **`skmemory export-flat`** - rescues SQLite-only memories to flat files.
-  Idempotent. Memories carry `metadata.recovered_from_sqlite_preview = True`
-  so consumers know the content is the SQLite preview (~150 chars), not full.
-- **`skmemory sync [--quiet] [--vector]`** - bidirectional reconcile:
-  export-flat → safe reindex → optional ChromaDB backfill.
-- **`skmemory reindex`** - safe by default (pre-exports orphans). Pass
-  `--force` to skip the safety net (the old destructive behavior).
-- **`systemd/skmemory-sync@<agent>.timer`** - fires every 6h, runs the
-  full reconcile in the background. See `systemd/README.md`.
+**Merge.** The default strategy pins the head of the ranking, then fills by rank-depth
+interleave across the live arms (`SKMEMORY_FUSION_FILL=rrf` selects RRF fill,
+`SKMEMORY_FUSION_STRATEGY=interleave` restores the older merge), then an optional bounded
+rerank (`SKMEMORY_SEARCH_RERANK`, default on). Plain equal-weight RRF is deliberately not
+the final ranker: a decoy that places mid-pack in two arms can outscore the true answer
+that places first in one.
 
-### Decomposition Layer
+**Query-shape routing.** `fusion.route_query` is deterministic and uses no LLM. A query is
+*identifier-ish* when it carries a digit, an underscore, a host-shaped token, or a token
+that is rare in the local FTS index (document frequency 1 to 3). Those pin the lexical top
+3 (`SKMEMORY_FUSION_PIN`). Question-shaped and stopword-heavy queries are *natural
+language* and pin the vector top 2 (`SKMEMORY_FUSION_VECTOR_PIN`), still filling with
+lexical hits; if the vector arm did not contribute, the lexical pin stands.
+`SKMEMORY_FUSION_ROUTE=auto|lexical|vector` (default `auto`) forces a route and
+`FusionResult.route` records it.
 
-**Long-form content becomes structured memory, not one flat blob.**
+**Deadlines and degraded.** All arms share one wall-clock budget
+(`SKMEMORY_SEARCH_DEADLINE_S`, default 4 s). A late arm reports `timeout`, never an empty
+success, and `MemoryStore.last_search_degraded()` says why a search was degraded. A hung arm cannot
+eat the worker pool: at most `SKMEMORY_ARM_MAX_INFLIGHT` (default 2) calls of one arm run
+at once, and after a timeout the arm cools down for `SKMEMORY_ARM_COOLDOWN_S` (default
+10 s), reported as `timeout`, so searches stay fast while a backend is down.
 
-`MemoryStore.ingest_document()` and `skmemory ingest-file` run a generic
-decomposition pass that extracts:
-- chunk boundaries with overlap
-- section titles
-- citations
-- entities
-- claim-like sentences
+**Retrieval log and health.** Every fused search appends one line to
+`<agent>/logs/retrieval.jsonl` (rotated at 5 MB, three kept): per-arm status, hit count,
+latency, the spread of the fused score, and a query hash and word count, never the query
+text. Writes go through a bounded queue and a daemon thread, so a slow disk cannot slow a
+search (`SKMEMORY_RETRIEVAL_LOG=off` disables it). `memory_health` reads the last 100
+searches into `retrieval.arms` and returns `degraded` when an arm errors or times out
+(latest attempt, or 10 percent of at least 5). A config-disabled arm never degrades; an
+arm with zero hits is `quiet`, degraded only if its backend probe also fails.
 
-The parent memory keeps the high-level document metadata. Child chunk memories
-carry chunk-local decomposition metadata and are individually indexed in vector
-and graph backends.
+**Source tiers and the cap.** Fused search lets at most floor(40 percent of the limit)
+slots go to `web` and `self-generated` hits WHEN higher-tier hits exist to fill the rest
+(`skmemory/tiers.py`). It is an occupancy limit, never a filter: with no or too few
+higher-tier hits the untrusted ones return in rank order. Schema v1 rows are not capped
+except those from a known generator source. Every write path sets `source_tier`: explicit
+`memory_store` is `user-stated`, Telegram, Notion and conversation imports are
+`user-stated`, hook and session extractions and digests are `self-generated`.
+`SKMEMORY_TIER_CAP=off` disables the cap.
 
-### Level 2: SKGraph (powered by FalkorDB) (optional - graph relationships)
+**Decay and importance.** Importance is written at first index (layer base plus
+0.3 x intensity / 10, SQLite column only) and raised on each caller-facing reinforcement
+with diminishing returns. `skmemory/decay.py` defines the `none`, `recency`,
+`reinforcement` and `affect_weighted` channels; `SKMEMORY_DECAY` selects one and the
+default is off, because the fusion A/B lowers semantic-class MRR with it on.
 
-**"What memories connect to this person?" - traverse the relationship web.**
+**Procedures.** `kind=procedure, outcome=failure` memories get a `WARNING:` prefix in
+`memory_auto_context` lines and rank below successful procedures for how-to queries.
 
-SKGraph (Cypher over Redis protocol) stores memory-to-memory edges:
-- `RELATED_TO` - explicit relationship links
-- `PROMOTED_FROM` - promotion lineage chains
-- `TAGGED` - tag-based clustering
-- `PLANTED` - seed creator attribution
-- `MENTIONS` - memory → entity
-- `CITES` - memory → citation
-- `ASSERTS` - memory → claim
-- `IN_SECTION` - memory → section
+---
 
-Install:
-```bash
-pip install skmemory[skgraph]
+## Time: as_of and supersession
 
-# Local Docker:
-docker compose up -d skgraph
+`search --as-of <instant>` (and `memory_search`'s `as_of`) keep only memories valid then:
+`coalesce(valid_from, created_at) <= as_of` and `valid_to` unset or later. The predicate
+is pushed into the semantic, lexical, `lexical_local`, graph and temporal arms (SQLite,
+skmem-pg typed columns or `memory_json`, AGE Cypher) and re-checked on every hydrated row.
+v1 rows without `valid_from` use `created_at`. With no `as_of` there is no temporal
+filter, so closed memories are still returned, but a closed record with a known superseder
+ranks below its open head (reorder only, nothing hidden) and `memory_search` results carry
+`superseded` and `superseded_by`. `store.history`, `memory_history` and `skmemory history
+<id>` return the chain oldest first; a declared reader gets it cut at the first hidden
+member. Promotion and chunking never close a parent's validity.
 
-# Or point to external:
-export SKMEMORY_SKGRAPH_URL=redis://your-host:6379
-```
+---
 
-Resource cost: ~100MB RAM, ~150MB disk idle.
+## Prospective memory: intentions
 
-You can query these decomposition structures directly from the CLI:
+`skmemory/intentions.py` is a typed store of "remember to do X".
 
-```bash
-skmemory graph entity "Internal Revenue Service"
-skmemory graph citation "UCC § 3-301"
-skmemory graph claim "shall respond"
-skmemory graph section "Demand"
-skmemory graph around <memory-id> --depth 2
-skmemory graph related-claims --entity "Internal Revenue Service"
-skmemory graph related-claims --citation "UCC § 3-301"
-```
+- **Kinds.** `time` (fires at `due_at`, optionally every `interval_s`; a long outage fires
+  once, not once per missed interval) and `event` (fires when a later prompt contains a
+  trigger term, subject to `scope`, `cooldown_s`, `max_fires` and `expires_at`).
+- **Lifecycle.** `pending`, `armed`, `fired`, `done`, `cancelled`, `expired`,
+  `invalidated`. `transition()` is the only place state changes are decided, from one
+  table that a regression fixture pins. Terminal states ignore every event. An intention
+  whose origin memory later gets a `valid_to` is invalidated by the supersession sweep.
+- **Storage.** One flat JSON file per intention under `intentions/` (so replicas that
+  change different intentions never conflict) plus a rebuildable `intentions` table in
+  `index.db`. Call `IntentionStore.reindex()` after a sync pull.
+- **Prefilter.** `IntentionStore.prefilter(text, scope, now)` is the no-LLM event matcher:
+  case-insensitive, word-boundary (so `fusion` does not fire in `confusion`). Candidates
+  come from lean index columns, but the fire is decided on the flat file under a
+  per-intention lock through `transition()`, so concurrent prompts fire once. Bounded work:
+  one total deadline (`SKMEMORY_PREFILTER_DEADLINE_S`, default 50 ms), at most 3 fires per
+  prompt (`SKMEMORY_PREFILTER_MAX_FIRES`), prompts scanned head and tail up to 16384 chars
+  (`SKMEMORY_PREFILTER_MAX_CHARS`). `prefilter_safe()` is the hook entry and never raises.
+- **Hook.** `skmemory hook user-prompt` prints `Standing intent (from memory <id>):
+  "<title>"` lines (300 chars each, 1200 total, control characters stripped, title quoted
+  as data) or nothing. `skmemory hooks install` wires `UserPromptSubmit` to the stdlib-only
+  `skmemory/hooks/user_prompt_fast.py` under `python -S`, which exits in a few
+  milliseconds unless the index holds an armed or fired event intention. Silent under
+  `SKMEMORY_HOOKS=off` and any declared `SKMEMORY_READER`; never fails a prompt.
+- **Tick.** `skmemory intentions tick` (every 5 minutes from a scheduler) fires due time
+  intentions through `sk-alert -g intentions`. Delivery first, fire recorded only on
+  success: a crash can duplicate an alert, never lose one. Only the host named by
+  `SKMEMORY_TICK_HOST` (or `--tick-host`) delivers; `--any-host` is for single-host
+  nodes. The alert carries only the intention title and origin memory id, never memory
+  content. `skmemory intentions done <id>` resolves. Example units: `deploy/systemd/`.
+- **MCP tools, owner only.** `memory_remind` (`due_at` ISO 8601 or `in N minutes/hours/
+  days/weeks`; optional `interval_s`, minimum 60), `memory_intentions`,
+  `memory_intention_done`. Event intentions are created through the Python API.
+- **GTD flags.** skcapstone's `gtd capture --due/--remind` create a linked time intention
+  with a deterministic id (repeating a capture never makes a second one), and `gtd next` /
+  `gtd waiting` list overdue ones. A GTD task belongs in `gtd capture`; a nudge that is not
+  a task belongs in `memory_remind`.
 
-Issue-oriented retrieval layers build on top of those graph primitives:
-- `skmemory novelty "query"` scores under-linked memories and rare decomposition signals
-- `skmemory session-brief "task"` returns top matches, authority summary, deadlines, defenses, citations, entities, missing factual gaps, and trace hints
-- `skmemory task-pack create "task"` persists a reusable issue pattern for later sessions and stores the generated brief in memory metadata
+---
 
-### Level 3: High Availability & Routing (optional)
+## Outcome ledger
 
-**Multiple backend endpoints. Automatic failover. Latency-aware routing.**
-
-When SKVector or SKGraph run on multiple nodes (e.g. home server + VPS via
-Tailscale), the **EndpointSelector** discovers all endpoints, probes their
-latency, and routes to the best one. If a node goes down, traffic shifts
-to the next healthy endpoint automatically.
-
-```
-┌──────────────────────────────────────────────┐
-│              EndpointSelector                 │
-│    (sits between config and backends)        │
-├──────────────┬───────────────────────────────┤
-│   SKVector   │     SKGraph                   │
-│   Endpoints  │     Endpoints                 │
-│              │                               │
-│ ● home:6333  │  ● home:6379                  │
-│   (2ms)      │    (1ms)                      │
-│ ● vps:6333   │  ● vps:6379                   │
-│   (12ms)     │    (15ms)                     │
-├──────────────┴───────────────────────────────┤
-│  Strategies: failover | latency |            │
-│  local-first | read-local-write-primary      │
-├──────────────────────────────────────────────┤
-│  Discovery: config.yaml + heartbeat mesh     │
-└──────────────────────────────────────────────┘
-```
-
-Key properties:
-- On-demand TCP probing (no background threads)
-- Heartbeat mesh auto-discovers new endpoints
-- Config endpoints take precedence over discovery
-- Backward compatible - single-URL configs work unchanged
-- No new pip dependencies (stdlib `socket`)
-
-See **[skmemory/HA.md](skmemory/HA.md)** for full documentation, Mermaid
-diagrams, configuration examples, and scaling considerations.
+`skmemory/ledger.py` records whether a skill that was served was followed, and with what
+effect. Source of truth is append-only JSONL under `ledger/`, one file per host per month
+(a host only appends to its own file, so replicas never conflict), merged on read and
+deduped by a stable event id. `ledger_events` in `index.db` is derived. There is no update
+or delete and no transcript text. Scoring uses a 90-day half-life and weights harm 4x; a
+skill version is an anti-pattern when decayed harm beats decayed success after at least 3
+follows, and `served-never-followed` when served 3 or more times and followed never.
+The Claude Code Stop hook records `served` and a heuristic `followed` (harm and success are
+never inferred); `skmemory ledger import-hermes` imports Hermes counters, scored apart as
+`imported_*`. Skipped under `SKMEMORY_LEDGER=off`, `SKMEMORY_HOOKS=off` or a declared
+reader. `skmemory ledger top` ranks versions.
 
 ---
 
@@ -341,9 +300,11 @@ code or storage with skmemory.
 
 **Every memory write is logged before it hits storage. Crash-safe. Auditable.**
 
-`skmemory/wal.py` - wraps all `MemoryStore` writes in a WAL entry that is
-flushed to `~/.skcapstone/agents/<agent>/memory/wal.jsonl` before the actual
-write completes. On startup the WAL is replayed to recover any incomplete writes.
+`skmemory/wal.py` - `MemoryStore` appends a `pending` line to
+`<agent memory dir>/wal/write_log.jsonl` before a write, then `done` or `failed` after it.
+`WriteAheadLog.pending_writes()` lists writes that never completed, which is how a crash
+mid-write is detected. (The SQLite index journal is a different thing; see "SQLite WAL
+bound" above.)
 
 ```mermaid
 sequenceDiagram
@@ -353,21 +314,21 @@ sequenceDiagram
     participant FS as Flat JSON + SQLite
 
     C->>WAL: log_write(memory)
-    WAL->>FS: append wal.jsonl (PENDING)
+    WAL->>FS: append write_log.jsonl (pending)
     WAL->>MS: snapshot(memory)
     MS->>FS: write {uuid}.json + index
-    WAL->>FS: mark wal entry COMMITTED
-    Note over WAL,FS: On crash replay: re-apply PENDING entries
+    WAL->>FS: append done (or failed)
+    Note over WAL,FS: A pending line with no done is an incomplete write
 ```
 
-Operations logged: `snapshot`, `promote`, `archive`, `gc`, `update_metadata`.
+Operations logged: `snapshot`, `promote`, `forget` and `supersede_close`.
 
 ### Query Sanitizer
 
 **Strip system-prompt bloat before embedding. Keep the real intent.**
 
 Raw AI queries often arrive as multi-paragraph context dumps. Embedding those
-directly pollutes the ChromaDB collection with system-prompt noise. The sanitizer
+directly pollutes the vector index with system-prompt noise. The sanitizer
 cascades through four steps:
 
 ```mermaid
@@ -407,59 +368,49 @@ Used by `session-to-memory.py` (archive hook) and Claude Code Stop/PreCompact ho
 
 ### Scoped Search
 
-**ChromaDB search with per-agent isolation and tier filtering.**
+**Every search is scoped to one agent and, when declared, one reader.**
 
-`SKChromaBackend.search(query, agent, tier)` - scoped to a single agent's
-collection, with optional memory tier filtering (short/mid/long). The query
-sanitizer runs automatically before embedding.
+The store resolves one agent's memory home and, in skmem-pg, filters every query by the
+agent. The reader's allowed `context_tag` set and the layer, tag, source and `as_of`
+filters travel into each arm's own query (see "Search" above). The query sanitizer runs
+before embedding.
 
 ```mermaid
 sequenceDiagram
-    participant A as Agent
-    participant SC as SKChromaBackend
+    participant A as Caller
+    participant S as MemoryStore.search
     participant QS as QuerySanitizer
-    participant CHR as ChromaDB
+    participant R as Reader scope
+    participant Arms as Arms (concurrent)
 
-    A->>SC: search("my query", agent="lumina", tier="mid-term")
-    SC->>QS: sanitize_query("my query")
-    QS-->>SC: "my query" (or truncated)
-    SC->>CHR: collection.query(query_texts=[clean], where={tier, agent})
-    CHR-->>SC: [(id, distance, metadata)]
-    SC-->>A: List[MemorySummary] ranked by relevance
+    A->>S: search("my query", reader="@work:acme", as_of=...)
+    S->>QS: sanitize_query
+    S->>R: resolve_reader (call reader narrowed by SKMEMORY_READER)
+    S->>Arms: semantic, lexical, lexical_local, temporal, graph (filters pushed down)
+    Arms-->>S: ranked hits + per-arm status
+    S-->>A: fused, capped, reader-checked memories
 ```
 
-### Claude Code Hooks
+### Harness hooks
 
-**Auto-save memory at session end and before compaction. No manual curation.**
+**Auto-save memory at session end and before compaction, inject context at session start.**
 
-`skmemory/hooks/claude_code_hooks.py` - implements two hooks:
+One packaged, fail-soft entrypoint, `skmemory hook <event>` (`skmemory/hook_cli.py`),
+replaces the older per-event shell scripts. `skmemory hooks install` wires it into Claude
+Code, Codex, OpenCode and Pi, backs up the config first, and keeps other hooks.
 
-| Hook | Trigger | Action |
-|---|---|---|
-| `Stop` | Session ends | Extract turns → Haiku digest → mid-term snapshot |
-| `PreCompact` | Context approaching limit | Save current context summary before compaction |
+| Event | Does |
+|---|---|
+| `session-start` | budgeted ritual context (8000 chars by default) |
+| `post-compact` | smaller budget (3500) after compaction or resume |
+| `pre-compact` | saves a bounded private copy of the transcript tail as one memory; drops replayed flushes and verbatim repeats; writes nothing under a declared reader; a watchdog forces exit 0 inside 10 s |
+| `session-end` | session summary, journal, activity log, digest |
+| `stop` | cheap breadcrumb every 5th stop; also feeds the outcome ledger (Claude only) |
+| `user-prompt` | prints standing intentions whose trigger fired on this prompt |
 
-Shell wrappers for `.claude/hooks/` configuration:
-
-```
-skmemory/hooks/
-├── session-end-save.sh       # Stop hook - save on exit
-├── pre-compact-save.sh       # PreCompact hook - save before context trim
-├── session-start-ritual.sh   # PostSessionStart - inject ritual
-├── stop-checkpoint.sh        # Stop - lightweight checkpoint
-└── post-compact-reinject.sh  # PostCompact - reinject identity
-```
-
-To wire into Claude Code:
-```bash
-# .claude/settings.json
-{
-  "hooks": {
-    "Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "~/.skenv/bin/python -m skmemory.hooks.claude_code_hooks stop"}]}],
-    "PreCompact": [{"matcher": "", "hooks": [{"type": "command", "command": "~/.skenv/bin/python -m skmemory.hooks.claude_code_hooks precompact"}]}]
-  }
-}
-```
+Every hook exits 0 and never fails the host. `SKMEMORY_HOOKS=off` disables all of them.
+The older `skmemory/hooks/claude_code_hooks.py` Stop and PreCompact module and the
+`*.sh` wrappers next to it remain for installs that still point at them.
 
 ---
 
@@ -581,6 +532,28 @@ Audience config lives at `skmemory/data/audience_config.json`:
 }
 ```
 
+### Reader scope on the search path
+
+The ritual uses channels; search uses a **reader**. `resolve_reader` turns a declared
+reader into a `ReaderScope`: the exact `context_tag` values it may receive, plus tag
+exclusions applied after hydration.
+
+| Reader | Scope |
+|---|---|
+| none, `owner`, `@chef`, `@chef-only` | unrestricted |
+| `@public`, `@community`, `@work-circle`, `@inner-circle` | tags at or below that level |
+| `@work:<x>`, `@inner:<x>` | the level below plus its own scoped tag only (`@work:a` never sees `@work:b`) |
+| `channel:<id>` | the members' minimum trust, the channel's own tag, the members' `never_share` tags |
+| unknown or memberless channel, unparseable string | `@public`, with a warning |
+
+`SKMEMORY_READER` declares the whole process and is a **ceiling**: it is narrowed by a
+per-call `reader` and never widened, so a prompt-injected argument cannot escalate a
+non-owner process. `TOOL_READER_POLICY` in `skmemory/mcp_server.py` puts every registered
+MCP tool in exactly one class (filtered, owner-only, exempt), and a test enforces it, so a
+new tool cannot ship without a decision. Hidden ids read as not-found. A ritual with no
+channel and the intention tools are owner only. An unknown or memberless ritual channel is
+`@public` (it used to be `@chef-only`, the highest ceiling, which filtered nothing).
+
 ### Module: `skmemory/audience.py`
 
 | Class / Function | Purpose |
@@ -590,6 +563,7 @@ Audience config lives at `skmemory/data/audience_config.json`:
 | `AudienceProfile` | Resolved channel audience (members, min_trust, exclusions) |
 | `AudienceResolver` | Loads config, resolves channels, checks memory access |
 | `AudienceResolver.is_memory_allowed()` | Two-gate check: trust level + exclusion |
+| `ReaderScope`, `resolve_reader()` | Search-path scope and the `SKMEMORY_READER` ceiling |
 
 ---
 
@@ -602,19 +576,20 @@ would blow the context window. SKMemory solves this with tiered loading.
 sequenceDiagram
     participant A as Agent
     participant MS as MemoryStore
-    participant SQ as SQLite
-    participant SV as SKVector
-    participant SG as SKGraph
+    participant SQ as SQLite (local tier)
+    participant PG as skmem-pg (pgvector)
+    participant AG as AGE graph
     A->>MS: snapshot(title, content, emotion)
-    MS->>SQ: save(memory) - primary
-    MS->>SV: save(memory) - embed + index
-    MS->>SG: index_memory(memory) - graph edges
+    MS->>SQ: save(memory) - flat file, then index
+    MS->>PG: save(memory) - embed + index (when configured)
+    MS->>AG: index_memory(memory) - graph edges (when configured)
     A->>MS: search("connected feeling")
-    MS->>SV: search_text(query) - semantic
-    SV-->>MS: ranked results
+    MS->>SQ: lexical_local arm
+    MS->>PG: semantic + lexical arms
+    PG-->>MS: ranked results (fused with the local arm)
     A->>MS: traverse(memory_id)
-    MS->>SG: get_related(id, depth=2)
-    SG-->>MS: connected nodes
+    MS->>AG: get_related(id, depth=2)
+    AG-->>MS: connected nodes
 ```
 
 ### The `skmemory context` Command
@@ -709,7 +684,7 @@ preventing memory loss during context compaction and session termination.
 
 | Environment | Hooks | Mechanism |
 |-------------|-------|-----------|
-| **Claude Code** | PreCompact, SessionEnd, SessionStart | Shell hooks in `~/.claude/settings.json` |
+| **Claude Code** | PreCompact, SessionEnd, SessionStart, Stop, UserPromptSubmit | `skmemory hooks install` writes `~/.claude/settings.json` |
 | **OpenClaw** | session:compaction, session:resume, session:end + per-message auto-save | OpenClaw plugin event listeners + `ConsciousnessLoop.auto_memory` |
 | **Cursor** | MCP tools (manual) | Agent calls `memory_store` MCP tool explicitly |
 
@@ -868,40 +843,75 @@ cat ~/.claude/settings.json | jq '.hooks'
 | SessionEnd | Snapshot (short-term) + journal entry with session ID, exit reason |
 | SessionStart (compact) | Reinjects: recent memories, strongest emotional memories, seeds, journal entries (within 500 token budget) |
 
-## Docker Compose (Full Local Stack)
+## Eval tooling and SKRSI
+
+Offline and deterministic, run in CI:
+
+- `python -m skmemory.eval.class_bench` runs `bm25_only`, `grep_substring`, `vector_only`,
+  `full_context` (an oracle, reported with its token cost), `fallback_chain` (the old
+  production behavior), `reimpl_fusion` (comparison only) and `candidate` (the production
+  `MemoryStore.search`) over vendored fixtures, reporting recall at 5, mrr and abstain
+  correctness PER query class, never only in aggregate, plus an `absent` class (abstain)
+  and a `privacy` class (`leak_count`, which must stay 0).
+- `python -m skmemory.eval.fusion_bench` is the older fusion A/B.
+- `python -m skmemory.eval.regression_gate` floors every candidate query and class against
+  `skmemory/eval/baseline.json` and fails on any query below its floor that is not a
+  recorded known failure.
+
+Opt-in and read-only against a real store (`SKMEMORY_EVAL_LIVE=1`, never run by CI):
+
+- `python -m skmemory.eval.live_bench` samples real memories with a seeded sampler, cuts
+  title and rare-token queries, and reports recall, mrr and p50/p95 latency per arm over the
+  real skmem-pg, AGE and SQLite arms, with a read-only guard and dead-arm reporting. It
+  is self-retrieval, which flatters lexical arms: use it to check arms are alive and to
+  compare arms on identical queries, not as an absolute quality number. `--routes` runs the
+  candidate once per fusion route.
+- `python -m skmemory.eval.harvest` collects real `memory_search` and `memory_recall`
+  queries (owner sessions, 90 days, de-duplicated, sensitive ones dropped) into a private
+  directory outside the repo; `python -m skmemory.eval.label` labels them with a
+  citation-gated two-pass judge (quotes validated in code, disagreement goes to an
+  `unjudged` bucket reported as missingness); `live_bench --labelled DIR` scores against
+  that set and tags it `evidence_class: live_labelled`.
+- `python -m skmemory.eval.paraphrase` generates natural questions for a seeded sample and
+  rejects any that share a rare token with the memory; `live_bench --paraphrase DIR`
+  scores them.
+
+**SKRSI.** `skrsi/targets/skmemory-retrieval.json` registers the `skmemory-retrieval`
+target (objective, invariants such as `leak_count` stays 0 and a measurement writes
+nothing, metrics, stop rules). `skrsi/baselines/` pins a live self-retrieval baseline
+(aggregates and evidence hashes only). `skrsi/class_bench_metrics.py` adapts the class
+bench to SKRSI metrics. The `skrsi-evaluate` workflow runs the class bench on pull requests
+that touch retrieval code and comments the result; its evidence class is `synthetic`, so
+SKRSI caps it at inconclusive. It is advisory, not a required check, and adds no merge gate.
+
+---
+
+## Docker Compose (skmem-pg)
 
 ```bash
-cd skmemory/
-docker compose up -d          # Start SKVector + SKGraph
-docker compose ps             # Check status
-docker compose down           # Stop
-
-# Resource usage:
-#   SKVector:  ~200MB RAM, port 6333 (qdrant/qdrant)
-#   SKGraph:   ~100MB RAM, port 6379 (falkordb/falkordb)
-#   Combined:  ~300MB RAM total
+export SKMEM_PG_PASSWORD=<strong password>   # required, no default
+docker compose up -d --build
+docker compose ps
 ```
 
-All services are optional. SKMemory works perfectly with just Level 0 (SQLite).
+One service, `skmem-pg`, built from `deploy/skmem-pg/Dockerfile`, bound to loopback
+(`SKMEM_PG_PORT`, default 5432), with a 2 GB memory limit. A fresh volume comes up fully
+migrated. Everything is optional: with no container, the local tier still works.
 
 ## Configuration
 
-Environment variables:
 ```bash
-SKMEMORY_SKVECTOR_URL=http://localhost:6333    # SKVector endpoint
-SKMEMORY_SKVECTOR_KEY=                          # SKVector API key
-SKMEMORY_SKVECTOR_EMBEDDING_MODEL=mxbai-embed-large # Sovereign default, fallback mixedbread-ai/mxbai-embed-large-v1
-SKMEMORY_SKVECTOR_VECTOR_DIM=1024              # Match the embedding model
-SKMEMORY_SKGRAPH_URL=redis://localhost:6379    # SKGraph endpoint
+SKMEMORY_VECTOR_BACKEND=pgvector      # or none
+SKMEMORY_PG_DSN=postgresql://postgres:<password>@127.0.0.1:5432/skmemory
+SKMEMORY_EMBED_URL=http://127.0.0.1:11434/api/embed   # SKMEMORY_EMBED_URLS for failover
+SKMEMORY_EMBED_MODEL=mxbai-embed-large                # 1024 dimensions
+SKMEMORY_READER=@public               # process-wide audience ceiling (optional)
+SKMEMORY_HOOKS=off                    # disable every lifecycle hook (optional)
 ```
 
-If you change the embedding model or vector dimension, reindex the vector store
-or rebuild downstream collections before relying on semantic retrieval again.
-
-CLI global options:
-```bash
-skmemory --skvector-url http://remote:6333 search "that moment"
-```
+The DSN precedence is the environment, then `skmemory.yaml`, then a local default. If you
+change the embedding model or dimension, rebuild the vector tier (`skmemory sync --vector`)
+before relying on semantic retrieval.
 
 ## Migration from FileBackend
 

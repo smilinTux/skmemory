@@ -56,7 +56,7 @@ try:
         CONFIG_PATH = CONFIG_DIR / "skmemory.yaml"
 except ValueError as _profile_error:
     # No profile resolved. This used to point SKMEMORY_HOME at the default
-    # TEMPLATE agent (lumina-template) and carry on. Measured on 192.168.0.41
+    # TEMPLATE agent (lumina-template) and carry on. Measured on a fleet node
     # 2026-11-06: `skmemory health` reported the template's 367 memories while
     # the real home held 51,270, with a primary backend reporting ok. A template
     # is a scaffold, so serving it as the live store answers confidently from

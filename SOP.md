@@ -1,12 +1,14 @@
 # SKMemory - Standard Operating Procedures
 
 Sovereign, multi-layer, emotionally-aware memory for AI agents. Flat JSON files are
-the **source of truth**; SQLite is the working index; pgvector (skmem-pg) and
-pgvector/skmem-pg provide vector recall. Called by SKCapstone agents (Claude Code,
-Hermes) over the CLI, the Python API, and the stdio MCP server.
+the **source of truth**. There are exactly two storage tiers: a **local** tier (SQLite
+`index.db` with an FTS5 lexical arm, always on, offline capable) and a **shared** tier
+(skmem-pg: pgvector, pg_search BM25, Apache AGE). ChromaDB, Qdrant and FalkorDB are
+retired. Called by SKCapstone agents (Claude Code, Hermes) over the CLI, the Python API,
+and the stdio MCP server.
 
 > This SOP is the operational source of truth. Deeper design lives in
-> [`ARCHITECTURE.md`](./ARCHITECTURE.md), the fortress/tamper model in
+> [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) and [`LOCAL-PG-STACK-ARCHITECTURE.md`](./LOCAL-PG-STACK-ARCHITECTURE.md), the fortress/tamper model in
 > [`docs/FORTRESS_SOP.md`](./docs/FORTRESS_SOP.md), provenance in
 > [`docs/PROVENANCE_AND_CLOSURE_DESIGN.md`](./docs/PROVENANCE_AND_CLOSURE_DESIGN.md),
 > and audience gating in [`docs/admission_policy.md`](./docs/admission_policy.md).
@@ -22,7 +24,8 @@ re-hydrate identity ("who was I?") before the first user message.
 
 **What it owns.**
 - The per-agent memory store under `~/.skcapstone/agents/$SKAGENT/memory/`.
-- The flat-file ⇄ SQLite ⇄ vector sync topology.
+- The flat-file ⇄ SQLite ⇄ skmem-pg sync topology.
+- Reader-scoped search and fusion, the intention store and tick, and the outcome ledger.
 - The rehydration ritual (soul blueprint + FEBs + seeds + strongest memories).
 - The MCP tool surface consumed by every agent runtime.
 
@@ -43,7 +46,7 @@ re-hydrate identity ("who was I?") before the first user message.
 ```mermaid
 flowchart TD
     CLI["skmemory CLI (click)"]
-    MCP["skmemory-mcp\n(stdio MCP server, 14 tools)"]
+    MCP["skmemory-mcp\n(stdio MCP server, 25 tools)"]
     API["Python API\nMemoryStore"]
 
     CLI --> Store
@@ -59,16 +62,16 @@ flowchart TD
         Flat["Flat-file store\nshort/ mid/ long-term JSON\n(Syncthing-synced)"]
     end
 
-    subgraph L0["Level 0 - Index (always)"]
+    subgraph L0["Local tier - index (always on)"]
         SQLite["SQLite index\n(SQLiteBackend · index.db)"]
         Vaulted["VaultedSQLiteBackend\nPGP-sealed at rest"]
     end
 
-    subgraph L1["Level 1 - Vector"]
+    subgraph L1["Shared tier - skmem-pg (optional)"]
         PG["pgvector backend\nskmem-pg · docs+memories · BM25+HNSW"]
     end
 
-    subgraph L2["Level 2 - Graph (optional)"]
+    subgraph L2["Shared tier - graph (optional)"]
         Graph["AGEGraphBackend\nApache AGE lineage"]
     end
 
@@ -102,7 +105,7 @@ primary:** it is LOCAL and per-node (each node runs its own writable pg on
 `localhost:5432`), NOT streaming-replicated, NOT a central/shared system of record, and
 NOT a SPOF. The `memories` table rebuilds from synced flat JSON via `reconcile.py`; `docs`
 rebuilds per-node via skingest from the git wiki. There is no remote primary/replica and
-no failover for skmem-pg (the `.158 -> .41` streaming standby was abandoned; ParadeDB
+no failover for skmem-pg (a streaming standby was tried and abandoned; ParadeDB
 Community cannot serve `pg_search` reads in recovery, prb-6f069c5e).
 
 **Start here.** The five files to read before changing anything:
@@ -117,14 +120,16 @@ Community cannot serve `pg_search` reads in recovery, prb-6f069c5e).
 
 **Endpoints / paths.**
 - Embed endpoint: Ollama-compatible, `mxbai-embed-large`, default
-  `http://localhost:11434/api/embed` (mxbai on .100 for reconcile/embeds).
+  `http://localhost:11434/api/embed` (`SKMEMORY_EMBED_URL`, with an ordered failover list
+  in `SKMEMORY_EMBED_URLS`).
 - skmem-pg DSN: node-local, default `localhost:5432` (the local skmem-pg container;
   fleet-wide uniform port, per-node override `SKMEMORY_PG_DSN`). Agents connect only to
   `localhost`, never a remote host. An unreachable local pg is an operational fault that
   should surface loudly (or degrade to the always-on SQLite recency read path), not
   silently answer from an empty retired vector store.
-- Per-agent home: `~/.skcapstone/agents/$SKAGENT/` (`SKAGENT` → `SKCAPSTONE_AGENT`
-  → `SKMEMORY_AGENT`, default `lumina`).
+- Per-agent home: `~/.skcapstone/agents/$SKAGENT/` (`SKAGENT`, `SKCAPSTONE_AGENT`,
+  `SKMEMORY_AGENT` must agree; then `SK_DEFAULT_AGENT`; then the sole installed agent;
+  otherwise it refuses. There is no implicit default).
 
 ---
 
@@ -165,10 +170,13 @@ workflows below fail the build on a red test (no `|| true` anywhere in the test 
 |---|---|---|
 | `.github/workflows/ci.yml` (job `test`) | push to `main`, PR to `main`; py3.11 + py3.12 | `python -m pytest tests/ -v --tb=short --cov=skmemory --cov-report=xml --cov-report=term-missing` |
 | `.github/workflows/ci.yml` (job `lint`) | same | `ruff format --check skmemory/ tests/` then `ruff check skmemory/ tests/` |
-| `.github/workflows/pytest.yml` | push/PR touching the package | `python -m pytest tests/ --ignore=tests/integration -k "not test_sharing" -v --tb=short` |
+| `.github/workflows/pytest.yml` | push/PR touching the package | `python -m pytest tests/ -k "not test_sharing" -v --tb=short` |
 
-`pytest.yml` deliberately excludes `tests/integration` and the pgpy-sharing tests so it
-stays green without a live backend; `ci.yml` runs the full `tests/` tree. Locally, add
+`pytest.yml` deliberately deselects the pgpy-sharing tests (unstable across CPython
+versions); neither workflow has a Postgres or an embed endpoint, so every test is
+hermetic (live-database tests skip themselves). `ci.yml` runs the full `tests/` tree with
+coverage. `tests/test_skill_md.py` is the docs gate: it runs `--help` on every command
+`SKILL.md` names and checks the paths and modules the public docs name. Locally, add
 `skmemory health`: any LIVE/backend claim in README/CHANGELOG must be reproducible from
 that output.
 
@@ -202,8 +210,9 @@ Service deploy (per-agent maintenance timers, units in `systemd/`):
 
 | Unit | Timer | Base `ExecStart` in this repo | **Effective** `ExecStart` on a fleet node |
 |---|---|---|---|
-| `skmemory-sync@<agent>.service` | `OnBootSec=5min`, then `OnUnitActiveSec=6h` | `%h/.skenv/bin/skmemory sync --quiet --vector --graph` | `~/clawd/skos/scripts/sk-cron-run.sh skmemory-sync@ ~/.skenv/bin/skmemory sync --quiet --vector --graph` |
-| `skmemory-fortress-verify@<agent>.service` | `OnCalendar=*-*-* 03:00:00`, `RandomizedDelaySec=5min` | `%h/clawd/skcapstone-repos/skmemory/scripts/fortress-verify.sh` | `~/clawd/skos/scripts/sk-cron-run.sh skmemory-fortress-verify@ ~/clawd/skcapstone-repos/skmemory/scripts/fortress-verify.sh` |
+| `skmemory-sync@<agent>.service` | `OnBootSec=5min`, then `OnUnitActiveSec=6h` | `%h/.skenv/bin/skmemory sync --quiet --vector --graph` | the same command, wrapped by the node's `sk-cron-run` script |
+| `skmemory-fortress-verify@<agent>.service` | `OnCalendar=*-*-* 03:00:00`, `RandomizedDelaySec=5min` | `scripts/fortress-verify.sh` from the checkout | the same command, wrapped by the node's `sk-cron-run` script |
+| intentions tick (example units in `deploy/systemd/`, not installed for you) | every 5 minutes | `skmemory intentions tick` | the same command, wrapped; set `SKMEMORY_TICK_HOST` so exactly one host delivers |
 
 ⚠️ **Both units have their `ExecStart` REWRITTEN on live nodes.** skos installs a
 `sk-cron-run.conf` drop-in (`~/.config/systemd/user/<unit>.d/sk-cron-run.conf`) that
@@ -222,16 +231,16 @@ systemctl --user cat  skmemory-sync@<agent>.service   # unit + every drop-in
 
 The three scripts that keep a skmemory node alive are vendored in-repo (coord
 `ce559215`) so any node is rebuildable from source. Previously they lived only on
-`.158` outside any git repo, so losing that host destroyed the only copy. All
+one host outside any git repo, so losing that host destroyed the only copy. All
 host-specifics (agent, DSN, container, backup dir, embed URL, alert lib) are
-env-parametrized; the defaults reproduce the original `.158` behavior. Install as
+env-parametrized. Install as
 daily cron entries / systemd timers per node, per agent. Full env contract, secrets
 note, and an example crontab live in
 [`deploy/ops/README.md`](./deploy/ops/README.md).
 
 | Script | Purpose | Env contract (key vars) | Schedule |
 |---|---|---|---|
-| `skmemory/reconcile.py` (canonical; `deploy/skmem-pg/skmem_reconcile.py` and `scripts/skmem_reconcile.py` are thin shims into it) | Idempotent flat↔pg reconcile: backfill missing memories (embed + upsert, with a stub/shrink guard and the shared-id convergence fix), prune pg rows whose flat file is gone (guarded), re-embed NULL-vector rows. Rebuilds the derived `memories` cache from the Syncthing-synced flat JSON source of truth. `--dry-run` reports every count with zero writes. Invariant covered by `tests/test_reconcile_invariant.py`, `tests/test_reconcile_stub_and_shared_id_guard.py`, `tests/test_reconcile_dry_run.py`. | `SKAGENT`/argv[1] (`lumina`), `--dry-run`, `--force-stubs`, `EMBED_URL` (mxbai on .100), `EMBED_MODEL` (`mxbai-embed-large`) | daily |
+| `skmemory/reconcile.py` (canonical; `deploy/skmem-pg/skmem_reconcile.py` and `scripts/skmem_reconcile.py` are thin shims into it) | Idempotent flat↔pg reconcile: backfill missing memories (embed + upsert, with a stub/shrink guard and the shared-id convergence fix), prune pg rows whose flat file is gone (guarded), re-embed NULL-vector rows. Rebuilds the derived `memories` cache from the Syncthing-synced flat JSON source of truth. `--dry-run` reports every count with zero writes. Invariant covered by `tests/test_reconcile_invariant.py`, `tests/test_reconcile_stub_and_shared_id_guard.py`, `tests/test_reconcile_dry_run.py`. | `SKAGENT`/argv[1] (`lumina`), `--dry-run`, `--force-stubs`, `EMBED_URL`, `EMBED_MODEL` (`mxbai-embed-large`) | daily |
 | [`deploy/ops/skmem-pg-backup.sh`](./deploy/ops/skmem-pg-backup.sh) | Daily `pg_dump -Fc` of the node-local skmem-pg container to the agent's `backups/` dir; retains the newest N. Fast-recovery path (seconds vs full re-embed) complementing the rebuild-from-source guarantee. | `SKAGENT` (`lumina`), `SKMEM_BACKUP_DIR`, `SKMEM_PG_CONTAINER` (`skmem-pg`), `SKMEM_PG_USER` (`postgres`), `SKMEM_PG_DB` (`skmemory`), `SKMEM_BACKUP_RETAIN` (`14`) | daily |
 | [`deploy/ops/skmem-health.sh`](./deploy/ops/skmem-health.sh) | Deterministic full-stack health probe (flat writes, SQLite index + functional query, skmem-pg reachability + functional vector/hybrid retrieval, backups lineage, skwhisper). Prints a `[PASS]/[WARN]/[FAIL]` digest, archives a dated report under `logs/skmem-health/`, persists run-over-run state, and fires `sk_alert` (deduped, 6h TTL) on WARN/FAIL. No LLM decides "healthy". | `SKAGENT` (`lumina`), `SKMEMORY_HEALTH_DSN` (node-local `localhost:5432`), `SKMEM_EMBED_URL`, `SKMEM_EMBED_MODEL`, `SKMEM_BACKUP_ROOT`, `SKALERT_LIB` (optional) | daily |
 
@@ -338,8 +347,8 @@ tier.
   gpg-agent, never stored in the repo or config. See [SECURITY.md](./SECURITY.md).
 
 ```bash
-skmemory store "..." --layer long --emotion joy --intensity 8
-skmemory search "cloud9 seeds"        # hybrid mxbai + BM25 (pgvector)
+skmemory snapshot "title" "content" --layer long-term --emotions joy --intensity 8
+skmemory search "cloud9 seeds"        # fused arms: FTS5 always, plus pgvector and BM25 when skmem-pg is up
 skmemory ritual                        # rehydrate identity
 skmemory context --max-tokens 3000     # token-budgeted load for a new session
 ```
@@ -348,19 +357,24 @@ skmemory context --max-tokens 3000     # token-budgeted load for a new session
 
 ## 7. API / Reference
 
-- **CLI:** `skmemory {store,search,context,ritual,promote,sweep,health,snapshot,moc,songs,...}`.
+- **CLI:** `skmemory {snapshot,search,history,context,ritual,promote,sweep,sync,health,intentions,ledger,moc,songs,...}` (`skmemory --help` is authoritative; `tests/test_skill_md.py` checks every command `SKILL.md` names).
   - `skmemory moc` - auto-generate **Maps of Content**: read-side index documents
     grouping memories **by quadrant** (Core/Work/Soul/Wild) and **by tag cluster**.
     Deterministic (byte-identical Markdown per input) + bounded; renders to stdout or
     writes one `<key>.md` per index with `--out DIR`. Flags:
     `--kind {all,quadrants,tags}`, `--limit`, `--min-cluster-size`, `--max-clusters`,
     `--max-entries`. Pure aggregation - never mutates the store (`moc.py`).
-- **MCP server:** `skmemory-mcp` (stdio) exposes 14 tools - `memory_store`,
-  `memory_search`, `memory_recall`, `memory_context`, `memory_promote`,
-  `memory_health`, `memory_save_session`, `memory_synthesize_*`, etc. (see the
-  `mcp__skmemory__*` surface).
-- **Python:** `from skmemory import MemoryStore` - `store.add()`, `store.search()`,
-  `store.promote()`, `store.context()`.
+- **MCP server:** `skmemory-mcp` (stdio) exposes 25 tools: the memory CRUD and search set
+  (`memory_store`, `memory_search`, `memory_auto_context`, `memory_recall`,
+  `memory_history`, `memory_list`, `memory_forget`, `memory_promote`, `memory_context`,
+  `memory_health`, `memory_graph`, ...), the maintenance set (`memory_consolidate`,
+  `memory_export`, `memory_import`, `memory_verify`, `memory_audit`,
+  `memory_synthesize_*`, `memory_save_session`, `memory_pre_compact`, `memory_extract`)
+  and the owner-only intention tools (`memory_remind`, `memory_intentions`,
+  `memory_intention_done`). Each is classed filtered, owner-only or exempt by
+  `TOOL_READER_POLICY` in `skmemory/mcp_server.py`.
+- **Python:** `from skmemory import MemoryStore` - `store.snapshot()`, `store.search()`,
+  `store.recall()`, `store.promote()`, `store.history()`, `store.load_context()`.
   - **Schema-validated writes (pre-write hooks):** every write runs a
     `(Memory) -> None` pre-write hook chain at the write boundary *before* any backend
     is touched (`validation.py`). The default `schema_validator` round-trips each memory
@@ -375,7 +389,8 @@ skmemory context --max-tokens 3000     # token-budgeted load for a new session
     of polluting the live agent's working window. Default `in_process_runner` is the
     identity element (behavior unchanged); `SubprocessRunner(spawn)` is the spawn seam.
 
-Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage.
+Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage, and
+[SKILL.md](./SKILL.md).
 
 ---
 
@@ -389,6 +404,13 @@ Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage.
 | Index drifts from flat files | Rebuild the index from the canonical flat files; check `skmemory-sync@<agent>` timer. |
 | Vaulted backend can't read | gpg-agent not holding the passphrase; unlock then retry. |
 | Wrong agent's memories | `SKAGENT`/`SKCAPSTONE_AGENT` not set as expected - echo it before launch. |
+| `health` says `degraded` | Read `retrieval.arms`: an arm that errors or times out (latest attempt, or 10 percent of at least 5) degrades; a config-disabled arm (graph by default) never does. Details per search are in `<agent>/logs/retrieval.jsonl`. |
+| A search is slow or an arm shows `timeout` | The arms share one deadline (`SKMEMORY_SEARCH_DEADLINE_S`, default 4). A timed-out arm cools down for 10 s. Check the embed endpoint and skmem-pg. |
+| `health` reports a large WAL | `index.db-wal` over 256 MB degrades health. The bound is applied on every connection; a long-lived reader can pin it, so restart the process. |
+| A non-owner reader sees "owner-only" | Intended: `SKMEMORY_READER` is a ceiling. Export, import, verify, audit, synthesis and the intention tools are owner only. |
+| A reminder never fired | Only the host named by `SKMEMORY_TICK_HOST` delivers (`skmemory intentions tick`). Confirm the timer runs there and `sk-alert` is on its PATH; an undelivered intention stays due and retries. |
+| `SKMEMORY_VECTOR_BACKEND` fails with "retired" | ChromaDB, Qdrant and FalkorDB are gone. Use `pgvector` or leave it unset (local tier only). |
+| Existing memories missing from lexical search | Finish the FTS5 backfill: `skmemory fts-backfill`. |
 
 ---
 
@@ -420,8 +442,10 @@ Full tool/flag reference: [README.md](./README.md) §MCP Tools and §Usage.
 ---
 
 <!-- docs-evidence
-verified: 2026-08-20
+verified: 2026-11-07
 checks:
+  - name: SKILL.md commands and named paths are machine-checked against the code
+    run: test -f tests/test_skill_md.py
   - name: three console-script entry points unchanged (skmemory, skmemory-mcp, skmemory-post-install)
     run: grep -qxF 'skmemory = "skmemory.cli:main"' pyproject.toml && grep -qxF 'skmemory-mcp = "skmemory.mcp_server:main"' pyproject.toml && grep -qxF 'skmemory-post-install = "skmemory.post_install:main"' pyproject.toml
   - name: package layout is top-level skmemory/, not src/, and CI lints that path

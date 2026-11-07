@@ -1,5 +1,5 @@
 """
-SQLite-indexed storage backend (Level 0.5).
+SQLite-indexed storage backend (local tier: the default primary, with the FTS5 lexical arm).
 
 Solves the file-scanning problem: instead of reading every JSON file
 on every list/search/filter, we maintain a SQLite index alongside
@@ -1550,7 +1550,7 @@ class SQLiteBackend(BaseBackend):
                 tried FIRST for each orphan, before falling back to the
                 lossy preview (card: skmemory sqlite-only-orphans recovery
                 follow-up, 2026-10-16 -- 23,525 rows on a laptop were
-                materialized as truncated stubs even though .158's skmem-pg
+                materialized as truncated stubs even though the shared skmem-pg
                 still held the full content for some of them, because this
                 method had no way to ask it). Typically bound to the
                 configured vector/pg backend's ``load()``. Its result is
@@ -1576,7 +1576,7 @@ class SQLiteBackend(BaseBackend):
                 rest away, and this method then ASSIGNED metadata to two keys,
                 so a successful rescue still silently dropped
                 ``access_count``, ``soul_context`` and every caller-set key
-                and reset ``importance`` to 0.5. Observed on noroc2027,
+                and reset ``importance`` to 0.5. Observed on a fleet node,
                 2026-11-06: recovered records lost ``body``, ``type`` and
                 ``urgency`` while keeping id, title and content, so nothing
                 looked wrong. The same anti-laundering check as
@@ -1641,7 +1641,7 @@ class SQLiteBackend(BaseBackend):
         # read one, so a delete could not hold in a replicated store: the flat
         # delete propagates, the peer index row becomes an orphan THERE, and
         # that peer next sync writes the file back and syncs it home. 2,387 of
-        # 7,675 deletes returned that way (noroc2027, 2026-11-06). Tombstones
+        # 7,675 deletes returned that way (fleet node, 2026-11-06). Tombstones
         # live under the memory dir, so honouring them here makes a forget
         # stick on every node that syncs.
         tombstoned = load_tombstones(self.base_path)

@@ -1,5 +1,5 @@
 """
-File-based storage backend (Level 1).
+File-based storage backend (local tier, no index).
 
 Zero infrastructure. Memories are stored as individual JSON files
 in a directory tree organized by layer. Works everywhere, today,

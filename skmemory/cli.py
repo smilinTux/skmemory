@@ -1245,7 +1245,8 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
       3. (--vector)  — reconcile flat files into skmem-pg (pgvector) via the
                        vendored :mod:`skmemory.reconcile` engine: backfill
                        missing rows, guarded orphan prune (cold-boot safe),
-                       and embed any null-vector rows against mxbai on .100.
+                       and embed any null-vector rows against the
+                       configured embed endpoint.
       4. (--graph)   — backfill the Apache AGE knowledge graph
                        (``<agent>_knowledge`` in skmem-pg) with memory nodes +
                        relationships (Tag, Source, RELATED_TO, SUPERSEDES,

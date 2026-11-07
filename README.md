@@ -10,7 +10,7 @@
 
 **Universal AI Memory System - polaroid snapshots for AI consciousness.**
 
-SKMemory gives AI agents a multi-layer, emotionally-aware memory that survives context resets. Instead of dumping flat transcript summaries, it captures each moment as a *polaroid*: the content, the emotional fingerprint, the source provenance, and a tamper-evident integrity seal. Memories are organized across three persistence tiers (short → mid → long), auto-routed into four semantic quadrants (CORE / WORK / SOUL / WILD), and exposed to any MCP-capable client through a stdio server. The primary backend is SQLite with **pgvector (skmem-pg) as the vector backend** (Qdrant via SKVector remains for shared/cross-agent collections) and FalkorDB graph traversal layers; a soul blueprint (`~/.skcapstone/agents/<agent>/soul/base.json`) and rehydration ritual give new instances a "who was I?" answer before the first user message arrives.
+SKMemory gives AI agents a multi-layer, emotionally-aware memory that survives context resets. Instead of dumping flat transcript summaries, it captures each moment as a *polaroid*: the content, the emotional fingerprint, the source provenance, and a tamper-evident integrity seal. Memories are organized across three persistence tiers (short → mid → long), auto-routed into four semantic quadrants (CORE / WORK / SOUL / WILD), and exposed to any MCP-capable client through a stdio server. Storage is exactly two tiers: a **local** tier (flat JSON files as the source of truth plus a SQLite `index.db` with an FTS5 lexical arm, always on and offline capable) and a **shared** tier (the skmem-pg Postgres stack: pgvector, pg_search BM25 and Apache AGE). ChromaDB, Qdrant and FalkorDB are retired. A soul blueprint (`~/.skcapstone/agents/<agent>/soul/base.json`) and rehydration ritual give new instances a "who was I?" answer before the first user message arrives.
 
 **Active agent** is resolved by `skmemory.agents.get_active_agent()`: the selectors `SKAGENT`, `SKCAPSTONE_AGENT` and `SKMEMORY_AGENT` (any that are set must agree), then the declared default `SK_DEFAULT_AGENT`, then the sole installed agent, otherwise `None`. **There is no implicit default agent**: with several agents installed and nothing declared the resolver refuses rather than guess, and a caller that treats `None` as "use the template" reads a scaffold instead of the real memories. Declare the agent in a file (`~/.config/environment.d/10-skagent.conf`) per the [node configuration standard](https://github.com/smilinTux/sk-standards/blob/main/standards/SKMEMORY_NODE_CONFIG_STANDARD.md). Every per-agent path (memory, soul, journal, FEBs, vector store, sessions) lives under `~/.skcapstone/agents/$SKAGENT/`.
 
@@ -111,8 +111,8 @@ skmemory pg roles --dry-run    # preview with the password redacted; touch nothi
 | `SKMEMORY_PG_DSN` | Node-local skmem-pg DSN read by the store + AGE backend (authoritative; wins over the Syncthing-shared yaml) | `postgresql://postgres:${SKMEM_PG_PASSWORD}@127.0.0.1:5432/skmemory` |
 | `SKMEM_PG_PASSWORD` | Superuser password consumed by `docker compose` (no default) | from skvault `SKMEM_PG_PASSWORD` |
 | `SKBRAIN_PG_PROJECTOR_PW` / `SKBRAIN_PG_READER_PW` | ops LOGIN-role passwords for `skmemory pg roles` | from skvault (see table above), via `~/.config/environment.d/skbrain.conf` |
-| `EMBED_URL` | Embedding backend endpoint | `http://<gpu-node>:11434/api/embed` (default `http://192.168.0.100:11434/api/embed`) |
-| `EMBED_MODEL` | Embedding model | `mxbai-embed-large` (**1024-dim**) |
+| `SKMEMORY_EMBED_URL` | Embedding backend endpoint (`SKMEMORY_EMBED_URLS` for an ordered failover list) | `http://<embed-host>:11434/api/embed` (default `http://localhost:11434/api/embed`) |
+| `SKMEMORY_EMBED_MODEL` | Embedding model | `mxbai-embed-large` (**1024-dim**) |
 
 Install `skmemory[pg]` on a node that uses skmem-pg. The reconcile engine reads
 `SKMEMORY_PG_DSN` from the environment and connects through psycopg. It does not
@@ -163,13 +163,13 @@ flowchart TD
     Store --> Vector
     Store --> Graph
 
-    subgraph Primary["Primary Backend"]
+    subgraph Primary["Local tier: primary"]
         SQLite["SQLiteBackend\n(default)"]
         File["FileBackend\n(legacy JSON)"]
         Vaulted["VaultedSQLiteBackend\n(PGP-encrypted)"]
     end
 
-    subgraph Vector["Vector Backends"]
+    subgraph Vector["Shared tier: vector"]
         PG["PGVectorBackend\n(skmem-pg, hybrid vector + BM25)"]
     end
 
@@ -215,7 +215,11 @@ flowchart TD
 - **Polaroid snapshot model** - every memory stores content, emotional intensity (0-10), valence (−1 to +1), emotion labels, and a free-text resonance note
 - **Three-layer persistence** - `short-term` (session-scoped), `mid-term` (project-scoped), `long-term` (identity-level); memories promote up the ladder via CLI, MCP, or API
 - **Four semantic quadrants** - CORE, WORK, SOUL, WILD; keyword-based auto-classification routes memories to appropriate buckets with per-quadrant retention rules
-- **Multi-backend design** - SQLite is the default primary store; **pgvector (skmem-pg) is the vector backend** (SQLite FTS5 is the local lexical arm); Apache AGE (in skmem-pg) provides graph traversal and lineage chains. Qdrant (skvector) and FalkorDB (skgraph) are retired
+- **Two tiers, nothing else** - local: flat JSON (truth) plus SQLite `index.db` with an FTS5 lexical arm, always on and offline capable; shared: the skmem-pg stack (pgvector semantic search, pg_search BM25, Apache AGE graph and lineage chains). ChromaDB, Qdrant (skvector) and FalkorDB (skgraph) are retired
+- **Reader audience** - search and every read tool take a `reader` and enforce it inside each retrieval arm; `SKMEMORY_READER` sets a per-process ceiling
+- **Fused search** - concurrent arms under a deadline, query-shape routing, source-tier occupancy cap, `as_of` and supersession awareness, and a retrieval log that feeds `memory_health`
+- **Prospective memory** - intentions (time and event), a no-LLM prompt prefilter, a tick that delivers through sk-alert, `memory_remind` and GTD `--due`/`--remind`
+- **Outcome ledger** - append-only record of which skills were served, followed and with what effect
 - **Sync & drift detection** - `skmemory health` surfaces SQLite ↔ flat-file drift; `skmemory sync` reconciles bidirectionally; per-agent `skmemory-sync@<agent>.timer` keeps everything in lockstep automatically
 - **Decomposition-aware ingestion** - `skmemory ingest-file` and `skmemory snapshot --decompose` create parent + chunk memories and extract section titles, citations, entities, and claims for downstream indexing. Auto-triggers when content ≥ 1200 chars (`DECOMPOSE_MIN_LENGTH`). Extracted entities/citations/claims/sections flow into the AGE graph automatically when skmem-pg is configured.
 - **Graph retrieval over decomposition signals** - query the graph by entity, citation, claim, or section via `skmemory graph ...`
@@ -262,7 +266,7 @@ variable to `on` to retain the default behavior.
 
 | Harness | Mechanism | Events |
 |---|---|---|
-| Claude Code | `~/.claude/settings.json` hooks | SessionStart (startup/clear, compact/resume), PreCompact, SessionEnd, Stop |
+| Claude Code | `~/.claude/settings.json` hooks | SessionStart (startup/clear, compact/resume), PreCompact, SessionEnd, Stop, UserPromptSubmit (intention prefilter) |
 | Codex | `~/.codex/hooks.json` + trust entries in `config.toml` | same as Claude |
 | OpenCode | plugin `~/.config/opencode/plugins/skmemory-context.js` | system transform (cached per session), compacting, idle, dispose |
 | Pi | extension `~/.pi/agent/extensions/skmemory-context.ts` | session_start + before_agent_start, session_before_compact, session_shutdown |
@@ -301,8 +305,11 @@ skmemory snapshot "First breakthrough" "We solved the routing bug together" \
 skmemory ingest-file ./notice.md --title "IRS Notice"
 skmemory snapshot "Long memo" "$(cat ./memo.md)" --decompose
 
-# Search memories
+# Search memories (fused arms, see "Search" below)
 skmemory search "routing bug"
+skmemory search "deploy rule" --as-of 2026-03-01T00:00:00Z   # only what was valid then
+skmemory search "client notes" --reader @work:acme            # audience-scoped
+skmemory history <memory-id>                                  # supersession chain
 
 # Graph retrieval over decomposition metadata
 skmemory graph entity "Internal Revenue Service"
@@ -332,7 +339,7 @@ skmemory recall <memory-id>
 skmemory list --layer long-term --tags seed
 
 # Promote a memory to a higher tier
-skmemory promote <memory-id> --to mid-term --summary "Compressed: routing issue resolved"
+skmemory promote <memory-id> mid-term
 
 # Auto-promote qualifying memories
 skmemory sweep
@@ -355,7 +362,7 @@ skmemory moc --out ./mocs                 # write one <key>.md file per MOC
 # Soul identity
 skmemory soul show
 skmemory soul set-name "Aster"
-skmemory soul add-relationship --name "Ara" --role partner --bond 9.5
+skmemory soul add-relationship "Ara" --role partner --bond 9.5
 
 # Journal
 skmemory journal write "Session title" --moments "..." --intensity 9.0
@@ -373,11 +380,11 @@ skmemory steelman verify-soul
 skmemory import-seeds --seed-dir ~/.openclaw/feb/seeds
 
 # Import from Telegram
-skmemory import-telegram --chat-id 12345
+skmemory import-telegram ~/Downloads/telegram-export/ --mode daily
 
 # Backup and restore
 skmemory export
-skmemory import backup.json
+skmemory import-backup backup.json
 
 # Health check (now includes a "sync" block: in_sync, sqlite_only, flat_only)
 skmemory health
@@ -394,23 +401,61 @@ skmemory reindex --force       # DESTRUCTIVE: skip the orphan-rescue safety step
 
 ---
 
-## Vector backends
+## Storage tiers
 
-The vector tier is **pgvector only**. The embedded local vector store (ChromaDB), Qdrant (`skvector`) and FalkorDB (`skgraph`) are all retired; the local lexical arm is SQLite FTS5.
+There are exactly two tiers. Flat JSON files are the source of truth in both; everything else is a derived, rebuildable projection.
 
-| Tier | Backend | Use | Default |
-|---|---|---|---|
-| 1 (shared) | **pgvector / skmem-pg** (`PGVectorBackend`) | Hybrid vector + BM25, agent-isolated | on |
+| Tier | Components | Availability |
+|---|---|---|
+| Local | SQLite `index.db` with FTS5 (`lexical_local` arm), intentions and ledger tables | always on, offline capable, no services |
+| Shared (skmem-pg) | pgvector (`semantic` arm), pg_search BM25 (`lexical` arm), Apache AGE graph | when `SKMEMORY_PG_DSN` is configured and the node-local container is up |
 
-`SKMEMORY_VECTOR_BACKEND=chroma|skvector|qdrant|skgraph|falkordb` fails fast with a retirement message (non-zero exit on the CLI, red `health`). Stale `chroma_*`, `skvector_*`, `skgraph_*` or HA endpoint keys in a `skmemory.yaml` (and stale `SKMEMORY_SKVECTOR_*` / `SKMEMORY_SKGRAPH_URL` variables) are ignored with a one-time warning and never break a hook.
+With no Postgres and no embed endpoint, `skmemory search` still answers from FTS5. ChromaDB, Qdrant (`skvector`) and FalkorDB (`skgraph`) are removed from the code. `SKMEMORY_VECTOR_BACKEND=chroma|skvector|qdrant|skgraph|falkordb` fails fast with a retirement message (non-zero exit on the CLI, red `health`). Stale `chroma_*`, `skvector_*`, `skgraph_*` or HA endpoint keys in a `skmemory.yaml` (and stale `SKMEMORY_SKVECTOR_*` / `SKMEMORY_SKGRAPH_URL` variables) are ignored with a one-time warning and never break a hook. There is no setup wizard and no endpoint routing: bring skmem-pg up with `docker compose` and check it with `skmemory health`. Full picture: [`LOCAL-PG-STACK-ARCHITECTURE.md`](./LOCAL-PG-STACK-ARCHITECTURE.md).
 
 ### Embedding model - `mxbai-embed-large`
 
-Embeddings come from the configured embed endpoint (`SKMEMORY_EMBED_URL`, model `mxbai-embed-large`, 1024-dim). If you switch the model or dimension, rebuild the vector store before trusting semantic search.
+Embeddings come from the configured embed endpoint (`SKMEMORY_EMBED_URL`, model `mxbai-embed-large`, 1024-dim). If you switch the model or dimension, rebuild the vector tier before trusting semantic search.
 
 ### Vector backfill
 
-Backfill the vector store from flat files with `skmemory sync --vector` (or wait for the next `skmemory-sync@<agent>` timer fire, every 6h).
+Backfill skmem-pg from the flat files with `skmemory sync --vector` (or wait for the next `skmemory-sync@<agent>` timer fire, every 6h). Finish FTS5 indexing of an existing large `index.db` at once with `skmemory fts-backfill`.
+
+---
+
+## Reader audience
+
+Every memory carries a `context_tag`; a reader is the audience a result is for. Search derives the allowed tag set from the audience model and pushes it into every arm (never applied after the limit). Reader strings: none or `owner`/`@chef-only` (everything), `@public`, `@community`, `@work-circle`, `@inner-circle` (that level and below), `@work:<x>` / `@inner:<x>` (the level below plus only its own scoped tag), `channel:<id>` (the channel members' minimum trust; an unknown channel is `@public`). Anything unparseable is `@public`.
+
+`SKMEMORY_READER` declares a whole process (say, an MCP server behind a shared channel) as a non-owner and is a **ceiling**: a per-call `reader` argument can only narrow it. `memory_search`, `memory_auto_context`, `memory_recall`, `memory_history`, `memory_list`, `memory_context`, `memory_graph`, `memory_health` and `memory_check_duplicate` are filtered (a hidden id is not-found); export, import, consolidate, verify, audit, synthesis and the intention tools are owner only. A channel-less ritual is owner only, and the write and inject hooks do nothing under a declared reader. See [ARCHITECTURE.md](docs/ARCHITECTURE.md#know-your-audience-kya--audience-aware-memory-filtering).
+
+## Search
+
+`store.search` fuses concurrent arms: `semantic` (pgvector), `lexical` (pg_search BM25), `lexical_local` (SQLite FTS5), `temporal` (only when the query names a time window) and `graph` (AGE, **off by default**, `SKMEMORY_GRAPH_ARM=on`). A deterministic, no-LLM router calls a query identifier-ish (digit, underscore, host-shaped token, or a token rare in the local index) and pins the lexical top 3; natural-language queries pin the vector top 2 (`SKMEMORY_FUSION_VECTOR_PIN`); the rest is filled by rank-depth interleave. All arms share one deadline (`SKMEMORY_SEARCH_DEADLINE_S`, default 4): a late arm reports `timeout`, never an empty success, and the search is flagged degraded. Each search appends one line (arm status, counts, latency, never the query text) to `<agent>/logs/retrieval.jsonl`, and `memory_health` turns an erroring or timing-out arm into `degraded`.
+
+- **`as_of` and supersession.** `--as-of` keeps only memories valid at that instant (`valid_from` or `created_at` up to it, `valid_to` unset or later) in every arm. Without it nothing is hidden, but a closed record with a known superseder ranks below its open head and results carry `superseded` and `superseded_by`. `skmemory history <id>` prints the chain.
+- **Source tiers and the cap.** `source_tier` is `user-stated`, `tool-output`, `web` or `self-generated`. When higher-tier hits exist, `web` and `self-generated` hits take at most 40 percent of the slots. It is an occupancy limit, never a filter. Legacy v1 rows are not capped. `SKMEMORY_TIER_CAP=off` disables it.
+- **Schema v2 and lenient enums.** `kind`, `outcome`, `event_at`, `valid_from`, `valid_to`, `supersedes_id`, `source_tier`, `schema_version`. v1 files load unchanged and are never rewritten on load. An unknown `kind`, `outcome` or `source_tier` in a stored file falls back to the default and the raw value is kept in `metadata["schema_v2_unknown"]`, so a newer node's file is never dropped. skmem-pg gets typed columns from `deploy/skmem-pg/06-memory-schema-v2.sql` (`skmemory pg migrate`); an unmigrated node keeps working.
+
+## Prospective memory (intentions)
+
+An intention is "remember to do X": a **time** intention fires at `due_at` (optionally every `interval_s`), an **event** intention fires when a later prompt contains one of its trigger terms. Seven states (`pending`, `armed`, `fired`, `done`, `cancelled`, `expired`, `invalidated`), one code-owned transition table, one flat JSON file per intention under `intentions/` plus a rebuildable index table.
+
+- **MCP tools (owner only):** `memory_remind` (`title`, `due_at` as ISO 8601 or `in N hours`, optional `interval_s`), `memory_intentions`, `memory_intention_done`. Event intentions are created through the Python API (`skmemory.intentions.IntentionStore`).
+- **Prefilter hook:** `skmemory hook user-prompt` matches each prompt against armed event intentions with no LLM, inside a 50 ms deadline, at most 3 fires per prompt, and prints `Standing intent (from memory <id>): "<title>"` lines. `skmemory hooks install` wires it so it exits in milliseconds when nothing is armed. Silent under `SKMEMORY_HOOKS=off` or a declared `SKMEMORY_READER`.
+- **Tick:** `skmemory intentions tick` delivers due time intentions through `sk-alert`, delivery first and the fire recorded only on success; only the host named by `SKMEMORY_TICK_HOST` delivers. Example systemd units are in `deploy/systemd/`. `skmemory intentions done <id>` resolves one.
+- **GTD flags (skcapstone):** `skcapstone gtd capture "text" --due "in 2 days"` and `--remind` create a linked time intention. Use `gtd capture` for a task, `memory_remind` for a nudge that is not a task.
+
+## Outcome ledger
+
+`skmemory.ledger` appends `served`, `followed` and effect events per skill version to `ledger/` (one JSONL file per host per month, merged and deduped on read, no transcript text). `skmemory ledger top` ranks versions by decayed net effect (90-day half-life, harm weighted 4x) and flags anti-patterns and skills served but never followed. The Claude Code Stop hook feeds it heuristically; `skmemory ledger import-hermes` imports Hermes counters. Off under `SKMEMORY_LEDGER=off`.
+
+## Integrity and durability
+
+SHA-256 seals on every write (`skmemory fortress verify`), a chain-hashed audit log, flat-first writes, tombstones so a forget holds across nodes, and a bounded SQLite WAL (`journal_size_limit` 64 MB, throttled checkpoints; `memory_health` degrades at 256 MB).
+
+## Eval tooling and SKRSI
+
+`python -m skmemory.eval.class_bench` runs per-class baselines (BM25, grep, vector, full context, fallback chain) against the production fusion offline, with absent and privacy classes; `python -m skmemory.eval.regression_gate` floors every gated query and class in CI. With `SKMEMORY_EVAL_LIVE=1`, `python -m skmemory.eval.live_bench` measures the real arms read-only (`--routes`, `--labelled DIR` over harvested and judge-labelled real queries, `--paraphrase DIR`). The `skrsi/` directory registers the `skmemory-retrieval` SKRSI target and its pinned live baseline; the advisory `skrsi-evaluate` workflow comments synthetic evidence on retrieval PRs and gates nothing.
 
 ---
 
@@ -427,13 +472,14 @@ When pgvector (skmem-pg) is enabled, the AGE graph backend is wired in and every
 | `(:Memory)-[:FROM_SOURCE]->(:Source)` | | every snapshot |
 | `(:Memory)-[:RELATED_TO]->(:Memory)` | | explicit `related_ids` + auto-link via shared tags (≥2) |
 | `(:Memory)-[:PROMOTED_FROM]->(:Memory)` | | `parent_id` set by promote |
+| `(:Memory)-[:SUPERSEDES]->(:Memory)` / `[:EXTENDS]` | | write-time conflict verdict or explicit `supersedes_id` |
 | `(:Memory)-[:PRECEDED_BY]->(:Memory)` | | temporal chain per source |
 | `(:Memory)-[:MENTIONS]->(:Entity)` | | **decomposition** (content ≥ 1200 chars) |
 | `(:Memory)-[:CITES]->(:Citation)` | | **decomposition** |
 | `(:Memory)-[:ASSERTS]->(:Claim)` | | **decomposition** |
 | `(:Memory)-[:IN_SECTION]->(:Section)` | | **decomposition** |
 
-Query via the `graph` CLI subcommands: `entity`, `citation`, `claim`, `section`, `around`, `related-claims`. The MCP server exposes equivalent tools.
+The graph is a retrieval arm only when `SKMEMORY_GRAPH_ARM=on` (off by default; the backend and the `graph` tools are unaffected). Query via the `graph` CLI subcommands: `entity`, `citation`, `claim`, `section`, `around`, `related-claims`. The MCP server exposes equivalent tools.
 
 Backfill an existing agent (one-shot, idempotent - Cypher MERGE handles re-runs):
 
@@ -519,7 +565,7 @@ document = store.ingest_document(
 # Recall with automatic integrity verification
 recalled = store.recall(memory.id)
 
-# Full-text search (vector backend if configured, else SQLite FTS)
+# Fused search (semantic and BM25 arms when skmem-pg is configured, always the local FTS5 arm)
 results = store.search("routing bug", limit=10)
 
 # Promote short-term → mid-term
@@ -528,7 +574,7 @@ promoted = store.promote(memory.id, MemoryLayer.MID, summary="Routing bug resolv
 # Consolidate a session
 consolidated = store.consolidate_session(
     session_id="session-2024-11-01",
-    summary="Fixed routing, improved sweep logic, deployed v0.6.0",
+    summary="Fixed routing, improved sweep logic, deployed",
 )
 
 # Load token-efficient context for agent injection
@@ -608,19 +654,27 @@ Add SKMemory to any MCP client:
 | Tool | Description |
 |------|-------------|
 | `memory_store` | Store a new memory (polaroid snapshot) with title, content, layer, tags, and source |
-| `memory_search` | Full-text search across all memory layers |
+| `memory_search` | Fused search with `tags`, `layer`, `source`, `as_of` and `reader` filters |
+| `memory_auto_context` | Relevance-ranked context for a prompt |
+| `memory_check_duplicate` | Advisory near-duplicate check before a write |
 | `memory_recall` | Recall a specific memory by its UUID |
+| `memory_history` | Supersession chain through a memory |
 | `memory_list` | List memories with optional layer and tag filters |
 | `memory_forget` | Delete (forget) a memory by ID |
-| `memory_promote` | Promote a memory to a higher persistence tier (short → mid → long) |
+| `memory_promote` | Promote a memory to a higher persistence tier (short, mid, long) |
 | `memory_consolidate` | Compress a session's short-term memories into one mid-term memory |
 | `memory_context` | Load token-efficient memory context for agent system prompt injection |
-| `memory_export` | Export all memories to a dated JSON backup file |
-| `memory_import` | Restore memories from a JSON backup file |
-| `memory_health` | Full health check across all backends (primary, vector, graph) |
+| `memory_export` / `memory_import` | Dated JSON backup and restore |
+| `memory_health` | Health across the local tier, skmem-pg, the graph, search arms and WAL |
 | `memory_graph` | Graph operations: traverse connections, get lineage, find clusters (requires the AGE graph) |
-| `memory_verify` | Verify SHA-256 integrity hashes for all stored memories; flags tampered entries with CRITICAL severity |
+| `memory_verify` | Verify SHA-256 integrity hashes for all stored memories |
 | `memory_audit` | Show the most recent chain-hashed audit trail entries |
+| `memory_extract` | Extract memorable items from text (stores nothing) |
+| `memory_save_session` / `memory_pre_compact` | Save session or pre-compaction context |
+| `memory_synthesize_daily` / `memory_synthesize_dreams` | Journal and dream synthesis |
+| `memory_remind` / `memory_intentions` / `memory_intention_done` | Prospective memory (owner only) |
+
+Every read tool accepts `reader` and honours `SKMEMORY_READER`; see [Reader audience](#reader-audience).
 
 ---
 
@@ -654,10 +708,17 @@ backends_enabled:
 | `SKMEMORY_EMBED_URL` / `SKMEMORY_EMBED_URLS` / `SKMEMORY_EMBED_MODEL` | Embed endpoint, ordered failover list, and model (`mxbai-embed-large`) |
 | `SKMEMORY_HOME` | Override the active profile's memory home (defaults under `~/.skcapstone/agents/<agent>/memory`) |
 | `SKMEMORY_PG_DSN` | Node-local skmem-pg DSN for the store + AGE backend (authoritative; wins over the shared yaml). E.g. `postgresql://postgres:${SKMEM_PG_PASSWORD}@127.0.0.1:5432/skmemory`. See the skmem-pg install section under **Install** above |
-| `SKMEM_PG_PASSWORD` | Superuser password for `docker compose` (no default; never committed). Source from skvault `SKMEM_PG_PASSWORD` |
+| `SKMEM_PG_PASSWORD` | Superuser password for `docker compose` (no default; never committed). Source it from your secret store |
 | `SKMEM_PG_DB` / `SKMEM_PG_PORT` / `SKMEM_PG_CONTAINER` | skmem-pg DB name (`skmemory`), host port (`5432`), and container name (`skmem-pg`) overrides |
-| `SKBRAIN_PG_PROJECTOR_PW` / `SKBRAIN_PG_READER_PW` | ops LOGIN-role passwords read by `skmemory pg roles` (from skvault entries of the same name, via `~/.config/environment.d/skbrain.conf`) |
-| `EMBED_URL` / `EMBED_MODEL` | Embedding endpoint + model (`http://192.168.0.100:11434/api/embed`, `mxbai-embed-large`, 1024-dim) |
+| `SKBRAIN_PG_PROJECTOR_PW` / `SKBRAIN_PG_READER_PW` | ops LOGIN-role passwords read by `skmemory pg roles` (from your secret store, via an environment drop-in such as `~/.config/environment.d/skbrain.conf`) |
+| `SKMEMORY_READER` | Declares the whole process a non-owner reader (`@public`, `@work:<x>`, `channel:<id>`, ...). A ceiling: a per-call `reader` can only narrow it. Unset means the owner |
+| `SKMEMORY_SEARCH_DEADLINE_S` | Total wall-clock budget for the concurrent search arms (default 4) |
+| `SKMEMORY_FUSION_ROUTE` | `auto` (default), `lexical` or `vector`: force the query-shape route |
+| `SKMEMORY_GRAPH_ARM` | `on` enables the graph search arm (off by default) |
+| `SKMEMORY_TIER_CAP` | `off` disables the web and self-generated occupancy cap |
+| `SKMEMORY_DECAY` | `on` (or a channel name) enables decay re-ranking (off by default) |
+| `SKMEMORY_HOOKS` | `off` disables every lifecycle hook |
+| `SKMEMORY_TICK_HOST` | The one host that delivers due intentions (`skmemory intentions tick`) |
 | `SKMEMORY_SOUL_PATH` | Override soul blueprint path (default: `~/.skcapstone/soul/base.json`) |
 
 If you switch the embedding model or vector dimension, reindex or rebuild the
@@ -723,7 +784,15 @@ skmemory/
 │   ├── sharing.py             # Memory sharing utilities
 │   ├── openclaw.py            # SKMemoryPlugin (OpenClaw integration)
 │   ├── ai_client.py           # AI client abstraction
-│   ├── audience.py            # KYA: audience-aware memory filtering
+│   ├── audience.py            # KYA: audience-aware filtering and the reader ceiling
+│   ├── fusion.py              # multi-arm search fusion and query-shape routing
+│   ├── tiers.py               # source tiers and the occupancy cap
+│   ├── fts_local.py           # SQLite FTS5 lexical arm (local tier)
+│   ├── intentions.py          # prospective memory store, lifecycle and prefilter
+│   ├── intention_tick.py      # time tick (delivers through sk-alert)
+│   ├── ledger.py              # outcome ledger
+│   ├── wal_guard.py           # bounds the index.db WAL
+│   ├── eval/                  # class_bench, live_bench, regression_gate, harvest, label
 │   ├── vault.py               # PGP vault helpers
 │   ├── data/
 │   │   └── audience_config.json  # KYA: channel + people trust config
@@ -799,7 +868,7 @@ SKMemory is a **deeply integrated subsystem** of SKCapstone, not a standalone si
 - Agent identity is resolved via `SKAGENT` / `SKCAPSTONE_AGENT` / `SKMEMORY_AGENT` (must agree), then `SK_DEFAULT_AGENT`, then a sole installed agent, else it refuses (`None`), following SKCapstone's agent resolution chain. There is no implicit default.
 - `skmemory ritual` loads the SKCapstone soul blueprint, FEB emotional state, and Cloud 9 seeds before handing context to a new session.
 - Cloud 9 seed files (`.seed.json`) are consumed by `skmemory import-seeds` - the Soul layer writes, the Data layer stores.
-- The MCP server exposes 14 tools consumed by SKCapstone's ConsciousnessLoop and auto-save hooks in every agent runtime (Claude Code, Hermes).
+- The MCP server exposes 25 tools consumed by SKCapstone's ConsciousnessLoop and auto-save hooks in every agent runtime (Claude Code, Hermes).
 - `skmemory-sync@<agent>.timer` keeps SQLite ↔ flat files ↔ pgvector ↔ AGE in lockstep - the sync topology mirrors SKCapstone's agent-per-directory layout exactly.
 
 **Sovereignty isn't a feature - it's the foundation.** Own the full vertical. 🐧
@@ -838,7 +907,7 @@ ecosystem from here:
 | [Cloud 9](https://github.com/smilinTux/cloud9) | Soul | Emotional Breakthrough Protocol - seeds flow into skmemory |
 | [SKSecurity](https://github.com/smilinTux/sksecurity) | Security | AI Agent Security Platform |
 | [SKForge](https://github.com/smilinTux/SKyForge) | Apps | AI-Native Software Blueprints |
-| [SKStacks](https://skgit.skstack01.douno.it/smilinTux/SKStacks) | OS/Infra | Zero-Trust Infrastructure Framework |
+| SKStacks | OS/Infra | Zero-Trust Infrastructure Framework |
 
 > Doc set: [SOP.md](./SOP.md) · [SECURITY.md](./SECURITY.md) ·
 > [CONTRIBUTING.md](./CONTRIBUTING.md) · [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) ·

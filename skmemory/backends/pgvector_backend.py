@@ -1,7 +1,7 @@
 """
 PGVector: semantic + hybrid memory search backend (Postgres + pgvector).
 
-Sovereign, syncable vector backend (the only one; Qdrant skvector is retired). The embedding
+Shared-tier vector backend (the only one: ChromaDB and Qdrant skvector are retired). The embedding
 store is a DERIVED, per-node rebuildable cache (same class as the SQLite
 index.db), NOT a replicated system of record:
   - Source of truth = the Syncthing-synced flat JSON memory files. `memories`
@@ -88,7 +88,7 @@ def _check_dsn_is_local(dsn: str) -> None:
     (see this module's docstring). prb-6f069c5e's own remediation plan
     found exactly the violation this guards against: every agent's
     SYNCED ``skmemory.yaml`` had hardcoded
-    ``pgvector_dsn=192.168.0.158:5432``, making ``.158`` a single point of
+    ``pgvector_dsn=<one node's address>:5432``, making that node a single point of
     failure the per-node architecture was supposed to retire, and the
     laptop had no local pg at all for most of the 2026-10-16 incident's
     window (card: skmemory sqlite-only-orphans). This does not re-verify
