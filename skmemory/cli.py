@@ -4010,6 +4010,44 @@ def ledger_group() -> None:
     """Skill outcome ledger (served, followed, effect)."""
 
 
+@ledger_group.command("import-hermes")
+@click.option(
+    "--usage",
+    "usage",
+    default="~/.hermes/skills/.usage.json",
+    show_default=True,
+    help="Hermes skill usage file (read only, never modified)",
+)
+@click.option("--base", "base", default=None, help="Memory base dir (default: agent memories)")
+def ledger_import_hermes(usage: str, base: str | None) -> None:
+    """Import Hermes skill usage counters as served/followed events (idempotent)."""
+    import os
+
+    from .ledger import Ledger
+    from .ledger_sidecar import import_hermes_usage
+
+    if (os.environ.get("SKMEMORY_READER") or "").strip():
+        click.echo("owner-only: unavailable while SKMEMORY_READER declares a non-owner.", err=True)
+        raise SystemExit(1)
+    if base is None:
+        from .agents import get_agent_paths
+
+        try:
+            base = str(get_agent_paths()["base"] / "memory")
+        except ValueError as exc:
+            click.echo(f"No active agent memory profile: {exc}", err=True)
+            raise SystemExit(1) from exc
+    try:
+        st = import_hermes_usage(Path(usage).expanduser(), Ledger(base))
+    except (OSError, ValueError) as exc:
+        click.echo(f"Cannot read {usage}: {exc}", err=True)
+        raise SystemExit(1) from exc
+    click.echo(
+        f"Imported {st['served']} served + {st['followed']} followed events "
+        f"from {st['skills']} skills ({st['skipped']} skipped)."
+    )
+
+
 @ledger_group.command("top")
 @click.option("--limit", default=20, show_default=True, help="Rows to show")
 @click.option("--as-of", default=None, help="ISO timestamp to score at (default: now)")

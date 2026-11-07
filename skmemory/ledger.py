@@ -101,8 +101,18 @@ class Ledger:
         effect: str | None = None,
         session: str = "",
         at: datetime | str | None = None,
+        event_id: str | None = None,
+        source: str | None = None,
+        missing: str | None = None,
     ) -> str:
-        """Append one event to this host's file for the event's month. Returns the event id."""
+        """Append one event to this host's file for the event's month. Returns the event id.
+
+        ``event_id`` lets a producer that re-reads the same input (a transcript, a usage
+        file) supply a stable id: a second ``record`` with a known id appends nothing.
+        ``source`` says what produced the event and ``missing`` what is unknown about it
+        (e.g. effect is null because only a heuristic saw the follow). Both are optional
+        metadata, never scored. Never pass transcript text in either.
+        """
         if event not in EVENTS:
             raise ValueError(f"unknown event {event!r}")
         if effect is not None and effect not in EFFECTS:
@@ -122,7 +132,13 @@ class Ledger:
         }
         # Random id minted once here: two genuine events with identical fields stay
         # distinct, while re-reading or re-importing the same line dedupes on this id.
-        rec["id"] = uuid.uuid4().hex
+        rec["id"] = event_id or uuid.uuid4().hex
+        if source:
+            rec["source"] = str(source)[:80]
+        if missing:
+            rec["missing"] = str(missing)[:200]
+        if event_id and self._known(event_id):
+            return event_id
         self.dir.mkdir(parents=True, exist_ok=True)
         path = self._file(when)
         line = json.dumps(rec, separators=(",", ":")) + "\n"
@@ -135,6 +151,21 @@ class Ledger:
             f.write(line.encode("utf-8"))
         self._index([rec])
         return rec["id"]
+
+    def _known(self, eid: str) -> bool:
+        """True when the derived index already holds this id (best effort: a miss just
+        appends a line that readers dedupe by id)."""
+        if not self._db_path.is_file():
+            return False
+        try:
+            c = self._conn()
+            with contextlib.closing(c):
+                return (
+                    c.execute("SELECT 1 FROM ledger_events WHERE id=?", (eid,)).fetchone()
+                    is not None
+                )
+        except sqlite3.Error:
+            return False
 
     def events(self) -> list[dict]:
         """Every event from every host file, deduped by id, ordered by time."""
@@ -159,6 +190,9 @@ class Ledger:
                     if isinstance(stored, str) and stored
                     else event_id(*(clean[k] for k in _FIELDS))
                 )
+                for extra in ("source", "missing"):
+                    if isinstance(r.get(extra), str) and r[extra]:
+                        clean[extra] = r[extra]
                 seen.setdefault(clean["id"], clean)
         return sorted(seen.values(), key=lambda r: (_utc(r["at"]), r["id"]))
 

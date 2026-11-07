@@ -9,7 +9,9 @@ Events:
     post-compact   smaller budget context (compact / resume)
     pre-compact    save recent transcript content before compaction
     session-end    save session summary + journal, activity log, skwhisper digest
-    stop           cheap breadcrumb checkpoint every 5th stop
+    stop           cheap breadcrumb checkpoint every 5th stop; every stop also feeds
+                   the outcome ledger (claude only; SKMEMORY_LEDGER=off or a declared
+                   SKMEMORY_READER skips it)
     user-prompt    standing intentions whose trigger fired on this prompt
                    (no output when nothing fires; SKMEMORY_HOOKS=off silences it)
 
@@ -444,12 +446,39 @@ def _save_event(event: str, harness: str, agent: str | None, payload: dict, args
     )
 
 
+def _ledger_stop(info, harness: str, payload: dict, args: dict) -> None:
+    """Feed the outcome ledger from the transcript. Never raises, writes no text.
+
+    Skipped under the kill switches and under a declared SKMEMORY_READER: a reader is
+    a non-owner session and must not write to the owner's store.
+    """
+    try:
+        if harness != "claude" or os.environ.get("SKMEMORY_LEDGER") == "off":
+            return
+        if (os.environ.get("SKMEMORY_READER") or "").strip():
+            return
+        transcript = payload.get("transcript_path") or args.get("transcript")
+        if not transcript:
+            return
+        from .ledger_sidecar import record_transcript
+
+        record_transcript(
+            transcript,
+            info.home / "memory",
+            session=str(payload.get("session_id") or args.get("session_id") or ""),
+        )
+    except Exception:  # noqa: BLE001 - a Stop hook must never fail a turn
+        if os.environ.get("SKMEMORY_HOOK_DEBUG") == "1":
+            raise
+
+
 def _stop_event(harness: str, agent: str | None, payload: dict, args: dict) -> None:
     from .session_context import resolve_agent
 
     info = resolve_agent(agent)
     if not info.home or not info.home.is_dir():
         return
+    _ledger_stop(info, harness, payload, args)
     sid = payload.get("session_id") or args.get("session_id") or "unknown"
     short = _short(sid)
     counter = (
