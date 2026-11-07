@@ -1123,7 +1123,7 @@ class MemoryStore:
         # Reinforce: a recall is a hit. Same batched path search() uses.
         self._reinforce([memory_id])
 
-        return memory
+        return self.redact_links(memory, reader)
 
     def _reinforce(self, memory_ids: Sequence[str], *, debounce_s: float | None = None) -> None:
         """Bump access_count / last_accessed for memories returned to a caller.
@@ -1247,6 +1247,8 @@ class MemoryStore:
         kept = order_procedures(kept, query)
         if record_access:
             self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
+        if not scope.unrestricted:
+            kept = [self.redact_links(m, reader) for m in kept]
         return kept
 
     def _search_unscoped(
@@ -2378,7 +2380,7 @@ class MemoryStore:
         """
         scope = resolve_reader(reader)
         if not scope.unrestricted:
-            return self._list_as_reader(
+            rows = self._list_as_reader(
                 scope,
                 layer=layer,
                 tags=tags,
@@ -2387,6 +2389,7 @@ class MemoryStore:
                 created_before=created_before,
                 source=source,
             )
+            return [self.redact_links(m, reader) for m in rows]
         return self.primary.list_memories(
             layer=layer,
             tags=tags,
@@ -2484,6 +2487,63 @@ class MemoryStore:
             }
             for i, m in enumerate(chain)
         ]
+
+    def redact_links(self, memory: Memory, reader: str | None = None) -> Memory:
+        """A copy of ``memory`` with links to memories the reader cannot see removed.
+
+        A reader that may see memory A must not learn the ids of hidden memories
+        A links to. Dropped: hidden ``related_ids`` entries, a hidden ``parent_id``
+        (and the relation that describes it), a hidden ``supersedes_id``, and in
+        ``metadata`` a hidden ``superseded_by`` (removed whole, its other fields
+        would still say a hidden successor exists), ``possible_conflict_with``
+        entries, ``write_triage`` (it names its target) and
+        ``decomposition.parent_id``. A dangling link reads like a hidden one.
+        This is the same rule :meth:`history` applies to its chain. The owner gets
+        the memory back untouched (the same object), so owner output is unchanged.
+        """
+        if resolve_reader(reader).unrestricted:
+            return memory
+        cache: dict[str, bool] = {}
+
+        def vis(i: Any) -> bool:
+            if not isinstance(i, str) or not i:
+                return False
+            if i not in cache:
+                cache[i] = self.reader_can_see(i, reader)
+            return cache[i]
+
+        meta = dict(memory.metadata or {})
+        parent_id = memory.parent_id if memory.parent_id and vis(memory.parent_id) else None
+        if memory.parent_id and parent_id is None:
+            meta.pop(PARENT_RELATION_KEY, None)
+        sb = meta.get("superseded_by")
+        if sb is not None and not (isinstance(sb, dict) and vis(sb.get("id"))):
+            meta.pop("superseded_by")
+        pcw = meta.get("possible_conflict_with")
+        if isinstance(pcw, list):
+            kept = [i for i in pcw if vis(i)]
+            if kept:
+                meta["possible_conflict_with"] = kept
+            else:
+                meta.pop("possible_conflict_with")
+        wt = meta.get("write_triage")
+        if isinstance(wt, dict) and not vis(wt.get("target")):
+            meta.pop("write_triage")
+        dec = meta.get("decomposition")
+        if isinstance(dec, dict) and dec.get("parent_id") and not vis(dec.get("parent_id")):
+            meta["decomposition"] = {k: v for k, v in dec.items() if k != "parent_id"}
+        return memory.model_copy(
+            update={
+                "related_ids": [i for i in memory.related_ids if vis(i)],
+                "parent_id": parent_id,
+                "supersedes_id": (
+                    memory.supersedes_id
+                    if memory.supersedes_id and vis(memory.supersedes_id)
+                    else None
+                ),
+                "metadata": meta,
+            }
+        )
 
     def reader_can_see(self, memory_id: str, reader: str | None = None) -> bool:
         """Whether the reader may see this memory. An unknown id is not visible."""
