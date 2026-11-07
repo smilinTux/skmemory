@@ -65,3 +65,57 @@ def test_noise_floor_declared_on_every_metric():
     m = lbm.flatten(_rows(["all"]))["metrics"]
     assert all(spec["noise"] > 0 for spec in m.values())
     assert m["live_p95_ms"]["noise"] == lbm.NOISE_P95_MS
+
+
+def _margin_rows(cand, ref, ref_status="alive"):
+    def arm(kinds, status="alive"):
+        return {
+            "status": status,
+            "by_kind": {k: {"recall@5": v, "mrr": 0.1, "n": 5} for k, v in kinds.items()},
+        }
+
+    raw = _rows(["all"], guards={"pg": "write refused"})
+    raw["arms"] = {"candidate": arm(cand), "bm25_only": arm(ref, ref_status)}
+    return raw
+
+
+def _mv(raw):
+    return lbm.flatten(raw)["metrics"]["live_recall_margin_vs_bm25"]
+
+
+def test_margin_is_worst_kind_candidate_minus_bm25_and_skips_all():
+    raw = _margin_rows(
+        {"all": 0.9, "title": 0.455, "rare_token": 0.747},
+        {"all": 0.1, "title": 0.625, "rare_token": 0.5},
+    )
+    m = _mv(raw)
+    assert m["value"] == -0.17
+    assert m["min"] == 0 and m["stop_rule"] == "fusion-below-bm25"
+
+
+def test_margin_null_when_arm_dead_or_kind_missing():
+    ok = {"title": 0.5, "rare_token": 0.5}
+    assert _mv(_margin_rows(ok, ok, ref_status="dead"))["value"] is None
+    assert _mv(_margin_rows(ok, {"title": 0.5}))["value"] is None
+    assert _mv(_margin_rows({"title": 0.5}, ok))["value"] is None
+    assert _mv(_margin_rows(ok, {"title": None, "rare_token": 0.5}))["value"] is None
+    assert _mv(_margin_rows({"all": 0.5}, {"all": 0.5}))["value"] is None
+    assert _mv(_rows(["all"]))["value"] is None  # no bm25_only arm at all
+
+
+def test_margin_from_baseline_file():
+    raw = json.loads(
+        (ROOT / "skrsi" / "baselines" / "skmemory-retrieval-live-20261106.json").read_text()
+    )
+    assert _mv(raw)["value"] == round(0.455 - 0.625, 4)
+    raw["recall_at_5"]["bm25_only"] = None
+    assert _mv(raw)["value"] is None
+
+
+def test_live_metrics_and_stop_rules_exist_in_the_target():
+    target = json.loads((ROOT / "skrsi" / "targets" / "skmemory-retrieval.json").read_text())
+    m = lbm.flatten(_rows(["all"]))["metrics"]
+    assert set(m) <= set(target["metrics"])
+    rules = {r["id"] for r in target["stop_rules"]}
+    assert {s["stop_rule"] for s in m.values() if "stop_rule" in s} <= rules
+    assert target["revision"] == 3

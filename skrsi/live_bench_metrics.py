@@ -52,6 +52,44 @@ def _from_baseline(raw: dict) -> tuple[dict, dict, float | None, int, str]:
     )
 
 
+def _margin(arms: dict) -> float | None:
+    """Worst query kind, candidate recall@5 minus bm25_only recall@5 (the target's objective).
+
+    ``arms`` maps arm name to {kind: recall@5 or None}. The aggregate ``all`` is not a kind. None
+    when either arm is absent or dead (no recall at all), or a kind is missing or null on either
+    side: a dead arm or an unmeasured kind is never dropped from the minimum, so it can neither
+    pass nor fail the stop rule.
+    """
+    cand, ref = arms.get("candidate"), arms.get("bm25_only")
+    if not cand or not ref:
+        return None
+    kinds = (set(cand) | set(ref)) - {"all"}
+    if not kinds:
+        return None
+    gaps = []
+    for k in sorted(kinds):
+        c, r = cand.get(k), ref.get(k)
+        if c is None or r is None:
+            return None
+        gaps.append(c - r)
+    return round(min(gaps), 4)
+
+
+def _arms_from_rows(raw: dict) -> dict:
+    out = {}
+    for name in ("candidate", "bm25_only"):
+        arm = raw.get("arms", {}).get(name) or {}
+        if arm.get("status", "alive") != "alive":
+            continue
+        out[name] = {k: v.get("recall@5") for k, v in (arm.get("by_kind") or {}).items()}
+    return out
+
+
+def _arms_from_baseline(raw: dict) -> dict:
+    rec = raw.get("recall_at_5", {})
+    return {n: rec[n] for n in ("candidate", "bm25_only") if isinstance(rec.get(n), dict)}
+
+
 WROTE_NOTHING = "a live measurement writes nothing to the store it measures"
 
 
@@ -76,6 +114,7 @@ NOISE_P95_MS = 300.0
 def flatten(raw: dict) -> dict:
     is_base = raw.get("schema") == "skmemory.skrsi.baseline.v1"
     recall, mrr, p95, n, cohort = (_from_baseline if is_base else _from_rows)(raw)
+    margin = _margin((_arms_from_baseline if is_base else _arms_from_rows)(raw))
 
     def ratio(v):
         return {
@@ -105,6 +144,14 @@ def flatten(raw: dict) -> dict:
             "live_recall_at_5_title": ratio(recall.get("title")),
             "live_recall_at_5_rare_token": ratio(recall.get("rare_token")),
             "live_mrr_all": ratio(mrr.get("all")),
+            "live_recall_margin_vs_bm25": {
+                "value": margin,
+                "unit": "ratio",
+                "direction": "higher",
+                "min": 0,
+                "noise": NOISE_RATIO,
+                "stop_rule": "fusion-below-bm25",
+            },
             "live_p95_ms": {
                 "value": p95,
                 "unit": "ms",

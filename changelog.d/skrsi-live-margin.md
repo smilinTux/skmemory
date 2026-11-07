@@ -1,0 +1,1 @@
+`skrsi/live_bench_metrics.py` emits `live_recall_margin_vs_bm25` (worst query kind, candidate recall@5 minus bm25_only, null when an arm is dead or a kind is missing; min 0, stop rule fusion-below-bm25) from both live input shapes, and target skmemory-retrieval is revision 3. Card 5e1f0f1d.
