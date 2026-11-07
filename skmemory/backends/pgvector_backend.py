@@ -306,6 +306,19 @@ def _probe_embed_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+#: Typed columns added by deploy/skmem-pg/06-memory-schema-v2.sql.
+_V2_PG_COLUMNS = (
+    "kind",
+    "outcome",
+    "event_at",
+    "valid_from",
+    "valid_to",
+    "supersedes_id",
+    "source_tier",
+    "schema_version",
+)
+
+
 class PGVectorBackend(BaseBackend):
     """Postgres + pgvector storage with hybrid (vector + BM25) search."""
 
@@ -400,6 +413,23 @@ class PGVectorBackend(BaseBackend):
             self._conn = psycopg.connect(self.dsn, autocommit=True)
             register_vector(self._conn)
         return self._conn
+
+    def _has_v2_columns(self, conn) -> bool:
+        """True once the schema-v2 typed columns exist (cached when true)."""
+        if getattr(self, "_v2_columns", False):
+            return True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = 'memories' "
+                "AND column_name = ANY(%s)",
+                (list(_V2_PG_COLUMNS),),
+            )
+            row = cur.fetchone()
+        ok = bool(row) and row[0] == len(_V2_PG_COLUMNS)
+        if ok:
+            self._v2_columns = True
+        return ok
 
     def _verify_embedding(self, vec: list[float], served_model: str | None = None) -> list[float]:
         """Verify a vector matches the pinned model identity, else raise.
@@ -617,34 +647,45 @@ class PGVectorBackend(BaseBackend):
                     f"({existing_len} -> {incoming_len} chars)"
                 )
 
+        params = [
+            memory.id,
+            self.agent,
+            str(getattr(memory.layer, "value", memory.layer)),
+            str(getattr(memory.role, "value", memory.role)),
+            memory.title,
+            memory.content,
+            memory.summary or "",
+            list(memory.tags or []),
+            memory.source,
+            memory.created_at,
+            memory.updated_at,
+            memory.model_dump_json(),
+            emb,
+        ]
+        cols = (
+            "id, agent, layer, role, title, content, summary, tags, source, "
+            "created_at, updated_at, memory_json, embedding"
+        )
+        sets = (
+            "agent=EXCLUDED.agent, layer=EXCLUDED.layer, role=EXCLUDED.role, "
+            "title=EXCLUDED.title, content=EXCLUDED.content, summary=EXCLUDED.summary, "
+            "tags=EXCLUDED.tags, source=EXCLUDED.source, updated_at=EXCLUDED.updated_at, "
+            "memory_json=EXCLUDED.memory_json, embedding=EXCLUDED.embedding"
+        )
+        # Schema v2 typed columns exist only after 06-memory-schema-v2.sql has
+        # been applied. memory_json always carries every field, so an
+        # unmigrated node keeps working and simply skips the typed columns.
+        if self._has_v2_columns(conn):
+            for name in _V2_PG_COLUMNS:
+                cols += f", {name}"
+                sets += f", {name}=EXCLUDED.{name}"
+                params.append(getattr(memory, name))
+        placeholders = ",".join(["%s"] * len(params))
         with conn.cursor() as cur:
             cur.execute(
-                """
-                INSERT INTO memories
-                  (id, agent, layer, role, title, content, summary, tags, source,
-                   created_at, updated_at, memory_json, embedding)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (id) DO UPDATE SET
-                  agent=EXCLUDED.agent, layer=EXCLUDED.layer, role=EXCLUDED.role,
-                  title=EXCLUDED.title, content=EXCLUDED.content, summary=EXCLUDED.summary,
-                  tags=EXCLUDED.tags, source=EXCLUDED.source, updated_at=EXCLUDED.updated_at,
-                  memory_json=EXCLUDED.memory_json, embedding=EXCLUDED.embedding
-                """,
-                (
-                    memory.id,
-                    self.agent,
-                    str(getattr(memory.layer, "value", memory.layer)),
-                    str(getattr(memory.role, "value", memory.role)),
-                    memory.title,
-                    memory.content,
-                    memory.summary or "",
-                    list(memory.tags or []),
-                    memory.source,
-                    memory.created_at,
-                    memory.updated_at,
-                    memory.model_dump_json(),
-                    emb,
-                ),
+                f"INSERT INTO memories ({cols}) VALUES ({placeholders}) "
+                f"ON CONFLICT (id) DO UPDATE SET {sets}",
+                params,
             )
         return memory.id
 

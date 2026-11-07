@@ -11,9 +11,9 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .invalid_records import require_memory_id
 
@@ -29,6 +29,15 @@ class MemoryLayer(str, Enum):
     SHORT = "short-term"
     MID = "mid-term"
     LONG = "long-term"
+
+
+# Schema v2 vocabularies. Kept as Literals (plain strings on disk and in JSON).
+MemoryKind = Literal["episode", "fact", "procedure", "preference", "rule"]
+MemoryOutcome = Literal["success", "failure", "lesson"]
+SourceTier = Literal["user-stated", "tool-output", "web", "self-generated"]
+
+#: Current on-disk schema version written for new and re-saved memories.
+SCHEMA_VERSION = 2
 
 
 class MemoryRole(str, Enum):
@@ -149,7 +158,18 @@ class Memory(BaseModel):
 
     Contains the content, emotional context, metadata for search,
     and relationship links to other memories.
+
+    Schema v2 adds ``kind``, ``outcome``, ``event_at``, ``valid_from``,
+    ``valid_to``, ``supersedes_id``, ``source_tier`` and ``schema_version``.
+    A v1 file (none of these keys) still loads: the defaults are applied in
+    memory only and nothing is written back until the memory is saved for
+    another reason. ``extra="allow"`` keeps fields this version does not know
+    about, so a node that loads and re-saves a newer file does not strip them.
+    None of the v2 fields feed ``compute_integrity_hash`` (id, title, content,
+    emotional signature), so existing seals stay valid.
     """
+
+    model_config = ConfigDict(extra="allow")
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -206,6 +226,37 @@ class Memory(BaseModel):
     )
 
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    # --- schema v2 ---------------------------------------------------------
+    kind: MemoryKind = Field(default="episode", description="What sort of memory this is")
+    outcome: MemoryOutcome | None = Field(
+        default=None, description="Result of the episode, when it has one"
+    )
+    event_at: str | None = Field(
+        default=None, description="When the event happened (defaults to created_at)"
+    )
+    valid_from: str | None = Field(
+        default=None, description="Start of validity (defaults to created_at)"
+    )
+    valid_to: str | None = Field(
+        default=None, description="End of validity; None means still valid"
+    )
+    supersedes_id: str | None = Field(
+        default=None, description="ID of the memory this one replaces"
+    )
+    source_tier: SourceTier = Field(
+        default="self-generated", description="Provenance tier of the content"
+    )
+    schema_version: int = Field(default=SCHEMA_VERSION)
+
+    @model_validator(mode="after")
+    def _default_temporal_fields(self) -> Memory:
+        """Fill event_at/valid_from from created_at (in memory only)."""
+        if self.event_at is None:
+            self.event_at = self.created_at
+        if self.valid_from is None:
+            self.valid_from = self.created_at
+        return self
 
     @field_validator("id")
     @classmethod
