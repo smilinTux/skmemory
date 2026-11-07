@@ -997,7 +997,7 @@ class PGVectorBackend(BaseBackend):
         if tags:
             clauses.append("tags @> %s")
             params.append(list(tags))
-        if context_tag:
+        if context_tag is not None:
             if isinstance(context_tag, str):
                 clauses.append("memory_json->>'context_tag' = %s")
                 params.append(context_tag)

@@ -1330,7 +1330,7 @@ class AGEGraphBackend:
         for i, tag in enumerate(tags or []):
             parts.append(f"$tag{i} IN m.tags")
             params[f"tag{i}"] = str(tag)
-        if context_tag:
+        if context_tag is not None:
             if isinstance(context_tag, str):
                 parts.append("m.context_tag = $context_tag")
                 params["context_tag"] = context_tag

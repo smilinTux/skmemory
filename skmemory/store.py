@@ -126,7 +126,7 @@ def _passes_filters(mem, layer, tags, context_tag, source) -> bool:
             return False
     if tags and not set(tags) <= set(getattr(mem, "tags", None) or []):
         return False
-    if context_tag:
+    if context_tag is not None:
         allowed = [context_tag] if isinstance(context_tag, str) else list(context_tag)
         if getattr(mem, "context_tag", None) not in allowed:
             return False
@@ -984,10 +984,10 @@ class MemoryStore:
                 return fused
 
         # The legacy path cannot push context_tag down, so overfetch and filter.
-        fetch = limit * 3 if context_tag else limit
+        fetch = limit * 3 if context_tag is not None else limit
 
         def _ctx(rows):
-            if not context_tag:
+            if context_tag is None:
                 return rows
             return [m for m in rows if _passes_filters(m, None, None, context_tag, None)][:limit]
 
@@ -1092,7 +1092,7 @@ class MemoryStore:
                 # than asked is possible; a leaked private hit is not.
                 if (
                     check_ctx
-                    and context_tag
+                    and context_tag is not None
                     and not _passes_filters(mem, None, None, context_tag, None)
                 ):
                     continue
