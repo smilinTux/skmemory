@@ -32,6 +32,21 @@
   `*_ok` flags reflect a probe that ran, and a new `profile` block turns an
   unresolved profile or a `-template` home into `status: red`.
 
+### Removed
+
+- **R6 fact extraction and R7 task queue deleted as shelfware (SKMEM-P0-07).**
+  `skmemory/fact_extraction.py`, `skmemory/taskqueue.py`, their benches
+  (`eval/extraction_bench.py`, `eval/queue_bench.py`) and tests had zero
+  importers in this repo, in skcapstone and in skwhisper: they were built and
+  measured but never wired into any write or read path. Neither bench was in
+  the regression gate or `baseline.json`, so no gated metric is removed. The
+  SQL migrations `deploy/skmem-pg/04-task-queue.sql` and `verify-task-queue.sql`
+  are left in place (a schema change is outside this card). Still unwired but
+  kept: R3 `observations.py` and R5 `triage.py` (to be wired in P3) and R4
+  `standing.py` (to be replaced by the intention store, SKMEM-P2-06). The
+  "Optional LLM fact extraction" and "Durable Postgres task queue" entries
+  under Added below describe code that no longer exists; they stay as history.
+
 ### Added
 
 - **Lifecycle hook kill switch.** Set `SKMEMORY_HOOKS=off` to make every event
