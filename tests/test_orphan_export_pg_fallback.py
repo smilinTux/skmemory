@@ -78,7 +78,11 @@ class TestFullContentFallbackRecovers:
         treat it as untrustworthy and fall back."""
         memory_id = _make_orphan(backend, FULL_CONTENT)
 
-        stats = backend.export_orphans_to_flat(full_content_lookup=lambda mid: "x")
+        # allow_preview_stubs=True: this test is about the lossy fallback
+        # itself, which is now opt-in (it destroys the real content).
+        stats = backend.export_orphans_to_flat(
+            full_content_lookup=lambda mid: "x", allow_preview_stubs=True
+        )
 
         assert stats["recovered_full"] == 0
         data = _load_flat(backend, memory_id)
@@ -90,7 +94,9 @@ class TestFallbackWhenLookupUnavailable:
     def test_no_lookup_behaves_as_before(self, backend):
         memory_id = _make_orphan(backend, FULL_CONTENT)
 
-        stats = backend.export_orphans_to_flat()
+        # allow_preview_stubs=True: this test is about the lossy fallback
+        # itself, which is now opt-in (it destroys the real content).
+        stats = backend.export_orphans_to_flat(allow_preview_stubs=True)
 
         assert stats["exported"] == 1
         assert stats["recovered_full"] == 0
@@ -102,7 +108,9 @@ class TestFallbackWhenLookupUnavailable:
         memory_id = _make_orphan(backend, FULL_CONTENT)
 
         with caplog.at_level(logging.WARNING, logger="skmemory.sqlite_backend"):
-            stats = backend.export_orphans_to_flat(full_content_lookup=lambda mid: None)
+            stats = backend.export_orphans_to_flat(
+                full_content_lookup=lambda mid: None, allow_preview_stubs=True
+            )
 
         assert stats["recovered_full"] == 0
         data = _load_flat(backend, memory_id)
@@ -119,7 +127,9 @@ class TestFallbackWhenLookupUnavailable:
             raise ConnectionError("pg unreachable")
 
         with caplog.at_level(logging.WARNING, logger="skmemory.sqlite_backend"):
-            stats = backend.export_orphans_to_flat(full_content_lookup=boom)
+            stats = backend.export_orphans_to_flat(
+                full_content_lookup=boom, allow_preview_stubs=True
+            )
 
         assert stats["errors"] == 0
         assert stats["recovered_full"] == 0
@@ -145,7 +155,8 @@ class TestAlreadyCorruptedPgRowIsNotTrustedAsFull:
 
         with caplog.at_level(logging.WARNING, logger="skmemory.sqlite_backend"):
             stats = backend.export_orphans_to_flat(
-                full_content_lookup=lambda mid: already_corrupted_pg_value
+                full_content_lookup=lambda mid: already_corrupted_pg_value,
+                allow_preview_stubs=True,
             )
 
         assert stats["recovered_full"] == 0

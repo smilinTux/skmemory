@@ -1107,7 +1107,8 @@ class SQLiteBackend(BaseBackend):
     def export_orphans_to_flat(
         self,
         full_content_lookup: Callable[[str], str | None] | None = None,
-        allow_preview_stubs: bool = True,
+        allow_preview_stubs: bool = False,
+        full_record_lookup: Callable[[str], Memory | None] | None = None,
     ) -> dict:
         """Write any SQLite-only memories out as flat JSON files.
 
@@ -1139,11 +1140,31 @@ class SQLiteBackend(BaseBackend):
                 path logs a WARNING per id naming the orphan and its source
                 -- a silent full-fleet loss must never be invisible again.
 
-            allow_preview_stubs: When False, an orphan with no full content
-                is NOT written: it is counted in ``preview_only`` and its id
-                listed in ``preview_only_ids`` instead. Unattended callers
-                (``sync``, ``reindex``) pass False so a lossy stub never
-                lands in the Syncthing-replicated source of truth on a timer.
+            full_record_lookup: Optional ``(memory_id) -> Memory | None``,
+                preferred over ``full_content_lookup`` because it recovers the
+                whole record rather than just its text. ``PGVectorBackend``
+                stores each memory as JSON in its ``memory_json`` column and
+                its ``load()`` already returns a parsed ``Memory``, so the
+                metadata is there for the asking. Before this existed the
+                store's lookup wrapper returned ``mem.content`` and threw the
+                rest away, and this method then ASSIGNED metadata to two keys,
+                so a successful rescue still silently dropped
+                ``access_count``, ``soul_context`` and every caller-set key
+                and reset ``importance`` to 0.5. Observed on noroc2027,
+                2026-11-06: recovered records lost ``body``, ``type`` and
+                ``urgency`` while keeping id, title and content, so nothing
+                looked wrong. The same anti-laundering check as
+                ``full_content_lookup`` applies to the record's content.
+
+            allow_preview_stubs: When False (the default), an orphan with no
+                full content is NOT written: it is counted in
+                ``preview_only`` and its id listed in ``preview_only_ids``
+                instead. Writing a truncated preview destroys the real
+                content, so it has to be asked for and must never be what a
+                caller gets by not thinking about it. ``sync`` and
+                ``reindex`` always passed False; the default was True, which
+                left ``export-flat`` (the one deliberately lossy rescue
+                command) silently setting policy for anything new.
 
         An orphan whose flat file exists in ANY active tier (full or 12-char
         shortform name) is skipped, not just one in the tier its index row
@@ -1221,7 +1242,29 @@ class SQLiteBackend(BaseBackend):
                 continue
 
             full_content = None
-            if full_content_lookup is not None:
+            recovered_metadata: dict | None = None
+            if full_record_lookup is not None:
+                try:
+                    record = full_record_lookup(memory_id)
+                except Exception as e:
+                    logger.warning(
+                        "sqlite_backend.py: full-record lookup raised for orphan "
+                        "%s (source=%s): %s -- falling back to truncated preview",
+                        memory_id,
+                        source or "unknown",
+                        e,
+                    )
+                    record = None
+                if record is not None:
+                    candidate = record.content or ""
+                    if (
+                        candidate
+                        and not candidate.endswith(TRUNCATED_PREVIEW_SUFFIX)
+                        and len(candidate) >= len(content_preview or "")
+                    ):
+                        full_content = candidate
+                        recovered_metadata = dict(record.metadata or {})
+            if full_content is None and full_content_lookup is not None:
                 try:
                     candidate = full_content_lookup(memory_id)
                 except Exception as e:
@@ -1247,10 +1290,13 @@ class SQLiteBackend(BaseBackend):
 
             if full_content is not None:
                 content = full_content
-                metadata = {
-                    "recovered_from_pg_fallback": True,
-                    "importance": importance or 0.5,
-                }
+                # Merge, never assign: whatever the recovery source held is
+                # the only copy of it left, and the index row has no metadata
+                # column to rebuild it from. The row's importance is a
+                # fallback for when the record carries none, not an override.
+                metadata = dict(recovered_metadata or {})
+                metadata["recovered_from_pg_fallback"] = True
+                metadata.setdefault("importance", importance or 0.5)
             else:
                 content = (content_preview or "") + TRUNCATED_PREVIEW_SUFFIX
                 metadata = {
@@ -1304,6 +1350,7 @@ class SQLiteBackend(BaseBackend):
         force: bool = False,
         allow_preview_stubs: bool = False,
         full_content_lookup: Callable[[str], str | None] | None = None,
+        full_record_lookup: Callable[[str], Memory | None] | None = None,
     ) -> int:
         """Rebuild the entire index from JSON files on disk.
 
@@ -1333,6 +1380,7 @@ class SQLiteBackend(BaseBackend):
             orphan_stats = self.export_orphans_to_flat(
                 full_content_lookup=full_content_lookup,
                 allow_preview_stubs=allow_preview_stubs,
+                full_record_lookup=full_record_lookup,
             )
             keep = list(orphan_stats.get("preview_only_ids") or [])
 

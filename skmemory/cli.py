@@ -1343,12 +1343,16 @@ def export_flat(ctx: click.Context, show_ids: bool) -> None:
     """Materialize SQLite-only memories as flat JSON files.
 
     Walks the SQLite index and writes any memory missing a flat .json file
-    out to ``<base>/<layer>/<id>.json``. Idempotent and non-destructive —
-    safe to run anytime. Use this before a destructive ``reindex --force``,
+    out to ``<base>/<layer>/<id>.json``. Idempotent and non-destructive, so
+    it is safe to run anytime. Use this before a destructive
+    ``reindex --force``,
     or whenever ``health`` shows SQLite count > flat-file count.
     """
     store: MemoryStore = ctx.obj["store"]
-    stats = store.export_orphans_to_flat()
+    # The one deliberately lossy rescue: this command exists so an operator
+    # can choose a truncated preview over nothing at all, so it opts in by
+    # name. Everything else leaves allow_preview_stubs at its False default.
+    stats = store.export_orphans_to_flat(allow_preview_stubs=True)
     click.echo(
         f"export-flat: exported={stats['exported']} skipped={stats['skipped']} "
         f"errors={stats['errors']}"
