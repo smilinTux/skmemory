@@ -169,3 +169,98 @@ def test_sweep_reads_valid_to_in_metadata(tmp_path):
         json.dumps({"id": "m1", "metadata": {"valid_to": "2026-10-01T00:00:00Z"}})
     )
     assert store.sweep_supersession(now=NOW) == ["a"]
+
+
+def test_reindex_skips_conflict_copies_and_canonical_wins(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="a1", kind="time", title="canonical", state="done"))
+    conflict = Intention(id="a1", kind="time", title="conflict", state="pending")
+    (tmp_path / "intentions" / "a1.sync-conflict-20261101-120000-ABCDEFG.json").write_text(
+        conflict.model_dump_json()
+    )
+    assert store.reindex() == 1
+    assert store.last_reindex_report["conflicts"] == [
+        "a1.sync-conflict-20261101-120000-ABCDEFG.json"
+    ]
+    got = store.list()
+    assert [(i.id, i.title, i.state) for i in got] == [("a1", "canonical", "done")]
+
+
+def test_sweep_rereads_flat_file_when_index_is_stale(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="a", kind="event", title="t", origin_memory_id="m1"))
+    _write_origin(tmp_path, "m1", "2026-10-01T00:00:00+00:00")
+    # a synced host marked it done; this host's index still says pending
+    done = Intention(id="a", kind="event", title="t", origin_memory_id="m1", state="done")
+    (tmp_path / "intentions" / "a.json").write_text(done.model_dump_json())
+    assert store.list()[0].state == "pending"
+    assert store.sweep_supersession(now=NOW) == []
+    assert store.get("a").state == "done"
+
+
+def test_save_cannot_revive_terminal_or_change_state(tmp_path):
+    store = IntentionStore(tmp_path)
+    done = Intention(id="a", kind="time", title="t", state="done")
+    store.save(done)
+    with pytest.raises(ValueError):
+        store.save(done.model_copy(update={"state": "pending"}))
+    assert store.get("a").state == "done"
+    store.save(Intention(id="b", kind="time", title="t"))
+    with pytest.raises(ValueError):
+        store.save(Intention(id="b", kind="time", title="t", state="armed"))
+
+
+def test_apply_uses_transition_and_terminal_stays_terminal(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="a", kind="time", title="t"))
+    assert store.apply("a", "arm").state == "armed"
+    assert store.apply("a", "fire", now=NOW).fires == 1
+    assert store.get("a").state == "fired" and store.list(state="fired")[0].id == "a"
+    store.apply("a", "done")
+    assert store.apply("a", "fire", now=NOW).state == "done"
+    assert store.apply("nope", "arm") is None
+
+
+def test_corrupt_file_does_not_raise_from_get_list_or_sweep(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="a", kind="event", title="t", origin_memory_id="m1"))
+    _write_origin(tmp_path, "m1", "2026-10-01T00:00:00+00:00")
+    (tmp_path / "intentions" / "a.json").write_text("{trunc")
+    assert store.get("a") is None
+    assert store.sweep_supersession(now=NOW) == []
+    assert store.unreadable >= 2
+    row = sqlite3.connect(tmp_path / "index.db")
+    row.execute("update intentions set data='{bad'")
+    row.commit()
+    assert store.list() == []
+
+
+def test_reindex_is_one_transaction(tmp_path):
+    store = IntentionStore(tmp_path)
+    store.save(Intention(id="a", kind="time", title="t"))
+    other = sqlite3.connect(tmp_path / "index.db")
+    seen = []
+    orig = store._db().executemany
+
+    class Spy:
+        def __init__(self, c):
+            self.c = c
+
+        def execute(self, *a):
+            return self.c.execute(*a)
+
+        def executemany(self, *a):
+            seen.append(other.execute("select count(*) from intentions").fetchone()[0])
+            return self.c.executemany(*a)
+
+        def __enter__(self):
+            return self.c.__enter__()
+
+        def __exit__(self, *a):
+            return self.c.__exit__(*a)
+
+    real = store._db()
+    store._conn = Spy(real)
+    store.reindex()
+    assert seen == [1]  # other connections still saw the old row mid-rebuild
+    assert orig  # keep reference used

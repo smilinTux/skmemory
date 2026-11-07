@@ -163,6 +163,9 @@ class IntentionStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         self._db_path = self.base_path / "index.db"
         self._conn: sqlite3.Connection | None = None
+        #: Count of unreadable files/rows skipped by this store instance.
+        self.unreadable = 0
+        self.last_reindex_report: dict[str, Any] = {}
         self._ensure_table()
 
     # -- index ---------------------------------------------------------
@@ -184,18 +187,22 @@ class IntentionStore:
         db.execute("CREATE INDEX IF NOT EXISTS idx_intentions_state ON intentions(state)")
         db.commit()
 
-    def _index(self, i: Intention, body: str) -> None:
+    @staticmethod
+    def _row(i: Intention, body: str) -> tuple:
         def iso(d: datetime | None) -> str | None:
             return d.isoformat() if d else None
 
-        self._db().execute(
-            "INSERT OR REPLACE INTO intentions VALUES (?,?,?,?,?,?,?,?,?)",
-            (
-                i.id, i.kind, i.state, iso(i.due_at), iso(i.snooze_until),
-                iso(i.expires_at), i.origin_memory_id, i.channel, body,
-            ),
+        return (
+            i.id, i.kind, i.state, iso(i.due_at), iso(i.snooze_until),
+            iso(i.expires_at), i.origin_memory_id, i.channel, body,
         )  # fmt: skip
-        self._db().commit()
+
+    def _index(self, i: Intention, body: str) -> None:
+        db = self._db()
+        with db:
+            db.execute(
+                "INSERT OR REPLACE INTO intentions VALUES (?,?,?,?,?,?,?,?,?)", self._row(i, body)
+            )
 
     def close(self) -> None:
         if self._conn is not None:
@@ -206,43 +213,119 @@ class IntentionStore:
     def _path(self, intention_id: str) -> Path:
         return self.dir / f"{_check_id(intention_id)}.json"
 
-    def save(self, intention: Intention) -> None:
-        """Write the flat file atomically, then index it (flat first, as for memories)."""
+    def _read(self, intention_id: str) -> Intention | None:
+        """Read the flat file. Missing -> None; corrupt -> None, counted and logged."""
+        p = self._path(intention_id)
+        try:
+            raw = p.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            return self._unreadable(p, e)
+        try:
+            return Intention(**json.loads(raw))
+        except Exception as e:  # noqa: BLE001 - corrupt/partial file must not abort callers
+            return self._unreadable(p, e)
+
+    def _unreadable(self, p: Path, err: Exception) -> None:
+        self.unreadable += 1
+        logger.warning("unreadable intention file %s: %s", p.name, err)
+        return None
+
+    def _write(self, intention: Intention) -> None:
         body = intention.model_dump_json(indent=2)
         atomic_write_text(self._path(intention.id), body)
         self._index(intention, body)
 
-    def get(self, intention_id: str) -> Intention | None:
-        """Read from the flat file (source of truth), not the index."""
-        p = self._path(intention_id)
-        if not p.exists():
+    def save(self, intention: Intention) -> None:
+        """Create an intention, or rewrite one whose state is unchanged on disk.
+
+        The flat file is truth. A save that would change the state of an
+        existing intention is refused (use :meth:`apply`), so a dead intention
+        cannot be revived by writing a stale copy. Flat file first, then index.
+        """
+        on_disk = self._read(intention.id)
+        if on_disk is not None and on_disk.state != intention.state:
+            raise ValueError(
+                f"refusing state change {on_disk.state!r} -> {intention.state!r} for "
+                f"{intention.id!r} via save(); use apply() so transition() decides"
+            )
+        self._write(intention)
+
+    def apply(
+        self,
+        intention_id: str,
+        event: str,
+        *,
+        now: datetime | None = None,
+        snooze_until: datetime | None = None,
+    ) -> Intention | None:
+        """Re-read the flat file, apply :func:`transition`, write. The only state-change path.
+
+        Returns the resulting intention, or None if the file is missing or
+        unreadable. Terminal states stay terminal. Not locked: two hosts racing
+        on the same intention resolve last-writer-wins at the Syncthing level.
+        """
+        cur = self._read(intention_id)
+        if cur is None:
             return None
-        return Intention(**json.loads(p.read_text(encoding="utf-8")))
+        new = transition(cur, event, now=now, snooze_until=snooze_until)
+        if new != cur:
+            self._write(new)
+        return new
+
+    def get(self, intention_id: str) -> Intention | None:
+        """Read from the flat file (source of truth); a corrupt file reads as None."""
+        return self._read(intention_id)
 
     def list(self, state: str | None = None) -> list[Intention]:
-        """List from the index. Run :meth:`reindex` after files arrive from a sync."""
-        q, args = "SELECT data FROM intentions", ()
+        """List from the index, skipping unparseable rows. Run :meth:`reindex` after a sync."""
+        q, args = "SELECT id, data FROM intentions", ()
         if state:
             q, args = q + " WHERE state=?", (state,)
-        rows = self._db().execute(q + " ORDER BY id", args).fetchall()
-        return [Intention(**json.loads(r["data"])) for r in rows]
+        out: list[Intention] = []
+        for r in self._db().execute(q + " ORDER BY id", args).fetchall():
+            try:
+                out.append(Intention(**json.loads(r["data"])))
+            except Exception as e:  # noqa: BLE001
+                self.unreadable += 1
+                logger.warning("unreadable intention index row %s: %s", r["id"], e)
+        return out
 
     def reindex(self) -> int:
-        """Rebuild the table from the flat files; unreadable files are skipped."""
-        db = self._db()
-        db.execute("DELETE FROM intentions")
-        db.commit()
-        n = 0
+        """Rebuild the table from the flat files in one transaction; returns rows indexed.
+
+        Only ``<id>.json`` whose stem equals the id inside is indexed. Anything
+        else (``a1.sync-conflict-*.json``, renamed copies) is a conflict copy:
+        the canonical file always wins, the copy is never indexed, and its name
+        is listed in ``last_reindex_report["conflicts"]`` and logged.
+        Unreadable files are listed under ``unreadable``.
+        """
+        rows, conflicts, bad = [], [], []
         for p in sorted(self.dir.glob("*.json")):
             try:
                 i = Intention(**json.loads(p.read_text(encoding="utf-8")))
                 _check_id(i.id)
             except Exception as e:  # noqa: BLE001 - one bad file must not block the rest
                 logger.warning("skipping unreadable intention file %s: %s", p.name, e)
+                bad.append(p.name)
                 continue
-            self._index(i, i.model_dump_json(indent=2))
-            n += 1
-        return n
+            if p.stem != i.id:
+                logger.warning("intention conflict copy %s (id %s) not indexed", p.name, i.id)
+                conflicts.append(p.name)
+                continue
+            rows.append(self._row(i, i.model_dump_json(indent=2)))
+        db = self._db()
+        with db:  # one transaction: readers never see an empty table
+            db.execute("DELETE FROM intentions")
+            db.executemany("INSERT INTO intentions VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        self.unreadable += len(bad)
+        self.last_reindex_report = {
+            "indexed": len(rows),
+            "conflicts": conflicts,
+            "unreadable": bad,
+        }
+        return len(rows)
 
     # -- supersession sweep -------------------------------------------
     def _origin_valid_to(self, memory_id: str) -> datetime | None:
@@ -276,11 +359,12 @@ class IntentionStore:
         """
         now = _aware(now) or datetime.now(timezone.utc)
         changed: list[str] = []
-        for i in self.list():
-            if i.state in TERMINAL_STATES or not i.origin_memory_id:
+        for iid in [i.id for i in self.list()]:  # index only supplies candidate ids
+            cur = self._read(iid)  # flat file is truth; the index row may be stale
+            if cur is None or cur.state in TERMINAL_STATES or not cur.origin_memory_id:
                 continue
-            vt = self._origin_valid_to(i.origin_memory_id)
+            vt = self._origin_valid_to(cur.origin_memory_id)
             if vt is not None and vt <= now:
-                self.save(transition(i, "invalidate", now=now))
-                changed.append(i.id)
+                self.apply(iid, "invalidate", now=now)
+                changed.append(iid)
         return changed
