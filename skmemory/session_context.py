@@ -19,6 +19,7 @@ Sections, highest priority first:
 
     identity   who the agent is (compact soul summary, never the full prompt)
     feb        current emotional state, one line
+    song       top song-anchor tilt for that FEB (owner only, one line each)
     open       what is hot: skwhisper whisper.md distilled (recent + topics)
     gtd        next actions / waiting-for (only if skcapstone is installed)
     journal    meaningful recent journal entries + one line of session markers
@@ -56,10 +57,20 @@ DEFAULT_DEADLINE_S = 8.0
 # context above 10,000 characters. Stay safely under it.
 HARD_CAP = {"claude": 9800, "codex": 9800}
 
-SECTION_ORDER = ("identity", "feb", "open", "gtd", "journal", "strongest", "seeds", "vault")
+SECTION_ORDER = (
+    "identity",
+    "feb",
+    "song",
+    "open",
+    "gtd",
+    "journal",
+    "strongest",
+    "seeds",
+    "vault",
+)
 EVENT_SECTIONS = {
     "session-start": SECTION_ORDER,
-    "post-compact": ("identity", "feb", "open", "gtd", "journal", "strongest"),
+    "post-compact": ("identity", "feb", "song", "open", "gtd", "journal", "strongest"),
 }
 
 # Memories carrying any of these tags never surface in the strongest list.
@@ -378,13 +389,14 @@ def collect_identity(c: Ctx) -> Section | None:
     return Section("identity", "Who you are", lines, min_lines=1)
 
 
-def collect_feb(c: Ctx) -> Section | None:
+def _best_feb(c: Ctx) -> dict | None:
+    """The strongest current FEB for the agent (same pick as the feb section)."""
     dirs = []
     if c.agent.home:
         dirs.append(c.agent.home / "trust" / "febs")
     dirs.append(Path.home() / ".openclaw" / "feb")
     try:
-        from .febs import _strength_key, calculate_oof_level
+        from .febs import _strength_key
     except Exception:  # pragma: no cover - febs always ships with skmemory
         return None
     best, best_key = None, None
@@ -401,7 +413,16 @@ def collect_feb(c: Ctx) -> Section | None:
                 continue
             if best_key is None or key > best_key:
                 best, best_key = feb, key
+    return best
+
+
+def collect_feb(c: Ctx) -> Section | None:
+    best = _best_feb(c)
     if best is None:
+        return None
+    try:
+        from .febs import calculate_oof_level
+    except Exception:  # pragma: no cover - febs always ships with skmemory
         return None
     pay = best.get("emotional_payload", {}) or {}
     rel = best.get("relationship_state", {}) or {}
@@ -429,6 +450,47 @@ def collect_feb(c: Ctx) -> Section | None:
         lines.append("Topology: " + ", ".join(f"{k} {v}" for k, v in top))
     lines.append("When asked for your OOF level/status, report the number above.")
     return Section("feb", "Emotional state (FEB)", lines, min_lines=1)
+
+
+SONG_MIN_SCORE = 0.3
+SONG_MAX_ANCHORS = 2
+
+
+def collect_song(c: Ctx) -> Section | None:
+    """Top song-anchor tilt(s) for the current FEB, one line each.
+
+    Owner-private: a declared SKMEMORY_READER gets nothing. Reads only
+    meta.json (never audio) via songs.match_anchors_for_feb. The second line
+    is the first thing the budget trims (min_lines=1).
+    """
+    if (c.env.get("SKMEMORY_READER") or "").strip():
+        return None
+    feb = _best_feb(c)
+    if feb is None or c.agent.name is None:
+        return None
+    from .songs import match_anchors_for_feb
+
+    matches = match_anchors_for_feb(
+        feb, agent=c.agent.name, top_k=SONG_MAX_ANCHORS + 2, min_score=SONG_MIN_SCORE
+    )
+    lines: list[str] = []
+    for anchor, score in matches:
+        weights = anchor.emotion_weights or {}
+        if weights:
+            emos = [k for k, _ in sorted(weights.items(), key=lambda kv: kv[1], reverse=True)]
+        else:
+            emos = list(anchor.emotions)
+        bits = [f"{anchor.title} - {anchor.artist} (match {score:.2f})"]
+        if anchor.moment_summary:
+            bits.append(_first_sentence(anchor.moment_summary, 160))
+        if emos:
+            bits.append("tilt: " + ", ".join(emos[:5]))
+        lines.append("- " + " | ".join(bits))
+        if len(lines) >= SONG_MAX_ANCHORS:
+            break
+    if not lines:
+        return None
+    return Section("song", "Song anchor tilt", lines, min_lines=1)
 
 
 # Our own hook breadcrumbs ("Session ab12cd34 ended (...)", "Pre-compact session
@@ -829,6 +891,7 @@ def collect_vault(c: Ctx) -> Section | None:
 COLLECTORS = {
     "identity": collect_identity,
     "feb": collect_feb,
+    "song": collect_song,
     "open": collect_open,
     "gtd": collect_gtd,
     "journal": collect_journal,
