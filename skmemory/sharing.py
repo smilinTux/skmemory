@@ -28,6 +28,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .audience import resolve_reader
 from .models import Memory, MemoryLayer
 
 logger = logging.getLogger("skmemory.sharing")
@@ -123,6 +124,7 @@ class MemorySharer:
         self,
         share_filter: ShareFilter,
         recipient: str = "",
+        reader: str | None = None,
     ) -> ShareBundle:
         """Select and package memories for sharing.
 
@@ -132,6 +134,10 @@ class MemorySharer:
         Args:
             share_filter: Selection criteria.
             recipient: Intended recipient identity.
+            reader: The recipient's reader ceiling (e.g. ``@public``). Combined
+                with the ``SKMEMORY_READER`` process ceiling. Memories the
+                reader cannot see are dropped, and links to such memories are
+                removed from the rest. Omit for an owner-to-owner bundle.
 
         Returns:
             ShareBundle: Package ready for encryption or transmission.
@@ -146,6 +152,12 @@ class MemorySharer:
             )
 
         memories = self._select_memories(share_filter)
+        scope = resolve_reader(reader)
+        if not scope.unrestricted:
+            memories = [m for m in memories if scope.allows(m.context_tag, m.tags)]
+            redact = getattr(self._store, "redact_links", None)
+            if callable(redact):
+                memories = [redact(m, reader) for m in memories]
         serialized = [m.model_dump(mode="json") for m in memories]
 
         checksum = hashlib.sha256(

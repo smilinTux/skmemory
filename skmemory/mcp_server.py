@@ -753,7 +753,7 @@ TOOL_READER_POLICY: dict[str, tuple[str, str]] = {
     "memory_store": (_FILTERED, "dedup only matches memories the reader can see"),
     "memory_save_session": (_FILTERED, "dedup only matches memories the reader can see"),
     "memory_pre_compact": (_FILTERED, "dedup only matches memories the reader can see"),
-    "memory_promote": (_FILTERED, "hidden id is not-found"),
+    "memory_promote": (_OWNER_ONLY, "a write: a declared reader, per-call or env, is refused"),
     "memory_forget": (_FILTERED, "hidden id is not-found"),
     "memory_export": (_OWNER_ONLY, ""),
     "memory_import": (_OWNER_ONLY, ""),
@@ -929,11 +929,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return _json_response(report.to_dict())
 
         elif name == "memory_promote":
+            if (refused := _owner_only(arguments, "memory_promote")) is not None:
+                return refused
             memory_id = arguments["memory_id"]
             target_str = arguments["target"]
             summary = arguments.get("summary", "")
-            if not store.reader_can_see(memory_id, arguments.get("reader")):
-                return _error_response(f"Memory not found: {memory_id}")
             target = _LAYER_MAP.get(target_str)
             if target is None:
                 return _error_response(f"Invalid target layer: {target_str}")

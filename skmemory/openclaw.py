@@ -172,7 +172,7 @@ class SKMemoryPlugin:
         mem = self.store.recall(memory_id)
         if mem is None:
             return None
-        return mem.model_dump()
+        return self.store.redact_links(mem).model_dump()
 
     def ritual(self) -> dict:
         """Perform the full rehydration ritual.
