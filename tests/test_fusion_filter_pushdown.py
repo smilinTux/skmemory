@@ -277,7 +277,8 @@ def test_legacy_path_filters_context_tag_with_overfetch(store, monkeypatch):
     store.vector = V()
     out = store.search("alpha", limit=2, context_tag="@public")
     assert [m.id for m in out] == ["pub"]
-    assert seen["limit"] == 6
+    # search() asks for a tier-cap pool of 3x limit, and the legacy path overfetches 3x of that
+    assert seen["limit"] == 18
 
 
 # ------------------------------------------- review fixes: real signatures, []
