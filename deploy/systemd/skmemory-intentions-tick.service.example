@@ -1,0 +1,11 @@
+# Example only, NOT installed by anything. Copy to ~/.config/systemd/user/,
+# set the tick host, then enable the timer by hand.
+# Alternative: a cron line  */5 * * * * sk-cron-run skmemory-intentions-tick -- skmemory intentions tick
+[Unit]
+Description=skmemory intentions time tick (fires due time intentions via sk-alert)
+
+[Service]
+Type=oneshot
+# Only the host named here delivers; every other host replicating the intentions dir no-ops.
+Environment=SKMEMORY_TICK_HOST=CHANGE-ME
+ExecStart=%h/.skenv/bin/skmemory intentions tick

@@ -401,7 +401,7 @@ def cli(
     # The operator facet (explain/observe/act) is store-free and must stay
     # hermetic: never build a MemoryStore (backends, embeddings) just to print
     # the operator contract or read fail-safe health probes.
-    if ctx.invoked_subcommand in ("operator", "hook", "hooks"):
+    if ctx.invoked_subcommand in ("operator", "hook", "hooks", "intentions"):
         ctx.obj["ai"] = None
         return
     if "store" not in ctx.obj:
@@ -3860,6 +3860,71 @@ def main() -> None:
     if sys.argv[1:2] not in (["hook"], ["hooks"]):
         _auto_register_once()
     cli()
+
+
+@cli.group("intentions")
+def intentions_group() -> None:
+    """Prospective memory: time ticks and resolving intentions (store-free, no embeddings)."""
+
+
+def _intention_store(base: str | None):
+    from .backends.sqlite_backend import DEFAULT_BASE_PATH
+    from .intentions import IntentionStore
+
+    return IntentionStore(base or DEFAULT_BASE_PATH)
+
+
+@intentions_group.command("tick")
+@click.option("--base", default=None, help="Memory base dir (default: the active agent's memory)")
+@click.option(
+    "--tick-host", default=None, help="Only this host runs the tick (env SKMEMORY_TICK_HOST)"
+)
+@click.option("--any-host", is_flag=True, help="Run without a tick host (single-host nodes only)")
+@click.option(
+    "--max-per-tick", type=int, default=5, show_default=True, help="Alerts per tick, oldest first"
+)
+def intentions_tick(
+    base: str | None, tick_host: str | None, any_host: bool, max_per_tick: int
+) -> None:
+    """Fire due time intentions through sk-alert (run from sk-cron-run every 5 minutes)."""
+    from .intention_tick import run_tick
+
+    store = _intention_store(base)
+    try:
+        res = run_tick(store, tick_host=tick_host, any_host=any_host, max_per_tick=max_per_tick)
+    finally:
+        store.close()
+    if res.skipped:
+        click.echo(f"tick skipped: {res.skipped}", err=True)
+        if res.skipped.startswith("no tick host"):
+            raise SystemExit(2)
+        return
+    click.echo(
+        f"fired {len(res.fired)}, delivery failed {len(res.failed)}, remaining {res.remaining}"
+    )
+    for iid in res.fired:
+        click.echo(f"  fired {iid}")
+    for iid in res.failed:
+        click.echo(f"  FAILED {iid} (stays armed for the next tick)")
+    if res.failed:
+        raise SystemExit(1)
+
+
+@intentions_group.command("done")
+@click.argument("intention_id")
+@click.option("--base", default=None, help="Memory base dir")
+def intentions_done(intention_id: str, base: str | None) -> None:
+    """Mark an intention done (the resolve hint in a tick alert)."""
+    store = _intention_store(base)
+    try:
+        res = store.apply(intention_id, "done")
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        store.close()
+    if res is None:
+        raise click.ClickException(f"intention not found: {intention_id}")
+    click.echo(f"{intention_id}: {res.state}")
 
 
 if __name__ == "__main__":
