@@ -500,3 +500,29 @@ def test_pg_near_sql_runs_on_throwaway_db():
     with pg._connection().cursor() as cur:  # read-only SQL: must parse and execute
         cur.execute(para.NEAR_SQL, ("none", "lumina", "lumina", "none", 0.05))
         assert cur.fetchall() == []
+
+
+@pytest.mark.parametrize(
+    "a,b",
+    [
+        ("certificate", "certificates"),
+        ("service", "services"),
+        ("cache", "caches"),
+        ("database", "databases"),
+        ("update", "updated"),
+        ("update", "updating"),
+        ("updated", "updating"),
+        ("deploy", "deployed"),
+        ("deploy", "deploying"),
+    ],
+)
+def test_stem_pairs_meet(a, b):
+    assert para.stem(a) == para.stem(b)
+
+
+def test_e_word_no_longer_leaks_past_overlap_check():
+    df = para.CorpusDF.from_texts(["x y z"] * 100)
+    assert (
+        para.overlap_reason("what certificate expired", "Renewals", "certificates renewed", df)
+        == "rare_stem"
+    )

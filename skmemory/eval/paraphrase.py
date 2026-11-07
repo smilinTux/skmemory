@@ -86,7 +86,12 @@ def stem(word: str) -> str:
         return w
     for suf in _SUFFIXES:
         if w.endswith(suf) and len(w) - len(suf) >= 3:
-            return w[: -len(suf)] + ("y" if suf in ("ies", "ied") else "")
+            w = w[: -len(suf)] + ("y" if suf in ("ies", "ied") else "")
+            break
+    # Normalise the silent -e AFTER suffix removal so certificate and certificates
+    # (cert-ificat-e / cert-ificat-es) meet at the same stem.
+    if w.endswith("e") and len(w) - 1 >= 4:
+        w = w[:-1]
     return w
 
 
