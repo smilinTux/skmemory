@@ -1,0 +1,1 @@
+- **Outcome ledger (SKMEM-P4-01).** New `skmemory.ledger` with append-only per-host per-month JSONL under `ledger/`, merge-on-read dedupe by stable event id, a rebuildable `ledger_events` table, `score()` with 90-day half-life and 4x harm weight, anti-pattern and served-never-followed flags, and `skmemory ledger top`.
