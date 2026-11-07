@@ -640,11 +640,16 @@ def recall(ctx: click.Context, memory_id: str) -> None:
 @cli.command()
 @click.argument("query")
 @click.option("--limit", type=int, default=10)
+@click.option(
+    "--reader",
+    default=None,
+    help="Audience the results are for (@public, @work:x, channel:<id>). Omit for the owner.",
+)
 @click.pass_context
-def search(ctx: click.Context, query: str, limit: int) -> None:
+def search(ctx: click.Context, query: str, limit: int, reader: str | None) -> None:
     """Search memories by text or meaning."""
     store: MemoryStore = ctx.obj["store"]
-    results = store.search(query, limit=limit, record_access=True)
+    results = store.search(query, limit=limit, record_access=True, reader=reader)
 
     if not results:
         click.echo("No memories found.")

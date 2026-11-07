@@ -17,6 +17,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
 from .agents import get_agent_paths
+from .audience import resolve_reader
 from .backends.base import BaseBackend
 from .backends.file_backend import FileBackend
 from .backends.skgraph_backend import SKGraphBackend
@@ -975,6 +976,7 @@ class MemoryStore:
         source: str | None = None,
         context_tag: str | list[str] | None = None,
         record_access: bool = False,
+        reader: str | None = None,
     ) -> list[Memory]:
         """Search memories by text.
 
@@ -997,10 +999,42 @@ class MemoryStore:
                 Background searches (auto-context, novelty, briefs, hooks)
                 must leave it False so search popularity never drives
                 promotion.
+            reader: Who is asking, see ``audience.resolve_reader`` for the
+                grammar (``@public``, ``@work:x``, ``channel:<id>``, ...).
+                ``None`` is the owner, which keeps local owner sessions
+                unchanged, UNLESS ``SKMEMORY_READER`` declares the process a
+                non-owner (that env is a ceiling a per-call reader can only
+                narrow). A declared reader is enforced in every arm and fails
+                closed: an unparseable reader is ``@public``.
 
         Returns:
             list[Memory]: Matching memories ranked by relevance.
         """
+        scope = resolve_reader(reader)
+        if not scope.unrestricted:
+            return self._search_as_reader(
+                query,
+                scope,
+                limit,
+                tags=tags,
+                layer=layer,
+                source=source,
+                context_tag=context_tag,
+                record_access=record_access,
+            )
+        return self._search_unscoped(
+            query,
+            limit,
+            tags=tags,
+            layer=layer,
+            source=source,
+            context_tag=context_tag,
+            record_access=record_access,
+        )
+
+    def _search_unscoped(
+        self, query, limit, *, tags, layer, source, context_tag, record_access=False
+    ) -> list[Memory]:
         query = sanitize_query(query)
 
         if self._fusion_enabled():
@@ -1042,6 +1076,38 @@ class MemoryStore:
         if record_access:
             self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         return results
+
+    def _search_as_reader(
+        self, query, scope, limit, *, tags, layer, source, context_tag, record_access=False
+    ) -> list[Memory]:
+        """Search for a declared (non-owner) reader.
+
+        The allowed ``context_tag`` set is pushed into every arm (intersected
+        with any explicit ``context_tag``), and the reader's never-share tag
+        exclusions are applied to the hydrated rows, with an overfetch so the
+        exclusion does not silently shorten the page.
+        """
+        allowed = scope.allowed_tags
+        if allowed is not None:
+            if context_tag is not None:
+                wanted = {context_tag} if isinstance(context_tag, str) else set(context_tag)
+                allowed = allowed & wanted
+            if not allowed:
+                return []
+            ctx: str | list[str] | None = sorted(allowed)
+        else:
+            ctx = context_tag
+        fetch = limit * 3 if scope.exclusions else limit
+        rows = self._search_unscoped(
+            query, fetch, tags=tags, layer=layer, source=source, context_tag=ctx
+        )
+        # Last gate: re-check every hydrated row against the full scope, so a
+        # backend that ignored the pushed filter still cannot leak.
+        kept = [m for m in rows if scope.allows(m.context_tag, m.tags)][:limit]
+        if record_access:
+            # Count only what the reader was actually given.
+            self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
+        return kept
 
     def _fusion_enabled(self) -> bool:
         """Whether multi-arm fusion should handle ``search()``.
@@ -1095,6 +1161,10 @@ class MemoryStore:
         record_access: bool = False,
     ) -> list[Memory] | tuple[list[Memory], FusionResult] | None:
         """Search by fusing every retrieval arm this store actually has.
+
+        This is the UNSCOPED primitive: it enforces ``context_tag`` but knows
+        nothing about readers. Reader enforcement lives in :meth:`search`; a
+        caller serving a non-owner must go through that, not here.
 
         Four arms, run independently and merged by rank-depth interleaving
         (see :mod:`skmemory.fusion` for the measurements behind that choice):
