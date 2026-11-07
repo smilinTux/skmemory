@@ -51,6 +51,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+from skmemory.eval import class_bench
 from skmemory.eval.fusion_bench import run_benchmark as run_fusion_benchmark
 from skmemory.eval.groundedness_scorer import (
     lexical_overlap_judge,
@@ -151,10 +152,16 @@ def collect_metrics() -> dict:
     # so this is re-proved rather than inherited.
     fusion_leaks = sum(int(d["leak_count"]) for d in fusion["strategies"].values())
 
+    # Per-class baselines over corpus-v1/queries-v1 (SKMEM-P1-02). Gated per
+    # class AND per query against each query's own gate_recall_at_5.
+    classes = class_bench.run()
+    metrics.update(class_bench.flat_metrics(classes))
+
     return {
         "metrics": metrics,
-        "leak_count": int(retrieval["leak_count"]) + fusion_leaks,
+        "leak_count": int(retrieval["leak_count"]) + fusion_leaks + int(classes["leak_count"]),
         "leak_count_unfiltered": int(retrieval["leak_count_unfiltered"]),
+        "class_gate_failures": classes["failures"],
     }
 
 
@@ -200,6 +207,18 @@ def compare(
                 f"{name}: {cur_val:.6f} < baseline {base_val:.6f} (drop {base_val - cur_val:.6f})"
             )
 
+    # Per-query gate (gate_recall_at_5): a candidate query below its gate is a
+    # regression unless the baseline records it as a KNOWN failure with its real
+    # number. Known failures stay protected by the per-query metric floor above,
+    # so they cannot get worse either.
+    known = {f["id"] for f in baseline.get("class_gate_failures", [])}
+    for f in current.get("class_gate_failures", []):
+        if f["id"] not in known:
+            regressions.append(
+                f"{f['id']} ({f['class']}): {f['metric']} {f['value']:.6f} < gate "
+                f"{f['gate']:.6f} and not a recorded known failure"
+            )
+
     # HARD privacy gate: any leak is a regression, independent of the baseline.
     leak = current.get("leak_count", 0)
     if leak and leak > 0:
@@ -230,6 +249,7 @@ def _baseline_document(metrics: dict) -> dict:
         "metrics": metrics["metrics"],
         "leak_count": metrics["leak_count"],
         "leak_count_unfiltered": metrics["leak_count_unfiltered"],
+        "class_gate_failures": metrics.get("class_gate_failures", []),
     }
 
 
