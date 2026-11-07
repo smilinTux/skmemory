@@ -321,6 +321,15 @@ class AGEGraphBackend:
             self._conn_obj = None
             return None
 
+    def reset_connection(self) -> None:
+        """Drop the cached connection so the next query opens a fresh session."""
+        conn, self._conn_obj = self._conn_obj, None
+        try:
+            if conn is not None and not conn.closed:
+                conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _safe_dsn(self) -> str:
         """DSN with any password redacted, for logging/health output."""
         return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", self.dsn)
@@ -352,6 +361,11 @@ class AGEGraphBackend:
         """
         if self.graph is None:
             raise GraphTransportError("AGE graph disabled: invalid graph name")
+        if "$$" in query:
+            # The body is wrapped in $$...$$; a literal $$ would end it early.
+            # Every caller passes a static body (values travel in ``params``),
+            # so this is a tripwire against a future f-string interpolation.
+            raise GraphTransportError("cypher body must not contain '$$'")
         conn = self._conn()
         if conn is None:
             raise GraphTransportError(f"AGE connection unavailable ({self._safe_dsn()})")

@@ -1006,6 +1006,8 @@ def graph_repair_lineage(do_apply: bool, as_json: bool) -> None:
         raise SystemExit(1) from exc
     if as_json:
         click.echo(json.dumps(stats, indent=2, sort_keys=True, default=str))
+        if stats["errors"]:
+            raise SystemExit(1)
         return
     mode = "DRY-RUN" if stats["dry_run"] else "APPLY"
     click.echo(
@@ -1016,7 +1018,17 @@ def graph_repair_lineage(do_apply: bool, as_json: bool) -> None:
     if stats["dry_run"]:
         click.echo("  dry-run: no edges changed (use --apply)")
     else:
-        click.echo(f"  rewritten={stats['rewritten']} backup={stats['backup_path']}")
+        click.echo(
+            f"  rewritten={stats['rewritten']} errors={stats['errors']} "
+            f"backup={stats['backup_path']}"
+        )
+        for sample in stats["error_samples"]:
+            click.echo(
+                f"  error {sample['child']} -> {sample['parent']}: {sample['error']}", err=True
+            )
+        if stats["errors"]:
+            click.echo("  rerun --apply to retry the failed rows (idempotent)")
+            raise SystemExit(1)
 
 
 @cli.command("novelty")

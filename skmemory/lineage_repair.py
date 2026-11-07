@@ -31,7 +31,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .backends.age_backend import PARENT_LINEAGE_EDGES, AGEGraphBackend
+from .backends.age_backend import PARENT_LINEAGE_EDGES, AGEGraphBackend, GraphTransportError
 from .models import RELATION_SUPERSEDES, parent_relation_of
 
 logger = logging.getLogger(__name__)
@@ -76,8 +76,12 @@ def repair_lineage_edges(
         ``rewritten``, ``backup_path`` and ``candidates`` (child/parent/edge).
 
     Raises:
-        GraphTransportError: the graph is unreachable or a rewrite failed
-        (remaining rewrites are aborted; the backup already exists).
+        GraphTransportError: the graph is unreachable before any rewrite.
+        A failing ROW never aborts the run: it is retried once on a fresh
+        connection, then counted in ``errors`` (first few in ``error_samples``)
+        and the run continues. A failed row leaves its SUPERSEDES edge, plus at
+        most an extra lineage edge (merge runs before delete), so a rerun
+        converges: MERGE is idempotent and only remaining edges are candidates.
     """
     backend.probe_connection()
     flat = _flat_parents(mem_dir)
@@ -105,6 +109,8 @@ def repair_lineage_edges(
         "kept_explicit": kept,
         "skipped_unknown": skipped,
         "rewritten": 0,
+        "errors": 0,
+        "error_samples": [],
         "backup_path": None,
         "candidates": candidates,
     }
@@ -119,6 +125,27 @@ def repair_lineage_edges(
     stats["backup_path"] = str(path)
 
     for cand in candidates:
-        backend.convert_supersedes_to_lineage(cand["child"], cand["parent"], cand["to"])
-        stats["rewritten"] += 1
+        try:
+            _convert_with_retry(backend, cand)
+            stats["rewritten"] += 1
+        except GraphTransportError as exc:
+            stats["errors"] += 1
+            logger.warning(
+                "lineage repair: %s -> %s failed: %s", cand["child"], cand["parent"], exc
+            )
+            if len(stats["error_samples"]) < 20:
+                stats["error_samples"].append(
+                    {"child": cand["child"], "parent": cand["parent"], "error": str(exc)[:300]}
+                )
     return stats
+
+
+def _convert_with_retry(backend, cand: dict) -> None:
+    """Convert one edge; on a transport error retry once on a fresh connection."""
+    try:
+        backend.convert_supersedes_to_lineage(cand["child"], cand["parent"], cand["to"])
+    except GraphTransportError:
+        reset = getattr(backend, "reset_connection", None)
+        if callable(reset):
+            reset()
+        backend.convert_supersedes_to_lineage(cand["child"], cand["parent"], cand["to"])
