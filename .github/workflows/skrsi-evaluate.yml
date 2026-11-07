@@ -1,0 +1,38 @@
+name: skrsi-evaluate
+
+# Advisory SKRSI evidence on retrieval changes. NOT a required check: it never
+# fails the PR and must not be added to branch protection. It runs the offline,
+# synthetic class bench on the PR head and on the base, and comments the result.
+# evidence_class is synthetic, so SKRSI caps this at inconclusive by contract.
+#
+# Merge order: smilinTux/skrsi PR 5 (the reusable workflow and builder) first.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "skmemory/backends/pgvector_backend.py"
+      - "skmemory/endpoint_selector.py"
+      - "skmemory/audience.py"
+      - "skmemory/fusion.py"
+      - "skmemory/rerank.py"
+      - "skmemory/eval/**"
+      - "skrsi/**"
+      - ".github/workflows/skrsi-evaluate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: smilinTux/skrsi/.github/workflows/evaluate.yml@main
+    with:
+      target_file: skrsi/targets/skmemory-retrieval.json
+      evidence_class: synthetic
+      setup_command: python -m pip install -e .
+      bench_command: >-
+        python -m skmemory.eval.class_bench --json > "$RUNNER_TEMP/class_bench.json" &&
+        python "$GITHUB_WORKSPACE/skrsi/class_bench_metrics.py" "$RUNNER_TEMP/class_bench.json" "$SKRSI_METRICS_OUT"

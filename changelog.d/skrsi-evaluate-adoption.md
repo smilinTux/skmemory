@@ -1,0 +1,1 @@
+ci(skrsi): advisory `skrsi-evaluate` workflow runs `skmemory.eval.class_bench` on PRs touching retrieval paths and comments a SKRSI evaluation (evidence class synthetic, so capped at inconclusive). Not a required check; adds no merge gate. Depends on smilinTux/skrsi PR 5 landing first (SKRSI-02).
