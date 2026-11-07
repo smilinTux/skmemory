@@ -1370,7 +1370,7 @@ class AGEGraphBackend:
             )
             for row in self._rows_to_dicts(rows, ["id", "title", "layer", "vf", "vt"]):
                 rid = row["id"]
-                if not _window_open(row.pop("vf"), row.pop("vt"), ts):
+                if not _window_open(row.pop("vf", None), row.pop("vt", None), ts):
                     continue
                 if rid and rid not in merged:
                     row["distance"] = 1
@@ -1440,7 +1440,7 @@ class AGEGraphBackend:
             )
             for row in self._rows_to_dicts(rows, ["id", "title", "layer", "vf", "vt"]):
                 pid = row["id"]
-                if not _window_open(row.pop("vf"), row.pop("vt"), ts):
+                if not _window_open(row.pop("vf", None), row.pop("vt", None), ts):
                     continue
                 if not pid or pid in visited:
                     continue
