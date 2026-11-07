@@ -364,6 +364,7 @@ def _import_per_message(
                     + _detect_content_type(msg),
                     emotional=emotional,
                     source="telegram",
+                    source_tier="user-stated",
                     source_ref=f"telegram:{msg.get('id', '')}",
                     metadata={
                         "telegram_msg_id": msg.get("id"),
@@ -452,6 +453,7 @@ def _import_daily(
                     labels=unique_labels,
                 ),
                 source="telegram",
+                source_tier="user-stated",
                 source_ref=f"telegram:daily:{day}",
                 metadata={
                     "date": day,
@@ -558,6 +560,7 @@ def _import_catchup(
                 + _detect_content_type(msg),
                 emotional=emotional,
                 source="telegram",
+                source_tier="user-stated",
                 source_ref=f"telegram:{msg.get('id', '')}",
                 metadata={
                     "telegram_msg_id": msg.get("id"),
@@ -602,6 +605,7 @@ def _import_catchup(
                 labels=unique_labels,
             ),
             source="telegram",
+            source_tier="user-stated",
             source_ref=f"telegram:daily:{day}",
             metadata={
                 "date": day,
@@ -663,6 +667,7 @@ def _import_catchup(
                 labels=unique_labels,
             ),
             source="telegram",
+            source_tier="user-stated",
             source_ref=f"telegram:weekly:{week}",
             metadata={
                 "week": week,

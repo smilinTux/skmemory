@@ -52,11 +52,13 @@ from .models import (
     MemoryLayer,
     MemoryRole,
     SeedMemory,
+    SourceTier,
 )
 from .query_sanitizer import sanitize_query
 from .rerank import NoopReranker, RareTermReranker
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
 from .skseed_validation import annotate_truth_score, resolve_auto_validate
+from .tiers import apply_tier_cap, tier_for_source
 from .tombstones import write_tombstone
 from .validation import (
     PreWriteHook,
@@ -437,6 +439,7 @@ class MemoryStore:
         kind: MemoryKind | None = None,
         reader: str | None = None,
         supersedes_id: str | None = None,
+        source_tier: SourceTier | None = None,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -462,6 +465,9 @@ class MemoryStore:
                 memory is written, so the write cannot confirm hidden content
                 or return its id. The write-time comparison also never compares,
                 closes or returns a memory this reader cannot see.
+            source_tier: Provenance tier. None derives it from ``source`` with
+                :func:`skmemory.models.tier_for_source` (unknown labels are
+                ``self-generated``, the capped, conservative choice).
             supersedes_id: Explicit supersession: always honoured (after the reader
                 check), whatever the kind. The open head of that record's chain is
                 closed at this memory's valid_from.
@@ -494,6 +500,7 @@ class MemoryStore:
                 tags=tags,
                 emotional=emotional,
                 source=source,
+                source_tier=source_tier or tier_for_source(source),
                 source_ref=source_ref,
                 related_ids=related_ids,
                 metadata=metadata,
@@ -510,6 +517,7 @@ class MemoryStore:
                     tags=tags,
                     emotional=emotional,
                     source=source,
+                    source_tier=source_tier or tier_for_source(source),
                     source_ref=source_ref,
                     related_ids=related_ids,
                     metadata=metadata,
@@ -531,6 +539,7 @@ class MemoryStore:
             tags=tags or [],
             emotional=emotional or EmotionalSnapshot(),
             source=source,
+            source_tier=source_tier or tier_for_source(source),
             source_ref=source_ref,
             related_ids=related_ids or [],
             metadata=metadata,
@@ -832,6 +841,7 @@ class MemoryStore:
         metadata: dict | None = None,
         chunk_target: int = CHUNK_TARGET,
         chunk_overlap: int = CHUNK_OVERLAP,
+        source_tier: SourceTier | None = None,
     ) -> Memory:
         """Store a long-form document with decomposition-aware child chunks."""
         metadata = self._enrich_metadata(title, source, source_ref, tags, metadata)
@@ -869,6 +879,7 @@ class MemoryStore:
                 ),
                 emotional=emotional or EmotionalSnapshot(),
                 source=source,
+                source_tier=source_tier or tier_for_source(source),
                 source_ref=source_ref,
                 related_ids=[],
                 metadata={
@@ -902,6 +913,7 @@ class MemoryStore:
             tags=_unique_list(base_tags + ["decomposed", "document-parent"]),
             emotional=emotional or EmotionalSnapshot(),
             source=source,
+            source_tier=source_tier or tier_for_source(source),
             source_ref=source_ref,
             related_ids=all_related,
             metadata={
@@ -969,6 +981,7 @@ class MemoryStore:
         source_ref: str = "",
         related_ids: list[str] | None = None,
         metadata: dict | None = None,
+        source_tier: SourceTier | None = None,
     ) -> Memory:
         """Split oversized content into parent (summary) + child (chunk) memories.
 
@@ -999,6 +1012,7 @@ class MemoryStore:
                 tags=(tags or []) + ["content-chunk"],
                 emotional=emotional or EmotionalSnapshot(),
                 source=source,
+                source_tier=source_tier or tier_for_source(source),
                 source_ref=source_ref,
                 metadata={
                     **(metadata or {}),
@@ -1024,6 +1038,7 @@ class MemoryStore:
             tags=(tags or []) + ["content-split-parent"],
             emotional=emotional or EmotionalSnapshot(),
             source=source,
+            source_tier=source_tier or tier_for_source(source),
             source_ref=source_ref,
             related_ids=all_related,
             metadata={

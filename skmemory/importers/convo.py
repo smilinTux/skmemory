@@ -44,6 +44,7 @@ from ..admission import (
     recover,
 )
 from ..models import EmotionalSnapshot, MemoryLayer, MemoryRole
+from ..tiers import tier_for_explicit_store
 
 logger = logging.getLogger(__name__)
 
@@ -532,6 +533,7 @@ def import_conversation(
                 role=role,
                 tags=list(row.get("tags") or []) + ["admission:refused"],
                 source=recovered,
+                source_tier="self-generated",
                 source_ref=row_id,
                 metadata=metadata,
             )
@@ -553,6 +555,7 @@ def import_conversation(
                 labels=list(row.get("emotional_labels") or []),
             ),
             source=recovered,
+            source_tier=tier_for_explicit_store(recovered),
             source_ref=row_id,
             metadata=metadata,
         )

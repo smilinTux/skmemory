@@ -138,6 +138,7 @@ def handle_stop() -> None:
                     layer=MemoryLayer.SHORT,
                     tags=["auto-extract", mem.type, f"session:{session_id}"],
                     source="claude-code-hook",
+                    source_tier="self-generated",
                     source_ref=f"session:{session_id}",
                     metadata={
                         "extraction_confidence": mem.confidence,
@@ -191,6 +192,7 @@ def handle_precompact() -> None:
                 layer=MemoryLayer.SHORT,
                 tags=["pre-compact", "auto-save", f"session:{session_id}"],
                 source="claude-code-hook",
+                source_tier="self-generated",
                 source_ref=f"session:{session_id}",
                 metadata={"hook": "precompact", "original_length": len(conversation)},
             )
