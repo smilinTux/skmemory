@@ -993,7 +993,7 @@ class SKGraphBackend:
             for json_file in tier_dir.glob("*.json"):
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
-                    memory = Memory.model_validate(data)
+                    memory = Memory.from_stored(data)
                     if self.index_memory(memory):
                         stats["indexed"] += 1
                     else:

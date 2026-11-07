@@ -318,6 +318,21 @@ class TestIndexAndGet:
         mem = make_memory(title="Index Test")
         assert backend.index_memory(mem) is True
 
+    def test_index_mirrors_schema_v2_properties(self, backend):
+        mem = make_memory(title="V2 Props")
+        mem.kind = "procedure"
+        mem.outcome = "lesson"
+        mem.source_tier = "web"
+        mem.supersedes_id = "older-id"
+        assert backend.index_memory(mem) is True
+        node = backend.get(mem.id)
+        assert node["kind"] == "procedure"
+        assert node["outcome"] == "lesson"
+        assert node["source_tier"] == "web"
+        assert node["supersedes_id"] == "older-id"
+        assert node["schema_version"] == 2
+        assert node["event_at"] == mem.created_at
+
     def test_index_then_get_round_trips_fields(self, backend):
         mem = make_memory(
             title="Round Trip",

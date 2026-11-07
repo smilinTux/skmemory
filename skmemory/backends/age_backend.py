@@ -936,6 +936,14 @@ class AGEGraphBackend:
             "tags": list(memory.tags),
             "metadata_json": json.dumps(memory.metadata or {}, default=str),
             "sync_hash": sync_hash,
+            "kind": memory.kind,
+            "outcome": memory.outcome,
+            "event_at": memory.event_at,
+            "valid_from": memory.valid_from,
+            "valid_to": memory.valid_to,
+            "supersedes_id": memory.supersedes_id,
+            "source_tier": memory.source_tier,
+            "schema_version": memory.schema_version,
         }
         query = (
             "MERGE (m:Memory {id: $id}) "
@@ -945,7 +953,11 @@ class AGEGraphBackend:
             "m.created_at = $created_at, m.updated_at = $updated_at, "
             "m.intensity = $intensity, m.valence = $valence, "
             "m.tags = $tags, m.metadata_json = $metadata_json, "
-            "m.sync_hash = $sync_hash "
+            "m.sync_hash = $sync_hash, "
+            "m.kind = $kind, m.outcome = $outcome, m.event_at = $event_at, "
+            "m.valid_from = $valid_from, m.valid_to = $valid_to, "
+            "m.supersedes_id = $supersedes_id, m.source_tier = $source_tier, "
+            "m.schema_version = $schema_version "
             "RETURN m"
         )
         rows = self._cypher(query, props, cols="m agtype")
@@ -2009,7 +2021,7 @@ class AGEGraphBackend:
                 if current is not None:
                     quarantine_invalid_flat_file(base, current, reason=str(exc))
                 return None
-            return Memory.model_validate(data)
+            return Memory.from_stored(data)
 
         # Pass 1: cheap. Hash bytes, skip what the graph already holds, and
         # order the rest new-first. Only (priority, name, path, hash) is kept,

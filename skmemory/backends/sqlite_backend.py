@@ -126,7 +126,15 @@ related_ids TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL,
 updated_at TEXT NOT NULL,
 file_path TEXT NOT NULL,
-content_hash TEXT NOT NULL DEFAULT ''
+content_hash TEXT NOT NULL DEFAULT '',
+kind TEXT NOT NULL DEFAULT 'episode',
+outcome TEXT,
+event_at TEXT,
+valid_from TEXT,
+valid_to TEXT,
+supersedes_id TEXT,
+source_tier TEXT NOT NULL DEFAULT 'self-generated',
+schema_version INTEGER NOT NULL DEFAULT 1
 );
 
 -- Core indexes
@@ -310,10 +318,38 @@ class SQLiteBackend(BaseBackend):
                     "content_hash",
                     "ALTER TABLE memories ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''",
                 ),
+                # Schema v2 (SKMEM-P3-01). Pre-existing rows are v1 rows, so
+                # schema_version defaults to 1 here; _index_memory always
+                # writes the real value for rows it touches.
+                (
+                    "kind",
+                    "ALTER TABLE memories ADD COLUMN kind TEXT NOT NULL DEFAULT 'episode'",
+                ),
+                ("outcome", "ALTER TABLE memories ADD COLUMN outcome TEXT"),
+                ("event_at", "ALTER TABLE memories ADD COLUMN event_at TEXT"),
+                ("valid_from", "ALTER TABLE memories ADD COLUMN valid_from TEXT"),
+                ("valid_to", "ALTER TABLE memories ADD COLUMN valid_to TEXT"),
+                ("supersedes_id", "ALTER TABLE memories ADD COLUMN supersedes_id TEXT"),
+                (
+                    "source_tier",
+                    "ALTER TABLE memories ADD COLUMN source_tier TEXT NOT NULL "
+                    "DEFAULT 'self-generated'",
+                ),
+                (
+                    "schema_version",
+                    "ALTER TABLE memories ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1",
+                ),
             ]
             for col, ddl in migrations:
                 if col not in existing:
-                    conn.execute(ddl)
+                    try:
+                        conn.execute(ddl)
+                    except sqlite3.OperationalError as e:
+                        # A concurrent opener may have added the column between
+                        # our PRAGMA and this ALTER. That is the desired end
+                        # state, not an error.
+                        if "duplicate column" not in str(e).lower():
+                            raise
             conn.commit()
 
             # Drop stale view so CREATE VIEW IF NOT EXISTS picks up new columns.
@@ -393,8 +429,11 @@ class SQLiteBackend(BaseBackend):
                     summary, content_preview, emotional_intensity,
                     emotional_valence, emotional_labels, cloud9_achieved,
                     parent_id, related_ids, created_at, updated_at,
-                    file_path, content_hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    file_path, content_hash,
+                    kind, outcome, event_at, valid_from, valid_to,
+                    supersedes_id, source_tier, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     layer = excluded.layer,
@@ -413,7 +452,15 @@ class SQLiteBackend(BaseBackend):
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at,
                     file_path = excluded.file_path,
-                    content_hash = excluded.content_hash
+                    content_hash = excluded.content_hash,
+                    kind = excluded.kind,
+                    outcome = excluded.outcome,
+                    event_at = excluded.event_at,
+                    valid_from = excluded.valid_from,
+                    valid_to = excluded.valid_to,
+                    supersedes_id = excluded.supersedes_id,
+                    source_tier = excluded.source_tier,
+                    schema_version = excluded.schema_version
                 """,
                 (
                     memory.id,
@@ -435,6 +482,14 @@ class SQLiteBackend(BaseBackend):
                     memory.updated_at,
                     str(file_path),
                     memory.content_hash(),
+                    memory.kind,
+                    memory.outcome,
+                    memory.event_at,
+                    memory.valid_from,
+                    memory.valid_to,
+                    memory.supersedes_id,
+                    memory.source_tier,
+                    memory.schema_version,
                 ),
             )
             conn.commit()
@@ -665,7 +720,7 @@ class SQLiteBackend(BaseBackend):
             for path in tier.glob("*.json"):
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
-                    Memory(**data)
+                    Memory.from_stored(data)
                 except Exception:  # noqa: BLE001
                     bad += 1
         return bad
@@ -677,7 +732,7 @@ class SQLiteBackend(BaseBackend):
 
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                return Memory(**data)
+                return Memory.from_stored(data)
             except (json.JSONDecodeError, Exception):
                 return None
 
@@ -695,7 +750,7 @@ class SQLiteBackend(BaseBackend):
         """
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            return Memory(**data)
+            return Memory.from_stored(data)
         except Exception as exc:  # noqa: BLE001
             key = str(path)
             if key not in self._unloadable_seen:
@@ -1214,7 +1269,7 @@ class SQLiteBackend(BaseBackend):
         count = 0
         for mem_data in data["memories"]:
             try:
-                memory = Memory(**mem_data)
+                memory = Memory.from_stored(mem_data)
                 file_path = self._file_path(memory)
                 assert_write_allowed(file_path)
                 # Durable flat write BEFORE indexing (card: sqlite-only
@@ -1557,7 +1612,7 @@ class SQLiteBackend(BaseBackend):
             for json_file in layer_dir.glob("*.json"):
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
-                    memory = Memory(**data)
+                    memory = Memory.from_stored(data)
                     self._index_memory(memory, json_file)
                     count += 1
                 except (json.JSONDecodeError, Exception):
@@ -1812,7 +1867,7 @@ class SQLiteBackend(BaseBackend):
             # Load the full memory from its flat file
             file_path = Path(row[0])
             if file_path.exists():
-                return Memory.model_validate_json(file_path.read_text())
+                return Memory.from_stored_json(file_path.read_text())
         except Exception as e:
             logger.warning("find_by_content_hash failed: %s", e)
         return None

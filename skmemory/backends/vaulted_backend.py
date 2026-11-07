@@ -293,7 +293,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
             if raw[: len(VAULT_HEADER)] == VAULT_HEADER:
                 raw = self._vault.decrypt(raw)
             data = json.loads(raw.decode("utf-8"))
-            return Memory(**data)
+            return Memory.from_stored(data)
         except Exception as e:
             logger.warning("vaulted_backend.py: %s", e)
             return None

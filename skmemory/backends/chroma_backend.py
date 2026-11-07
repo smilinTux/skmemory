@@ -262,7 +262,7 @@ class SKChromaBackend(BaseBackend):
             result = self._collection.get(ids=[memory_id], include=["documents"])
             if not result["documents"] or not result["documents"][0]:
                 return None
-            return Memory.model_validate_json(result["documents"][0])
+            return Memory.from_stored_json(result["documents"][0])
         except Exception as e:
             logger.warning("ChromaDB get failed for memory %s: %s", memory_id, e)
             return None
@@ -356,7 +356,7 @@ class SKChromaBackend(BaseBackend):
             for doc in result.get("documents") or []:
                 if doc:
                     try:
-                        memories.append(Memory.model_validate_json(doc))
+                        memories.append(Memory.from_stored_json(doc))
                     except Exception as e:
                         logger.warning("ChromaDB: skipping malformed memory document: %s", e)
                         continue
@@ -426,7 +426,7 @@ class SKChromaBackend(BaseBackend):
             for doc in results.get("documents", [[]])[0]:
                 if doc:
                     try:
-                        memories.append(Memory.model_validate_json(doc))
+                        memories.append(Memory.from_stored_json(doc))
                     except Exception as e:
                         logger.warning("ChromaDB: skipping malformed memory document: %s", e)
                         continue
@@ -476,7 +476,7 @@ class SKChromaBackend(BaseBackend):
                 if not doc:
                     continue
                 try:
-                    preview = Memory.model_validate_json(doc).content[:CONTENT_PREVIEW_LENGTH]
+                    preview = Memory.from_stored_json(doc).content[:CONTENT_PREVIEW_LENGTH]
                 except Exception:
                     preview = doc[:CONTENT_PREVIEW_LENGTH]
 
@@ -522,7 +522,7 @@ class SKChromaBackend(BaseBackend):
                 try:
                     raw = json_file.read_text(encoding="utf-8")
                     data = json.loads(raw)
-                    memory = Memory.model_validate(data)
+                    memory = Memory.from_stored(data)
                     flat_memory_ids.add(memory.id)
 
                     content_hash = memory.content_hash()
