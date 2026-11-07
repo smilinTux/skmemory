@@ -621,6 +621,10 @@ async def list_tools() -> list[Tool]:
                         "description": "ISO 8601 time, or 'in N days' / 'in N hours'.",
                     },
                     "channel": {"type": "string", "description": "Delivery channel hint."},
+                    "interval_s": {
+                        "type": "integer",
+                        "description": "Repeat every N seconds (re-arms after each fire).",
+                    },
                     "origin_memory_id": {
                         "type": "string",
                         "description": "Memory this reminder came from (optional).",
@@ -1203,7 +1207,11 @@ def _intention_tool(store: Any, name: str, arguments: dict) -> list[TextContent]
                 origin = arguments.get("origin_memory_id") or None
                 if origin:
                     _check_id(str(origin))
-            except ValueError as e:
+                interval = arguments.get("interval_s")
+                interval = int(interval) if interval not in (None, "") else None
+                if interval is not None and interval < 60:
+                    raise ValueError("interval_s must be at least 60 seconds")
+            except (ValueError, TypeError) as e:
                 return _error_response(str(e))
             i = Intention(
                 id=uuid.uuid4().hex[:16],
@@ -1212,6 +1220,7 @@ def _intention_tool(store: Any, name: str, arguments: dict) -> list[TextContent]
                 due_at=due,
                 channel=str(arguments.get("channel") or "inline"),
                 origin_memory_id=origin,
+                interval_s=interval,
             )
             ist.save(i)
             return _json_response({"id": i.id, "state": i.state, "due_at": due.isoformat()})

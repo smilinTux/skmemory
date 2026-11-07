@@ -48,7 +48,7 @@ import sqlite3
 import tempfile
 import time
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -118,6 +118,8 @@ class Intention(BaseModel):
     # time intentions
     due_at: datetime | None = None
     snooze_until: datetime | None = None
+    #: Repeat every this many seconds: a fire re-arms with ``due_at`` advanced.
+    interval_s: int | None = None
     # event intentions
     trigger_terms: list[str] = Field(default_factory=list)
     scope: dict[str, str] = Field(default_factory=dict)
@@ -136,6 +138,16 @@ class Intention(BaseModel):
     @classmethod
     def _tz(cls, v: Any) -> Any:
         return _aware(v)
+
+
+def _repeats(i: Intention, fires_after: int) -> bool:
+    return (
+        i.kind == "time"
+        and bool(i.interval_s)
+        and i.interval_s > 0
+        and i.due_at is not None
+        and (i.max_fires is None or fires_after < i.max_fires)
+    )
 
 
 def transition(
@@ -160,7 +172,17 @@ def transition(
     upd: dict[str, Any] = {"state": nxt}
     if event == "fire":
         upd["fires"] = intention.fires + 1
-        upd["last_fired_at"] = _aware(now) or datetime.now(timezone.utc)
+        fired_at = _aware(now) or datetime.now(timezone.utc)
+        upd["last_fired_at"] = fired_at
+        if _repeats(intention, upd["fires"]):
+            # Advance by whole intervals to the first slot strictly after now, so a
+            # long outage yields one fire, not a storm of catch-up fires.
+            step = intention.interval_s
+            due = intention.due_at
+            k = max(1, (fired_at - due) // timedelta(seconds=step) + 1)
+            upd["state"] = "armed"
+            upd["due_at"] = due + timedelta(seconds=step * k)
+            upd["snooze_until"] = None
     elif event == "snooze" and snooze_until is not None:
         upd["snooze_until"] = _aware(snooze_until)
     return intention.model_copy(update=upd)
