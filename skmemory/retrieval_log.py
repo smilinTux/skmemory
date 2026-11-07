@@ -19,9 +19,8 @@ from __future__ import annotations
 
 import atexit
 import contextlib
-import fcntl
-import contextlib
 import contextvars
+import fcntl
 import hashlib
 import json
 import logging
