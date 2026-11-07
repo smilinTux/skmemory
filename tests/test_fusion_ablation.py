@@ -15,9 +15,9 @@ def grid():
 
 
 def test_default_grid_is_full_cross_product(grid):
-    assert grid["affect_weights"] == [0.0, 0.25, 0.5]
+    assert grid["affect_weights"] == [0.0, 0.25, 0.5, 1.0]
     assert grid["channels"] == list(decay.CHANNELS)
-    assert len(grid["cells"]) == 12
+    assert len(grid["cells"]) == 16
     for cell in grid["cells"]:
         assert "affect" in cell["by_class"]
         assert set(cell["overall"]) >= {"recall@5", "mrr"}

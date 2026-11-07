@@ -91,7 +91,7 @@ target-version = ["py310"]
 [tool.ruff]
 line-length = 99
 target-version = "py310"
-extend-exclude = ["skmemory/eval/fixtures/gen_fixtures.py"]
+extend-exclude = ["skmemory/eval/fixtures/gen_fixtures.py", "skmemory/eval/fixtures/gen_affect_v2.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
