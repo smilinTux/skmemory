@@ -210,3 +210,102 @@ def test_cli_fts_backfill(tmp_path):
     assert res.exit_code == 0, res.output
     assert "Indexed 1" in res.output and "complete=True" in res.output
     assert backend.fts_status()["missing"] == 0
+
+
+def test_index_survives_external_vacuum_renumbering(tmp_path):
+    base = str(tmp_path / "m")
+    b = SQLiteBackend(base_path=base)
+    ms = [_mem(f"t{i}", f"vacword{i} common") for i in range(6)]
+    for m in ms:
+        b.save(m)
+    # Delete early rows so VACUUM renumbers the implicit memories.rowid.
+    for m in ms[:3]:
+        b.delete(m.id)
+    c = b._get_conn()
+    c.execute("VACUUM")
+    for m in ms[3:]:
+        n = m.title[1:]
+        assert [r.id for r in b.search_lexical_local(f"vacword{n}")] == [m.id]
+    assert {r.id for r in b.search_lexical_local("common")} == {m.id for m in ms[3:]}
+
+
+def test_lazy_backfill_skips_when_database_locked(tmp_path, monkeypatch):
+    import time
+
+    base = str(tmp_path / "m")
+    b = SQLiteBackend(base_path=base)
+    b.save(_mem("t", "lockword"))
+    c = b._get_conn()
+    c.execute("DELETE FROM memory_fts")
+    c.execute("DELETE FROM fts_meta")
+    c.commit()
+    other = sqlite3.connect(str(tmp_path / "m" / "index.db"), timeout=0.1)
+    other.execute("BEGIN IMMEDIATE")
+    try:
+        t0 = time.monotonic()
+        assert b.search_lexical_local("lockword") == []
+        assert time.monotonic() - t0 < 2.0  # not the 5s busy_timeout
+    finally:
+        other.rollback()
+        other.close()
+    assert len(b.search_lexical_local("lockword")) == 1  # converges after
+
+
+def test_fully_indexed_skips_anti_join(backend, monkeypatch):
+    backend.save(_mem("t", "doneword"))
+    calls = []
+    real = fts_local.backfill
+    monkeypatch.setattr(fts_local, "backfill", lambda *a, **k: calls.append(1) or real(*a, **k))
+    for _ in range(5):
+        backend.search_lexical_local("doneword")
+    assert len(calls) == 1
+
+
+def test_vault_vacuum_failure_does_not_raise(tmp_path, monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE memories(id TEXT PRIMARY KEY)")
+    fts_local.ensure_schema(conn)
+
+    class Wrapped:
+        def __init__(self, c):
+            self._c = c
+
+        def execute(self, sql, *a):
+            if sql == "VACUUM":
+                raise sqlite3.OperationalError("database is locked")
+            return self._c.execute(sql, *a)
+
+        def commit(self):
+            self._c.commit()
+
+    fts_local.drop(Wrapped(conn))  # must not raise
+
+
+def test_public_reader_never_gets_chef_only_via_local_arm(tmp_path, monkeypatch):
+    from skmemory.audience import READER_ENV
+
+    monkeypatch.delenv(READER_ENV, raising=False)
+    monkeypatch.delenv("SKMEMORY_SEARCH_FUSION", raising=False)
+    for fusion in ("off", "on"):
+        monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", fusion)
+        backend = SQLiteBackend(base_path=str(tmp_path / f"m{fusion}"))
+        store = MemoryStore(primary=backend, use_sqlite=False)
+        pub = _mem("pub", LONG_TAIL + "sharedneedle", context_tag="@public")
+        priv = _mem("priv", LONG_TAIL + "sharedneedle", context_tag="@chef-only")
+        backend.save(pub)
+        backend.save(priv)
+        got = {m.id for m in store.search("sharedneedle", reader="@public")}
+        assert got == {pub.id}
+        assert {m.id for m in store.search("sharedneedle")} == {pub.id, priv.id}
+
+
+def test_record_access_counts_only_local_arm_hits_returned(tmp_path, monkeypatch):
+    monkeypatch.delenv("SKMEMORY_SEARCH_FUSION", raising=False)
+    backend = SQLiteBackend(base_path=str(tmp_path / "m"))
+    store = MemoryStore(primary=backend, use_sqlite=False)
+    m = _mem("t", LONG_TAIL + "accessneedle", context_tag="@public")
+    backend.save(m)
+    store.search("accessneedle", record_access=False)
+    assert store.usage_counts([m.id])[m.id]["access_count"] == 0
+    store.search("accessneedle", record_access=True)
+    assert store.usage_counts([m.id])[m.id]["access_count"] == 1

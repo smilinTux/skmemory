@@ -40,24 +40,12 @@ _DDL = (
     "title, content, summary, tags, content='', contentless_delete=1, "
     "tokenize='unicode61 remove_diacritics 2')",
     "CREATE TABLE IF NOT EXISTS fts_meta ("
-    "rowid INTEGER PRIMARY KEY, content_hash TEXT NOT NULL DEFAULT '', "
-    "context_tag TEXT NOT NULL DEFAULT '')",
+    "rowid INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, "
+    "content_hash TEXT NOT NULL DEFAULT '', context_tag TEXT NOT NULL DEFAULT '')",
     "CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN "
-    "DELETE FROM memory_fts WHERE rowid = old.rowid; "
-    "DELETE FROM fts_meta WHERE rowid = old.rowid; END",
+    "DELETE FROM memory_fts WHERE rowid IN (SELECT rowid FROM fts_meta WHERE id = old.id); "
+    "DELETE FROM fts_meta WHERE id = old.id; END",
 )
-
-
-def fts5_available(conn: sqlite3.Connection) -> bool:
-    """Whether this SQLite build has FTS5 with contentless delete (3.43+)."""
-    try:
-        conn.execute(
-            "CREATE VIRTUAL TABLE temp._fts_probe USING fts5(a, content='', contentless_delete=1)"
-        )
-        conn.execute("DROP TABLE temp._fts_probe")
-        return True
-    except sqlite3.Error:
-        return False
 
 
 def ensure_schema(conn: sqlite3.Connection) -> bool:
@@ -89,7 +77,12 @@ def drop(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
     conn.commit()
     if existed:
-        conn.execute("VACUUM")
+        try:
+            conn.execute("VACUUM")
+        except sqlite3.Error as e:
+            # A locked database must not make opening the vault raise. The
+            # tables are already gone; only the freelist scrub is skipped.
+            logger.warning("fts_local: VACUUM after drop skipped: %s", e)
 
 
 def sanitize_match(query: str) -> str | None:
@@ -123,20 +116,29 @@ def _row_values(memory) -> tuple[str, str, str, str]:
 def index_memory(conn: sqlite3.Connection, memory, content_hash: str) -> None:
     """Index one memory's full text. Call inside the caller's transaction.
 
+    Keyed on the memory id, not ``memories.rowid`` (an implicit rowid that an
+    external VACUUM may renumber). The FTS rowid is ``fts_meta.rowid``, an
+    INTEGER PRIMARY KEY that VACUUM preserves.
+
     Raises sqlite3.Error; the caller decides whether that is fatal.
     """
-    row = conn.execute("SELECT rowid FROM memories WHERE id = ?", (memory.id,)).fetchone()
+    ctx = getattr(memory, "context_tag", "") or ""
+    row = conn.execute("SELECT rowid FROM fts_meta WHERE id = ?", (memory.id,)).fetchone()
     if row is None:
-        return
-    rid = row[0]
-    conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (rid,))
+        rid = conn.execute(
+            "INSERT INTO fts_meta(id, content_hash, context_tag) VALUES (?, ?, ?)",
+            (memory.id, content_hash, ctx),
+        ).lastrowid
+    else:
+        rid = row[0]
+        conn.execute(
+            "UPDATE fts_meta SET content_hash = ?, context_tag = ? WHERE rowid = ?",
+            (content_hash, ctx, rid),
+        )
+        conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (rid,))
     conn.execute(
         "INSERT INTO memory_fts(rowid, title, content, summary, tags) VALUES (?, ?, ?, ?, ?)",
         (rid, *_row_values(memory)),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO fts_meta(rowid, content_hash, context_tag) VALUES (?, ?, ?)",
-        (rid, content_hash, getattr(memory, "context_tag", "") or ""),
     )
 
 
@@ -144,7 +146,7 @@ def coverage(conn: sqlite3.Connection) -> dict:
     """Indexed vs total row counts, for health and the lazy-backfill decision."""
     total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
     indexed = conn.execute(
-        "SELECT COUNT(*) FROM memories m JOIN fts_meta f ON f.rowid = m.rowid"
+        "SELECT COUNT(*) FROM memories m JOIN fts_meta f ON f.id = m.id"
     ).fetchone()[0]
     return {"total": total, "indexed": indexed, "missing": total - indexed}
 
@@ -173,8 +175,8 @@ def backfill(
             if batch <= 0:
                 break
         rows = conn.execute(
-            "SELECT m.*, m.rowid AS _rid FROM memories m "
-            "LEFT JOIN fts_meta f ON f.rowid = m.rowid WHERE f.rowid IS NULL LIMIT ?",
+            "SELECT m.* FROM memories m "
+            "LEFT JOIN fts_meta f ON f.id = m.id WHERE f.id IS NULL LIMIT ?",
             (batch,),
         ).fetchall()
         if not rows:
@@ -187,8 +189,8 @@ def backfill(
                 logger.debug("fts_local: backfill could not load %s: %s", row["id"], e)
             if mem is None:
                 conn.execute(
-                    "INSERT OR REPLACE INTO fts_meta(rowid, content_hash) VALUES (?, 'unloadable')",
-                    (row["_rid"],),
+                    "INSERT OR REPLACE INTO fts_meta(id, content_hash) VALUES (?, 'unloadable')",
+                    (row["id"],),
                 )
                 skipped += 1
             else:
@@ -199,8 +201,7 @@ def backfill(
                 return {"indexed": done, "unloadable": skipped, "complete": False}
         conn.commit()
     left = conn.execute(
-        "SELECT COUNT(*) FROM memories m LEFT JOIN fts_meta f ON f.rowid = m.rowid "
-        "WHERE f.rowid IS NULL"
+        "SELECT COUNT(*) FROM memories m LEFT JOIN fts_meta f ON f.id = m.id WHERE f.id IS NULL"
     ).fetchone()[0]
     return {"indexed": done, "unloadable": skipped, "complete": left == 0}
 
@@ -243,8 +244,8 @@ def search_rows(
     params.append(limit)
     return conn.execute(
         "SELECT m.* FROM memory_fts "
-        "JOIN memories m ON m.rowid = memory_fts.rowid "
-        "JOIN fts_meta f ON f.rowid = m.rowid "
+        "JOIN fts_meta f ON f.rowid = memory_fts.rowid "
+        "JOIN memories m ON m.id = f.id "
         f"WHERE {' AND '.join(where)} "
         f"ORDER BY bm25(memory_fts, {_BM25_WEIGHTS}) LIMIT ?",
         params,

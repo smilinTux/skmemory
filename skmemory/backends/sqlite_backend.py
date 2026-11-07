@@ -1134,7 +1134,18 @@ class SQLiteBackend(BaseBackend):
                 results.append(mem)
         return results
 
+    #: Seconds between anti-join rechecks once the index is fully backfilled.
+    _FTS_RECHECK_S = 60.0
+    #: Lock wait for the lazy backfill; it skips rather than stalling a search.
+    _FTS_LAZY_LOCK_MS = 100
+
     def _lazy_fts_backfill(self, conn: sqlite3.Connection) -> None:
+        import time
+
+        now = time.monotonic()
+        done_at = getattr(self, "_fts_complete_at", None)
+        if done_at is not None and now - done_at < self._FTS_RECHECK_S:
+            return
         try:
             budget = float(os.environ.get("SKMEMORY_FTS_LAZY_BACKFILL_S", "0.15"))
         except ValueError:
@@ -1142,9 +1153,18 @@ class SQLiteBackend(BaseBackend):
         if budget <= 0:
             return
         try:
-            fts_local.backfill(conn, self._row_to_memory, budget_s=budget)
+            conn.execute(f"PRAGMA busy_timeout={self._FTS_LAZY_LOCK_MS}")
+            out = fts_local.backfill(conn, self._row_to_memory, budget_s=budget)
+            self._fts_complete_at = now if out["complete"] else None
         except sqlite3.Error as e:
-            logger.warning("sqlite_backend: lazy fts backfill failed: %s", e)
+            # Another writer holds the lock (or the write failed): skip, the
+            # search proceeds on whatever is already indexed.
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+            logger.debug("sqlite_backend: lazy fts backfill skipped: %s", e)
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_S * 1000)}")
 
     def fts_backfill(self, max_rows: int | None = None, budget_s: float | None = None) -> dict:
         """Explicitly index memories that have no FTS entry yet."""
@@ -1153,6 +1173,7 @@ class SQLiteBackend(BaseBackend):
         out = fts_local.backfill(
             self._get_conn(), self._row_to_memory, max_rows=max_rows, budget_s=budget_s
         )
+        self._fts_complete_at = None
         return {"enabled": True, **out}
 
     def fts_status(self) -> dict:
