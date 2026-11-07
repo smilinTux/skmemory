@@ -3931,3 +3931,39 @@ def profile_sync(service: tuple[str, ...], dry_run: bool) -> None:
     click.echo(
         f"\nRegistered {len(written)} profile(s) in {root / 'config/profile-registry.json'}"
     )
+
+
+@cli.group("ledger")
+def ledger_group() -> None:
+    """Skill outcome ledger (served, followed, effect)."""
+
+
+@ledger_group.command("top")
+@click.option("--limit", default=20, show_default=True, help="Rows to show")
+@click.option("--as-of", default=None, help="ISO timestamp to score at (default: now)")
+@click.option("--base", "base", default=None, help="Memory base dir (default: agent memories)")
+def ledger_top(limit: int, as_of: str | None, base: str | None) -> None:
+    """Rank skill versions by decayed net effect (harm weighted 4x)."""
+    from .ledger import Ledger
+
+    if base is None:
+        from .agents import get_agent_paths
+
+        try:
+            base = str(get_agent_paths()["base"] / "memory")
+        except ValueError as exc:
+            click.echo(f"No active agent memory profile: {exc}", err=True)
+            raise SystemExit(1) from exc
+    rows = Ledger(base).top(as_of, limit)
+    if not rows:
+        click.echo("No ledger events.")
+        return
+    click.echo(f"{'#':>2}  {'skill@version':<34} {'net':>7} {'follow':>6} {'srv':>4}  flags")
+    for s in rows:
+        flags = ["anti-pattern"] if s.anti_pattern else []
+        if s.flag:
+            flags.append(s.flag)
+        click.echo(
+            f"{s.rank:>2}  {s.key:<34} {s.net:>+7.2f} {s.follow_rate:>6.2f} {s.served:>4}  "
+            + ",".join(flags)
+        )
