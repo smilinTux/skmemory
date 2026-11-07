@@ -208,6 +208,15 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Filter results by source (e.g. 'manual', 'mcp', 'claude-code-hook').",
                     },
+                    "reader": {
+                        "type": "string",
+                        "description": (
+                            "Audience the results are for, e.g. '@public', '@community', "
+                            "'@work-circle', '@inner-circle', '@work:<x>' or 'channel:<id>'. "
+                            "Only returns memories that audience may see. Omit for the owner. "
+                            "Can only narrow a SKMEMORY_READER declared for the server process."
+                        ),
+                    },
                 },
                 "required": ["query"],
             },
@@ -471,6 +480,10 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Max tokens for results (default: 2000).",
                     },
+                    "reader": {
+                        "type": "string",
+                        "description": "Audience the results are for (see memory_search). Omit for the owner.",
+                    },
                 },
                 "required": ["keywords"],
             },
@@ -619,8 +632,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             tags = arguments.get("tags") or None
             layer = arguments.get("layer") or None
             source = arguments.get("source") or None
+            reader = arguments.get("reader")
             memories = store.search(
-                query, limit=limit, tags=tags, layer=layer, source=source, record_access=True
+                query,
+                limit=limit,
+                tags=tags,
+                layer=layer,
+                source=source,
+                record_access=True,
+                reader=reader,
             )
             return _json_response([_memory_dict(m) for m in memories])
 
@@ -819,7 +839,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             all_results: list[dict] = []
 
             for kw in keywords[:10]:  # cap at 10 keywords
-                results = store.search(kw, limit=10)
+                results = store.search(kw, limit=10, reader=arguments.get("reader"))
                 for m in results:
                     if m.id not in seen_ids:
                         seen_ids.add(m.id)

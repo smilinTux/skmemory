@@ -276,3 +276,130 @@ class AudienceResolver:
                     return False
 
         return True
+
+
+# ── Reader scope (search-path enforcement) ───────────────────────────────────
+#
+# ``AudienceResolver`` decides what a CHANNEL may see (used by the ritual).
+# ``ReaderScope`` is the same decision expressed for the search path: the exact
+# set of ``context_tag`` values a reader may receive, which every retrieval arm
+# can filter on, plus the never-share tag exclusions applied after hydration.
+#
+# Reader grammar (the string a caller declares):
+#
+#   None                     undeclared. The OWNER, unless SKMEMORY_READER is set.
+#   @chef / @chef-only /     the owner. No filter.
+#   owner
+#   @public, @community,     a trust level: sees context tags at or below it.
+#   @work-circle,
+#   @inner-circle
+#   @work:<x> / @inner:<x>   the level below it plus its own scoped tag only
+#                            (client isolation: @work:a never sees @work:b).
+#   channel:<id>             a configured channel: its members' MIN trust, its
+#                            own context_tag, and its members' never_share tags.
+#                            An unknown channel or one with no members is
+#                            @public (NOT the ritual's @chef-only fallback,
+#                            which for a reader means "sees everything").
+#   anything else            @public, with a warning. A declared reader that
+#                            cannot be parsed never widens access.
+#
+# SKMEMORY_READER declares the process-wide reader and is a CEILING: a per-call
+# reader can only narrow it, never widen it, so a prompt-injected tool argument
+# cannot escalate a non-owner process.
+
+READER_ENV = "SKMEMORY_READER"
+
+_OWNER_READERS = frozenset({"@chef", "@chef-only", "owner"})
+
+
+@dataclass(frozen=True)
+class ReaderScope:
+    """What a declared reader may receive from search.
+
+    Attributes:
+        allowed_tags: Exact ``context_tag`` values permitted, or ``None`` for
+            unrestricted (the owner).
+        exclusions: Memory tags that must never reach this reader.
+        label: The reader as declared, for logs.
+    """
+
+    allowed_tags: frozenset[str] | None = None
+    exclusions: frozenset[str] = frozenset()
+    label: str = "owner"
+
+    @property
+    def unrestricted(self) -> bool:
+        return self.allowed_tags is None and not self.exclusions
+
+    def narrow(self, other: ReaderScope) -> ReaderScope:
+        """The intersection of two scopes (most restrictive of each dimension)."""
+        if self.allowed_tags is None:
+            allowed = other.allowed_tags
+        elif other.allowed_tags is None:
+            allowed = self.allowed_tags
+        else:
+            allowed = self.allowed_tags & other.allowed_tags
+        return ReaderScope(
+            allowed_tags=allowed,
+            exclusions=self.exclusions | other.exclusions,
+            label=f"{self.label}&{other.label}",
+        )
+
+    def allows(self, context_tag: str | None, tags: list[str] | None = None) -> bool:
+        """Whether a memory with this context tag and tags may reach the reader."""
+        if self.allowed_tags is not None and (context_tag or "") not in self.allowed_tags:
+            return False
+        return not (self.exclusions and any(t in self.exclusions for t in (tags or [])))
+
+
+def _tags_up_to(level: AudienceLevel) -> set[str]:
+    return {tag for tag, lvl in _TAG_TO_LEVEL.items() if lvl <= level}
+
+
+def resolve_reader(reader: str | None, resolver: AudienceResolver | None = None) -> ReaderScope:
+    """Turn a declared reader into a :class:`ReaderScope`.
+
+    Combines the per-call *reader* with the ``SKMEMORY_READER`` environment
+    ceiling. Both absent means the owner (today's behaviour for local stdio MCP
+    and CLI sessions).
+    """
+    import os
+
+    env = (os.environ.get(READER_ENV) or "").strip()
+    scope = _scope_for(reader, resolver) if reader is not None else ReaderScope()
+    if env:
+        scope = _scope_for(env, resolver).narrow(scope)
+    return scope
+
+
+def _scope_for(reader: str, resolver: AudienceResolver | None) -> ReaderScope:
+    if not isinstance(reader, str):
+        logger.warning("Non-string reader %r, treating as @public", type(reader).__name__)
+        return ReaderScope(frozenset(_tags_up_to(AudienceLevel.PUBLIC)), label="@public(unparsed)")
+    name = reader.strip()
+    low = name.casefold()
+    if low in _OWNER_READERS:
+        return ReaderScope(label=low)
+    if low in _TAG_TO_LEVEL:
+        return ReaderScope(frozenset(_tags_up_to(AudienceLevel(_TAG_TO_LEVEL[low]))), label=low)
+    for prefix, base in (
+        ("@work:", AudienceLevel.WORK_CIRCLE),
+        ("@inner:", AudienceLevel.INNER_CIRCLE),
+    ):
+        if low.startswith(prefix) and len(low) > len(prefix):
+            below = AudienceLevel(base - 1)
+            return ReaderScope(frozenset(_tags_up_to(below) | {low}), label=low)
+    if low.startswith("channel:") and len(low) > len("channel:"):
+        # channel ids are case-sensitive in the config; use the declared spelling
+        channel_id = name.split(":", 1)[1]
+        res = resolver or AudienceResolver()
+        known = channel_id in res._config.get("channels", {})
+        profile = res.resolve_audience(channel_id)
+        if not known or not profile.members:
+            return ReaderScope(frozenset(_tags_up_to(AudienceLevel.PUBLIC)), label=low)
+        allowed = _tags_up_to(profile.min_trust)
+        if profile.context_tag and tag_to_level(profile.context_tag) <= profile.min_trust:
+            allowed.add(profile.context_tag)
+        return ReaderScope(frozenset(allowed), frozenset(profile.exclusions), label=low)
+    logger.warning("Unrecognised reader %r, treating as @public", reader)
+    return ReaderScope(frozenset(_tags_up_to(AudienceLevel.PUBLIC)), label="@public(unparsed)")
