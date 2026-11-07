@@ -91,8 +91,8 @@ def test_natural_route_pins_vector_head_then_fills_with_lexical():
         pin_arms=("lexical_local",),
         route=route_query("why is the sync slow"),
     )
-    assert r.ids[:2] == ["v1", "v2"] and r.route == "natural"
-    assert "l1" in r.ids[:4]
+    assert r.ids[:4] == ["v1", "v2", "v3", "v4"] and r.route == "natural"
+    assert r.ids[4] == "l1"
 
 
 def test_natural_route_without_vector_degrades_to_lexical_pin():
@@ -153,3 +153,54 @@ def test_natural_route_keeps_vector_order_over_lexical_votes():
     )
     assert r.ids[:3] == ["target", "v2", "v3"]
     assert "d1" in r.ids[:6]  # other arms still fill
+
+
+# SKMEM-P1-09 (natural route): fill arms must not displace vector ranks 4 and 5.
+def _displacement_arms():
+    # vector's hits sit at ranks 4 and 5; every other arm's champions would
+    # take head slots in the rank-depth interleave fill.
+    return [
+        ArmOutcome("semantic", ("v1", "v2", "v3", "hit4", "v5", "v6")),
+        ArmOutcome("lexical", ("lx1", "lx2", "lx3")),
+        ArmOutcome("lexical_local", ("ll1", "ll2", "ll3")),
+        ArmOutcome("temporal", ("t1", "t2")),
+    ]
+
+
+def test_natural_route_top5_keeps_vector_top4_and_one_lexical_slot():
+    r = fuse(
+        _displacement_arms(),
+        limit=20,
+        strategy="pinned_rrf",
+        pin_arms=("lexical", "lexical_local"),
+        route=route_query("why is the sync slow"),
+    )
+    assert r.route == "natural"
+    assert r.ids[:4] == ["v1", "v2", "v3", "hit4"]
+    # slot 5 is the best lexical hit, preferring lexical_local (FTS5)
+    assert r.ids[4] == "ll1"
+    assert "v5" in r.ids  # kept, just after the fill champions
+
+
+def test_natural_route_lexical_slot_skips_ids_vector_already_has():
+    arms = [
+        ArmOutcome("semantic", ("v1", "v2", "v3", "v4", "v5")),
+        ArmOutcome("lexical_local", ("v2", "ll2", "ll3")),
+    ]
+    r = fuse(
+        arms,
+        strategy="pinned_rrf",
+        pin_arms=("lexical_local",),
+        route=route_query("why is the sync slow"),
+    )
+    assert r.ids[:5] == ["v1", "v2", "v3", "v4", "ll2"]
+
+
+def test_identifier_route_unchanged_by_natural_slot():
+    r = fuse(
+        _displacement_arms(),
+        strategy="pinned_rrf",
+        pin_arms=("lexical", "lexical_local"),
+        route=route_query("prb-6f069c5e"),
+    )
+    assert r.ids[:3] == ["ll1", "ll2", "ll3"]
