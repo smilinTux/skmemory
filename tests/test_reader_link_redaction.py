@@ -89,7 +89,7 @@ def test_redact_links_for_reader(store):
         assert key not in m.metadata, key
     assert m.metadata["decomposition"] == {"idx": 0}
     assert m.metadata["chunk_memory_ids"] == ["pub2"]
-    assert m.metadata["observation"] == {"proof_count": 3, "evidence_ids": ["pub2"], "key": "k"}
+    assert m.metadata["observation"] == {"proof_count": 1, "evidence_ids": ["pub2"], "key": "k"}
     _no_hidden(m.model_dump_json())
 
 

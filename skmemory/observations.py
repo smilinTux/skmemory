@@ -68,6 +68,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -737,6 +738,41 @@ def render_observation_text(observation: Observation) -> str:
     return "\n".join(lines)
 
 
+_QUOTE_RE = re.compile(r'"((?:.|\n)*?)" \(memory (\S+?)\)(?=\n|$)')
+_COUNT_RE = re.compile(r"connects \d+ memories")
+
+
+def redact_observation_text(
+    title: str, content: str, evidence_ids: Sequence[str], visible: set[str]
+) -> tuple[str, str]:
+    """``(title, content)`` of an observation with hidden evidence taken out.
+
+    Output-boundary only. Drops each quote line whose ``(memory <id>)`` is not
+    in *visible* and restates the evidence count in the statement and title.
+    Fails closed: if a hidden id still appears in the result, only the
+    statement is kept.
+    """
+    hidden = [i for i in evidence_ids if i not in visible]
+    if not hidden:
+        return title, content
+    n = sum(1 for i in evidence_ids if i in visible)
+
+    def fix(text: str) -> str:
+        return _COUNT_RE.sub(f"connects {n} memories", text)
+
+    head, _, tail = content.partition("\n\n")
+    kept = [m.group(0) for m in _QUOTE_RE.finditer(tail) if m.group(2) in visible]
+    new = fix("\n".join([head, "", *kept]) if kept else head)
+    if any(h in new for h in hidden):
+        new = fix(head)
+    if any(h in new for h in hidden):
+        new = "Observation"
+    new_title = fix(title)
+    if any(h in new_title for h in hidden):
+        new_title = "Observation"
+    return new_title, new
+
+
 def _build_observation(key: str, members: Sequence[Memory]) -> Observation:
     return Observation(
         statement=f"A recurring pattern connects {len(members)} memories around '{key}'.",
@@ -789,7 +825,9 @@ def _reindex(store: Any, memory: Memory) -> None:
             getattr(backend, method)(memory)
 
 
-def write_observation(store: Any, observation: Observation, *, key: str = "") -> Memory | None:
+def write_observation(
+    store: Any, observation: Observation, *, key: str = "", reader: str | None = None
+) -> Memory | None:
     """Write *observation* as a ``fact`` memory if it passes the citation gate.
 
     The gate covers every evidence item, and ``proof_count`` counts them all
@@ -799,7 +837,7 @@ def write_observation(store: Any, observation: Observation, *, key: str = "") ->
     layer with zero intensity and inherits the most restrictive ``context_tag``
     of its evidence.
     """
-    if not resolve_reader(None).unrestricted:
+    if not resolve_reader(reader).unrestricted:
         return None  # a declared reader never writes
     text = render_observation_text(observation)
     if citation_gate(text, observation.evidence, content_lookup_from_store(store)):
@@ -831,7 +869,11 @@ def write_observation(store: Any, observation: Observation, *, key: str = "") ->
 
 
 def refresh_observation(
-    store: Any, memory: Memory, key: str, extra_ids: Iterable[str] = ()
+    store: Any,
+    memory: Memory,
+    key: str,
+    extra_ids: Iterable[str] = (),
+    reader: str | None = None,
 ) -> str:
     """Recompute an open observation from its evidence; ``unchanged``, ``updated``,
     ``closed`` or ``refused``.
@@ -841,7 +883,7 @@ def refresh_observation(
     ``MIN_EVIDENCE`` the observation is closed (``valid_to``), never deleted.
     The file is rewritten only when a value changed.
     """
-    if not resolve_reader(None).unrestricted:
+    if not resolve_reader(reader).unrestricted:
         return "refused"  # a declared reader never writes
     stored = (memory.metadata.get("observation") or {}).get("evidence_ids", [])
     members = _valid_sources(store, [*stored, *extra_ids], key)
@@ -886,7 +928,9 @@ def refresh_observation(
     return "updated"
 
 
-def sweep_observations(store: Any, *, max_new: int = 5, scan_limit: int = 500) -> dict[str, int]:
+def sweep_observations(
+    store: Any, *, max_new: int = 5, scan_limit: int = 500, reader: str | None = None
+) -> dict[str, int]:
     """Refresh existing observations, then write up to *max_new* new ones.
 
     Existing open observations are recomputed in place every sweep (proof
@@ -896,7 +940,7 @@ def sweep_observations(store: Any, *, max_new: int = 5, scan_limit: int = 500) -
     are counted, never raised.
     """
     out = {"written": 0, "refused": 0, "errors": 0, "updated": 0, "closed": 0}
-    if not resolve_reader(None).unrestricted:
+    if not resolve_reader(reader).unrestricted:
         return out  # a declared reader never writes
     candidates = [
         m

@@ -2211,7 +2211,7 @@ class MemoryStore:
         except Exception:
             return False
 
-    def forget_cascade(self, memory_id: str) -> ForgetReport:
+    def forget_cascade(self, memory_id: str, reader: str | None = None) -> ForgetReport:
         """Delete a memory from EVERY store and return a verification report.
 
         Cascades the removal across the flat JSON files (source of truth), the
@@ -2227,10 +2227,14 @@ class MemoryStore:
 
         Args:
             memory_id: The memory to forget.
+            reader: A per-call reader. Deletion is owner-only: any declared
+                reader (this one or the ``SKMEMORY_READER`` ceiling) is refused.
 
         Returns:
             ForgetReport: One :class:`~skmemory.forget.StorePurge` per store.
         """
+        if not resolve_reader(reader).unrestricted:
+            raise PermissionError("forget is owner-only: a declared reader may not delete")
         report = ForgetReport(memory_id=memory_id)
 
         # --- 1 + 2: primary (flat JSON + index.db) -------------------------
@@ -2536,12 +2540,20 @@ class MemoryStore:
         cmi = meta.get("chunk_memory_ids")
         if isinstance(cmi, list):
             meta["chunk_memory_ids"] = [i for i in cmi if vis(i)]
+        text_update: dict[str, str] = {}
         obs = meta.get("observation")
         if isinstance(obs, dict) and isinstance(obs.get("evidence_ids"), list):
-            meta["observation"] = {
-                **obs,
-                "evidence_ids": [i for i in obs["evidence_ids"] if vis(i)],
-            }
+            kept_ev = [i for i in obs["evidence_ids"] if vis(i)]
+            meta["observation"] = {**obs, "evidence_ids": kept_ev}
+            if "proof_count" in obs:
+                meta["observation"]["proof_count"] = len(kept_ev)
+            if len(kept_ev) != len(obs["evidence_ids"]):
+                from .observations import redact_observation_text
+
+                new_title, new_content = redact_observation_text(
+                    memory.title, memory.content, obs["evidence_ids"], set(kept_ev)
+                )
+                text_update = {"title": new_title, "content": new_content}
         wt = meta.get("write_triage")
         if isinstance(wt, dict) and not vis(wt.get("target")):
             meta.pop("write_triage")
@@ -2550,6 +2562,7 @@ class MemoryStore:
             meta["decomposition"] = {k: v for k, v in dec.items() if k != "parent_id"}
         return memory.model_copy(
             update={
+                **text_update,
                 "related_ids": [i for i in memory.related_ids if vis(i)],
                 "parent_id": parent_id,
                 "supersedes_id": (
@@ -2679,6 +2692,7 @@ class MemoryStore:
         memory_id: str,
         target: MemoryLayer,
         summary: str = "",
+        reader: str | None = None,
     ) -> Memory | None:
         """Promote a memory to a higher persistence tier.
 
@@ -2689,6 +2703,8 @@ class MemoryStore:
             memory_id: ID of the memory to promote.
             target: Target layer (should be higher than current).
             summary: Optional compressed summary.
+            reader: A per-call reader. Promotion is owner-only, so any declared
+                reader (this one or the ``SKMEMORY_READER`` ceiling) is refused.
 
         Returns:
             Optional[Memory]: The promoted memory, or None if source not found.
@@ -2704,7 +2720,7 @@ class MemoryStore:
         """
         if not str(memory_id or "").strip():
             raise ValueError("memory_id cannot be empty or null for promote()")
-        if not resolve_reader(None).unrestricted:
+        if not resolve_reader(reader).unrestricted:
             raise PermissionError("promote is owner-only: a declared reader may not write")
 
         source = self.primary.load(memory_id)
