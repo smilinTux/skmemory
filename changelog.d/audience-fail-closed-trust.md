@@ -1,0 +1,1 @@
+Audience: an unknown channel member, a person with no `trust_level`, and a malformed `trust_level` now all resolve to PUBLIC through one helper (`get_person_trust`) used by both `get_person_trust` and `resolve_audience`, with a warning log. Previously `resolve_audience` defaulted them to level 4 (@chef-only). The packaged audience config resolves identically (SKMEM-P0-20).
