@@ -17,6 +17,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 
 from . import decay as _decay
+from . import write_triage
 from .agents import get_agent_paths
 from .audience import ReaderScope, resolve_reader
 from .backends.base import BaseBackend
@@ -35,8 +36,11 @@ from .fusion import (
 from .models import (
     PARENT_RELATION_KEY,
     RELATION_CHUNK_OF,
+    RELATION_EXTENDS,
+    RELATION_SUPERSEDES,
     EmotionalSnapshot,
     Memory,
+    MemoryKind,
     MemoryLayer,
     MemoryRole,
     SeedMemory,
@@ -346,7 +350,9 @@ class MemoryStore:
         related_ids: list[str] | None = None,
         metadata: dict | None = None,
         decompose: bool = False,
+        kind: MemoryKind | None = None,
         reader: str | None = None,
+        supersedes_id: str | None = None,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -364,10 +370,17 @@ class MemoryStore:
             source_ref: Reference to the source.
             related_ids: IDs of related memories.
             metadata: Additional key-value data.
+            kind: Schema v2 kind. None (the default) keeps today's behaviour
+                exactly. fact, rule and preference are compared with similar
+                same-kind memories at write time (see write_triage.py).
             reader: Who is writing. Dedup only matches memories this reader may
                 see; a hash match with a hidden memory is ignored and a fresh
                 memory is written, so the write cannot confirm hidden content
-                or return its id.
+                or return its id. The write-time comparison also never compares,
+                closes or returns a memory this reader cannot see.
+            supersedes_id: Explicit supersession: always honoured (after the reader
+                check), whatever the kind. The open head of that record's chain is
+                closed at this memory's valid_from.
 
         Returns:
             Memory: The stored memory with its assigned ID.
@@ -437,7 +450,40 @@ class MemoryStore:
             source_ref=source_ref,
             related_ids=related_ids or [],
             metadata=metadata,
+            **({"kind": kind} if kind else {}),
         )
+
+        # Write-time conflict verdict (card SKMEM-P3-02): fact/rule/preference only.
+        if supersedes_id:
+            decision = write_triage.explicit(self, supersedes_id, reader)
+        else:
+            decision = write_triage.decide(self, memory, reader=reader) if kind else None
+        if (
+            decision is not None
+            and decision.verdict == "changes"
+            and not write_triage.can_close(self, decision.target)
+        ):
+            logger.warning("supersession downgraded to extends: sealed record cannot be re-sealed")
+            decision = write_triage.WriteDecision(
+                "extends", decision.target, decision.tier, decision.status, True
+            )
+        if decision is not None:
+            if decision.verdict == "unchanged":
+                return decision.target
+            if decision.possible_conflict and decision.verdict != "changes":
+                memory.metadata["possible_conflict_with"] = [decision.target.id]
+            memory.parent_id = decision.target.id
+            if decision.verdict == "changes":
+                memory.supersedes_id = decision.target.id
+                memory.metadata[PARENT_RELATION_KEY] = RELATION_SUPERSEDES
+            else:
+                memory.metadata[PARENT_RELATION_KEY] = RELATION_EXTENDS
+            memory.metadata["write_triage"] = {
+                "verdict": decision.verdict,
+                "target": decision.target.id,
+                "tier": decision.tier,
+                "status": decision.status,
+            }
 
         # Infer valence from emotional labels if not explicitly set
         if memory.emotional.valence == 0.0 and memory.emotional.labels:
@@ -494,6 +540,12 @@ class MemoryStore:
             logger.warning("store.py: %s", exc)
             self._wal.log_failed("snapshot", memory.id, str(exc))
             raise
+
+        if decision is not None and decision.verdict == "changes":
+            try:
+                write_triage.close_superseded(self, decision.target.id, memory)
+            except Exception as exc:  # noqa: BLE001 - the new memory is already saved
+                logger.warning("could not close superseded %s: %s", decision.target.id, exc)
 
         # Vector indexing (resilient)
         if self.vector:

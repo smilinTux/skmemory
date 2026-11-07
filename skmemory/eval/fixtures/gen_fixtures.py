@@ -360,9 +360,13 @@ S = {
    {"child_kind":"chunk","edge":"CHUNK_OF","must_not_close_parent":True},
  ],
  "write_time_conflict_cases": [
-   {"new_fact":"skwk12 listens on port 22","existing":port_old,"expected_verdict":"changes","expected_edge":"SUPERSEDES"},
-   {"new_fact":"skap08 runs the rollout timer every two minutes","existing":ents["skap08"],"expected_verdict":"unchanged","expected_edge":None},
+   {"new_fact":"skwk12 listens on port 22","existing":port_old,"expected_verdict":"changes","expected_edge":"SUPERSEDES","needs_llm":True},
+   {"new_fact":"skap08 runs the rollout timer every two minutes","existing":ents["skap08"],"expected_verdict":"unchanged","expected_edge":None,"needs_llm":True},
    {"new_fact":"skap08 also hosts the review panes","existing":ents["skap08"],"expected_verdict":"extends","expected_edge":"EXTENDS"},
+   # must never close or dedupe, with or without an LLM (review of PR 112): doubt is extends
+   {"new_fact":"skap08 never runs the backup timer at midnight","existing":ents["skap08"],"expected_verdict":"extends","expected_edge":"EXTENDS"},
+   {"new_fact":"skap09 no longer runs the sync timer","existing":ents["skap08"],"expected_verdict":"extends","expected_edge":"EXTENDS"},
+   {"new_fact":"is the gateway port actually 2222?","existing":port_old,"expected_verdict":"extends","expected_edge":"EXTENDS"},
  ]}
 json.dump(S, open(f"{OUT}/supersession-v1.json","w"), indent=1)
 

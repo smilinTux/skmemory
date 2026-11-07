@@ -92,17 +92,37 @@
    "new_fact": "skwk12 listens on port 22",
    "existing": "m-20e7b54b06",
    "expected_verdict": "changes",
-   "expected_edge": "SUPERSEDES"
+   "expected_edge": "SUPERSEDES",
+   "needs_llm": true
   },
   {
    "new_fact": "skap08 runs the rollout timer every two minutes",
    "existing": "m-3c059f37b4",
    "expected_verdict": "unchanged",
-   "expected_edge": null
+   "expected_edge": null,
+   "needs_llm": true
   },
   {
    "new_fact": "skap08 also hosts the review panes",
    "existing": "m-3c059f37b4",
+   "expected_verdict": "extends",
+   "expected_edge": "EXTENDS"
+  },
+  {
+   "new_fact": "skap08 never runs the backup timer at midnight",
+   "existing": "m-3c059f37b4",
+   "expected_verdict": "extends",
+   "expected_edge": "EXTENDS"
+  },
+  {
+   "new_fact": "skap09 no longer runs the sync timer",
+   "existing": "m-3c059f37b4",
+   "expected_verdict": "extends",
+   "expected_edge": "EXTENDS"
+  },
+  {
+   "new_fact": "is the gateway port actually 2222?",
+   "existing": "m-20e7b54b06",
    "expected_verdict": "extends",
    "expected_edge": "EXTENDS"
   }

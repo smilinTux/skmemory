@@ -34,6 +34,49 @@ from .base import BaseBackend
 DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memory")
 
 
+CONFLICT_MARK = ".sync-conflict-"
+
+
+def conflict_copy_id(path: Path) -> str | None:
+    """The memory id a Syncthing conflict copy belongs to, or None for a normal file."""
+    return path.name.split(CONFLICT_MARK)[0] if CONFLICT_MARK in path.name else None
+
+
+def is_hidden_conflict_copy(path: Path, base_path: Path) -> bool:
+    """True for a conflict copy that is NOT the record's only live copy.
+
+    Hidden: a canonical ``<id>.json`` exists in any layer, or a later-sorted
+    sibling conflict copy exists. A conflict copy that is the record's only
+    copy stays visible (the newest one when there are several), so a memory
+    that exists only as a conflict copy is never silently dropped.
+    """
+    cid = conflict_copy_id(path)
+    if cid is None:
+        return False
+    for layer in MemoryLayer:
+        d = base_path / layer.value
+        if (d / f"{cid}.json").exists():
+            return True
+        if d.exists() and any(
+            q.name > path.name for q in d.glob(f"{cid}{CONFLICT_MARK}*.json") if q != path
+        ):
+            return True
+    return False
+
+
+def scan_conflict_copies(base_path: Path) -> dict[str, int]:
+    """Count conflict copies: ``hidden`` (a canonical or newer copy exists) and
+    ``only_copy`` (visible because nothing else holds the record)."""
+    out = {"hidden": 0, "only_copy": 0}
+    for layer in MemoryLayer:
+        d = Path(base_path) / layer.value
+        if not d.exists():
+            continue
+        for p in d.glob(f"*{CONFLICT_MARK}*.json"):
+            out["hidden" if is_hidden_conflict_copy(p, Path(base_path)) else "only_copy"] += 1
+    return out
+
+
 class FileBackend(BaseBackend):
     """Stores memories as JSON files on the local filesystem.
 
@@ -104,6 +147,13 @@ class FileBackend(BaseBackend):
             path = self.base_path / layer.value / f"{memory_id}.json"
             if path.exists():
                 return path
+        # Only copy left is a Syncthing conflict copy: it is still the record.
+        for layer in MemoryLayer:
+            d = self.base_path / layer.value
+            if d.exists():
+                copies = sorted(d.glob(f"{memory_id}{CONFLICT_MARK}*.json"))
+                if copies:
+                    return copies[-1]
         return None
 
     def save(self, memory: Memory) -> str:
@@ -244,6 +294,8 @@ class FileBackend(BaseBackend):
             if not layer_dir.exists():
                 continue
             for json_file in layer_dir.glob("*.json"):
+                if is_hidden_conflict_copy(json_file, self.base_path):
+                    continue  # a divergent copy of a record that has a canonical file
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
                     mem = Memory.from_stored(data)

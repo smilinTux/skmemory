@@ -44,6 +44,7 @@ from ..pytest_guard import assert_write_allowed
 from ..stub_markers import STUB_METADATA_KEY, TRUNCATED_PREVIEW_SUFFIX
 from ..tombstones import load_tombstones
 from .base import BaseBackend
+from .file_backend import is_hidden_conflict_copy, scan_conflict_copies
 
 logger = logging.getLogger("skmemory.sqlite_backend")
 
@@ -1778,6 +1779,8 @@ class SQLiteBackend(BaseBackend):
             if not layer_dir.exists():
                 continue
             for json_file in layer_dir.glob("*.json"):
+                if is_hidden_conflict_copy(json_file, self.base_path):
+                    continue  # never let a stale conflict copy overwrite the canonical row
                 try:
                     data = json.loads(json_file.read_text(encoding="utf-8"))
                     memory = Memory.from_stored(data)
@@ -1934,6 +1937,7 @@ class SQLiteBackend(BaseBackend):
             "archived": archived,
             "missing_tiers": missing_tiers,
             "by_layer": by_layer,
+            "conflict_copies": scan_conflict_copies(self.base_path),
         }
 
     def prune_archived(self) -> int:

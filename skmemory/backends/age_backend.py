@@ -60,6 +60,7 @@ from typing import Any
 from ..invalid_records import payload_memory_id, quarantine_invalid_flat_file, require_memory_id
 from ..models import (
     RELATION_CHUNK_OF,
+    RELATION_EXTENDS,
     RELATION_PROMOTED_FROM,
     RELATION_SUPERSEDES,
     Memory,
@@ -129,7 +130,7 @@ _STAMP_NEW_EDGE = (
 
 #: Memory-to-Memory edge types a relatedness walk follows. Promotion and chunk
 #: lineage edges are included so a child keeps a path to its parent.
-MEMORY_LINK_EDGES = ("RELATED_TO", "SUPERSEDES", "PROMOTED_FROM", "CHUNK_OF")
+MEMORY_LINK_EDGES = ("RELATED_TO", "SUPERSEDES", "PROMOTED_FROM", "CHUNK_OF", "EXTENDS")
 
 #: Edges get_lineage follows toward ancestors (any kind of parent).
 LINEAGE_WALK_EDGES = ("PROMOTED_FROM", "CHUNK_OF", "SUPERSEDES")
@@ -139,6 +140,7 @@ LINEAGE_WALK_EDGES = ("PROMOTED_FROM", "CHUNK_OF", "SUPERSEDES")
 PARENT_LINEAGE_EDGES = {
     RELATION_PROMOTED_FROM: "PROMOTED_FROM",
     RELATION_CHUNK_OF: "CHUNK_OF",
+    RELATION_EXTENDS: "EXTENDS",
 }
 
 
