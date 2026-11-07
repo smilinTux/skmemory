@@ -13,4 +13,5 @@
 {"id": "p-13", "text": "HOSTS=\"skap08 skap03\"", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-004"]}
 {"id": "p-14", "text": "Rollout Ring", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-004"]}
 {"id": "p-15", "text": "rollouts rings", "scope": {"repo": "skcapstone"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
-{"id": "p-16", "text": "time tick at T0: which time intentions are due", "scope": {}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-002"]}
+{"id": "p-16", "text": "this confusion about weights is real", "scope": {"repo": "skmemory"}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": []}
+{"id": "p-17", "text": "time tick at T0: which time intentions are due", "scope": {}, "now": "2026-11-01T12:00:00+00:00", "expected_fire": ["int-002"]}

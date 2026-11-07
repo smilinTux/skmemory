@@ -19,7 +19,7 @@ def test_all_loaders_return_models():
     assert len(fx.load_queries()) == 53
     assert len(fx.load_intentions()) == 12
     assert len(fx.load_intention_transitions()) == 15
-    assert len(fx.load_prompts()) == 16
+    assert len(fx.load_prompts()) == 17
     assert len(fx.load_outcomes()) == 34
     assert len(fx.load_outcomes_expected().expected) == 4
     assert len(fx.load_supersession().chains) == 4

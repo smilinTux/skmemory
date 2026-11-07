@@ -311,6 +311,7 @@ P = [
  ("HOSTS=\"skap08 skap03\"", "skcapstone", ["int-004"]),
  ("Rollout Ring", "skcapstone", ["int-004"]),                      # case-insensitive
  ("rollouts rings", "skcapstone", []),                             # no stemming: exact phrase match only
+ ("this confusion about weights is real", "skmemory", []),         # word boundary: 'fusion' must not fire inside 'confusion'
  ("time tick at T0: which time intentions are due", None, ["int-002"]),  # int-001 future, int-003 snoozed, 009/010 terminal
 ]
 with open(f"{OUT}/prompts-v1.jsonl","w") as f:
