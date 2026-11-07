@@ -291,3 +291,127 @@ def test_parse_time_window_bounds_are_iso_utc_and_ordered():
     after, before = parse_time_window("June 2026", now=_NOW)
     assert after.endswith("Z") and before.endswith("Z")
     assert after < before
+
+
+# ---------------------------------------------------------------------------
+# parse_time_window: broadened phrases (SKMEM-P0-08)
+# ---------------------------------------------------------------------------
+
+# 2026-11-06 is a Friday.
+_FRI = datetime(2026, 11, 6, 15, 30, tzinfo=timezone.utc)
+
+
+def _win(q, now=_FRI):
+    return parse_time_window(q, now=now)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "the rollout may halt",
+        "it may be the cache",
+        "May we ship this",
+        "this may fail again",
+    ],
+)
+def test_may_modal_verb_is_not_a_month(query):
+    assert _win(query) is None
+
+
+@pytest.mark.parametrize(
+    "query,start",
+    [
+        ("what shipped in May", "2026-05-01"),
+        ("what shipped in may 2026", "2026-05-01"),
+        ("changes in may", "2026-05-01"),
+        ("May 2025 outage", "2025-05-01"),
+    ],
+)
+def test_may_as_month_still_parses(query, start):
+    after, _ = _win(query)
+    assert after.startswith(start)
+
+
+def test_may_with_day_number_is_that_day():
+    assert _win("what happened may 5") == ("2026-05-05T00:00:00Z", "2026-05-05T23:59:59.999999Z")
+    assert _win("5th of may")[0].startswith("2026-05-05")
+
+
+def test_march_verb_vs_month():
+    assert _win("we march on friday") is None
+    assert _win("the March outage")[0].startswith("2026-03-01")
+
+
+def test_iso_date():
+    assert _win("notes 2026-03-14") == ("2026-03-14T00:00:00Z", "2026-03-14T23:59:59.999999Z")
+
+
+def test_n_days_ago_is_that_day():
+    assert _win("3 days ago") == ("2026-11-03T00:00:00Z", "2026-11-03T23:59:59.999999Z")
+    assert _win("two days ago")[0].startswith("2026-11-04")
+
+
+def test_n_weeks_ago_is_that_iso_week():
+    # 2 weeks before Fri Nov 6 is Fri Oct 23; its Mon-Sun week is Oct 19-25.
+    after, before = _win("2 weeks ago")
+    assert after.startswith("2026-10-19") and before.startswith("2026-10-25")
+
+
+def test_n_months_ago_is_that_calendar_month():
+    after, before = _win("review queue status two months ago")
+    assert after.startswith("2026-09-01") and before.startswith("2026-09-30")
+
+
+def test_last_n_days_is_rolling_to_now():
+    after, before = _win("what changed in the last 3 days")
+    assert after.startswith("2026-11-03T15:30:00")
+    assert before.startswith("2026-11-06T15:30:00")
+
+
+def test_last_weekday_is_strictly_before_today():
+    # Friday: last Tuesday is Nov 3, last Friday is a week ago.
+    assert _win("anything from last Tuesday")[0].startswith("2026-11-03")
+    assert _win("last friday")[0].startswith("2026-10-30")
+
+
+def test_last_tuesday_from_sunday():
+    sun = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
+    assert _win("anything from last Tuesday", sun)[0].startswith("2026-10-27")
+
+
+def test_this_and_last_week_are_monday_to_sunday():
+    a, b = _win("this week")
+    assert a.startswith("2026-11-02T00:00:00") and b.startswith("2026-11-08T23:59:59")
+    a, b = _win("last week")
+    assert a.startswith("2026-10-26T00:00:00") and b.startswith("2026-11-01T23:59:59")
+    sun = datetime(2026, 11, 1, 12, tzinfo=timezone.utc)
+    assert _win("this week", sun)[0].startswith("2026-10-26")
+
+
+def test_last_and_this_month():
+    a, b = _win("last month")
+    assert a.startswith("2026-10-01") and b.startswith("2026-10-31")
+    assert _win("this month")[0].startswith("2026-11-01")
+    jan = datetime(2026, 1, 10, tzinfo=timezone.utc)
+    assert _win("last month", jan)[0].startswith("2025-12-01")
+
+
+def test_boundaries_follow_now_timezone_and_output_is_utc():
+    from datetime import timedelta
+
+    tokyo = timezone(timedelta(hours=9))
+    # 2026-11-07 02:00 in Tokyo is still Nov 6 in UTC; "today" is Nov 7 locally.
+    now = datetime(2026, 11, 7, 2, 0, tzinfo=tokyo)
+    assert _win("today", now) == ("2026-11-06T15:00:00Z", "2026-11-07T14:59:59.999999Z")
+    assert _win("yesterday", now)[0] == "2026-11-05T15:00:00Z"
+
+
+def test_naive_now_is_treated_as_utc():
+    assert _win("today", datetime(2026, 11, 6, 1, 0)) == _win("today")
+
+
+def test_no_wall_clock_dependency():
+    # Same answer regardless of when the test runs.
+    assert _win("last month") == _win(
+        "last month", datetime(2026, 11, 6, 15, 30, tzinfo=timezone.utc)
+    )
