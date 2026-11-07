@@ -61,6 +61,8 @@ byte-identical on every run and across hosts.
 Run:
     python -m skmemory.eval.fusion_bench            # the A/B table
     python -m skmemory.eval.fusion_bench --json     # machine-readable
+    python -m skmemory.eval.fusion_bench --ablation # affect weight x decay channel
+    python -m skmemory.eval.fusion_bench --affect-weight 0,0.25,0.5 --decay-channel none,recency
 """
 
 from __future__ import annotations
@@ -75,6 +77,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from statistics import mean
 
+from skmemory import decay
 from skmemory.audience import AudienceLevel, AudienceProfile, AudienceResolver
 from skmemory.eval.recall_benchmark import ndcg_at_k, recall_at_k
 from skmemory.eval.retrieval_bench import (
@@ -1138,10 +1141,188 @@ def _print_report(res: dict) -> None:
     )
 
 
+# =============================================================================
+# AFFECT-WEIGHT x DECAY-CHANNEL ABLATION (SKMEM-P1-05)
+# =============================================================================
+# The emotional-intensity hypothesis ("high-affect memories should surface
+# first") is measured here instead of assumed. It runs over the vendored v1
+# corpus (corpus-v1 / queries-v1), because that is where per-memory intensity
+# and the ``affect`` query class live; the synthetic corpus above carries
+# neither. Offline and deterministic.
+#
+# Pipeline per query: the chosen strategy's top-10 over the reader-visible docs,
+# then a bench-local rerank. With rank r (0-based), intensity i on 0-1 and the
+# decay score s from ``skmemory.decay.decay_score`` for the channel:
+#
+#     key = 1/(1+r) * max(s, 1e-9) ** RERANK_GAMMA * (1 + affect_weight * i)
+#
+# ``channel=none, affect_weight=0`` is the identity. Affect weight is a BENCH
+# knob: the product has no such parameter (``affect_weighted`` is the only
+# place intensity enters ranking, via the decay channel), so a winning weight
+# is evidence for adding one, not a measurement of something that ships.
+
+#: Same pinned clock as ``class_bench.FIXTURE_NOW`` (asserted equal in tests).
+ABLATION_AS_OF = "2026-11-01T12:00:00+00:00"
+ABLATION_WEIGHTS = (0.0, 0.25, 0.5)
+
+
+def _ablation_rank(
+    ranked: list[str], by_id: dict, weight: float, channel: str, as_of
+) -> list[str]:
+    keyed = []
+    for rank, doc_id in enumerate(ranked):
+        d = by_id[doc_id]
+        i = min(max(float(d["emotional"]["intensity"]), 0.0), 1.0)
+        s = decay.decay_score(
+            channel,
+            as_of=as_of,
+            created_at=d["created_at"],
+            intensity=i,
+            kind="gist" if d["layer"] == "long-term" else "fact",
+        )
+        key = (1.0 / (1 + rank)) * max(s, 1e-9) ** decay.RERANK_GAMMA * (1.0 + weight * i)
+        keyed.append((-key, rank, doc_id))
+    keyed.sort()
+    return [t[2] for t in keyed]
+
+
+def run_ablation(
+    strategy: str = "interleave_rerank",
+    affect_weights: Sequence[float] = ABLATION_WEIGHTS,
+    channels: Sequence[str] = decay.CHANNELS,
+) -> dict:
+    """Score every (affect_weight, channel) cell per query class and overall.
+
+    Queries without gold (``absent``) are skipped for recall and MRR. Each cell
+    also reports ``reordered`` (queries whose top-10 changed vs the baseline)
+    and, for the affect class, ``hi_above_lo``: how often the high-intensity
+    dream memory outranks the low-intensity one on the queries that retrieve both.
+    """
+    from skmemory.eval.fixtures import load_corpus, load_queries
+
+    for ch in channels:
+        if ch not in decay.CHANNELS:
+            raise ValueError(f"unknown decay channel {ch!r}; expected one of {decay.CHANNELS}")
+    strat = STRATEGIES[strategy]
+    docs = _prep_docs([d.model_dump() for d in load_corpus()])
+    by_id = {d["id"]: d for d in docs}
+    public = _allowed_docs(docs, _public_audience(), AudienceResolver())
+    as_of = datetime.fromisoformat(ABLATION_AS_OF)
+    queries = [q for q in load_queries() if q.gold_ids]
+    base = {q.id: strat(q.query, docs if q.reader == "@chef" else public, 10) for q in queries}
+    hi = lo = None
+    for d in docs:
+        if "dream" in d.get("tags", []) and d["layer"] == "mid-term":
+            if d["emotional"]["intensity"] >= 0.9:
+                hi = d["id"]
+            elif d["emotional"]["intensity"] <= 0.1:
+                lo = d["id"]
+
+    cells = []
+    for ch in channels:
+        for w in affect_weights:
+            per: dict[str, list] = {}
+            moved = 0
+            pair = [0, 0]
+            for q in queries:
+                got = _ablation_rank(base[q.id], by_id, float(w), ch, as_of)
+                moved += got != base[q.id]
+                gold = set(q.gold_ids)
+                per.setdefault(q.query_class, []).append(
+                    (recall_at_k(got, gold, 5), reciprocal_rank(got, gold))
+                )
+                if q.query_class == "affect" and hi in got and lo in got:
+                    pair[1] += 1
+                    pair[0] += got.index(hi) < got.index(lo)
+            by_class = {
+                c: {
+                    "recall@5": mean(r for r, _ in v),
+                    "mrr": mean(m for _, m in v),
+                    "queries": len(v),
+                }
+                for c, v in sorted(per.items())
+            }
+            allv = [x for v in per.values() for x in v]
+            cells.append(
+                {
+                    "affect_weight": float(w),
+                    "channel": ch,
+                    "overall": {
+                        "recall@5": mean(r for r, _ in allv),
+                        "mrr": mean(m for _, m in allv),
+                        "queries": len(allv),
+                    },
+                    "by_class": by_class,
+                    "reordered": moved,
+                    "hi_above_lo": f"{pair[0]}/{pair[1]}",
+                }
+            )
+    return {
+        "strategy": strategy,
+        "as_of": ABLATION_AS_OF,
+        "affect_weights": [float(w) for w in affect_weights],
+        "channels": list(channels),
+        "cells": cells,
+    }
+
+
+def _print_ablation(res: dict) -> None:
+    print(
+        f"\naffect weight x decay channel  |  strategy {res['strategy']}  |  "
+        f"corpus-v1, clock {res['as_of']}\n"
+    )
+    h = (
+        f"{'channel':<16}{'weight':>7}{'affect R@5':>12}{'affect MRR':>12}"
+        f"{'ALL R@5':>9}{'ALL MRR':>9}{'moved':>7}{'hi>lo':>7}"
+    )
+    print(h)
+    print("-" * len(h))
+    for c in res["cells"]:
+        a = c["by_class"].get("affect", {})
+        print(
+            f"{c['channel']:<16}{c['affect_weight']:>7.2f}"
+            f"{a.get('recall@5', float('nan')):>12.3f}{a.get('mrr', float('nan')):>12.3f}"
+            f"{c['overall']['recall@5']:>9.3f}{c['overall']['mrr']:>9.3f}"
+            f"{c['reordered']:>7d}{c['hi_above_lo']:>7}"
+        )
+    print(
+        "\nmoved = queries whose top-10 order changed; hi>lo = high-intensity dream memory above the low one.\n"
+    )
+
+
+def _floats(raw: str) -> list[float]:
+    return [float(x) for x in raw.split(",") if x.strip()]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="skmemory retrieval fusion A/B")
     parser.add_argument("--json", action="store_true", help="emit JSON only")
+    parser.add_argument(
+        "--affect-weight",
+        help="comma list of affect weights, e.g. 0,0.25,0.5 (runs the ablation instead)",
+    )
+    parser.add_argument(
+        "--decay-channel",
+        help=f"comma list of decay channels from {', '.join(decay.CHANNELS)} (runs the ablation)",
+    )
+    parser.add_argument("--ablation", action="store_true", help="full weight x channel grid")
+    parser.add_argument("--strategy", default="interleave_rerank", choices=list(STRATEGIES))
     args = parser.parse_args()
+    if args.ablation or args.affect_weight or args.decay_channel:
+        weights = _floats(args.affect_weight) if args.affect_weight else None
+        chans = [c.strip() for c in args.decay_channel.split(",")] if args.decay_channel else None
+        if args.ablation:
+            weights, chans = weights or list(ABLATION_WEIGHTS), chans or list(decay.CHANNELS)
+        res = run_ablation(
+            args.strategy,
+            weights if weights is not None else [0.0],
+            chans if chans is not None else ["none"],
+        )
+        if args.json:
+            print(json.dumps(res, indent=2, sort_keys=True))
+        else:
+            _print_ablation(res)
+        return
     res = run_benchmark()
     if args.json:
         print(json.dumps(res, indent=2, sort_keys=True))
