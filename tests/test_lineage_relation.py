@@ -187,6 +187,10 @@ def test_convert_merges_new_edge_before_deleting_old():
     assert "MERGE" in b.queries[0] and "CHUNK_OF" in b.queries[0]
     assert "DELETE e" in b.queries[1] and "SUPERSEDES" in b.queries[1]
 
+
+class _FlakyBackend(_RepairBackend):
+    """Fails one pair every time and another only on its first attempt."""
+
     def __init__(self, edges, always_bad, once_bad):
         super().__init__(edges)
         self.always_bad, self.once_bad = always_bad, once_bad
