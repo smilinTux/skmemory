@@ -73,7 +73,7 @@ def test_song_line_after_feb(home):
     assert "A made-up moment. Second sentence is dropped." in res.text
     assert "tilt: joy, love, warmth" in res.text
     assert res.text.index("Emotional state") < res.text.index("Song anchor tilt")
-    assert "—" not in res.text.split("## Song anchor tilt")[1].split("\n---")[0]
+    assert "\u2014" not in res.text.split("## Song anchor tilt")[1].split("\n---")[0]
 
 
 def test_second_anchor_bars(home, monkeypatch):
@@ -96,6 +96,10 @@ def test_second_anchor_bars(home, monkeypatch):
     assert "- hi - " in block  # exactly on both bars
     scores.update(t=0.38, hi=0.35)
     assert "- hi - " not in _build().text  # second below 0.4 even within gap
+    scores.update(t=0.55, hi=0.39)
+    assert "- hi - " not in _build().text  # just below the 0.4 bar
+    scores.update(t=0.56, hi=0.40)
+    assert "- hi - " not in _build().text  # gap 0.16, just outside 0.15
 
 
 def test_moment_cap_on_word_boundary(home):
@@ -114,6 +118,17 @@ def test_moment_dashes_normalised(home):
         "T",
         {"joy": 0.9, "love": 0.9},
         moment_summary="sang along \u2014 first conduit",
+    )
+    assert "sang along - first conduit" in _build().text
+
+
+def test_moment_en_dash_normalised(home):
+    _anchor(
+        home / "memory" / "songs",
+        "a1",
+        "T",
+        {"joy": 0.9, "love": 0.9},
+        moment_summary="sang along \u2013 first conduit",
     )
     assert "sang along - first conduit" in _build().text
 
