@@ -44,7 +44,7 @@ _ON = {"", "1", "on", "true", "yes"}
 
 LAYER_IMPORTANCE = {"short-term": 0.3, "mid-term": 0.5, "long-term": 0.7}
 INTENSITY_IMPORTANCE_WEIGHT = 0.3
-REINFORCE_IMPORTANCE_STEP = 0.02
+REINFORCE_IMPORTANCE_STEP = 0.02  # importance += step * (1 - importance)
 
 
 def initial_importance(layer: str, intensity: float) -> float:

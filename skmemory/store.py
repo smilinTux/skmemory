@@ -956,6 +956,11 @@ class MemoryStore:
         except Exception as exc:
             logger.debug("access bump skipped: %s", exc)
 
+    def backfill_importance(self, batch_size: int = 500) -> dict | None:
+        """Recompute legacy importance in the SQLite index; None if unsupported."""
+        fn = getattr(self.primary, "backfill_importance", None)
+        return fn(batch_size) if fn else None
+
     def usage_counts(self, memory_ids: Sequence[str]) -> dict[str, dict] | None:
         """Usage counters (``access_count``, ``last_accessed``) for ids.
 

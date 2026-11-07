@@ -137,7 +137,7 @@ def test_resave_keeps_reinforced_importance(store, backend):
     m = store.snapshot(title="keep me", content="keep body")
     store.recall(m.id)
     raised = _imp(backend, m.id)
-    assert raised == pytest.approx(0.32)
+    assert raised == pytest.approx(0.3 + 0.02 * 0.7)
     backend.save(m)
     assert _imp(backend, m.id) == pytest.approx(raised)
 
@@ -148,7 +148,8 @@ def test_reinforcement_raises_importance_capped(store, backend):
     conn.execute("UPDATE memories SET importance = 0.99 WHERE id = ?", (m.id,))
     conn.commit()
     store.recall(m.id)
-    assert _imp(backend, m.id) == pytest.approx(1.0)
+    assert _imp(backend, m.id) == pytest.approx(0.99 + 0.02 * 0.01)
+    assert _imp(backend, m.id) < 1.0
 
 
 # ------------------------------------------------------------- search order
@@ -196,3 +197,53 @@ def test_search_off_leaves_order_untouched(store, backend, monkeypatch):
     # the stale (400 day old, unreinforced) memory is never ranked above fresh when on
     fresh_title = {m.id: m.title for m in store.search("zebra stripes")}
     assert "fresh" in fresh_title[on[0]]
+
+
+def test_diminishing_returns_never_saturate(store, backend):
+    m = store.snapshot(title="many hits", content="many hits body")
+    vals = []
+    for _ in range(40):
+        backend.bump_access([m.id])
+        vals.append(_imp(backend, m.id))
+    assert all(b > a for a, b in zip(vals, vals[1:]))
+    assert vals[-1] < 1.0
+    assert vals[1] - vals[0] > vals[-1] - vals[-2]
+
+
+def _legacy(backend, mid, imp=0.5, count=0):
+    conn = backend._get_conn()
+    conn.execute(
+        "UPDATE memories SET importance = ?, access_count = ? WHERE id = ?", (imp, count, mid)
+    )
+    conn.commit()
+
+
+def test_reindex_recomputes_legacy_but_keeps_real_state(store, backend):
+    legacy = store.snapshot(
+        title="legacy", content="legacy body", emotional=EmotionalSnapshot(intensity=10.0)
+    )
+    used = store.snapshot(
+        title="used", content="used body", emotional=EmotionalSnapshot(intensity=10.0)
+    )
+    _legacy(backend, legacy.id)
+    _legacy(backend, used.id, imp=0.5, count=3)
+    backend.reindex(force=True)
+    assert _imp(backend, legacy.id) == pytest.approx(0.6)
+    assert _imp(backend, used.id) == pytest.approx(0.5)
+
+
+def test_backfill_importance_counts_and_no_flat_write(store, backend):
+    a = store.snapshot(title="a", content="a body", emotional=EmotionalSnapshot(intensity=10.0))
+    b = store.snapshot(title="b", content="b body", layer=MemoryLayer.MID)
+    c = store.snapshot(title="c", content="c body", emotional=EmotionalSnapshot(intensity=10.0))
+    for m in (a, b, c):
+        _legacy(backend, m.id)
+    _legacy(backend, c.id, imp=0.5, count=2)
+    before = {m.id: backend._find_file(m.id).read_bytes() for m in (a, b, c)}
+    res = backend.backfill_importance(batch_size=1)
+    assert res == {"total": 3, "scanned": 2, "updated": 1, "unchanged": 1}
+    assert _imp(backend, a.id) == pytest.approx(0.6)
+    assert _imp(backend, b.id) == pytest.approx(0.5)
+    assert _imp(backend, c.id) == pytest.approx(0.5)
+    assert before == {m.id: backend._find_file(m.id).read_bytes() for m in (a, b, c)}
+    assert backend.backfill_importance()["updated"] == 0
