@@ -222,6 +222,30 @@ def load_labelled(private_dir: str | os.PathLike) -> tuple[list[LiveQuery], dict
     return qs, meta
 
 
+def load_paraphrase(private_dir: str | os.PathLike) -> tuple[list[LiveQuery], dict]:
+    """Load ``paraphrase.jsonl`` from ``eval.paraphrase``; kind is the question type."""
+    from skmemory.eval.harvest import check_private_dir
+
+    d = check_private_dir(private_dir)
+    qs = []
+    for line in (d / "paraphrase.jsonl").read_text().splitlines():
+        if line.strip():
+            r = json.loads(line)
+            qs.append(LiveQuery(r["qid"], r.get("qtype", "other"), r["query"], tuple(r["gold"])))
+    meta_path = d / "paraphrase-meta.json"
+    return qs, (json.loads(meta_path.read_text()) if meta_path.exists() else {})
+
+
+def paraphrase_line(meta: dict) -> str:
+    if not meta:
+        return "generation counts unknown (no paraphrase-meta.json)"
+    return (
+        f"requested {meta.get('requested')}, accepted {meta.get('accepted')}, rejected for "
+        f"overlap {meta.get('rejected_overlap')} (missing, not scored), other failures "
+        f"{meta.get('failed_other')}; query types {meta.get('query_types')}"
+    )
+
+
 def missingness_line(meta: dict) -> str:
     if not meta:
         return "missingness unknown (no label-meta.json)"
@@ -402,8 +426,24 @@ def _ms(v) -> str:
 def format_table(res: dict, meta: dict | None = None) -> str:
     meta = dict(meta or {})
     labelled = res.get("evidence_class") == EVIDENCE_LABELLED
+    paraphrase = res.get("query_source") == "paraphrase"
     head = (
         [
+            "skmemory LIVE paraphrase queries (SKMEM-P1-04)",
+            "- query_source: paraphrase",
+            f"- evidence_class: {res.get('evidence_class', EVIDENCE_SELF)} (kept at "
+            "live_self_retrieval: the schema has no better class, because gold is a single "
+            "known item written by a model, not an independent human judgement)",
+            "- Why this instrument: queries are model-written questions that share no rare "
+            "token, identifier or 3-gram with the target memory, so lexical bias is removed. "
+            "But gold is a single known item (another memory may answer as well) and generated "
+            "questions are not real user queries.",
+            f"- {res.get('missingness', '')}",
+            f"- {res.get('judge_limits', '')}",
+            "- the per-kind rows below are the QUERY-TYPE breakdown (question word)",
+        ]
+        if paraphrase
+        else [
             "skmemory LIVE labelled queries (SKMEM-P1-04)",
             f"- evidence_class: {EVIDENCE_LABELLED}",
             "- Queries are REAL harvested ones, not cut from the target memory, so this is not "
@@ -419,7 +459,7 @@ def format_table(res: dict, meta: dict | None = None) -> str:
         ]
     )
     out = list(head)
-    if not labelled:
+    if not labelled and not paraphrase:
         out += [
             "- BIAS: SELF-RETRIEVAL. Each query is cut from the memory it must find (its title, or "
             "its rarest tokens). Easy for lexical arms; says little about semantic recall on a "
@@ -766,6 +806,7 @@ def run(
     agent: str | None = None,
     embed_interval_s: float = DEFAULT_EMBED_INTERVAL_S,
     labelled: str | None = None,
+    paraphrase: str | None = None,
 ) -> dict:
     require_live()
     check_out_dir(out_dir)
@@ -779,7 +820,10 @@ def run(
     alive = probe_arms(pg, age, sq)
     store = build_store(pg, age, sq)
     label_meta: dict = {}
-    if labelled:
+    if paraphrase:
+        queries, label_meta = load_paraphrase(paraphrase)
+        mems = []
+    elif labelled:
         queries, label_meta = load_labelled(labelled)
         mems = []
     else:
@@ -797,7 +841,13 @@ def run(
         else:
             os.environ["SKMEMORY_SEARCH_FUSION"] = keep
     res["evidence_class"] = EVIDENCE_LABELLED if labelled else EVIDENCE_SELF
-    if labelled:
+    if paraphrase:
+        from skmemory.eval.paraphrase import LIMITS
+
+        res["query_source"] = "paraphrase"
+        res["missingness"] = paraphrase_line(label_meta)
+        res["judge_limits"] = LIMITS
+    elif labelled:
         from skmemory.eval.label import JUDGE_LIMITS
 
         res["missingness"] = missingness_line(label_meta)
@@ -830,6 +880,12 @@ def main() -> None:
         help="score against the labelled set (evidence_class live_labelled) instead of "
         "self-retrieval; the dir holds labelled.jsonl from eval.label",
     )
+    p.add_argument(
+        "--paraphrase",
+        metavar="PRIVATE_DIR",
+        help="score generated paraphrase queries (query_source: paraphrase); the dir holds "
+        "paraphrase.jsonl from eval.paraphrase",
+    )
     p.add_argument("--embed-interval", type=float, default=DEFAULT_EMBED_INTERVAL_S)
     args = p.parse_args()
     res = run(
@@ -839,6 +895,7 @@ def main() -> None:
         agent=args.agent,
         embed_interval_s=args.embed_interval,
         labelled=args.labelled,
+        paraphrase=args.paraphrase,
     )
     meta = res["meta"]
     table = format_table(
@@ -846,8 +903,8 @@ def main() -> None:
         {
             "agent": meta["agent"],
             "sample": (
-                f"{res['queries']} labelled queries"
-                if args.labelled
+                f"{res['queries']} labelled or paraphrase queries"
+                if args.labelled or args.paraphrase
                 else f"{meta['sample']} memories, seed {meta['seed']}"
             ),
             "embed_interval_s": meta["embed_interval_s"],

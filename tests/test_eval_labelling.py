@@ -307,3 +307,119 @@ def test_parse_json_repairs_missing_closers_only():
     assert lab.parse_json('<think>x</think>{"gold":[]}') == {"gold": []}
     assert lab.parse_json("no braces") is None
     assert lab.parse_json('{"gold": [oops]}') is None
+
+
+# ---- paraphrase (SKMEM-P1-04 stronger instrument) --------------------------
+
+from skmemory.eval import paraphrase as para  # noqa: E402
+
+PM = [
+    (
+        "p1",
+        "Codex pool ceiling",
+        "The gateway pool ceiling for codex is 32 on both gateways. zebra9-x",
+    ),
+    (
+        "p2",
+        "Fusion weights",
+        "Reciprocal rank fusion weights are tuned per arm in the benchmark harness.",
+    ),
+]
+
+
+def _df():
+    return lb.document_frequency([f"{t} {c}" for _, t, c in PM])
+
+
+def test_overlap_rejects_identifier_rare_token_and_trigram():
+    t, c = PM[0][1], PM[0][2]
+    df = _df()
+    assert para.overlap_reason("what is zebra9-x", t, c, df) == "identifier"
+    assert para.overlap_reason("how many concurrent codex workers", t, c, df) == "rare_token"
+    assert para.overlap_reason("is the gateway pool ceiling ok", t, c, df) is not None
+    assert para.overlap_reason("how many agents can run at once", t, c, df) is None
+
+
+def test_question_type_and_cleaning():
+    assert para.question_type("How many agents can run?") == "how"
+    assert para.question_type("Does it scale?") == "yes_no"
+    assert para.question_type("Tell me more") == "other"
+    assert para.clean_question('<think>x</think>\n"How many agents run at once?"') == (
+        "How many agents run at once?"
+    )
+
+
+def test_select_memories_skips_sensitive_and_short():
+    recs = {
+        "a": ("T", "x" * 100, []),
+        "b": ("T", "medical diagnosis " + "y" * 100, []),
+        "c": ("T", "short", []),
+        "d": ("T", "z" * 100, ["sacred"]),
+    }
+    out, sk = para.select_memories(list(recs), recs.get, 10, 1)
+    assert [m[0] for m in out] == ["a"] and sk == {"sensitive": 2, "too_short": 1}
+
+
+class QGateway:
+    """First answer overlaps (when ``leak_first``), the retry is clean."""
+
+    def __init__(self, leak_first=True, always_leak=False, headers=LOCAL):
+        self.n, self.leak_first, self.always_leak, self.headers = (
+            0,
+            leak_first,
+            always_leak,
+            headers,
+        )
+        self.sent = []
+
+    def __call__(self, url, payload, timeout):
+        text = payload["messages"][-1]["content"]
+        self.sent.append(text)
+        if "single word" in text:
+            out = "ok"
+        else:
+            retry = "Rephrase completely" in text
+            leak = self.always_leak or (self.leak_first and not retry)
+            out = "What is the zebra9-x thing?" if leak else "How many helpers can run together?"
+        return 200, self.headers, json.dumps({"choices": [{"message": {"content": out}}]})
+
+
+def test_generate_retry_then_accept_and_private_files(tmp_path):
+    gw = QGateway()
+    meta = para.generate(PM[:1], lab.Judge(transport=gw), tmp_path / "pp", interval_s=0)
+    assert meta["requested"] == 1 and meta["accepted"] == 1 and meta["retried"] == 1
+    rec = json.loads((tmp_path / "pp" / "paraphrase.jsonl").read_text())
+    assert rec["gold"] == ["p1"] and rec["qtype"] == "how"
+    assert stat.S_IMODE(os.stat(tmp_path / "pp").st_mode) == 0o700
+    assert stat.S_IMODE(os.stat(tmp_path / "pp" / "paraphrase.jsonl").st_mode) == 0o600
+
+
+def test_generate_rejected_stays_missing(tmp_path):
+    meta = para.generate(
+        PM[:1], lab.Judge(transport=QGateway(always_leak=True)), tmp_path / "pp", interval_s=0
+    )
+    assert meta["accepted"] == 0 and meta["rejected_overlap"] == 1
+    assert (tmp_path / "pp" / "paraphrase.jsonl").read_text() == ""
+
+
+def test_generate_non_local_route_sends_only_canary(tmp_path):
+    gw = QGateway(headers={"x-sk-rail": "remote", "x-sk-provider": "x"})
+    with pytest.raises(lab.RouteRefused):
+        para.generate(PM, lab.Judge(transport=gw), tmp_path / "pp", interval_s=0)
+    assert len(gw.sent) == 1
+
+
+def test_live_bench_paraphrase_header_and_breakdown(tmp_path):
+    d = tmp_path / "pp"
+    para.generate(PM[:1], lab.Judge(transport=QGateway()), d, interval_s=0)
+    qs, meta = lb.load_paraphrase(d)
+    assert qs[0].kind == "how" and qs[0].gold == ("p1",)
+    arms = {n: (lambda q: ["p1"]) for n in lb.ARMS if n != "fallback_chain"}
+    res = lb.run_live(arms, qs, alive={n: (True, "ok") for n in lb.ARMS}, embed_interval_s=0)
+    res.update(evidence_class=lb.EVIDENCE_SELF, query_source="paraphrase",
+               missingness=lb.paraphrase_line(meta), judge_limits=para.LIMITS)  # fmt: skip
+    table = lb.format_table(res)
+    assert "query_source: paraphrase" in table and "live_self_retrieval" in table
+    assert "not real user queries" in table and "QUERY-TYPE" in table
+    assert "how " in table and "How many helpers" not in table
+    assert "—" not in table and "–" not in table
