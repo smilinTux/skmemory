@@ -35,6 +35,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from skmemory import retrieval_log
 from skmemory.eval import live_bench as lb
 
 TOP = 5
@@ -95,7 +96,8 @@ def trace_query(store, vector_only: Callable[[str], list[str]], query: str) -> d
     vec = list(vector_only(query))[:LIMIT]
     pool = max(LIMIT, LIMIT * 3)  # what MemoryStore.search asks search_fused for
     sq = sanitize_query(query)
-    mems, report = store.search_fused(sq, limit=pool, record_access=False, return_report=True)
+    with retrieval_log.measurement():
+        mems, report = store.search_fused(sq, limit=pool, record_access=False, return_report=True)
     found = {m.id: m for m in (mems or [])}
     arms = {a.name: list(a.ids) for a in report.arms}
     status = {a.name: a.status for a in report.arms}
@@ -126,7 +128,8 @@ def trace_query(store, vector_only: Callable[[str], list[str]], query: str) -> d
     capped = [m.id for m in order_procedures([found[i] for i in capped], sq)]
     stages["capped"] = capped
 
-    page = [m.id for m in store.search(query, limit=LIMIT, record_access=False, reader=None)]
+    with retrieval_log.measurement():
+        page = [m.id for m in store.search(query, limit=LIMIT, record_access=False, reader=None)]
     stages["page"] = page
     return {
         "route": getattr(report, "route", None),

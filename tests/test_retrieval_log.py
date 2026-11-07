@@ -159,3 +159,76 @@ def test_legacy_path_labelled_unobserved(tmp_path, monkeypatch):
     monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", "off")
     h = _store(tmp_path).health()
     assert h["retrieval"]["observed"] is False and "unobserved" in h["retrieval"]["note"]
+
+
+def _fused_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", "on")
+    st = _store(tmp_path)
+    st.snapshot(title="alpha", content="zebra giraffe", layer=MemoryLayer.SHORT)
+    return st
+
+
+def test_measurement_block_writes_no_record_normal_search_unchanged(tmp_path, monkeypatch):
+    st = _fused_store(tmp_path, monkeypatch)
+    st.search("zebra")
+    n_normal = len(_lines(tmp_path))
+    assert n_normal >= 1
+    with rl.measurement():
+        st.search("zebra", record_access=False)
+        st.search_fused("zebra", limit=5, record_access=False)
+    assert len(_lines(tmp_path)) == n_normal
+    st.search("zebra")
+    assert len(_lines(tmp_path)) == 2 * n_normal
+
+
+def test_record_access_false_alone_still_logs(tmp_path, monkeypatch):
+    st = _fused_store(tmp_path, monkeypatch)
+    st.search("zebra", record_access=False)
+    assert _lines(tmp_path)
+
+
+def test_concurrent_normal_search_logs_during_measurement(tmp_path, monkeypatch):
+    st = _fused_store(tmp_path, monkeypatch)
+    entered, done = threading.Event(), threading.Event()
+    out = {}
+
+    def bench():
+        with rl.measurement():
+            entered.set()
+            assert done.wait(10)
+            st.search("zebra", record_access=False)
+
+    t = threading.Thread(target=bench)
+    t.start()
+    assert entered.wait(10)
+    st.search("giraffe")  # other thread, measurement active in bench thread
+    out["during"] = len(_lines(tmp_path))
+    done.set()
+    t.join(10)
+    assert out["during"] >= 1
+    assert len(_lines(tmp_path)) == out["during"]  # bench's own search wrote nothing
+
+    # a nested normal search from a fresh thread spawned INSIDE a measurement also logs
+    with rl.measurement():
+        th = threading.Thread(target=lambda: st.search("zebra"))
+        th.start()
+        th.join(10)
+    assert len(_lines(tmp_path)) > out["during"]
+
+
+def test_measurement_resets_after_exception():
+    try:
+        with rl.measurement():
+            raise RuntimeError
+    except RuntimeError:
+        pass
+    assert rl._measuring.get() is False
+
+
+def test_live_bench_candidate_and_arm_diff_write_no_records(tmp_path, monkeypatch):
+    from skmemory.eval import live_bench as lb
+
+    st = _fused_store(tmp_path, monkeypatch)
+    arms = lb.build_arms(None, None, None, st, {})
+    arms[next(k for k in arms if k.startswith("candidate_"))]("zebra")
+    assert _lines(tmp_path) == []

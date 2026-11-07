@@ -63,6 +63,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
 
+from skmemory import retrieval_log
 from skmemory.eval.recall_benchmark import recall_at_k
 
 LIVE_ENV = "SKMEMORY_EVAL_LIVE"
@@ -844,7 +845,8 @@ def build_arms(pg, age, sqlite_backend, store, telemetry: dict) -> dict[str, Arm
     store.search_fused = spy
 
     def candidate(q: str) -> list[str]:
-        mems = store.search(q, limit=LIMIT, record_access=False, reader=None)
+        with retrieval_log.measurement():
+            mems = store.search(q, limit=LIMIT, record_access=False, reader=None)
         return [m.id for m in mems]
 
     def routed(mode: str) -> Arm:
