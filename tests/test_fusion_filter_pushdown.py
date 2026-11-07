@@ -212,6 +212,7 @@ class _Graph:
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_GRAPH_ARM", "on")  # these tests exercise the graph arm
     monkeypatch.setenv("SKCAPSTONE_HOME", str(tmp_path))
     monkeypatch.delenv("SKMEMORY_SEARCH_FUSION", raising=False)
     return MemoryStore()

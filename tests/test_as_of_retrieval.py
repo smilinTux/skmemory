@@ -192,6 +192,7 @@ def test_arm_with_as_of_receives_it(tmp_path, monkeypatch):
 
 
 def test_graph_arm_receives_as_of_and_rechecks(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_GRAPH_ARM", "on")  # the arm is off by default
     monkeypatch.setenv("SKMEMORY_SEARCH_FUSION", "on")
     s = _chain_store(tmp_path)
     seen = {}

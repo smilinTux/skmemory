@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -228,6 +229,16 @@ class SQLiteBackend(BaseBackend):
         self._ensure_dirs()
         self._db_path = self.base_path / "index.db"
         self._conn: sqlite3.Connection | None = None
+        # Search arms run on worker threads, and one sqlite3 connection used
+        # from two threads at once fails with "bad parameter or other API
+        # misuse" (observed in class_bench with the arms concurrent). The
+        # thread that built this backend keeps `_conn`; every other thread
+        # gets its own connection (WAL + busy_timeout make that safe, and a
+        # lazy FTS backfill commits on the connection that ran it). `_conn_gen`
+        # invalidates them when `_reset_conn` / `close` drops the database.
+        self._owner_thread = threading.get_ident()
+        self._conn_gen = 0
+        self._tls = threading.local()
         #: Flat files this process could not parse. Seen-once so a repeated
         #: read does not spam the log, and countable so health can report it.
         self._unloadable_seen: set[str] = set()
@@ -250,21 +261,33 @@ class SQLiteBackend(BaseBackend):
         Returns:
             sqlite3.Connection: Active database connection.
         """
+        if threading.get_ident() != self._owner_thread:
+            conn = getattr(self._tls, "conn", None)
+            if conn is None or getattr(self._tls, "gen", -1) != self._conn_gen:
+                conn = self._open_conn()
+                self._tls.conn = conn
+                self._tls.gen = self._conn_gen
+            return conn
         if self._conn is None:
-            self._conn = sqlite3.connect(
-                str(self._db_path),
-                check_same_thread=False,
-                timeout=_BUSY_TIMEOUT_S,
-            )
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_S * 1000)}")
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            wal_guard.apply(self._conn)
+            self._conn = self._open_conn()
         return self._conn
+
+    def _open_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(
+            str(self._db_path),
+            check_same_thread=False,
+            timeout=_BUSY_TIMEOUT_S,
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_S * 1000)}")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        wal_guard.apply(conn)
+        return conn
 
     def _reset_conn(self) -> None:
         """Drop the cached connection so the next call reopens cleanly."""
+        self._conn_gen += 1
         if self._conn is not None:
             with contextlib.suppress(Exception):
                 self._conn.close()
@@ -2136,6 +2159,7 @@ class SQLiteBackend(BaseBackend):
 
     def close(self) -> None:
         """Close the database connection."""
+        self._conn_gen += 1
         if self._conn:
             self._conn.close()
             self._conn = None

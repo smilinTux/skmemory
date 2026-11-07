@@ -627,9 +627,16 @@ def search(
         results = store.search(query, limit=limit, record_access=True, reader=reader, as_of=as_of)
     except ValueError as exc:
         raise click.BadParameter(str(exc), param_hint="--as-of") from exc
+    degraded = getattr(store, "last_search_degraded", lambda: None)()
+    if isinstance(degraded, str) and degraded:
+        click.echo(f"degraded: {degraded}", err=True)
 
     if not results:
-        click.echo("No memories found.")
+        click.echo(
+            "No memories found."
+            if not isinstance(degraded, str)
+            else "No memories found (degraded)."
+        )
         return
 
     ai: AIClient | None = ctx.obj.get("ai")

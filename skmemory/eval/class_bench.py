@@ -255,9 +255,15 @@ def _fusion_env():
     store_mod.parse_time_window = functools.partial(
         orig_ptw, now=datetime.fromisoformat(FIXTURE_NOW)
     )
-    keep = {k: os.environ.get(k) for k in ("SKMEMORY_SEARCH_FUSION", "SKMEMORY_SEARCH_RERANK")}
+    keep = {
+        k: os.environ.get(k)
+        for k in ("SKMEMORY_SEARCH_FUSION", "SKMEMORY_SEARCH_RERANK", "SKMEMORY_SEARCH_DEADLINE_S")
+    }
     os.environ["SKMEMORY_SEARCH_FUSION"] = "on"
     os.environ["SKMEMORY_SEARCH_RERANK"] = "on"
+    # Ranking, not latency, is measured here: a loaded CI box must not time an
+    # arm out (and put it in cooldown), which would make the numbers drift.
+    os.environ["SKMEMORY_SEARCH_DEADLINE_S"] = "120"
     try:
         yield
     finally:
