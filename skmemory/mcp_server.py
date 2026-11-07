@@ -42,6 +42,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from .audience import READER_ENV, resolve_reader
 from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
 from .models import MemoryLayer
 from .store import MemoryStore
@@ -150,7 +151,7 @@ _LAYER_MAP = {
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    return [
+    tools = [
         Tool(
             name="memory_store",
             description="Store a new memory in SKMemory (polaroid snapshot).",
@@ -600,11 +601,73 @@ async def list_tools() -> list[Tool]:
             },
         ),
     ]
+    for tool in tools:
+        if tool.name in _READER_TOOLS:
+            tool.inputSchema.setdefault("properties", {})["reader"] = _READER_PROP
+    return tools
 
 
 # ---------------------------------------------------------------------------
 # Tool handlers
 # ---------------------------------------------------------------------------
+
+
+# Read tools that take an optional ``reader`` (the schema gains it below).
+_READER_TOOLS = frozenset(
+    {
+        "memory_check_duplicate",
+        "memory_recall",
+        "memory_list",
+        "memory_context",
+        "memory_health",
+        "memory_graph",
+    }
+)
+
+# Every registered tool is in exactly one class (enforced by a test), so a new
+# tool cannot ship without a decision about the reader ceiling.
+_FILTERED = "filtered"
+_OWNER_ONLY = "owner-only"
+_EXEMPT = "exempt"
+TOOL_READER_POLICY: dict[str, tuple[str, str]] = {
+    "memory_search": (_FILTERED, ""),
+    "memory_auto_context": (_FILTERED, ""),
+    "memory_recall": (_FILTERED, ""),
+    "memory_list": (_FILTERED, ""),
+    "memory_context": (_FILTERED, ""),
+    "memory_graph": (_FILTERED, ""),
+    "memory_health": (_FILTERED, ""),
+    "memory_check_duplicate": (_FILTERED, ""),
+    "memory_store": (_FILTERED, "dedup only matches memories the reader can see"),
+    "memory_save_session": (_FILTERED, "dedup only matches memories the reader can see"),
+    "memory_pre_compact": (_FILTERED, "dedup only matches memories the reader can see"),
+    "memory_promote": (_FILTERED, "hidden id is not-found"),
+    "memory_forget": (_FILTERED, "hidden id is not-found"),
+    "memory_export": (_OWNER_ONLY, ""),
+    "memory_import": (_OWNER_ONLY, ""),
+    "memory_consolidate": (_OWNER_ONLY, ""),
+    "memory_verify": (_OWNER_ONLY, ""),
+    "memory_audit": (_OWNER_ONLY, ""),
+    "memory_synthesize_daily": (_OWNER_ONLY, ""),
+    "memory_synthesize_dreams": (_OWNER_ONLY, ""),
+    "memory_extract": (_EXEMPT, "pure text-in, text-out; reads no stored memory"),
+}
+
+_READER_PROP = {
+    "type": "string",
+    "description": (
+        "Audience the results are for, e.g. '@public', '@community', '@work-circle', "
+        "'@inner-circle', '@work:<x>' or 'channel:<id>'. Omit for the owner. "
+        f"Can only narrow a {READER_ENV} declared for the server process."
+    ),
+}
+
+
+def _owner_only(arguments: dict, tool: str) -> list[TextContent] | None:
+    """Refuse an owner-only tool to any declared (or env-ceilinged) reader."""
+    if resolve_reader(arguments.get("reader")).unrestricted:
+        return None
+    return _error_response(f"{tool} is owner-only and cannot be used by a declared reader")
 
 
 @server.call_tool()
@@ -625,6 +688,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 layer=layer,
                 tags=tags,
                 source=source,
+                reader=arguments.get("reader"),
             )
             return _json_response({"memory_id": memory.id, "stored": True})
 
@@ -650,7 +714,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             content = arguments["content"]
             threshold = float(arguments.get("threshold", 0.73))
             k = int(arguments.get("k", 5))
-            matches = store.check_duplicate(content, threshold=threshold, k=k)
+            matches = store.check_duplicate(
+                content, threshold=threshold, k=k, reader=arguments.get("reader")
+            )
             return _json_response(
                 {
                     "duplicate_candidates": matches,
@@ -660,7 +726,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "memory_recall":
             memory_id = arguments["memory_id"]
-            memory = store.recall(memory_id)
+            memory = store.recall(memory_id, reader=arguments.get("reader"))
             if memory is None:
                 return _error_response(f"Memory not found: {memory_id}")
             return _json_response(_memory_dict(memory))
@@ -670,11 +736,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             tags = arguments.get("tags")
             limit = int(arguments.get("limit", 50))
             layer = _LAYER_MAP.get(layer_str) if layer_str else None
-            memories = store.list_memories(layer=layer, tags=tags, limit=limit)
+            memories = store.list_memories(
+                layer=layer, tags=tags, limit=limit, reader=arguments.get("reader")
+            )
             return _json_response([_memory_dict(m) for m in memories])
 
         elif name == "memory_forget":
             memory_id = arguments["memory_id"]
+            if not store.reader_can_see(memory_id, arguments.get("reader")):
+                return _error_response(f"Memory not found: {memory_id}")
             # Full forget/redaction cascade across every store, returning a
             # per-store verification report (flat, index.db, chroma, skmem-pg,
             # graph). ``deleted`` stays top-level for backward compatibility.
@@ -685,6 +755,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             memory_id = arguments["memory_id"]
             target_str = arguments["target"]
             summary = arguments.get("summary", "")
+            if not store.reader_can_see(memory_id, arguments.get("reader")):
+                return _error_response(f"Memory not found: {memory_id}")
             target = _LAYER_MAP.get(target_str)
             if target is None:
                 return _error_response(f"Invalid target layer: {target_str}")
@@ -700,6 +772,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
 
         elif name == "memory_consolidate":
+            if (refused := _owner_only(arguments, "memory_consolidate")) is not None:
+                return refused
             session_id = arguments["session_id"]
             summary = arguments["summary"]
             consolidated = store.consolidate_session(session_id, summary)
@@ -713,24 +787,29 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "memory_context":
             token_budget = int(arguments.get("token_budget", 4000))
-            context = store.load_context(max_tokens=token_budget)
+            context = store.load_context(max_tokens=token_budget, reader=arguments.get("reader"))
             return _json_response(context)
 
         elif name == "memory_export":
+            if (refused := _owner_only(arguments, "memory_export")) is not None:
+                return refused
             path = store.export_backup()
             return _json_response({"exported": True, "path": path})
 
         elif name == "memory_import":
+            if (refused := _owner_only(arguments, "memory_import")) is not None:
+                return refused
             backup_path = arguments["backup_path"]
             count = store.import_backup(backup_path)
             return _json_response({"imported": count, "path": backup_path})
 
         elif name == "memory_health":
-            health = store.health()
+            health = store.health(reader=arguments.get("reader"))
             return _json_response(health)
 
         elif name == "memory_graph":
             action = arguments["action"]
+            reader = arguments.get("reader")
             if store.graph is None:
                 return _error_response(
                     "SKGraph backend not configured. "
@@ -741,16 +820,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 if not mid:
                     return _error_response("memory_id required for traverse/around")
                 depth = int(arguments.get("depth", 2))
-                results = store.graph.get_related(mid, depth=depth)
+                results = store.graph_related(mid, depth=depth, reader=reader)
                 return _json_response(results)
             elif action == "lineage":
                 mid = arguments.get("memory_id")
                 if not mid:
                     return _error_response("memory_id required for lineage")
-                chain = store.graph.get_lineage(mid)
+                chain = store.graph_lineage(mid, reader=reader)
                 return _json_response(chain)
             elif action == "clusters":
-                clusters = store.graph.find_clusters()
+                clusters = store.graph_clusters(reader=reader)
                 return _json_response(clusters)
             elif action == "related_claims":
                 pivot_type = arguments.get("pivot_type")
@@ -763,15 +842,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     results = store.graph.related_claims_by_entity(query)
                 else:
                     results = store.graph.related_claims_by_citation(query)
-                return _json_response(results)
+                return _json_response(store.filter_graph_rows(results, reader))
             else:
                 return _error_response(f"Unknown graph action: {action}")
 
-        elif name == "memory_stats":
-            health = store.health()
-            return _json_response(health)
-
         elif name == "memory_verify":
+            if (refused := _owner_only(arguments, "memory_verify")) is not None:
+                return refused
             from .config import SKMEMORY_HOME
             from .fortress import FortifiedMemoryStore
 
@@ -784,6 +861,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return _json_response(result)
 
         elif name == "memory_audit":
+            if (refused := _owner_only(arguments, "memory_audit")) is not None:
+                return refused
             from .config import SKMEMORY_HOME
             from .fortress import AuditLog
 
@@ -794,6 +873,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # ── Synthesis & Auto-Context tools ────────────────────
         elif name == "memory_synthesize_daily":
+            if (refused := _owner_only(arguments, "memory_synthesize_daily")) is not None:
+                return refused
             from .journal import Journal
             from .synthesis import JournalSynthesizer
 
@@ -810,6 +891,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
 
         elif name == "memory_synthesize_dreams":
+            if (refused := _owner_only(arguments, "memory_synthesize_dreams")) is not None:
+                return refused
             from .journal import Journal
             from .synthesis import JournalSynthesizer
 
@@ -934,6 +1017,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         tags=["auto-extract", mem.type, f"session:{session_id}"],
                         source="mcp:memory_save_session",
                         source_ref=f"session:{session_id}",
+                        reader=arguments.get("reader"),
                         metadata={
                             "extraction_confidence": mem.confidence,
                             "extraction_type": mem.type,
@@ -970,6 +1054,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 tags=["pre-compact", "auto-save", f"session:{session_id}"],
                 source="mcp:memory_pre_compact",
                 source_ref=f"session:{session_id}",
+                reader=arguments.get("reader"),
                 metadata={
                     "tool": "memory_pre_compact",
                     "original_length": len(context),
