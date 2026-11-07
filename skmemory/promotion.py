@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
+from .audience import resolve_reader
 from .fresh_context import FreshContextRunner, resolve_runner
 from .models import Memory, MemoryLayer
 from .store import MemoryStore
@@ -258,6 +259,8 @@ class PromotionEngine:
         Returns:
             Optional[Memory]: The promoted memory, or None on failure.
         """
+        if not resolve_reader(None).unrestricted:
+            return None  # a declared reader never writes
         summary = self._generate_summary(memory)
         promoted = self._store.promote(memory.id, target, summary=summary)
 

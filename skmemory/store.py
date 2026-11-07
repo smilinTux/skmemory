@@ -1123,7 +1123,7 @@ class MemoryStore:
         # Reinforce: a recall is a hit. Same batched path search() uses.
         self._reinforce([memory_id])
 
-        return self.redact_links(memory, reader)
+        return memory
 
     def _reinforce(self, memory_ids: Sequence[str], *, debounce_s: float | None = None) -> None:
         """Bump access_count / last_accessed for memories returned to a caller.
@@ -1247,8 +1247,6 @@ class MemoryStore:
         kept = order_procedures(kept, query)
         if record_access:
             self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
-        if not scope.unrestricted:
-            kept = [self.redact_links(m, reader) for m in kept]
         return kept
 
     def _search_unscoped(
@@ -2380,7 +2378,7 @@ class MemoryStore:
         """
         scope = resolve_reader(reader)
         if not scope.unrestricted:
-            rows = self._list_as_reader(
+            return self._list_as_reader(
                 scope,
                 layer=layer,
                 tags=tags,
@@ -2389,7 +2387,6 @@ class MemoryStore:
                 created_before=created_before,
                 source=source,
             )
-            return [self.redact_links(m, reader) for m in rows]
         return self.primary.list_memories(
             layer=layer,
             tags=tags,
@@ -2496,10 +2493,16 @@ class MemoryStore:
         (and the relation that describes it), a hidden ``supersedes_id``, and in
         ``metadata`` a hidden ``superseded_by`` (removed whole, its other fields
         would still say a hidden successor exists), ``possible_conflict_with``
-        entries, ``write_triage`` (it names its target) and
-        ``decomposition.parent_id``. A dangling link reads like a hidden one.
+        entries, ``write_triage`` (it names its target),
+        ``decomposition.parent_id``, ``promoted_id``, ``chunk_memory_ids`` and
+        ``observation.evidence_ids``. A dangling link reads like a hidden one.
         This is the same rule :meth:`history` applies to its chain. The owner gets
         the memory back untouched (the same object), so owner output is unchanged.
+
+        Call this ONLY at an output boundary (MCP result, CLI print). ``recall``,
+        ``search`` and ``list_memories`` return the real record because internal
+        code (promotion, observation refresh) reads them and writes them back;
+        a redacted copy saved there would erase real links.
         """
         if resolve_reader(reader).unrestricted:
             return memory
@@ -2526,6 +2529,18 @@ class MemoryStore:
                 meta["possible_conflict_with"] = kept
             else:
                 meta.pop("possible_conflict_with")
+        pid = meta.get("promoted_id")
+        if pid is not None and not vis(pid):
+            meta.pop("promoted_id")
+        cmi = meta.get("chunk_memory_ids")
+        if isinstance(cmi, list):
+            meta["chunk_memory_ids"] = [i for i in cmi if vis(i)]
+        obs = meta.get("observation")
+        if isinstance(obs, dict) and isinstance(obs.get("evidence_ids"), list):
+            meta["observation"] = {
+                **obs,
+                "evidence_ids": [i for i in obs["evidence_ids"] if vis(i)],
+            }
         wt = meta.get("write_triage")
         if isinstance(wt, dict) and not vis(wt.get("target")):
             meta.pop("write_triage")
@@ -2688,6 +2703,8 @@ class MemoryStore:
         """
         if not str(memory_id or "").strip():
             raise ValueError("memory_id cannot be empty or null for promote()")
+        if not resolve_reader(None).unrestricted:
+            raise PermissionError("promote is owner-only: a declared reader may not write")
 
         source = self.primary.load(memory_id)
         if source is None:

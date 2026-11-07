@@ -55,6 +55,9 @@ def store(tmp_path, monkeypatch):
                 "write_triage": {"verdict": "changes", "target": "priv3"},
                 "decomposition": {"parent_id": "priv2", "idx": 0},
                 PARENT_RELATION_KEY: "supersedes",
+                "promoted_id": "priv1",
+                "chunk_memory_ids": ["priv2", "pub2", "ghost"],
+                "observation": {"proof_count": 3, "evidence_ids": ["priv3", "pub2"], "key": "k"},
             },
         )
     )
@@ -72,22 +75,89 @@ def _no_hidden(text: str):
     assert "ghost" not in text
 
 
-def test_recall_redacts_for_reader(store):
-    m = store.recall("pub1", reader="@public")
+def test_redact_links_for_reader(store):
+    m = store.redact_links(store.recall("pub1"), "@public")
     assert m.related_ids == ["pub2"]
     assert m.parent_id is None and m.supersedes_id is None
-    assert "superseded_by" not in m.metadata
-    assert "possible_conflict_with" not in m.metadata
-    assert "write_triage" not in m.metadata
+    for key in (
+        "superseded_by",
+        "possible_conflict_with",
+        "write_triage",
+        "promoted_id",
+        PARENT_RELATION_KEY,
+    ):
+        assert key not in m.metadata, key
     assert m.metadata["decomposition"] == {"idx": 0}
-    assert PARENT_RELATION_KEY not in m.metadata
+    assert m.metadata["chunk_memory_ids"] == ["pub2"]
+    assert m.metadata["observation"] == {"proof_count": 3, "evidence_ids": ["pub2"], "key": "k"}
     _no_hidden(m.model_dump_json())
 
 
-def test_recall_does_not_mutate_stored_record(store):
-    store.recall("pub1", reader="@public")
-    again = store.primary.load("pub1")
-    assert again.parent_id == "priv2" and "priv1" in again.related_ids
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("promoted_id", "priv1"),
+        ("chunk_memory_ids", ["priv1", "ghost"]),
+        ("observation", {"evidence_ids": ["priv1"], "key": "k"}),
+        ("superseded_by", {"id": "priv1"}),
+        ("possible_conflict_with", ["priv1"]),
+        ("write_triage", {"target": "priv1"}),
+        ("decomposition", {"parent_id": "priv1"}),
+    ],
+)
+def test_each_metadata_field_redacted(store, key, value):
+    store.primary.save(
+        Memory(id="solo", title="solo", content="x", context_tag="@public", metadata={key: value})
+    )
+    out = store.redact_links(store.recall("solo"), "@public")
+    _no_hidden(out.model_dump_json())
+
+
+def test_storage_apis_return_real_links_under_ceiling(store, monkeypatch):
+    monkeypatch.setenv(READER_ENV, "@public")
+    assert store.recall("pub1").parent_id == "priv2"
+    assert "priv1" in store.search("linkage zebra")[0].related_ids
+    assert "priv1" in {i for m in store.list_memories() if m.id == "pub1" for i in m.related_ids}
+
+
+def test_ceiling_promote_and_refresh_leave_links_unchanged(store, monkeypatch):
+    from skmemory.observations import refresh_observation
+    from skmemory.promotion import PromotionEngine
+
+    obs = Memory(
+        id="obs1",
+        title="o",
+        content="o",
+        context_tag="@public",
+        related_ids=["priv1"],
+        metadata={
+            "observation": {"evidence_ids": ["priv1", "pub2"], "proof_count": 2, "key": "k"}
+        },
+    )
+    store.primary.save(obs)
+    before = {i: store.primary.load(i).model_dump_json() for i in ("pub1", "obs1")}
+    monkeypatch.setenv(READER_ENV, "@public")
+    with pytest.raises(PermissionError):
+        store.promote("pub1", MemoryLayer.LONG)
+    assert (
+        PromotionEngine(store).promote_memory(store.primary.load("pub1"), MemoryLayer.LONG) is None
+    )
+    assert refresh_observation(store, store.primary.load("obs1"), "k") == "refused"
+    for i, raw in before.items():
+        assert store.primary.load(i).model_dump_json() == raw
+    assert store.primary.load("pub1").parent_id == "priv2"
+    assert "priv1" in store.primary.load("pub1").related_ids
+
+
+def test_cli_recall_redacts(store, monkeypatch):
+    from click.testing import CliRunner
+
+    from skmemory.cli import cli
+
+    monkeypatch.setenv(READER_ENV, "@public")
+    res = CliRunner().invoke(cli, ["recall", "pub1"], obj={"store": store})
+    assert res.exit_code == 0, res.output
+    _no_hidden(res.output)
 
 
 def test_visible_links_are_kept(store):
@@ -103,14 +173,13 @@ def test_visible_links_are_kept(store):
             metadata={"superseded_by": {"id": "pub2"}},
         )
     )
-    m = store.recall("pub3", reader="@public")
+    m = store.redact_links(store.recall("pub3"), "@public")
     assert m.related_ids == ["pub2"] and m.parent_id == "pub1" and m.supersedes_id == "pub2"
     assert m.metadata["superseded_by"] == {"id": "pub2"}
 
 
 def test_owner_recall_is_byte_identical(store, monkeypatch):
     raw = store.primary.load("pub1")
-    assert store.recall("pub1") is not None
     owner = call(store, monkeypatch, "memory_recall", memory_id="pub1")
     assert json.loads(owner) == json.loads(json.dumps(mcp_server._memory_dict(raw), default=str))
     assert all(h in owner for h in ("priv1", "priv2", "priv3"))
@@ -126,11 +195,3 @@ def test_mcp_recall_list_search_redact(store, monkeypatch):
     _no_hidden(call(store, monkeypatch, "memory_list", limit=10))
     _no_hidden(call(store, monkeypatch, "memory_search", query="linkage zebra"))
     _no_hidden(call(store, monkeypatch, "memory_search", query="linkage zebra", detail="index"))
-
-
-def test_store_search_and_list_redact(store):
-    hits = store.search("linkage zebra", reader="@public")
-    assert [m.id for m in hits] == ["pub1"]
-    _no_hidden(hits[0].model_dump_json())
-    for m in store.list_memories(reader="@public"):
-        _no_hidden(m.model_dump_json())
