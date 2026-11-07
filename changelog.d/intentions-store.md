@@ -1,0 +1,1 @@
+- **Intentions: typed prospective memory (SKMEM-P2-01).** New `skmemory.intentions` with the `Intention` model, a code-owned `transition()` lifecycle, a one-file-per-intention flat store under `intentions/` with a rebuildable `intentions` table in `index.db`, and a supersession sweep that invalidates intentions whose origin memory has a passed `valid_to`.
