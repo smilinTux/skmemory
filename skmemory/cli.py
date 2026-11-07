@@ -644,7 +644,7 @@ def recall(ctx: click.Context, memory_id: str) -> None:
 def search(ctx: click.Context, query: str, limit: int) -> None:
     """Search memories by text or meaning."""
     store: MemoryStore = ctx.obj["store"]
-    results = store.search(query, limit=limit)
+    results = store.search(query, limit=limit, record_access=True)
 
     if not results:
         click.echo("No memories found.")
@@ -785,7 +785,7 @@ def sweep_cmd(
                         "title": mem.title,
                         "from": mem.layer.value,
                         "to": target.value,
-                        "reason": engine._promotion_reason(mem),
+                        "reason": engine._promotion_reason(mem, engine._access_count(mem)),
                     }
                 )
 

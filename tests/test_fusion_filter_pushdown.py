@@ -236,7 +236,7 @@ def test_graph_arm_drops_stale_rows_that_fail_the_filter(store, monkeypatch):
     ok = _Mem("ok", layer="long-term")
     stale = _Mem("stale", layer="short-term")
     store.graph = _Graph([{"id": "ok"}, {"id": "stale"}])
-    monkeypatch.setattr(store, "recall", lambda i: {"ok": ok, "stale": stale}.get(i))
+    monkeypatch.setattr(store.primary, "load", lambda i: {"ok": ok, "stale": stale}.get(i))
     out = store.search_fused("alpha beta", limit=5, layer="long-term")
     assert [m.id for m in out] == ["ok"]
 
@@ -245,7 +245,7 @@ def test_graph_arm_blocks_private_memory_for_public_reader(store, monkeypatch):
     priv = _Mem("priv", ctx="@chef-only")
     pub = _Mem("pub", ctx="@public")
     store.graph = _Graph([{"id": "priv"}, {"id": "pub"}])
-    monkeypatch.setattr(store, "recall", lambda i: {"priv": priv, "pub": pub}.get(i))
+    monkeypatch.setattr(store.primary, "load", lambda i: {"priv": priv, "pub": pub}.get(i))
     out = store.search_fused("alpha beta", limit=5, context_tag="@public")
     assert [m.id for m in out] == ["pub"]
 
@@ -303,7 +303,7 @@ def test_fused_graph_arm_works_with_the_real_skgraph_signature(store, monkeypatc
         lambda self, tmpl, q, limit: [{"id": "stale", "title": "t", "layer": "short-term"}],
     )
     store.graph = g
-    monkeypatch.setattr(store, "recall", lambda i: _Mem("stale", layer="short-term"))
+    monkeypatch.setattr(store.primary, "load", lambda i: _Mem("stale", layer="short-term"))
     _, report = store.search_fused("alpha beta", limit=5, layer="long-term", return_report=True)
     arm = [a for a in report.arms if a.name == "graph"][0]
     assert arm.status != "failed"

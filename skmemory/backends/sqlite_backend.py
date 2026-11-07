@@ -29,8 +29,8 @@ import functools
 import json
 import logging
 import sqlite3
-from collections.abc import Callable
-from datetime import datetime
+from collections.abc import Callable, Sequence
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..atomic_io import atomic_write_text
@@ -450,6 +450,149 @@ class SQLiteBackend(BaseBackend):
                 except Exception as rec_err:  # pragma: no cover - defensive
                     logger.error("sqlite_backend: recovery failed: %s", rec_err)
             return False
+
+    # ------------------------------------------------------------------
+    # Usage counters (access_count / last_accessed / importance)
+    # ------------------------------------------------------------------
+
+    _BUMP_BUSY_MS = 200
+    _BUMP_CHUNK = 500
+
+    def bump_access(
+        self,
+        memory_ids: Sequence[str],
+        now: str | None = None,
+        debounce_s: float | None = None,
+    ) -> int:
+        """Reinforce memories that were read by a caller.
+
+        One batched ``UPDATE ... WHERE id IN (...)`` per call (chunked only to
+        stay under SQLite's variable limit), setting ``access_count + 1`` and
+        ``last_accessed`` together. With ``debounce_s``, a row is only bumped
+        when ``last_accessed`` is NULL or older than that many seconds, in the
+        WHERE clause, so repeat hits inside a session count once.
+
+        Hot-path write on its OWN short-lived connection with a 200ms busy
+        timeout. ``PRAGMA busy_timeout`` is per connection, and the cached
+        connection is shared by every thread, so changing it there would
+        change other threads' behaviour mid-flight. Under lock contention or a
+        broken index the bump is skipped; this method NEVER raises.
+
+        Returns:
+            int: Rows updated (0 on failure or no match).
+        """
+        ids = list(dict.fromkeys(str(i) for i in memory_ids if i))
+        if not ids:
+            return 0
+        clock = datetime.now(timezone.utc)
+        stamp = now or clock.isoformat()
+        guard = ""
+        extra: list = []
+        if debounce_s is not None:
+            guard = " AND (last_accessed IS NULL OR last_accessed < ?)"
+            extra = [(clock - timedelta(seconds=debounce_s)).isoformat()]
+        updated = 0
+        conn = None
+        try:
+            conn = sqlite3.connect(str(self._db_path), timeout=self._BUMP_BUSY_MS / 1000)
+            for i in range(0, len(ids), self._BUMP_CHUNK):
+                chunk = ids[i : i + self._BUMP_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                cur = conn.execute(
+                    "UPDATE memories SET access_count = access_count + 1, "
+                    f"last_accessed = ? WHERE id IN ({marks}){guard}",
+                    [stamp, *chunk, *extra],
+                )
+                updated += max(cur.rowcount, 0)
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.debug("sqlite_backend: access bump skipped: %s", e)
+            return 0
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+        return updated
+
+    def get_usage(self, memory_ids: Sequence[str]) -> dict[str, dict]:
+        """Read ``access_count`` / ``last_accessed`` for ids, in one query per chunk.
+
+        Ids with no index row are absent from the result, so a caller can tell
+        "zero accesses" from "not indexed".
+        """
+        ids = list(dict.fromkeys(str(i) for i in memory_ids if i))
+        out: dict[str, dict] = {}
+        try:
+            conn = self._get_conn()
+            for i in range(0, len(ids), self._BUMP_CHUNK):
+                chunk = ids[i : i + self._BUMP_CHUNK]
+                marks = ",".join("?" * len(chunk))
+                for row in conn.execute(
+                    f"SELECT id, access_count, last_accessed FROM memories WHERE id IN ({marks})",
+                    chunk,
+                ):
+                    out[row["id"]] = {
+                        "access_count": row["access_count"] or 0,
+                        "last_accessed": row["last_accessed"],
+                    }
+        except sqlite3.Error as e:
+            logger.warning("sqlite_backend: usage read failed: %s", e)
+        return out
+
+    def _snapshot_and_clear(self, keep: Sequence[str] = ()) -> list[tuple]:
+        """Snapshot usage state and delete the index rows in ONE transaction.
+
+        ``BEGIN IMMEDIATE`` takes the write lock first, so no bump can land
+        between the snapshot and the delete. Rows named in ``keep`` are not
+        deleted (preview-only orphans).
+        """
+        conn = self._get_conn()
+        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = conn.execute(
+                "SELECT id, access_count, last_accessed, importance FROM memories"
+            ).fetchall()
+            if keep:
+                conn.execute("CREATE TEMP TABLE IF NOT EXISTS _reindex_keep (id TEXT PRIMARY KEY)")
+                conn.execute("DELETE FROM _reindex_keep")
+                conn.executemany(
+                    "INSERT OR IGNORE INTO _reindex_keep (id) VALUES (?)", [(i,) for i in keep]
+                )
+                conn.execute("DELETE FROM memories WHERE id NOT IN (SELECT id FROM _reindex_keep)")
+                conn.execute("DROP TABLE _reindex_keep")
+            else:
+                conn.execute("DELETE FROM memories")
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+        kept = set(keep)
+        return [
+            (r["id"], r["access_count"], r["last_accessed"], r["importance"])
+            for r in rows
+            if r["id"] not in kept  # kept rows were never deleted, nothing to restore
+        ]
+
+    def _restore_usage(self, snapshot: list[tuple]) -> None:
+        """Put snapshotted usage state back on rows that survived the rebuild.
+
+        Additive for the count and max for the timestamp, so a bump that hit a
+        re-indexed row while the rebuild ran is kept, not overwritten.
+        """
+        if not snapshot:
+            return
+        try:
+            conn = self._get_conn()
+            conn.executemany(
+                "UPDATE memories SET access_count = access_count + ?, "
+                "last_accessed = CASE WHEN last_accessed IS NULL OR last_accessed < ? "
+                "THEN ? ELSE last_accessed END, importance = ? WHERE id = ?",
+                [(c, la or "", la, imp, i) for (i, c, la, imp) in snapshot],
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.warning("sqlite_backend: usage restore failed: %s", e)
 
     def _row_to_memory_summary(self, row: sqlite3.Row) -> dict:
         """Convert a database row to a lightweight memory summary dict.
@@ -1384,18 +1527,7 @@ class SQLiteBackend(BaseBackend):
             )
             keep = list(orphan_stats.get("preview_only_ids") or [])
 
-        conn = self._get_conn()
-        if keep:
-            conn.execute("CREATE TEMP TABLE IF NOT EXISTS _reindex_keep (id TEXT PRIMARY KEY)")
-            conn.execute("DELETE FROM _reindex_keep")
-            conn.executemany(
-                "INSERT OR IGNORE INTO _reindex_keep (id) VALUES (?)", [(i,) for i in keep]
-            )
-            conn.execute("DELETE FROM memories WHERE id NOT IN (SELECT id FROM _reindex_keep)")
-            conn.execute("DROP TABLE _reindex_keep")
-        else:
-            conn.execute("DELETE FROM memories")
-        conn.commit()
+        usage = self._snapshot_and_clear(keep)
 
         count = 0
         for layer in MemoryLayer:
@@ -1411,6 +1543,7 @@ class SQLiteBackend(BaseBackend):
                 except (json.JSONDecodeError, Exception):
                     continue
 
+        self._restore_usage(usage)
         return count
 
     def stats(self) -> dict:
