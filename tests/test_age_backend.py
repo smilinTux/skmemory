@@ -1285,3 +1285,30 @@ class TestAgeConfigWireIn:
         loader._ensure_backends()
 
         assert loader._graph_backend is None
+
+
+@requires_skmem_pg
+class TestExtendsEdge:
+    """SKMEM-P3-02: parent_relation 'extends' writes an EXTENDS edge that never closes the parent."""
+
+    def test_extends_edge_is_open_and_walkable(self, backend):
+        from skmemory.models import PARENT_RELATION_KEY, RELATION_EXTENDS
+
+        parent = make_memory(title="p")
+        backend.index_memory(parent)
+        child = make_memory(
+            title="c",
+            parent_id=parent.id,
+            metadata={PARENT_RELATION_KEY: RELATION_EXTENDS},
+        )
+        backend.index_memory(child)
+        rows = backend._cypher(
+            "MATCH (c:Memory {id: $c})-[e:EXTENDS]->(p:Memory {id: $p}) RETURN e",
+            {"c": child.id, "p": parent.id},
+            cols="e agtype",
+        )
+        assert len(rows) == 1
+        edge = backend._agtype(rows[0][0])
+        assert edge["properties"].get("valid_to") is None
+        assert not [e for e in backend.supersedes_edges() if e["child"] == child.id]
+        assert any(r["id"] == parent.id for r in backend.get_related(child.id, depth=1))

@@ -152,7 +152,13 @@ PARENT_RELATION_KEY = "parent_relation"
 RELATION_PROMOTED_FROM = "promoted_from"
 RELATION_CHUNK_OF = "chunk_of"
 RELATION_SUPERSEDES = "supersedes"
-PARENT_RELATIONS = (RELATION_PROMOTED_FROM, RELATION_CHUNK_OF, RELATION_SUPERSEDES)
+RELATION_EXTENDS = "extends"
+PARENT_RELATIONS = (
+    RELATION_PROMOTED_FROM,
+    RELATION_CHUNK_OF,
+    RELATION_SUPERSEDES,
+    RELATION_EXTENDS,
+)
 
 
 def parent_relation_of(parent_id: str | None, metadata: dict | None) -> str | None:

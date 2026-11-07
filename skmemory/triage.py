@@ -535,7 +535,9 @@ def _parse_verdict(text: str) -> TriageVerdict | None:
     return None
 
 
-def _gateway_complete(prompt: str, *, base_url: str, model: str, timeout: float) -> str:
+def _gateway_complete(
+    prompt: str, *, base_url: str, model: str, timeout: float, system: str | None = None
+) -> str:
     """One OpenAI-compatible chat completion call against skgateway.
 
     Stdlib urllib only. Raises on any transport or parse problem; the caller
@@ -545,7 +547,7 @@ def _gateway_complete(prompt: str, *, base_url: str, model: str, timeout: float)
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _LLM_SYSTEM},
+            {"role": "system", "content": system or _LLM_SYSTEM},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
@@ -702,3 +704,112 @@ def triage(
         status=attempt.status,
         detail=attempt.detail,
     )
+
+
+# =============================================================================
+# WRITE-TIME RELATION (card SKMEM-P3-02)
+# =============================================================================
+# ``triage()`` answers "what should happen to this candidate": its ``changes``
+# is also the abstain default and covers a vague claim made specific, so it is
+# far too broad to close a record's validity on. ``judge_relation`` narrows it
+# to the three outcomes the write path acts on, and resolves every doubt toward
+# ``extends`` (an edge, nothing closed). Only an explicit, agreed ``changes``
+# ever reaches the caller as ``changes``.
+
+RelationVerdict = Literal["unchanged", "extends", "changes", "unrelated"]
+
+_RELATION_SYSTEM = (
+    "You compare a NEW fact with ONE OLD fact about the same system. Answer with exactly "
+    "one word on the first line: UNCHANGED, EXTENDS, CHANGES, or UNRELATED.\n"
+    "UNCHANGED: the new fact says the same thing as the old one.\n"
+    "EXTENDS: the new fact adds detail or a further fact about the same subject and the old "
+    "fact is still true.\n"
+    "CHANGES: the new fact makes the old fact FALSE for the same subject and attribute (a "
+    "value replaced, a status reversed, a correction). Both cannot be true at once.\n"
+    "UNRELATED: different subject.\n"
+    "If the old fact could still be true, answer EXTENDS, never CHANGES."
+)
+_RELATION_RE = re.compile(r"\b(unchanged|extends|changes|unrelated)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class RelationResult:
+    """Typed outcome of :func:`judge_relation`. ``detail`` never carries memory text."""
+
+    verdict: RelationVerdict
+    tier: TriageTier
+    status: TriageStatus
+    detail: str = ""
+
+
+def _relation_prompt(new: str, old: str, variant: str) -> str:
+    ask = (
+        "Which single label fits the NEW fact relative to the OLD fact?"
+        if variant == "a"
+        else "Is the OLD fact still true now that the NEW fact is known? Then pick the one label."
+    )
+    return f"OLD: {old}\n\nNEW: {new}\n\n{ask}"
+
+
+def judge_relation(
+    new: str,
+    old: str,
+    *,
+    use_llm: bool | None = None,
+    gateway_url: str | None = None,
+    gateway_model: str | None = None,
+    timeout: float | None = None,
+    llm_call: Callable[[str], str] | None = None,
+) -> RelationResult:
+    """Decide how ``new`` relates to the single existing fact ``old``.
+
+    Rules first (the deterministic :func:`triage` tier): an agreed restatement is
+    ``unchanged`` (or an LLM agreement on a fact that adds no new word); an agreed change cue inside the related
+    band is ``changes``; no topical overlap is ``unrelated``. Anything the rules
+    cannot settle goes to the LLM (only when enabled, via skgateway) which must
+    answer the same way twice. Every other outcome, including a rules
+    disagreement, an LLM disagreement, an unparseable reply and a dead gateway,
+    resolves to ``extends`` when the texts overlap and ``unrelated`` when they
+    do not. It never raises.
+    """
+    rules = triage(new, [old], use_llm=False)
+    overlap = _lexical_similarity(new, old)
+    if rules.status == "ok" and rules.verdict == "restates":
+        return RelationResult("unchanged", "deterministic", "ok", rules.detail)
+    if rules.status == "ok" and rules.verdict == "changes":
+        return RelationResult("changes", "deterministic", "ok", rules.detail)
+
+    enabled = _env_flag("SKMEMORY_TRIAGE_USE_LLM") if use_llm is None else use_llm
+    fallback_verdict: RelationVerdict = "extends" if overlap > 0 else "unrelated"
+    if not enabled or overlap <= 0:
+        return RelationResult(
+            fallback_verdict, "deterministic", rules.status, "rules inconclusive, no LLM consulted"
+        )
+
+    base_url = gateway_url or os.environ.get("SKMEMORY_TRIAGE_GATEWAY_URL", DEFAULT_GATEWAY_URL)
+    model = gateway_model or os.environ.get("SKMEMORY_TRIAGE_GATEWAY_MODEL", DEFAULT_GATEWAY_MODEL)
+    tmo = timeout or float(os.environ.get("SKMEMORY_TRIAGE_TIMEOUT", str(DEFAULT_GATEWAY_TIMEOUT)))
+    if llm_call is None:
+
+        def call(prompt: str) -> str:
+            return _gateway_complete(
+                prompt, base_url=base_url, model=model, timeout=tmo, system=_RELATION_SYSTEM
+            )
+    else:
+        call = llm_call
+    try:
+        verdicts = []
+        for variant in ("a", "b"):
+            match = _RELATION_RE.search(call(_relation_prompt(new, old, variant)) or "")
+            verdicts.append(match.group(1).casefold() if match else None)
+    except Exception as exc:  # noqa: BLE001 - a dead gateway must never lose the write
+        logger.warning("judge_relation: gateway call failed: %s", type(exc).__name__)
+        return RelationResult(fallback_verdict, "llm", "failed", "gateway call failed")
+    if verdicts[0] is not None and verdicts[0] == verdicts[1]:
+        # "unchanged" drops the write, so the LLM alone is not enough: the new fact
+        # must also add no content word the old one lacks (a negation would).
+        agreed = verdicts[0]
+        if agreed == "unchanged" and not (_content_tokens(new) <= _content_tokens(old)):
+            agreed = "extends"
+        return RelationResult(agreed, "llm", "ok", "two phrasings agreed")  # type: ignore[arg-type]
+    return RelationResult(fallback_verdict, "llm", "abstained", "LLM phrasings disagreed")
