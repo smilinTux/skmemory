@@ -219,18 +219,17 @@ def knn_fetch(conn, sql: str, params: list, limit: int) -> list:
             cur.execute(sql, params)
             return cur.fetchall()
     ef, mode = hnsw_query_settings(limit)
-    with tx():
-        with conn.cursor() as cur:
-            if ef is not None:
-                cur.execute("SELECT set_config('hnsw.ef_search', %s, true)", (str(ef),))
-            if mode is not None:
-                try:
-                    with tx():
-                        cur.execute("SELECT set_config('hnsw.iterative_scan', %s, true)", (mode,))
-                except Exception as exc:  # noqa: BLE001 - pgvector < 0.8
-                    logger.warning("could not set hnsw.iterative_scan for this query: %s", exc)
-            cur.execute(sql, params)
-            return cur.fetchall()
+    with tx(), conn.cursor() as cur:
+        if ef is not None:
+            cur.execute("SELECT set_config('hnsw.ef_search', %s, true)", (str(ef),))
+        if mode is not None:
+            try:
+                with tx():
+                    cur.execute("SELECT set_config('hnsw.iterative_scan', %s, true)", (mode,))
+            except Exception as exc:  # noqa: BLE001 - pgvector < 0.8
+                logger.warning("could not set hnsw.iterative_scan for this query: %s", exc)
+        cur.execute(sql, params)
+        return cur.fetchall()
 
 
 def _parse_float_env(name: str, default: float) -> float:
