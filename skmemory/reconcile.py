@@ -9,7 +9,7 @@ from source. It is NOT streaming-replicated, NOT a central/shared system of
 record, and NOT a SPOF. The `memories` table is a DERIVED cache (same class as
 `index.db`): this reconcile rebuilds it, agent-scoped and idempotently, from the
 Syncthing-synced flat JSON. Embeddings are a deterministic function of flat
-content + mxbai on .100, so any node regenerates them locally. This module uses
+content + the mxbai embedding model, so any node regenerates them locally. This module uses
 the node-local ``SKMEMORY_PG_DSN`` when configured. The DSN is read from the
 environment and never placed in process arguments or logs. A legacy Docker
 transport remains available for nodes without a DSN and explicit test transports.
@@ -180,7 +180,7 @@ def _resolve_embed_urls() -> list[str]:
     """Embed endpoints for the reconcile path, in failover order.
 
     This module used to read a bare ``EMBED_URL`` and default to a hardcoded
-    ``http://192.168.0.100:11434/api/embed``, which is BOTH a different knob
+    LAN address, which is BOTH a different knob
     from the one the rest of the package documents (``SKMEMORY_EMBED_URL`` /
     ``SKMEMORY_EMBED_URLS``) and, since that host went down, an endpoint that
     cannot answer. A node could configure the documented variables correctly,
@@ -238,7 +238,7 @@ def prune_orphans_sql(agent: str, orphan_ids) -> str:
 
     * one run's DROP landed between another's CREATE and DELETE, failing it
       with `relation "flat_ids" does not exist` (354 failed syncs in 4 days on
-      .41, 2026-10-27), or two CREATEs raced (`Key (typname, typnamespace)=
+      one node, 2026-10-27), or two CREATEs raced (`Key (typname, typnamespace)=
       (flat_ids, 2200) already exists`);
     * worse, when the race did not error, run A's DELETE read run B's keep
       set, so A deleted every one of its own rows that B did not happen to

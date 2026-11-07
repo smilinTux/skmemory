@@ -1,7 +1,7 @@
 """One place that decides which derived backends a process may use.
 
 Two silent-degradation defects lived in the absence of this module (measured on
-192.168.0.41, 2026-11-06, no agent selector declared and
+a fleet node, 2026-11-06, no agent selector declared and
 ``SKMEMORY_VECTOR_BACKEND=pgvector`` in the environment):
 
 * The CLI never read ``SKMEMORY_VECTOR_BACKEND`` at all. It tried the retired

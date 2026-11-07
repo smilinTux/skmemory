@@ -15,7 +15,7 @@ The repo ships an installer that handles copy + enable + optional alert
 hook wiring with an interactive prompt:
 
 ```bash
-cd ~/clawd/skcapstone-repos/skmemory
+cd <your skmemory checkout>
 scripts/install-systemd.sh
 ```
 
@@ -74,18 +74,18 @@ the node-local **skmem-pg** container (pgvector) and its **Apache AGE**
 knowledge graph. The retired embedded-vector and FalkorDB targets were removed
 (card 162a19eb).
 
-1. **export-flat** — writes any SQLite-only memories out as JSON
+1. **export-flat** - writes any SQLite-only memories out as JSON
    (recovers orphans created by importers/dreamers that wrote SQLite
    without a flat file).
-2. **reindex** (safe) — picks up any flat-only files into the SQLite
+2. **reindex** (safe) - picks up any flat-only files into the SQLite
    index. Orphans are pre-exported in step 1, so no destruction.
-3. **pgvector reconcile** (`--vector`) — delegates to the vendored
+3. **pgvector reconcile** (`--vector`) - delegates to the vendored
    production engine (`python -m skmemory.reconcile`): backfills flat
    memories missing from skmem-pg, applies the **guarded** orphan prune
-   (cold-boot / mid-Syncthing-sync safe — refuses to wipe a derived
+   (cold-boot / mid-Syncthing-sync safe - refuses to wipe a derived
    index from an empty/partial flat source), and embeds any null-vector
-   rows via mxbai on `.100`.
-4. **AGE graph sync** (`--graph`) — backfills the
+   rows against the configured embed endpoint.
+4. **AGE graph sync** (`--graph`) - backfills the
    `<agent>_knowledge` property graph in skmem-pg (memory nodes +
    Tag/Source/RELATED_TO/SUPERSEDES/MENTIONS/CITES/ASSERTS/IN_SECTION
    edges) from flat files. Idempotent (MERGE semantics).
@@ -106,7 +106,7 @@ log only grows when work happens.
 > copies and reload:
 >
 > ```bash
-> cd ~/clawd/skcapstone-repos/skmemory
+> cd <your skmemory checkout>
 > scripts/install-systemd.sh --agents lumina,opus,jarvis --sync --no-fortress
 > systemctl --user restart skmemory-sync@lumina.timer   # or wait for next tick
 > ```
@@ -121,7 +121,7 @@ Runs `scripts/fortress-verify.sh`, which:
 1. Calls `skmemory fortress verify --json` for the agent named by `%i`.
 2. Writes a stamped JSON result to
    `~/.skcapstone/agents/<agent>/fortress/last-verify.json`.
-3. Fires an alert hook on `TAMPER` (exit 2) or `FAIL` (exit 3) — silent
+3. Fires an alert hook on `TAMPER` (exit 2) or `FAIL` (exit 3) - silent
    on `OK`.
 
 Alert hook resolution (in order):
