@@ -1,0 +1,1 @@
+docs: replace CLAUDE.md with AGENTS.md (sk-standards AGENT_INSTRUCTIONS_STANDARD). Same rules, reshaped into the standard's sections, plus the audience barrier invariants, a privacy section naming the enforcing tests, and hazards (no CLAUDE.md, CLAP not implemented, concurrent sessions). Drops the hardcoded co-author trailer in favour of naming the agent that did the work.
