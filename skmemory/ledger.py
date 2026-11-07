@@ -32,6 +32,7 @@ import logging
 import re
 import socket
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,10 +120,19 @@ class Ledger:
             "effect": effect,
             "session": session,
         }
-        rec["id"] = event_id(*(rec[k] for k in _FIELDS))
+        # Random id minted once here: two genuine events with identical fields stay
+        # distinct, while re-reading or re-importing the same line dedupes on this id.
+        rec["id"] = uuid.uuid4().hex
         self.dir.mkdir(parents=True, exist_ok=True)
-        with self._file(when).open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        path = self._file(when)
+        line = json.dumps(rec, separators=(",", ":")) + "\n"
+        with path.open("ab") as f:
+            if f.tell() > 0:
+                with path.open("rb") as r:
+                    r.seek(-1, 2)
+                    if r.read(1) != b"\n":  # torn tail: do not fuse onto it
+                        f.write(b"\n")
+            f.write(line.encode("utf-8"))
         self._index([rec])
         return rec["id"]
 
@@ -130,19 +140,25 @@ class Ledger:
         """Every event from every host file, deduped by id, ordered by time."""
         seen: dict[str, dict] = {}
         for p in sorted(self.dir.glob("outcomes-*.jsonl")) if self.dir.is_dir() else []:
-            for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-                if not line.strip():
+            for n, raw in enumerate(p.read_bytes().split(b"\n"), 1):
+                if not raw.strip():
                     continue
                 try:
-                    r = json.loads(line)
+                    r = json.loads(raw.decode("utf-8"))
                     clean = {k: r[k] if k != "effect" else r.get("effect") for k in _FIELDS}
+                    clean["version"] = str(clean["version"])
                     if clean["event"] not in EVENTS:
                         raise ValueError("bad event")
                     _utc(clean["at"])
                 except (ValueError, KeyError, TypeError) as err:
                     logger.warning("ledger: skipping %s:%d (%s)", p.name, n, err)
                     continue
-                clean["id"] = event_id(*(clean[k] for k in _FIELDS))
+                stored = r.get("id")
+                clean["id"] = (
+                    stored
+                    if isinstance(stored, str) and stored
+                    else event_id(*(clean[k] for k in _FIELDS))
+                )
                 seen.setdefault(clean["id"], clean)
         return sorted(seen.values(), key=lambda r: (_utc(r["at"]), r["id"]))
 
@@ -192,6 +208,7 @@ class Ledger:
                 a[0] += 1
                 continue
             a[1] += 1
+            # Future-dated events (clock skew between hosts) are capped at weight 1.0.
             age = max((now - _utc(r["at"])).total_seconds() / 86400.0, 0.0)
             w = 0.5 ** (age / HALF_LIFE_DAYS)
             if r["effect"] == "success":

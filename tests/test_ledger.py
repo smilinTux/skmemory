@@ -51,11 +51,65 @@ def test_hosts_write_separate_files_and_merge_deduped(tmp_path):
     a, b = Ledger(tmp_path, host="nor"), Ledger(tmp_path, host="chi")
     when = datetime(2026, 10, 3, tzinfo=timezone.utc)
     a.record("s", "1", "served", session="x", at=when)
-    b.record("s", "1", "served", session="x", at=when)  # same logical event, other host
     b.record("s", "1", "served", session="y", at=when)
     files = sorted(p.name for p in (tmp_path / "ledger").iterdir())
     assert files == ["outcomes-chi-2026-10.jsonl", "outcomes-nor-2026-10.jsonl"]
+    # a re-import of the same lines under another name dedupes on the stored id
+    nor = tmp_path / "ledger" / "outcomes-nor-2026-10.jsonl"
+    (tmp_path / "ledger" / "outcomes-copy-2026-10.jsonl").write_bytes(nor.read_bytes())
     assert len(a.events()) == len(b.events()) == 2
+
+
+def test_same_timestamp_same_session_events_stay_distinct(tmp_path):
+    led = Ledger(tmp_path, host="h")
+    for _ in range(2):
+        led.record(
+            "s", "1", "followed", effect="success", session="x", at="2026-10-01T00:00:00+00:00"
+        )
+    assert len(led.events()) == 2
+
+
+def test_numeric_and_string_version_share_a_key(tmp_path):
+    led = Ledger(tmp_path, host="h")
+    led.record("s", 1.2, "served", at="2026-10-01T00:00:00+00:00")
+    line = json.dumps(
+        {
+            "skill": "s",
+            "version": 1.2,
+            "event": "served",
+            "at": "2026-10-02T00:00:00+00:00",
+            "effect": None,
+            "session": "",
+        }
+    )
+    (tmp_path / "ledger" / "outcomes-x-2026-10.jsonl").write_text(line + "\n")
+    assert [s.key for s in led.scores("2026-11-01T00:00:00+00:00")] == ["s@1.2"]
+
+
+def test_torn_tail_does_not_crash_or_swallow_next_event(tmp_path):
+    led = Ledger(tmp_path, host="h")
+    led.record("s", "1", "served", at="2026-10-01T00:00:00+00:00")
+    p = tmp_path / "ledger" / "outcomes-h-2026-10.jsonl"
+    with p.open("ab") as f:
+        f.write(b'{"skill":"s","version":"1","event":"ser\xe2\x82')  # torn multibyte, no newline
+    assert len(led.events()) == 1
+    led.record("s", "1", "served", at="2026-10-02T00:00:00+00:00")
+    assert len(led.events()) == 2
+
+
+def test_future_event_weight_capped(tmp_path):
+    led = Ledger(tmp_path, host="h")
+    led.record("s", "1", "followed", effect="success", at="2027-01-01T00:00:00+00:00")
+    assert led.score("s", "1", "2026-11-01T00:00:00+00:00").net == 1.0
+
+
+def test_cli_top_defaults_to_agent_memory_dir(tmp_path, monkeypatch):
+    base = tmp_path / "agents" / "nova"
+    monkeypatch.setattr("skmemory.agents.get_agent_paths", lambda *a, **k: {"base": base})
+    _load(Ledger(base / "memory", host="h"))
+    r = CliRunner().invoke(cli, ["ledger", "top", "--as-of", "2026-11-01T12:00:00+00:00"])
+    assert r.exit_code == 0, r.output
+    assert "recover-schema@1.2" in r.output
 
 
 def test_month_rollover_and_malformed_lines_skipped(tmp_path):

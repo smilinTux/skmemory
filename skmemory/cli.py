@@ -4016,9 +4016,13 @@ def ledger_top(limit: int, as_of: str | None, base: str | None) -> None:
     from .ledger import Ledger
 
     if base is None:
-        from .config import SKMEMORY_HOME
+        from .agents import get_agent_paths
 
-        base = str(SKMEMORY_HOME / "memories")
+        try:
+            base = str(get_agent_paths()["base"] / "memory")
+        except ValueError as exc:
+            click.echo(f"No active agent memory profile: {exc}", err=True)
+            raise SystemExit(1) from exc
     rows = Ledger(base).top(as_of, limit)
     if not rows:
         click.echo("No ledger events.")
