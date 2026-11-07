@@ -393,8 +393,8 @@ _DSN = os.environ.get("SKMEMORY_PG_DSN")
 def test_pg_as_of_executes_on_real_postgres(monkeypatch):
     from skmemory.backends.pgvector_backend import PGVectorBackend
 
-    be = PGVectorBackend(agent="p3-03-test")
-    be._embed = lambda q: [0.0] * 1024
+    be = PGVectorBackend(dsn=_DSN, agent="lumina")
+    be._embed = lambda q: [1.0] + [0.0] * 1023
     conn = be._connection()
     try:
         for mid, created, vto in (("p303-old", OLD, MID), ("p303-new", MID, None)):
@@ -402,24 +402,38 @@ def test_pg_as_of_executes_on_real_postgres(monkeypatch):
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO memories (id, agent, layer, role, title, content, summary, tags, "
-                    "source, created_at, updated_at, memory_json) VALUES "
-                    "(%s,%s,'mid-term','ai',%s,%s,'',%s,'t',%s,%s,%s::jsonb)",
-                    (mid, "p3-03-test", mid, m.content, [], created, created, m.model_dump_json()),
+                    "source, created_at, updated_at, memory_json, embedding) VALUES "
+                    "(%s,%s,'mid-term','ai',%s,%s,'',%s,'t',%s,%s,%s::jsonb,%s::vector)",
+                    (
+                        mid,
+                        "lumina",
+                        mid,
+                        m.content,
+                        [],
+                        created,
+                        created,
+                        m.model_dump_json(),
+                        str([1.0] + [0.0] * 1023),
+                    ),
                 )
         for migrated in (False, True):
             be._v2_columns = migrated
             if migrated:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE memories SET valid_from=created_at, valid_to=(memory_json->>'valid_to')::timestamptz WHERE agent='p3-03-test'"
+                        "UPDATE memories SET valid_from=created_at, valid_to=(memory_json->>'valid_to')::timestamptz WHERE agent='lumina' AND id LIKE 'p303-%'"
                     )
             ids = lambda t: {m.id for m in be.list_memories(as_of=t)}  # noqa: E731
             assert ids("2026-03-01T00:00:00+00:00") == {"p303-old"}
             assert ids("2026-07-01T00:00:00+00:00") == {"p303-new"}
             assert ids("2025-01-01T00:00:00+00:00") == set()
+            sem = lambda t: {m.id for m in be.search_semantic("q", as_of=t)}  # noqa: E731
+            assert sem("2026-03-01T00:00:00+00:00") == {"p303-old"}
+            assert sem("2026-07-01T00:00:00+00:00") == {"p303-new"}
+            assert sem("2025-01-01T00:00:00+00:00") == set()
             assert {
                 m.id for m in be.search_lexical("p303 gateway", as_of="2026-07-01T00:00:00+00:00")
             } <= {"p303-new"}
     finally:
         with conn.cursor() as cur:
-            cur.execute("DELETE FROM memories WHERE agent='p3-03-test'")
+            cur.execute("DELETE FROM memories WHERE agent='lumina' AND id LIKE 'p303-%'")
