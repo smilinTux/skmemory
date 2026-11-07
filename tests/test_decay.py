@@ -205,7 +205,7 @@ def test_diminishing_returns_never_saturate(store, backend):
     for _ in range(40):
         backend.bump_access([m.id])
         vals.append(_imp(backend, m.id))
-    assert all(b > a for a, b in zip(vals, vals[1:]))
+    assert all(b > a for a, b in zip(vals, vals[1:], strict=False))
     assert vals[-1] < 1.0
     assert vals[1] - vals[0] > vals[-1] - vals[-2]
 
