@@ -59,6 +59,7 @@ try:  # POSIX only; without it locking degrades to a warning
 except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
+from . import wal_guard
 from .atomic_io import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -332,6 +333,7 @@ class IntentionStore:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute(f"PRAGMA busy_timeout={self._busy_ms}")
             self._conn.execute("PRAGMA journal_mode=WAL")
+            wal_guard.apply(self._conn)
         return self._conn
 
     def _ensure_table(self) -> None:

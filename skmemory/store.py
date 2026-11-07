@@ -2900,6 +2900,11 @@ class MemoryStore:
         overall = "ok"
         if (sqlite_only or 0) > 0 or (flat_only or 0) > 0:
             overall = "degraded"
+        primary_wal = status["primary"].get("wal") if isinstance(status["primary"], dict) else None
+        if isinstance(primary_wal, dict):
+            status["wal"] = primary_wal
+            if primary_wal.get("wal_ok") is False:
+                overall = "degraded"
         # An ABSENT tier directory is not an empty one. A layer that never
         # synced onto this node has no index rows and no files, so every count
         # reads zero and the old check called that in sync.
