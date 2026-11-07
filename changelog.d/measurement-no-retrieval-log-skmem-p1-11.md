@@ -1,0 +1,1 @@
+Benchmark queries (live_bench, arm_diff) no longer write retrieval.jsonl records: they run inside retrieval_log.measurement(), a ContextVar block, so the arm_liveness window memory_health reads reflects real traffic only (SKMEM-P1-11).

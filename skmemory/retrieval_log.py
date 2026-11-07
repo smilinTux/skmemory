@@ -20,6 +20,8 @@ from __future__ import annotations
 import atexit
 import contextlib
 import fcntl
+import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -47,6 +49,26 @@ _lock = threading.Lock()
 _thread: threading.Thread | None = None
 _idle = threading.Event()
 _idle.set()
+
+
+_measuring: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "skmemory_retrieval_log_measuring", default=False
+)
+
+
+@contextlib.contextmanager
+def measurement():
+    """Searches made inside this block write no retrieval record.
+
+    Benchmarks enter it so their queries do not pad the 100-record window
+    ``arm_liveness`` reads. A ContextVar is per thread and per asyncio task, so a
+    normal search running concurrently elsewhere still logs.
+    """
+    token = _measuring.set(True)
+    try:
+        yield
+    finally:
+        _measuring.reset(token)
 
 
 def enabled() -> bool:
@@ -147,7 +169,7 @@ def _drain() -> None:
 def record(log_dir: Path | None, rec: dict) -> None:
     """Queue ``rec`` for writing. Never raises, never blocks."""
     global _thread
-    if log_dir is None or not enabled():
+    if log_dir is None or not enabled() or _measuring.get():
         return
     try:
         _idle.clear()
