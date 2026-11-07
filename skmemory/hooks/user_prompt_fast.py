@@ -11,7 +11,6 @@ correct answer beats a silent miss. It never raises and never prints a traceback
 
 import contextlib
 import os
-import subprocess
 import sys
 
 
@@ -76,6 +75,8 @@ def main(argv):
         raw = sys.stdin.buffer.read() if not sys.stdin.isatty() else b""
     except Exception:
         raw = b""
+    import subprocess  # lazy: costs ~8 ms, only needed on handover
+
     exe = sys.executable
     proc = subprocess.run(
         [exe, "-m", "skmemory.hook_cli", "user-prompt", "--harness", harness],
