@@ -18,6 +18,7 @@ probe also fails.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -109,10 +110,8 @@ def _rotate(path: Path) -> None:
 def _write(p: Path, lines: list[str]) -> None:
     """Append under an flock so two processes cannot interleave or clobber a rotation."""
     p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(p.parent, 0o700)
-    except OSError:
-        pass
     lock_fd = os.open(str(p) + ".lock", os.O_CREAT | os.O_WRONLY, 0o600)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
