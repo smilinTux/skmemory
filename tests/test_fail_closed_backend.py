@@ -279,7 +279,7 @@ def test_mcp_retired_backend_env_fails_fast(monkeypatch):
 
     mcp._store = None
     monkeypatch.setenv("SKMEMORY_VECTOR_BACKEND", "chroma")
-    with pytest.raises(BackendInitError, match="ChromaDB was retired"):
+    with pytest.raises(BackendInitError, match="ChromaDB has been retired"):
         mcp._get_store()
     mcp._store = None
 
