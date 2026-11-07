@@ -1072,7 +1072,22 @@ class MemoryStore:
             except Exception as exc:
                 logger.warning("Vector search failed, falling back to text search: %s", exc)
 
-        results = _ctx(self.primary.search_text(query, limit=fetch))
+        results = []
+        local = getattr(self.primary, "search_lexical_local", None)
+        if local is not None:
+            try:
+                results = local(
+                    query,
+                    limit=limit,
+                    layer=layer,
+                    tags=tags,
+                    source=source,
+                    context_tag=context_tag,
+                )
+            except Exception as exc:
+                logger.warning("Local FTS search failed, falling back to LIKE: %s", exc)
+        if not results:
+            results = _ctx(self.primary.search_text(query, limit=fetch))
         if record_access:
             self._reinforce([m.id for m in results], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         return results
@@ -1249,6 +1264,24 @@ class MemoryStore:
                 )
             return _collect(self.primary.search_text(query, limit=arm_limit), check_ctx=True)
 
+        def _lexical_local() -> list[str]:
+            # Always-on local tier: bm25 over the full text in index.db. With
+            # skmem-pg down it is the only real lexical engine; with pg up it
+            # is an extra voter and fusion handles the overlap.
+            local = getattr(self.primary, "search_lexical_local", None)
+            if local is None:
+                return []
+            return _collect(
+                local(
+                    query,
+                    limit=arm_limit,
+                    layer=layer,
+                    tags=tags,
+                    source=source,
+                    context_tag=context_tag,
+                )
+            )
+
         def _graph() -> list[str]:
             backend = self.graph
             # Prefer token-level entity lookup when the backend offers it.
@@ -1314,6 +1347,12 @@ class MemoryStore:
         arms = [
             run_arm("semantic", _semantic if self.vector is not None else None),
             run_arm("lexical", _lexical),
+            run_arm(
+                "lexical_local",
+                _lexical_local
+                if getattr(self.primary, "search_lexical_local", None) is not None
+                else None,
+            ),
             run_arm("graph", _graph if self.graph is not None else None),
             run_arm("temporal", _temporal),
         ]
