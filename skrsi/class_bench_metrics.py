@@ -16,12 +16,12 @@ BASELINES = ["bm25_only", "grep_substring", "vector_only", "fallback_chain"]
 
 def flatten(raw: dict) -> dict:
     classes = raw["by_class"]
-    # worst class for the production candidate: a mean would hide a collapsed class
-    recalls = [
-        c["strategies"]["candidate"]["recall@5"]
-        for c in classes.values()
-        if c["strategies"]["candidate"].get("recall@5") is not None
-    ]
+    # worst class for the production candidate: a mean would hide a collapsed class. A class that should score
+    # recall but reports null (dead arm) makes the whole metric missing; it is never dropped from the minimum.
+    # Abstain-scored classes (abstain_correct present) have no recall by design.
+    cand = [c["strategies"]["candidate"] for c in classes.values()]
+    dead = any(c.get("recall@5") is None and "abstain_correct" not in c for c in cand)
+    recalls = [c["recall@5"] for c in cand if c.get("recall@5") is not None]
     return {
         "cohort": {
             "id": "class-bench-v1",
@@ -42,7 +42,7 @@ def flatten(raw: dict) -> dict:
         },
         "metrics": {
             "class_recall_at_5_per_class": {
-                "value": min(recalls) if recalls else None,
+                "value": None if dead or not recalls else min(recalls),
                 "unit": "ratio",
                 "direction": "higher",
             },

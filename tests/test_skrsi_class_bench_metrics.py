@@ -24,11 +24,23 @@ def raw(leaks=0, recalls=(1.0, 0.5, None)):
     }
 
 
-def test_flatten_takes_worst_class_and_skips_null_classes():
-    out = cbm.flatten(raw())
+def test_flatten_takes_worst_class_and_abstain_classes_have_no_recall():
+    r = raw(recalls=(1.0, 0.5))
+    r["by_class"]["absent"] = {
+        "queries": 4,
+        "strategies": {"candidate": {"recall@5": None, "abstain_correct": 1.0}},
+    }
+    out = cbm.flatten(r)
     assert out["metrics"]["class_recall_at_5_per_class"]["value"] == 0.5
     assert out["cohort"]["sample_size"] == 12
     assert out["instrument"]["runs_production_code"] is True
+
+
+def test_a_dead_class_makes_the_metric_missing_not_the_minimum_of_the_rest():
+    out = cbm.flatten(
+        raw(recalls=(1.0, 0.5, None))
+    )  # null recall without abstain scoring is a dead arm
+    assert out["metrics"]["class_recall_at_5_per_class"]["value"] is None
 
 
 def test_no_measured_class_is_missing_not_zero():
