@@ -1,0 +1,1 @@
+Failure procedures (kind=procedure, outcome=failure) get a WARNING: prefix on memory_auto_context index lines (content untouched) and, for how-to queries, rank below successful procedures without being dropped or filtered. Queries asking about failure keep retrieved order (SKMEM-P4-05).
