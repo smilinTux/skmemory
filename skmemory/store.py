@@ -345,6 +345,7 @@ class MemoryStore:
         related_ids: list[str] | None = None,
         metadata: dict | None = None,
         decompose: bool = False,
+        reader: str | None = None,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -362,6 +363,10 @@ class MemoryStore:
             source_ref: Reference to the source.
             related_ids: IDs of related memories.
             metadata: Additional key-value data.
+            reader: Who is writing. Dedup only matches memories this reader may
+                see; a hash match with a hidden memory is ignored and a fresh
+                memory is written, so the write cannot confirm hidden content
+                or return its id.
 
         Returns:
             Memory: The stored memory with its assigned ID.
@@ -372,6 +377,8 @@ class MemoryStore:
         _content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
         if isinstance(self.primary, SQLiteBackend):
             existing = self.primary.find_by_content_hash(_content_hash)
+            if existing and not resolve_reader(reader).allows(existing.context_tag, existing.tags):
+                existing = None
             if existing:
                 logger.info(
                     "Duplicate content detected for title '%s' — returning existing memory %s",

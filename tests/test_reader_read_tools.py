@@ -232,3 +232,80 @@ def test_channelless_ritual_refused_under_reader_env(store, monkeypatch):
     monkeypatch.setenv(READER_ENV, "@public")
     with pytest.raises(PermissionError):
         perform_ritual(store=store)
+
+
+def _registered():
+    return [t.name for t in asyncio.run(mcp_server.list_tools())]
+
+
+def test_every_tool_has_exactly_one_policy():
+    names = set(_registered())
+    assert names == set(mcp_server.TOOL_READER_POLICY), names ^ set(mcp_server.TOOL_READER_POLICY)
+    for tool, (cls, why) in mcp_server.TOOL_READER_POLICY.items():
+        assert cls in {"filtered", "owner-only", "exempt"}, tool
+        if cls == "exempt":
+            assert why, f"{tool} exempt without a reason"
+
+
+@pytest.mark.parametrize(
+    "tool,args",
+    [
+        ("memory_import", {"backup_path": "/nonexistent.json"}),
+        ("memory_consolidate", {"session_id": "s", "summary": "x"}),
+    ],
+)
+def test_import_and_consolidate_owner_only(store, monkeypatch, tool, args):
+    monkeypatch.setenv(READER_ENV, "@public")
+    assert "owner-only" in call(store, monkeypatch, tool, **args)
+
+
+def test_owner_only_policy_tools_all_refuse(store, monkeypatch):
+    monkeypatch.setenv(READER_ENV, "@public")
+    for tool, (cls, _) in mcp_server.TOOL_READER_POLICY.items():
+        if cls == "owner-only":
+            out = call(store, monkeypatch, tool, backup_path="x", session_id="s", summary="x")
+            assert "owner-only" in out, tool
+
+
+def test_consolidate_does_not_copy_private_ids(store, monkeypatch):
+    store.primary.save(
+        Memory(
+            id="privS",
+            title="p",
+            content="c",
+            layer=MemoryLayer.SHORT,
+            tags=["session:S", "secret-tag"],
+            context_tag="@chef-only",
+        )
+    )
+    monkeypatch.setenv(READER_ENV, "@public")
+    call(store, monkeypatch, "memory_consolidate", session_id="S", summary="x")
+    assert not [m for m in store.primary.list_memories(limit=50) if "consolidated" in m.tags]
+
+
+@pytest.mark.parametrize(
+    "tool,args",
+    [
+        ("memory_store", {"title": "t", "content": "priv body"}),
+        ("memory_save_session", {"conversation": "We decided to use priv body. " * 10}),
+        ("memory_pre_compact", {"context": "priv body"}),
+    ],
+)
+def test_writes_do_not_dedup_against_hidden(store, monkeypatch, tool, args):
+    monkeypatch.setenv(READER_ENV, "@public")
+    before = store.primary.load("priv").model_dump()
+    out = json.loads(call(store, monkeypatch, tool, **args))
+    assert '"priv"' not in json.dumps(out)
+    assert store.primary.load("priv").model_dump() == before
+
+
+def test_memory_store_hash_match_hidden_writes_fresh(store, monkeypatch):
+    monkeypatch.setenv(READER_ENV, "@public")
+    out = json.loads(call(store, monkeypatch, "memory_store", title="t", content="priv body"))
+    assert out["memory_id"] != "priv" and out["stored"] is True
+    assert store.primary.load(out["memory_id"]) is not None
+
+
+def test_owner_dedup_unchanged(store, monkeypatch):
+    out = json.loads(call(store, monkeypatch, "memory_store", title="t", content="priv body"))
+    assert out["memory_id"] == "priv"

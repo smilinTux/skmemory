@@ -624,6 +624,35 @@ _READER_TOOLS = frozenset(
     }
 )
 
+# Every registered tool is in exactly one class (enforced by a test), so a new
+# tool cannot ship without a decision about the reader ceiling.
+_FILTERED = "filtered"
+_OWNER_ONLY = "owner-only"
+_EXEMPT = "exempt"
+TOOL_READER_POLICY: dict[str, tuple[str, str]] = {
+    "memory_search": (_FILTERED, ""),
+    "memory_auto_context": (_FILTERED, ""),
+    "memory_recall": (_FILTERED, ""),
+    "memory_list": (_FILTERED, ""),
+    "memory_context": (_FILTERED, ""),
+    "memory_graph": (_FILTERED, ""),
+    "memory_health": (_FILTERED, ""),
+    "memory_check_duplicate": (_FILTERED, ""),
+    "memory_store": (_FILTERED, "dedup only matches memories the reader can see"),
+    "memory_save_session": (_FILTERED, "dedup only matches memories the reader can see"),
+    "memory_pre_compact": (_FILTERED, "dedup only matches memories the reader can see"),
+    "memory_promote": (_FILTERED, "hidden id is not-found"),
+    "memory_forget": (_FILTERED, "hidden id is not-found"),
+    "memory_export": (_OWNER_ONLY, ""),
+    "memory_import": (_OWNER_ONLY, ""),
+    "memory_consolidate": (_OWNER_ONLY, ""),
+    "memory_verify": (_OWNER_ONLY, ""),
+    "memory_audit": (_OWNER_ONLY, ""),
+    "memory_synthesize_daily": (_OWNER_ONLY, ""),
+    "memory_synthesize_dreams": (_OWNER_ONLY, ""),
+    "memory_extract": (_EXEMPT, "pure text-in, text-out; reads no stored memory"),
+}
+
 _READER_PROP = {
     "type": "string",
     "description": (
@@ -659,6 +688,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 layer=layer,
                 tags=tags,
                 source=source,
+                reader=arguments.get("reader"),
             )
             return _json_response({"memory_id": memory.id, "stored": True})
 
@@ -742,6 +772,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
 
         elif name == "memory_consolidate":
+            if (refused := _owner_only(arguments, "memory_consolidate")) is not None:
+                return refused
             session_id = arguments["session_id"]
             summary = arguments["summary"]
             consolidated = store.consolidate_session(session_id, summary)
@@ -765,6 +797,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return _json_response({"exported": True, "path": path})
 
         elif name == "memory_import":
+            if (refused := _owner_only(arguments, "memory_import")) is not None:
+                return refused
             backup_path = arguments["backup_path"]
             count = store.import_backup(backup_path)
             return _json_response({"imported": count, "path": backup_path})
@@ -811,10 +845,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return _json_response(store.filter_graph_rows(results, reader))
             else:
                 return _error_response(f"Unknown graph action: {action}")
-
-        elif name == "memory_stats":
-            health = store.health(reader=arguments.get("reader"))
-            return _json_response(health)
 
         elif name == "memory_verify":
             if (refused := _owner_only(arguments, "memory_verify")) is not None:
@@ -987,6 +1017,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         tags=["auto-extract", mem.type, f"session:{session_id}"],
                         source="mcp:memory_save_session",
                         source_ref=f"session:{session_id}",
+                        reader=arguments.get("reader"),
                         metadata={
                             "extraction_confidence": mem.confidence,
                             "extraction_type": mem.type,
@@ -1023,6 +1054,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 tags=["pre-compact", "auto-save", f"session:{session_id}"],
                 source="mcp:memory_pre_compact",
                 source_ref=f"session:{session_id}",
+                reader=arguments.get("reader"),
                 metadata={
                     "tool": "memory_pre_compact",
                     "original_length": len(context),

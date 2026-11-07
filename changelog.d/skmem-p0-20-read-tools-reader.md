@@ -9,3 +9,7 @@
   `memory_forget` report a hidden id as not-found. Undeclared local owner sessions are unchanged.
 - **Unknown or memberless ritual channels read as `@public`** (was `@chef-only`, the highest
   ceiling, which filtered nothing).
+- `memory_import` and `memory_consolidate` are owner-only under a declared reader. `memory_store`,
+  `memory_save_session` and `memory_pre_compact` no longer dedup against memories the reader cannot
+  see (a hash match with a hidden memory writes a fresh memory and never returns the hidden id).
+  `TOOL_READER_POLICY` classifies every registered MCP tool, enforced by a test.
