@@ -137,7 +137,13 @@ def make_memory(
     related_ids: list[str] | None = None,
     metadata: dict | None = None,
 ) -> Memory:
-    """Factory for Memory objects, unique id per call."""
+    """Factory for Memory objects, unique id per call.
+
+    A ``parent_id`` here means supersession (these tests exercise the bitemporal
+    SUPERSEDES chain); promotion and chunking are covered in test_lineage_relation.
+    """
+    if parent_id:
+        metadata = {"parent_relation": "supersedes", **(metadata or {})}
     return Memory(
         id=str(uuid.uuid4()),
         title=title,

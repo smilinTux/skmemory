@@ -30,7 +30,9 @@ Graph schema (matches the existing live ontology):
     (:Memory)-[:FROM_SOURCE]->(:Source)
     (:Memory)-[:MENTIONS]->(:Entity)
     (:Memory)-[:RELATED_TO]->(:Memory)
-    (:Memory)-[:SUPERSEDES]->(:Memory)   -- promotion / lineage chain
+    (:Memory)-[:SUPERSEDES]->(:Memory)   -- explicit supersession (closes validity)
+    (:Memory)-[:PROMOTED_FROM]->(:Memory) -- promotion copy -> original
+    (:Memory)-[:CHUNK_OF]->(:Memory)     -- chunk -> its document
 
 Idempotency: every write uses ``MERGE`` (never bare ``CREATE``) so
 re-indexing the same memory never duplicates nodes or edges — this is
@@ -56,7 +58,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ..invalid_records import payload_memory_id, quarantine_invalid_flat_file, require_memory_id
-from ..models import Memory
+from ..models import (
+    RELATION_CHUNK_OF,
+    RELATION_PROMOTED_FROM,
+    RELATION_SUPERSEDES,
+    Memory,
+    parent_relation_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +125,21 @@ _STAMP_NEW_EDGE = (
     "WITH n, e WHERE e.valid_from IS NULL "
     "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
 )
+
+
+#: Memory-to-Memory edge types a relatedness walk follows. Promotion and chunk
+#: lineage edges are included so a child keeps a path to its parent.
+MEMORY_LINK_EDGES = ("RELATED_TO", "SUPERSEDES", "PROMOTED_FROM", "CHUNK_OF")
+
+#: Edges get_lineage follows toward ancestors (any kind of parent).
+LINEAGE_WALK_EDGES = ("PROMOTED_FROM", "CHUNK_OF", "SUPERSEDES")
+
+#: parent_relation value -> the edge written for it. SUPERSEDES is deliberately
+#: absent: it closes validity and goes through ``_merge_supersedes`` only.
+PARENT_LINEAGE_EDGES = {
+    RELATION_PROMOTED_FROM: "PROMOTED_FROM",
+    RELATION_CHUNK_OF: "CHUNK_OF",
+}
 
 
 def _graph_sync_budget_s() -> float:
@@ -794,6 +817,77 @@ class AGEGraphBackend:
         )
         return bool(rows)
 
+    def supersedes_edges(self) -> list[dict]:
+        """Every Memory-to-Memory SUPERSEDES edge with its properties. STRICT.
+
+        Returns:
+            list[dict]: ``{"child", "parent", "properties"}`` per edge.
+        """
+        rows = self._cypher_strict(
+            "MATCH (c:Memory)-[e:SUPERSEDES]->(p:Memory) RETURN c.id, p.id, e",
+            cols="c agtype, p agtype, e agtype",
+        )
+        out: list[dict] = []
+        for c, p, e in rows:
+            child, parent = self._agtype(c), self._agtype(p)
+            if isinstance(child, str) and isinstance(parent, str):
+                out.append(
+                    {"child": child, "parent": parent, "properties": self._props(self._agtype(e))}
+                )
+        return out
+
+    def convert_supersedes_to_lineage(self, child_id: str, parent_id: str, rel: str) -> bool:
+        """MERGE the lineage edge, THEN delete the SUPERSEDES edge.
+
+        Merge first so a crash between the two leaves both edges (rerunnable)
+        rather than neither.
+
+        Deleting the edge is what reopens the parent: validity is only ever
+        recorded as ``valid_to`` on the incoming SUPERSEDES edge. STRICT:
+        raises :class:`GraphTransportError` on failure.
+        """
+        if rel not in PARENT_LINEAGE_EDGES.values():
+            raise ValueError(f"not a lineage edge type: {rel!r}")
+        self._cypher_strict(
+            "MATCH (c:Memory {id: $child_id}) "
+            "MATCH (p:Memory {id: $parent_id}) "
+            "MERGE (c)-[e:" + rel + "]->(p) "
+            "WITH e WHERE e.valid_from IS NULL "
+            "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
+            "RETURN 1",
+            {"child_id": child_id, "parent_id": parent_id, "now": _now_iso()},
+            cols="r agtype",
+        )
+        self._cypher_strict(
+            "MATCH (c:Memory {id: $child_id})-[e:SUPERSEDES]->(p:Memory {id: $parent_id}) "
+            "DELETE e RETURN 1",
+            {"child_id": child_id, "parent_id": parent_id},
+            cols="r agtype",
+        )
+        return True
+
+    def _merge_lineage(self, child_id: str, parent_id: str, rel: str) -> bool:
+        """MERGE a ``(child)-[:PROMOTED_FROM|CHUNK_OF]->(parent)`` edge with an
+        OPEN interval. Unlike SUPERSEDES it never sets ``valid_to``: the parent
+        stays currently valid. ``rel`` must be a ``PARENT_LINEAGE_EDGES`` value.
+        """
+        if rel not in PARENT_LINEAGE_EDGES.values():
+            raise ValueError(f"not a lineage edge type: {rel!r}")
+        query = (
+            "MATCH (c:Memory {id: $child_id}) "
+            "MERGE (p:Memory {id: $parent_id}) "
+            "MERGE (c)-[e:" + rel + "]->(p) "
+            "WITH p, e WHERE e.valid_from IS NULL "
+            "SET e.valid_from = $now, e.recorded_at = coalesce(e.recorded_at, $now) "
+            "RETURN p"
+        )
+        rows = self._cypher(
+            query,
+            {"child_id": child_id, "parent_id": parent_id, "now": _now_iso()},
+            cols="p agtype",
+        )
+        return bool(rows)
+
     def index_memory(self, memory: Memory, sync_hash: str | None = None) -> bool:
         """MERGE a memory node and all its relationships into the graph.
 
@@ -871,11 +965,18 @@ class AGEGraphBackend:
                     self._merge_related(memory.id, related_id)
 
             if memory.parent_id and memory.parent_id != memory.id:
-                # Supersession CLOSES the parent's validity: the parent edge's
-                # valid_to is set to this (superseding) memory's recorded instant.
-                self._merge_supersedes(
-                    memory.id, memory.parent_id, child_recorded_at=memory.created_at
-                )
+                relation = parent_relation_of(memory.parent_id, memory.metadata)
+                if relation == RELATION_SUPERSEDES:
+                    # Supersession CLOSES the parent's validity: the parent edge's
+                    # valid_to is set to this (superseding) memory's recorded instant.
+                    self._merge_supersedes(
+                        memory.id, memory.parent_id, child_recorded_at=memory.created_at
+                    )
+                elif relation in PARENT_LINEAGE_EDGES:
+                    # Promotion copies and chunks do NOT retire their parent.
+                    self._merge_lineage(
+                        memory.id, memory.parent_id, PARENT_LINEAGE_EDGES[relation]
+                    )
 
             self._merge_edges_to_named(
                 memory.id, "Entity", "name", self._entities_for(memory), "MENTIONS"
@@ -969,7 +1070,8 @@ class AGEGraphBackend:
     def get_related(self, memory_id: str, depth: int = 2) -> list[dict]:
         """Traverse Memory-to-Memory relationship edges only, up to ``depth`` hops.
 
-        Constrained to ``RELATED_TO`` and ``SUPERSEDES`` — the only edge
+        Constrained to the ``MEMORY_LINK_EDGES`` types (``RELATED_TO``,
+        ``SUPERSEDES``, ``PROMOTED_FROM``, ``CHUNK_OF``), the only edge
         types that connect ``(:Memory)-(:Memory)`` (see the graph schema
         docstring at the top of this module). Deliberately excludes
         ``TAGGED_WITH`` / ``FROM_SOURCE`` / ``MENTIONS``, which connect a
@@ -998,7 +1100,7 @@ class AGEGraphBackend:
         # what a single combined query's `min(length(path))` would have
         # produced).
         merged: dict[str, dict] = {}
-        for rel_type in ("RELATED_TO", "SUPERSEDES"):
+        for rel_type in MEMORY_LINK_EDGES:
             query = (
                 "MATCH (start:Memory {id: $id}) "
                 "MATCH path = (start)-[:"
@@ -1029,7 +1131,8 @@ class AGEGraphBackend:
         return self.get_related(memory_id, depth=depth)
 
     def get_lineage(self, memory_id: str) -> list[dict]:
-        """Walk the ``SUPERSEDES`` chain outward from a memory (its ancestors).
+        """Walk lineage outward from a memory (its ancestors) over
+        ``PROMOTED_FROM``, ``CHUNK_OF`` and ``SUPERSEDES``.
 
         Args:
             memory_id: Starting (most recent) memory ID.
@@ -1040,16 +1143,24 @@ class AGEGraphBackend:
         """
         if self.graph is None:
             return []
-        query = (
-            "MATCH (start:Memory {id: $id}) "
-            "MATCH path = (start)-[:SUPERSEDES*1..10]->(anc:Memory) "
-            "RETURN anc.id, anc.title, anc.layer, length(path) "
-            "ORDER BY length(path) ASC"
-        )
-        rows = self._cypher(
-            query, {"id": memory_id}, cols="id agtype, title agtype, layer agtype, depth agtype"
-        )
-        return self._rows_to_dicts(rows, ["id", "title", "layer", "depth"])
+        merged: dict[str, dict] = {}
+        for rel_type in LINEAGE_WALK_EDGES:
+            query = (
+                "MATCH (start:Memory {id: $id}) "
+                "MATCH path = (start)-[:" + rel_type + "*1..10]->(anc:Memory) "
+                "RETURN anc.id, anc.title, anc.layer, length(path) "
+                "ORDER BY length(path) ASC"
+            )
+            rows = self._cypher(
+                query,
+                {"id": memory_id},
+                cols="id agtype, title agtype, layer agtype, depth agtype",
+            )
+            for row in self._rows_to_dicts(rows, ["id", "title", "layer", "depth"]):
+                existing = merged.get(row["id"])
+                if existing is None or (row["depth"] or 0) < (existing["depth"] or 0):
+                    merged[row["id"]] = row
+        return sorted(merged.values(), key=lambda r: r["depth"] or 0)
 
     # ─────────────────────────────────────────────────────────
     # Bitemporal / point-in-time reads (ep-bitemporal-kg)
@@ -1167,8 +1278,8 @@ class AGEGraphBackend:
         ``as_of`` reaches that instant. So an ``as_of`` *before* a supersession
         still sees the then-valid link, and *after* it does not.
 
-        Constrained to the two Memory-to-Memory edge types (``RELATED_TO``,
-        ``SUPERSEDES``) exactly like :meth:`get_related`, deliberately excluding
+        Constrained to the Memory-to-Memory edge types (``MEMORY_LINK_EDGES``)
+        exactly like :meth:`get_related`, deliberately excluding
         the ``TAGGED_WITH`` / ``FROM_SOURCE`` / ``MENTIONS`` hub edges (walking
         those explodes through shared-tag/source/entity hubs). AGE 1.7.x cannot
         do relationship-type alternation in a pattern, so each edge type is
@@ -1188,7 +1299,7 @@ class AGEGraphBackend:
             return []
         ts = as_of or _now_iso()
         merged: dict[str, dict] = {}
-        for rel_type in ("RELATED_TO", "SUPERSEDES"):
+        for rel_type in MEMORY_LINK_EDGES:
             query = (
                 "MATCH (start:Memory {id: $id})-[e:" + rel_type + "]-(n:Memory) "
                 "WHERE n.id <> $id "
@@ -1211,7 +1322,9 @@ class AGEGraphBackend:
     def supersedes_chain(self, memory_id: str, as_of: str | None = None) -> list[dict]:
         """Walk the ``SUPERSEDES`` lineage valid as of ``as_of`` (card c915b47d).
 
-        Point-in-time counterpart of :meth:`get_lineage`: follows outgoing
+        SUPERSEDES-only BY MEANING (unlike :meth:`get_lineage`): promotion and
+        chunk edges never retire a parent, so they have no place in a
+        validity chain. Follows outgoing
         ``SUPERSEDES`` edges (toward older, superseded ancestors) but only over
         edges whose validity interval contains ``as_of`` (default now), using
         the same window predicate as :meth:`neighbors`::

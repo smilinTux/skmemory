@@ -47,7 +47,13 @@ from collections.abc import Iterable
 
 from .. import graph_queries as Q
 from ..invalid_records import require_memory_id
-from ..models import Memory
+from ..models import (
+    RELATION_CHUNK_OF,
+    RELATION_PROMOTED_FROM,
+    RELATION_SUPERSEDES,
+    Memory,
+    parent_relation_of,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -225,18 +231,26 @@ class SKGraphBackend:
                 },
             )
 
-            # PROMOTED_FROM + SUPERSEDES edges (promotion lineage)
+            # Lineage edge chosen by the child's recorded relation. SUPERSEDES
+            # only when explicitly recorded: promotion copies and chunks do
+            # not retire their parent.
             if memory.parent_id:
-                try:
-                    self._graph.query(
-                        "MATCH (child:Memory {id: $child_id}) "
-                        "MERGE (parent:Memory {id: $parent_id}) "
-                        "MERGE (child)-[:PROMOTED_FROM]->(parent) "
-                        "MERGE (child)-[:SUPERSEDES]->(parent)",
-                        {"child_id": memory.id, "parent_id": memory.parent_id},
-                    )
-                except Exception as e:
-                    logger.warning("PROMOTED_FROM/SUPERSEDES edge failed: %s", e)
+                relation = parent_relation_of(memory.parent_id, memory.metadata)
+                rel = {
+                    RELATION_PROMOTED_FROM: "PROMOTED_FROM",
+                    RELATION_CHUNK_OF: "CHUNK_OF",
+                    RELATION_SUPERSEDES: "SUPERSEDES",
+                }.get(relation or "")
+                if rel:
+                    try:
+                        self._graph.query(
+                            "MATCH (child:Memory {id: $child_id}) "
+                            "MERGE (parent:Memory {id: $parent_id}) "
+                            f"MERGE (child)-[:{rel}]->(parent)",
+                            {"child_id": memory.id, "parent_id": memory.parent_id},
+                        )
+                    except Exception as e:
+                        logger.warning("%s edge failed: %s", rel, e)
 
             # RELATED_TO edges (explicit relationships)
             for related_id in memory.related_ids:

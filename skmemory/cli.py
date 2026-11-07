@@ -1131,6 +1131,54 @@ def graph_reconcile(ctx: click.Context, do_apply: bool, force: bool, as_json: bo
         raise SystemExit(1)
 
 
+@graph.command("repair-lineage")
+@click.option(
+    "--apply",
+    "do_apply",
+    is_flag=True,
+    help="Actually rewrite edges (default: dry-run, counts only).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def graph_repair_lineage(do_apply: bool, as_json: bool) -> None:
+    """Rewrite SUPERSEDES edges that promotion/chunking wrongly wrote.
+
+    Promotion copies become PROMOTED_FROM and chunks CHUNK_OF, which reopens
+    the parent's validity. Classified from the flat files; explicit
+    supersedes are kept. Dry-run by default; --apply backs the edges up first.
+    """
+    from .agents import get_agent_paths
+    from .backends.age_backend import AGEGraphBackend, GraphTransportError
+    from .lineage_repair import repair_lineage_edges
+
+    paths = get_agent_paths()
+    cfg = None
+    try:
+        from .config import load_config
+
+        cfg = load_config()
+    except Exception:
+        logger.warning("cli.py: config load failed", exc_info=True)
+    backend = AGEGraphBackend(dsn=resolve_pg_dsn(cfg), agent=paths["base"].name)
+    try:
+        stats = repair_lineage_edges(backend, paths["base"] / "memory", dry_run=not do_apply)
+    except GraphTransportError as exc:
+        click.echo(f"lineage repair failed: {exc}", err=True)
+        raise SystemExit(1) from exc
+    if as_json:
+        click.echo(json.dumps(stats, indent=2, sort_keys=True, default=str))
+        return
+    mode = "DRY-RUN" if stats["dry_run"] else "APPLY"
+    click.echo(
+        f"lineage repair [{stats['agent']}] ({mode}): supersedes={stats['supersedes_total']} "
+        f"to_promoted_from={stats['to_promoted_from']} to_chunk_of={stats['to_chunk_of']} "
+        f"kept_explicit={stats['kept_explicit']} skipped_unknown={stats['skipped_unknown']}"
+    )
+    if stats["dry_run"]:
+        click.echo("  dry-run: no edges changed (use --apply)")
+    else:
+        click.echo(f"  rewritten={stats['rewritten']} backup={stats['backup_path']}")
+
+
 @cli.command("novelty")
 @click.argument("query")
 @click.option("--limit", type=int, default=8, help="Maximum novelty candidates.")

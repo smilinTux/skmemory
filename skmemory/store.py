@@ -31,6 +31,8 @@ from .fusion import (
     run_arm,
 )
 from .models import (
+    PARENT_RELATION_KEY,
+    RELATION_CHUNK_OF,
     EmotionalSnapshot,
     Memory,
     MemoryLayer,
@@ -771,6 +773,7 @@ class MemoryStore:
             if child is None:
                 continue
             child.parent_id = parent.id
+            child.metadata[PARENT_RELATION_KEY] = RELATION_CHUNK_OF
             neighbours: list[str] = [parent.id]
             if idx > 0:
                 neighbours.append(child_ids[idx - 1])
