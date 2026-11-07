@@ -613,6 +613,15 @@ async def list_tools() -> list[Tool]:
                         "description": "Minimum extracted-segment length (default: 100 — same as the Stop hook).",
                         "default": 100,
                     },
+                    "event_at": {
+                        "type": "string",
+                        "description": (
+                            "ISO 8601 time the conversation happened. When given, relative "
+                            "dates (yesterday, next Monday) in each saved memory get the "
+                            "resolved ISO date appended, in this timestamp's own offset, and "
+                            "the memory's event_at is set. Absent: text is saved unchanged."
+                        ),
+                    },
                 },
                 "required": ["conversation"],
             },
@@ -1164,13 +1173,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         "skipped": "below_min_length",
                     }
                 )
+            from .dates import parse_event_at, resolve_relative_dates
+
+            event_dt = parse_event_at(arguments.get("event_at"))
             extracted = extract_memories(conversation)
             saved_memories = []
             for mem in extracted:
                 try:
+                    content = resolve_relative_dates(mem.content, event_dt)
                     memory = store.snapshot(
                         title=f"[auto-{mem.type}] {mem.content[:60]}",
-                        content=mem.content,
+                        content=content,
+                        **({"event_at": event_dt.isoformat()} if event_dt else {}),
                         layer=MemoryLayer.SHORT,
                         tags=["auto-extract", mem.type, f"session:{session_id}"],
                         source="mcp:memory_save_session",

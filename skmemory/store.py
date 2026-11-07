@@ -444,6 +444,7 @@ class MemoryStore:
         supersedes_id: str | None = None,
         source_tier: SourceTier | None = None,
         outcome: MemoryOutcome | None = None,
+        event_at: str | None = None,
     ) -> Memory:
         """Take a polaroid -- capture a moment as a memory.
 
@@ -474,6 +475,9 @@ class MemoryStore:
                 ``self-generated``, the capped, conservative choice).
             outcome: Schema v2 outcome (success, failure, lesson). None leaves it
                 unset. Not carried through the decompose and split paths.
+            event_at: When the event happened (ISO 8601). None keeps the
+                default (created_at). Not carried through the decompose and
+                split paths.
             supersedes_id: Explicit supersession: always honoured (after the reader
                 check), whatever the kind. The open head of that record's chain is
                 closed at this memory's valid_from.
@@ -551,6 +555,7 @@ class MemoryStore:
             metadata=metadata,
             **({"kind": kind} if kind else {}),
             **({"outcome": outcome} if outcome else {}),
+            **({"event_at": event_at} if event_at else {}),
         )
 
         # Write-time conflict verdict (card SKMEM-P3-02): fact/rule/preference only.
