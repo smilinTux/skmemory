@@ -1,0 +1,1 @@
+- eval: opt-in live self-retrieval runner (`skmemory.eval.live_bench`, `SKMEMORY_EVAL_LIVE=1`) that samples real memories with a seeded sampler, builds title and rare-token queries, and reports recall, mrr and p50/p95 latency per arm over the real skmem-pg, AGE and SQLite arms with a read-only guard and dead-arm reporting (SKMEM-P1-03).
