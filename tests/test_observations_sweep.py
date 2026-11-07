@@ -136,6 +136,61 @@ class TestSweep:
         assert len(store.list_memories(tags=["observation"])) == 1
 
 
+class TestRefresh:
+    def _setup(self, store, n=3):
+        ms = [_mem(store, f"t{i}", f"memory number {i} about topicz", "topicz") for i in range(n)]
+        sweep_observations(store)
+        (obs,) = store.list_memories(tags=["observation"])
+        return ms, obs
+
+    def test_proof_count_not_truncated_and_grows(self, store):
+        ms, obs = self._setup(store, 7)
+        assert obs.metadata["observation"]["proof_count"] == 7
+        assert "connects 7 memories" in obs.title
+        _mem(store, "t8", "memory number 8 about topicz", "topicz")
+        assert sweep_observations(store)["updated"] == 1
+        (obs,) = store.list_memories(tags=["observation"])
+        assert obs.metadata["observation"]["proof_count"] == 8
+        assert obs.verify_integrity()
+
+    def test_forgotten_evidence_drops_count_and_stale_quote(self, store):
+        ms, obs = self._setup(store, 3)
+        store.primary.delete(ms[2].id)
+        assert sweep_observations(store)["updated"] == 1
+        (obs,) = store.list_memories(tags=["observation"])
+        assert obs.metadata["observation"]["proof_count"] == 2
+        assert ms[2].content not in obs.content
+
+    def test_below_minimum_closes_not_deletes(self, store):
+        ms, obs = self._setup(store, 2)
+        store.primary.delete(ms[1].id)
+        assert sweep_observations(store)["closed"] == 1
+        (obs,) = store.list_memories(tags=["observation"])
+        assert obs.valid_to is not None
+        # closed stays closed, no recreate
+        assert sweep_observations(store)["written"] == 0
+
+    def test_idempotent_and_no_rewrite_when_unchanged(self, store):
+        ms, obs = self._setup(store, 3)
+        path = next(Path(store.primary.base_path).rglob(f"{obs.id}.json"))
+        before = (path.read_bytes(), path.stat().st_mtime_ns)
+        out = sweep_observations(store)
+        assert out["updated"] == 0 and out["closed"] == 0
+        assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+    def test_tag_relaxes_when_private_evidence_forgotten(self, store):
+        _mem(store, "a", "public thing about topicq", "topicq")
+        _mem(store, "b", "another public topicq note", "topicq")
+        c = _mem(store, "c", "private topicq worry here", "topicq", "@chef-only")
+        sweep_observations(store)
+        (obs,) = store.list_memories(tags=["observation"])
+        assert obs.context_tag == "@chef-only"
+        store.primary.delete(c.id)
+        sweep_observations(store)
+        (obs,) = store.list_memories(tags=["observation"])
+        assert obs.context_tag == "@public"
+
+
 class TestEngineIntegration:
     def _two(self, store):
         for i in range(2):

@@ -65,6 +65,7 @@ plain ``Path.write_text`` is not an acceptable substitute here.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -653,6 +654,8 @@ def load_all_observations(agent_name: str | None = None) -> list[Observation]:
 
 #: Env kill switch for the sweep step. ``0``/``off``/``false``/``no`` disables it.
 OBSERVATIONS_ENV = "SKMEMORY_OBSERVATIONS"
+#: Fewest evidence items an observation may rest on.
+MIN_EVIDENCE = 2
 #: Shortest quote the citation gate accepts (a one-word "quote" proves nothing).
 MIN_QUOTE_CHARS = 8
 #: Longest verbatim quote embedded per evidence item.
@@ -717,50 +720,105 @@ def citation_gate(
     return reasons
 
 
+def _shown(observation: Observation) -> list[ObservationEvidence]:
+    """The newest :data:`MAX_EVIDENCE_PER_OBSERVATION` items, quoted in the text.
+
+    Truncation applies to the rendered text only; ``proof_count`` counts all.
+    """
+    return observation.sorted_evidence()[-MAX_EVIDENCE_PER_OBSERVATION:]
+
+
 def render_observation_text(observation: Observation) -> str:
-    """Observation statement followed by verbatim quotes of its evidence."""
+    """Observation statement followed by verbatim quotes of its newest evidence."""
     lines = [observation.statement, ""]
-    for ev in observation.sorted_evidence()[:MAX_EVIDENCE_PER_OBSERVATION]:
+    for ev in _shown(observation):
         lines.append(f'"{ev.quote}" (memory {ev.memory_id})')
     return "\n".join(lines)
+
+
+def _build_observation(key: str, members: Sequence[Memory]) -> Observation:
+    return Observation(
+        statement=f"A recurring pattern connects {len(members)} memories around '{key}'.",
+        evidence=[
+            ObservationEvidence(
+                memory_id=m.id,
+                quote=m.content.strip()[:MAX_QUOTE_CHARS],
+                timestamp=_memory_timestamp(m),
+                relevance=key,
+            )
+            for m in members
+        ],
+    )
+
+
+def _payload(observation: Observation, key: str, tag: str) -> dict[str, Any]:
+    return {
+        "title": f"Observation: {observation.statement[:80]}",
+        "content": render_observation_text(observation),
+        "context_tag": tag,
+        "observation": {
+            "proof_count": observation.proof_count,
+            "evidence_ids": [ev.memory_id for ev in observation.sorted_evidence()],
+            "key": key,
+        },
+    }
+
+
+def _valid_sources(store: Any, ids: Iterable[str], key: str) -> list[Memory]:
+    """Evidence memories that still exist, are still valid, and still carry *key*."""
+    out: dict[str, Memory] = {}
+    for mid in ids:
+        m = store.recall(mid)
+        if (
+            m is not None
+            and m.valid_to is None
+            and m.source != OBSERVATION_SOURCE
+            and len(m.content.strip()) >= MIN_QUOTE_CHARS
+            and key in _memory_group_keys(m) - _BOOKKEEPING_TAGS
+        ):
+            out[m.id] = m
+    return sorted(out.values(), key=lambda m: (m.created_at, m.id))
+
+
+def _reindex(store: Any, memory: Memory) -> None:
+    for backend, method in ((store.vector, "save"), (store.graph, "index_memory")):
+        if backend is None:
+            continue
+        with contextlib.suppress(Exception):  # index refresh is best effort
+            getattr(backend, method)(memory)
 
 
 def write_observation(store: Any, observation: Observation, *, key: str = "") -> Memory | None:
     """Write *observation* as a ``fact`` memory if it passes the citation gate.
 
-    Returns the new memory, or ``None`` when the gate refuses. Raw memories are
-    never modified. The new memory is ``source_tier="self-generated"`` at the
-    mid-term layer with zero intensity, and inherits the most restrictive
-    ``context_tag`` of its evidence.
+    The gate covers every evidence item, and ``proof_count`` counts them all
+    (only the quoted text is limited to the newest few). Returns the new
+    memory, or ``None`` when the gate refuses. Raw memories are never
+    modified. The memory is ``source_tier="self-generated"`` at the mid-term
+    layer with zero intensity and inherits the most restrictive ``context_tag``
+    of its evidence.
     """
     text = render_observation_text(observation)
-    shown = observation.sorted_evidence()[:MAX_EVIDENCE_PER_OBSERVATION]
-    lookup = content_lookup_from_store(store)
-    if citation_gate(text, shown, lookup):
+    if citation_gate(text, observation.evidence, content_lookup_from_store(store)):
         return None
-    sources = [store.recall(ev.memory_id) for ev in shown]
+    sources = [store.recall(ev.memory_id) for ev in observation.evidence]
     if any(m is None for m in sources):
         return None
     tag = inherited_context_tag(m.context_tag for m in sources if m is not None)
     from .models import EmotionalSnapshot, MemoryLayer
 
+    payload = _payload(observation, key, tag)
     # kind is set after the write: kind=fact on snapshot would run the
     # supersession triage, and a derived belief must never close a raw memory.
     memory = store.snapshot(
-        title=f"Observation: {observation.statement[:80]}",
+        title=payload["title"],
         content=text,
         layer=MemoryLayer.MID,
         tags=[OBSERVATION_SOURCE],
         emotional=EmotionalSnapshot(intensity=OBSERVATION_MAX_INTENSITY),
         source=OBSERVATION_SOURCE,
         source_ref=f"{OBSERVATION_SOURCE}:{key}" if key else "",
-        metadata={
-            "observation": {
-                "proof_count": observation.proof_count,
-                "evidence_ids": [ev.memory_id for ev in observation.sorted_evidence()],
-                "key": key,
-            }
-        },
+        metadata={"observation": payload["observation"]},
     )
     memory.kind = "fact"
     memory.source_tier = "self-generated"
@@ -769,54 +827,110 @@ def write_observation(store: Any, observation: Observation, *, key: str = "") ->
     return memory
 
 
-def sweep_observations(store: Any, *, max_new: int = 5, scan_limit: int = 500) -> dict[str, int]:
-    """Derive and write up to *max_new* new observations from recent memories.
+def refresh_observation(
+    store: Any, memory: Memory, key: str, extra_ids: Iterable[str] = ()
+) -> str:
+    """Recompute an open observation from its evidence; ``unchanged``, ``updated``,
+    ``closed`` or ``refused``.
 
-    Groups by shared tag, skips groups that already have an observation
-    (``source_ref``), and never groups observations or bookkeeping tags.
-    Individual failures are counted, never raised.
+    Re-checks that every evidence memory still exists, is still valid and still
+    carries the key, adds any new members in *extra_ids*, and recounts. Below
+    ``MIN_EVIDENCE`` the observation is closed (``valid_to``), never deleted.
+    The file is rewritten only when a value changed.
     """
-    out = {"written": 0, "refused": 0, "errors": 0}
-    if max_new < 1:
-        return out
-    existing = {
-        m.source_ref
-        for m in store.list_memories(tags=[OBSERVATION_SOURCE], limit=scan_limit)
-        if m.source_ref
+    stored = (memory.metadata.get("observation") or {}).get("evidence_ids", [])
+    members = _valid_sources(store, [*stored, *extra_ids], key)
+    now = datetime.now(timezone.utc).isoformat()
+    if len(members) < MIN_EVIDENCE:
+        memory.valid_to = now
+        memory.updated_at = now
+        memory.metadata = {
+            **memory.metadata,
+            "observation": {
+                **(memory.metadata.get("observation") or {}),
+                "closed_reason": "evidence below minimum",
+            },
+        }
+        store.primary.save(memory)
+        _reindex(store, memory)
+        return "closed"
+    obs = _build_observation(key, members)
+    tag = inherited_context_tag(m.context_tag for m in members)
+    if citation_gate(render_observation_text(obs), obs.evidence, content_lookup_from_store(store)):
+        return "refused"
+    want = _payload(obs, key, tag)
+    have = {
+        "title": memory.title,
+        "content": memory.content,
+        "context_tag": memory.context_tag,
+        "observation": {
+            k: (memory.metadata.get("observation") or {}).get(k)
+            for k in ("proof_count", "evidence_ids", "key")
+        },
     }
+    if have == want:
+        return "unchanged"
+    memory.title = want["title"]
+    memory.content = want["content"]
+    memory.context_tag = tag
+    memory.metadata = {**memory.metadata, "observation": want["observation"]}
+    memory.updated_at = now
+    memory.seal()
+    store.primary.save(memory)
+    _reindex(store, memory)
+    return "updated"
+
+
+def sweep_observations(store: Any, *, max_new: int = 5, scan_limit: int = 500) -> dict[str, int]:
+    """Refresh existing observations, then write up to *max_new* new ones.
+
+    Existing open observations are recomputed in place every sweep (proof
+    count, quotes, context tag); one whose evidence drops below
+    ``MIN_EVIDENCE`` is closed. Refreshing is not limited by *max_new*. A
+    closed observation is never reopened or recreated. Individual failures
+    are counted, never raised.
+    """
+    out = {"written": 0, "refused": 0, "errors": 0, "updated": 0, "closed": 0}
     candidates = [
         m
         for m in store.list_memories(limit=scan_limit)
         if m.source != OBSERVATION_SOURCE and len(m.content.strip()) >= MIN_QUOTE_CHARS
     ]
-    by_id = {m.id: m for m in candidates}
     groups: dict[str, list[Memory]] = {}
     for m in candidates:
         for key in _memory_group_keys(m) - _BOOKKEEPING_TAGS:
             groups.setdefault(key, []).append(m)
+
+    existing: set[str] = set()
+    for obs_mem in store.list_memories(tags=[OBSERVATION_SOURCE], limit=scan_limit):
+        ref = obs_mem.source_ref
+        if not ref:
+            continue
+        existing.add(ref)
+        if obs_mem.valid_to is not None:
+            continue
+        key = ref.removeprefix(f"{OBSERVATION_SOURCE}:")
+        try:
+            status = refresh_observation(store, obs_mem, key, [m.id for m in groups.get(key, [])])
+        except Exception:  # noqa: BLE001
+            out["errors"] += 1
+            continue
+        if status in ("updated", "closed"):
+            out[status] += 1
+        elif status == "refused":
+            out["refused"] += 1
+
+    if max_new < 1:
+        return out
     for key in sorted(groups):
         if out["written"] >= max_new:
             break
         members = groups[key]
-        if len(members) < 2 or f"{OBSERVATION_SOURCE}:{key}" in existing:
+        if len(members) < MIN_EVIDENCE or f"{OBSERVATION_SOURCE}:{key}" in existing:
             continue
-        members = sorted(members, key=lambda m: (m.created_at, m.id))[
-            -MAX_EVIDENCE_PER_OBSERVATION:
-        ]
-        obs = Observation(
-            statement=f"A recurring pattern connects {len(members)} memories around '{key}'.",
-            evidence=[
-                ObservationEvidence(
-                    memory_id=m.id,
-                    quote=by_id[m.id].content.strip()[:MAX_QUOTE_CHARS],
-                    timestamp=_memory_timestamp(m),
-                    relevance=key,
-                )
-                for m in members
-            ],
-        )
+        members = sorted(members, key=lambda m: (m.created_at, m.id))
         try:
-            written = write_observation(store, obs, key=key)
+            written = write_observation(store, _build_observation(key, members), key=key)
         except Exception:  # noqa: BLE001 - one bad group must not stop the rest
             out["errors"] += 1
             continue
