@@ -360,3 +360,17 @@ def test_live_bench_marks_each_connection_read_only_once():
         assert _set_session_read_only(owner, conn) is conn
     assert len(a.sql) == 1 and len(b.sql) == 1
     assert "READ ONLY" in a.sql[0]
+
+
+def test_fill_defaults_to_interleave_and_rrf_is_selectable(monkeypatch):
+    # after the pinned head, interleave puts every arm's champion first; RRF
+    # puts the doc two arms agree on first
+    arms = {
+        "lexical": ["l1", "l2", "l3", "a", "b"],
+        "semantic": ["champ", "a", "x"],
+        "temporal": ["t1", "a"],
+    }
+    monkeypatch.delenv("SKMEMORY_FUSION_FILL", raising=False)
+    assert [d for d, _, _ in pinned_rrf(arms)][3] in ("champ", "t1")
+    monkeypatch.setenv("SKMEMORY_FUSION_FILL", "rrf")
+    assert [d for d, _, _ in pinned_rrf(arms)][3] == "a"

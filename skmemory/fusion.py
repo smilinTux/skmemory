@@ -273,7 +273,7 @@ def pinned_rrf(
     pin: int | None = None,
     pin_arms: Sequence[str] = LEXICAL_ARMS,
 ) -> list[tuple[str, float, dict[str, int]]]:
-    """Pin the lexical arm's top ``pin`` hits, then fill by plain RRF.
+    """Pin the lexical arm's top ``pin`` hits, then fill (interleave by default, RRF by env).
 
     Why: with :func:`rank_interleave` every arm's champion takes a head slot, so
     on a self-retrieval run the lexical rank 2-5 hit was pushed past rank 5 by
@@ -288,9 +288,10 @@ def pinned_rrf(
     if pin is None:
         pin = fusion_pin()
     fused = reciprocal_rank_fusion(arm_results, k)
-    if os.environ.get("SKMEMORY_FUSION_FILL", "rrf").strip().casefold() == "interleave":
-        # Comparison knob: fill after the pinned head by rank-depth interleaving
-        # instead of RRF, which protects every other arm's champion.
+    # Fill after the pinned head by rank-depth interleaving, which protects every
+    # other arm's champion. Chosen on the live bench (recall@5 0.737 vs 0.702 for
+    # RRF fill, p95 881 ms vs 1211 ms). ``SKMEMORY_FUSION_FILL=rrf`` selects RRF fill.
+    if os.environ.get("SKMEMORY_FUSION_FILL", "interleave").strip().casefold() != "rrf":
         fused = rank_interleave(arm_results, k)
     by_id = {doc_id: (score, prov) for doc_id, score, prov in fused}
     head: list[str] = []
