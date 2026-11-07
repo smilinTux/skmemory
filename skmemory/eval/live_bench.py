@@ -65,6 +65,8 @@ from statistics import mean
 from skmemory.eval.recall_benchmark import recall_at_k
 
 LIVE_ENV = "SKMEMORY_EVAL_LIVE"
+EVIDENCE_SELF = "live_self_retrieval"
+EVIDENCE_LABELLED = "live_labelled"
 DEFAULT_N = 200
 DEFAULT_SEED = 20261106
 K = 5
@@ -175,9 +177,14 @@ def rare_tokens(text: str, df: Counter, k: int = 3, max_df: int = 2) -> list[str
 
 @dataclass(frozen=True)
 class LiveQuery:
-    id: str  # gold memory id
-    kind: str  # "title" | "rare_token"
+    id: str  # gold memory id (labelled: the query id)
+    kind: str  # "title" | "rare_token" (labelled: the harvest source)
     text: str
+    gold: tuple[str, ...] = ()  # labelled queries: all gold ids; empty means (id,)
+
+    @property
+    def gold_ids(self) -> frozenset[str]:
+        return frozenset(self.gold or (self.id,))
 
 
 def build_queries(mems: Sequence[tuple[str, str, str]]) -> list[LiveQuery]:
@@ -194,6 +201,39 @@ def build_queries(mems: Sequence[tuple[str, str, str]]) -> list[LiveQuery]:
     return out
 
 
+def load_labelled(private_dir: str | os.PathLike) -> tuple[list[LiveQuery], dict]:
+    """Load ``labelled.jsonl`` and ``label-meta.json`` written by ``eval.label``.
+
+    The directory holds real query text and must be private (checked). Returns the
+    queries and the missingness meta. Gold ids are kept as given.
+    """
+    from skmemory.eval.harvest import check_private_dir
+
+    d = check_private_dir(private_dir)
+    qs = []
+    for line in (d / "labelled.jsonl").read_text().splitlines():
+        if line.strip():
+            r = json.loads(line)
+            qs.append(
+                LiveQuery(r["qid"], r.get("source", "labelled"), r["query"], tuple(r["gold"]))
+            )
+    meta_path = d / "label-meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    return qs, meta
+
+
+def missingness_line(meta: dict) -> str:
+    if not meta:
+        return "missingness unknown (no label-meta.json)"
+    ar = meta.get("agreement_rate")
+    return (
+        f"labelled {meta.get('labelled')} of {meta.get('attempted')} attempted "
+        f"({meta.get('candidates')} harvested); unjudged {meta.get('unjudged')} "
+        f"{meta.get('unjudged_reasons')} reported as missingness; judge pass agreement "
+        f"{'n/a' if ar is None else format(ar, '.3f')} (agreement is not accuracy)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Runner (backend-agnostic: arms are plain callables)
 # ---------------------------------------------------------------------------
@@ -206,9 +246,10 @@ def _pct(values: Sequence[float], p: float) -> float | None:
     return s[max(0, math.ceil(p / 100 * len(s)) - 1)]
 
 
-def _rr(got: Sequence[str], gold: str) -> float:
+def _rr(got: Sequence[str], gold: str | frozenset[str]) -> float:
+    gold = {gold} if isinstance(gold, str) else gold
     for rank, i in enumerate(got, 1):
-        if i == gold:
+        if i in gold:
             return 1.0 / rank
     return 0.0
 
@@ -265,7 +306,7 @@ def run_live(
             per["fallback_chain"] = dict(lex)
         else:
             per["fallback_chain"] = {"skipped": True}
-        rows.append({"id": q.id, "kind": q.kind, "per": per})
+        rows.append({"id": q.id, "kind": q.kind, "gold": sorted(q.gold_ids), "per": per})
 
     return _summarise(rows, alive)
 
@@ -309,10 +350,10 @@ def _summarise(rows: list[dict], alive: dict[str, tuple[bool, str]]) -> dict:
             ]
             by_kind[kind] = {
                 "n": len(sel),
-                "recall@5": mean(recall_at_k(c["ids"], {r["id"]}, K) for r, c in sel)
+                "recall@5": mean(recall_at_k(c["ids"], set(r["gold"]), K) for r, c in sel)
                 if sel
                 else None,
-                "mrr": mean(_rr(c["ids"], r["id"]) for r, c in sel) if sel else None,
+                "mrr": mean(_rr(c["ids"], frozenset(r["gold"])) for r, c in sel) if sel else None,
             }
         entry["by_kind"] = by_kind
         arms_out[name] = entry
@@ -329,7 +370,9 @@ def _summarise(rows: list[dict], alive: dict[str, tuple[bool, str]]) -> dict:
                         {"skipped": True}
                         if c.get("skipped")
                         else {
-                            "rank": (c["ids"].index(r["id"]) + 1 if r["id"] in c["ids"] else None),
+                            "rank": next(
+                                (i for i, x in enumerate(c["ids"], 1) if x in r["gold"]), None
+                            ),
                             "n": len(c["ids"]),
                             "ms": round(c["ms"], 2),
                             "error": c["error"],
@@ -357,13 +400,33 @@ def _ms(v) -> str:
 
 
 def format_table(res: dict, meta: dict | None = None) -> str:
-    meta = meta or {}
-    out = [
-        "skmemory LIVE self-retrieval (SKMEM-P1-03)",
-        "- BIAS: SELF-RETRIEVAL. Each query is cut from the memory it must find (its title, or "
-        "its rarest tokens). Easy for lexical arms; says little about semantic recall on a "
-        "paraphrased question. Compare arms on identical queries; do not read as absolute quality.",
-        "- rare tokens are rare relative to the SAMPLE (document frequency proxy), not the corpus",
+    meta = dict(meta or {})
+    labelled = res.get("evidence_class") == EVIDENCE_LABELLED
+    head = (
+        [
+            "skmemory LIVE labelled queries (SKMEM-P1-04)",
+            f"- evidence_class: {EVIDENCE_LABELLED}",
+            "- Queries are REAL harvested ones, not cut from the target memory, so this is not "
+            "self-retrieval. Gold ids come from a two-pass citation-gated judge, pooled over "
+            "several arms. Compare arms on identical queries; the pool favours arms that fed it.",
+            f"- {res.get('missingness', 'missingness not recorded')}",
+            f"- {res.get('judge_limits', '')}",
+        ]
+        if labelled
+        else [
+            "skmemory LIVE self-retrieval (SKMEM-P1-03)",
+            f"- evidence_class: {EVIDENCE_SELF}",
+        ]
+    )
+    out = list(head)
+    if not labelled:
+        out += [
+            "- BIAS: SELF-RETRIEVAL. Each query is cut from the memory it must find (its title, or "
+            "its rarest tokens). Easy for lexical arms; says little about semantic recall on a "
+            "paraphrased question. Compare arms on identical queries; do not read as absolute quality.",
+            "- rare tokens are rare relative to the SAMPLE (document frequency proxy), not the corpus",
+        ]
+    out += [
         "- candidate entry = MemoryStore.search(query, limit=10, record_access=False, reader=None) "
         "with SKMEMORY_SEARCH_FUSION=on: the same public entry as MCP memory_search (which "
         "passes record_access=True; forced False here so nothing is counted)",
@@ -702,6 +765,7 @@ def run(
     seed: int = DEFAULT_SEED,
     agent: str | None = None,
     embed_interval_s: float = DEFAULT_EMBED_INTERVAL_S,
+    labelled: str | None = None,
 ) -> dict:
     require_live()
     check_out_dir(out_dir)
@@ -714,8 +778,13 @@ def run(
     guards = verify_read_only(pg, age, sq)
     alive = probe_arms(pg, age, sq)
     store = build_store(pg, age, sq)
-    mems = sample_from_pg(pg, n, seed)
-    queries = build_queries(mems)
+    label_meta: dict = {}
+    if labelled:
+        queries, label_meta = load_labelled(labelled)
+        mems = []
+    else:
+        mems = sample_from_pg(pg, n, seed)
+        queries = build_queries(mems)
     telemetry: dict = {}
     arms = build_arms(pg, age, sq, store, telemetry)
     keep = os.environ.get("SKMEMORY_SEARCH_FUSION")
@@ -727,6 +796,12 @@ def run(
             os.environ.pop("SKMEMORY_SEARCH_FUSION", None)
         else:
             os.environ["SKMEMORY_SEARCH_FUSION"] = keep
+    res["evidence_class"] = EVIDENCE_LABELLED if labelled else EVIDENCE_SELF
+    if labelled:
+        from skmemory.eval.label import JUDGE_LIMITS
+
+        res["missingness"] = missingness_line(label_meta)
+        res["judge_limits"] = JUDGE_LIMITS
     res["meta"] = {
         "agent": agent,
         "sample": len(mems),
@@ -749,6 +824,12 @@ def main() -> None:
     p.add_argument("-n", type=int, default=DEFAULT_N)
     p.add_argument("--seed", type=int, default=DEFAULT_SEED)
     p.add_argument("--agent")
+    p.add_argument(
+        "--labelled",
+        metavar="PRIVATE_DIR",
+        help="score against the labelled set (evidence_class live_labelled) instead of "
+        "self-retrieval; the dir holds labelled.jsonl from eval.label",
+    )
     p.add_argument("--embed-interval", type=float, default=DEFAULT_EMBED_INTERVAL_S)
     args = p.parse_args()
     res = run(
@@ -757,13 +838,18 @@ def main() -> None:
         seed=args.seed,
         agent=args.agent,
         embed_interval_s=args.embed_interval,
+        labelled=args.labelled,
     )
     meta = res["meta"]
     table = format_table(
         res,
         {
             "agent": meta["agent"],
-            "sample": f"{meta['sample']} memories, seed {meta['seed']}",
+            "sample": (
+                f"{res['queries']} labelled queries"
+                if args.labelled
+                else f"{meta['sample']} memories, seed {meta['seed']}"
+            ),
             "embed_interval_s": meta["embed_interval_s"],
             "read-only guards": ", ".join(
                 f"{k}: {v}" for k, v in meta["read_only_guards"].items()
@@ -772,7 +858,9 @@ def main() -> None:
         },
     )
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    paths = write_outputs(args.out, res, table, f"live-{meta['agent']}-{stamp}")
+    paths = write_outputs(
+        args.out, res, table, f"live-{res['evidence_class']}-{meta['agent']}-{stamp}"
+    )
     print(table)
     print("\nwrote: " + ", ".join(str(x) for x in paths))
 
