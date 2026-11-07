@@ -125,7 +125,73 @@ def reembed(
         "skipped_changed_since_read": int(state.get("skipped_changed_since_read", 0)),
         "failed": int(state.get("failed", 0)),
     }
+    failed_ids: list[str] = list(state.get("failed_ids", []))
     this_run = 0
+
+    def process(mid, title, content, summary) -> int:
+        """Embed and write one row. Returns 1 if a vector was written."""
+        try:
+            vec = embed(embed_text(title, content, summary) or " ")
+            with conn.cursor() as cur:
+                # Only the embedding column, only this agent, only if the text
+                # we embedded is still the row's text.
+                cur.execute(
+                    "UPDATE memories SET embedding = %s::vector "
+                    "WHERE id = %s AND agent = %s AND md5("
+                    "coalesce(title,'') || E'\\n' || coalesce(content,'') || E'\\n' "
+                    "|| coalesce(summary,'')) = %s",
+                    (vec, mid, agent, text_digest(title, content, summary)),
+                )
+                if cur.rowcount:
+                    counts["updated"] += 1
+                    wrote = 1
+                else:
+                    counts["skipped_changed_since_read"] += 1
+                    wrote = 0
+            if mid in failed_ids:
+                failed_ids.remove(mid)
+            return wrote
+        except Exception as exc:  # noqa: BLE001 - one bad row must not stop the run
+            if mid not in failed_ids:
+                failed_ids.append(mid)
+            print(f"reembed: {mid} failed: {type(exc).__name__}", file=sys.stderr)
+            return 0
+
+    def checkpoint() -> None:
+        counts["failed"] = len(failed_ids)
+        if state_path is not None and apply:
+            _save_state(
+                state_path,
+                {
+                    "version": STATE_VERSION,
+                    "agent": agent,
+                    "last_id": last_id,
+                    "failed_ids": failed_ids,
+                    **counts,
+                },
+            )
+
+    # Rows that failed in an earlier run are retried FIRST: the keyset cursor has
+    # already moved past them, so without this a transient embed error would skip
+    # a row permanently.
+    if apply and failed_ids:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, title, content, summary FROM memories "
+                "WHERE agent = %s AND id = ANY(%s) ORDER BY id",
+                (agent, list(failed_ids)),
+            )
+            retry = cur.fetchall()
+        found = {r[0] for r in retry}
+        for gone in [i for i in failed_ids if i not in found]:
+            failed_ids.remove(gone)  # row deleted since: nothing left to retry
+        for mid, title, content, summary in retry:
+            if needs_reembed(title, content, summary):
+                process(mid, title, content, summary)
+            else:
+                failed_ids.remove(mid)
+        checkpoint()
+
     while True:
         with conn.cursor() as cur:
             cur.execute(
@@ -150,31 +216,8 @@ def reembed(
             counts["stale_formula"] += 1
             if not apply:
                 continue
-            try:
-                vec = embed(embed_text(title, content, summary) or " ")
-                with conn.cursor() as cur:
-                    # Only the embedding column, only this agent, only if the text
-                    # we embedded is still the row's text.
-                    cur.execute(
-                        "UPDATE memories SET embedding = %s::vector "
-                        "WHERE id = %s AND agent = %s AND md5("
-                        "coalesce(title,'') || E'\\n' || coalesce(content,'') || E'\\n' "
-                        "|| coalesce(summary,'')) = %s",
-                        (vec, mid, agent, text_digest(title, content, summary)),
-                    )
-                    if cur.rowcount:
-                        counts["updated"] += 1
-                        wrote += 1
-                    else:
-                        counts["skipped_changed_since_read"] += 1
-            except Exception as exc:  # noqa: BLE001 - one bad row must not stop the run
-                counts["failed"] += 1
-                print(f"reembed: {mid} failed: {type(exc).__name__}", file=sys.stderr)
-        if state_path is not None and apply:
-            _save_state(
-                state_path,
-                {"version": STATE_VERSION, "agent": agent, "last_id": last_id, **counts},
-            )
+            wrote += process(mid, title, content, summary)
+        checkpoint()
         if limit is not None and this_run >= limit:
             break
         if apply and wrote and rows_per_sec > 0:
@@ -182,7 +225,14 @@ def reembed(
             spent = time.monotonic() - started
             if budget > spent:
                 sleep(budget - spent)
-    return {"agent": agent, "applied": apply, "last_id": last_id or None, **counts}
+    counts["failed"] = len(failed_ids)
+    return {
+        "agent": agent,
+        "applied": apply,
+        "last_id": last_id or None,
+        "failed_ids": list(failed_ids),
+        **counts,
+    }
 
 
 def build_embedder(agent: str) -> Callable[[str], list[float]]:

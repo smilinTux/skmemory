@@ -11,6 +11,7 @@ import time
 import pytest
 
 from skmemory.fusion import (
+    ArmGuard,
     ArmOutcome,
     arm_executor,
     fuse,
@@ -374,3 +375,137 @@ def test_fill_defaults_to_interleave_and_rrf_is_selectable(monkeypatch):
     assert [d for d, _, _ in pinned_rrf(arms)][3] in ("champ", "t1")
     monkeypatch.setenv("SKMEMORY_FUSION_FILL", "rrf")
     assert [d for d, _, _ in pinned_rrf(arms)][3] == "a"
+
+
+# ---------------------------------------------------------------- deadline is a real bound
+
+
+class _Hung:
+    """Every backend call blocks far past the deadline."""
+
+    def __init__(self, hold=3.0):
+        self.hold = hold
+        self.calls = 0
+
+    def _block(self):
+        self.calls += 1
+        time.sleep(self.hold)
+        return []
+
+    def search_semantic(self, *a, **k):
+        return self._block()
+
+    def search_lexical(self, *a, **k):
+        return self._block()
+
+    def search_text(self, *a, **k):
+        return self._block()
+
+
+def test_all_arms_hung_returns_local_results_within_the_deadline_and_says_degraded(
+    store, monkeypatch
+):
+    monkeypatch.setenv("SKMEMORY_SEARCH_DEADLINE_S", "0.5")
+    hung = _Hung()
+    store.vector = hung
+    # lexical arm on the pg-like backend hangs too (search_lexical), and so does
+    # every legacy search_text; only local SQLite works.
+    t0 = time.monotonic()
+    got = store.search("skgateway routing", limit=3)
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.5 + 0.6, f"search took {elapsed:.2f}s, the deadline must bound it"
+    assert store.last_search_degraded() == "arms timed out"
+    assert any("skgateway" in m.content for m in got), "local lexical still answers"
+    assert hung.calls <= 2, "the legacy synchronous pg path must not be taken"
+
+
+def test_hung_everything_and_no_local_hit_is_empty_but_flagged_degraded(store, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_SEARCH_DEADLINE_S", "0.4")
+    store.vector = _Hung()
+    t0 = time.monotonic()
+    got = store.search("zzzqqq nothinghere", limit=3)
+    assert time.monotonic() - t0 < 1.2
+    assert got == [] and store.last_search_degraded() == "arms timed out"
+
+
+def test_a_healthy_search_is_not_flagged_degraded(store):
+    store.search("skgateway routing", limit=3)
+    assert store.last_search_degraded() is None
+
+
+def test_mcp_memory_search_reports_degraded(store, monkeypatch):
+    import asyncio
+    import json
+
+    from skmemory import mcp_server
+
+    monkeypatch.setenv("SKMEMORY_SEARCH_DEADLINE_S", "0.4")
+    store.vector = _Hung()
+    monkeypatch.setattr(mcp_server, "_get_store", lambda: store)
+    out = asyncio.run(mcp_server.call_tool("memory_search", {"query": "skgateway routing"}))
+    text = out[0].text
+    assert json.loads(text)["degraded"] == "arms timed out"
+
+
+def test_cli_search_prints_degraded_to_stderr(store, monkeypatch):
+    from click.testing import CliRunner
+
+    from skmemory.cli import cli
+
+    monkeypatch.setenv("SKMEMORY_SEARCH_DEADLINE_S", "0.4")
+    store.vector = _Hung()
+    res = CliRunner(mix_stderr=False).invoke(cli, ["search", "skgateway routing"], obj={"store": store})
+    assert "degraded: arms timed out" in res.stderr
+
+
+# ---------------------------------------------------------------- one hung arm cannot eat the pool
+
+
+def test_arm_guard_caps_inflight_and_cools_down():
+    guard = ArmGuard(max_inflight=2, cooldown_s=0.3)
+    started = []
+    release = threading.Event()
+
+    def hang():
+        started.append(1)
+        release.wait(5)
+        return ["x"]
+
+    def run():
+        return run_arms_concurrent(
+            [("slow", hang, None), ("fast", lambda: ["a"], None)],
+            deadline_s=0.15,
+            executor=arm_executor(),
+            guard=guard,
+        )
+
+    first = run()
+    assert first[0].status == "timeout" and first[1].status == "ok"
+    # in cooldown: not called again, still reported timeout, and fast arm is unaffected
+    second = run()
+    assert second[0].status == "timeout" and "cooling down" in second[0].detail
+    assert second[1].status == "ok" and len(started) == 1
+    time.sleep(0.35)
+    third = run()  # cooldown over: probed again (2nd in flight)
+    assert len(started) == 2 and third[0].status == "timeout"
+    time.sleep(0.35)
+    fourth = run()  # cap of 2 in flight reached: refused without a call
+    assert len(started) == 2 and "still running" in fourth[0].detail
+    release.set()
+    time.sleep(0.2)
+    assert run()[0].status in ("ok", "timeout")  # released: admitted again
+
+
+def test_a_hung_arm_does_not_starve_other_searches(store, monkeypatch):
+    monkeypatch.setenv("SKMEMORY_SEARCH_DEADLINE_S", "0.2")
+    store.vector = _Hung(hold=4.0)
+    for _ in range(8):  # more searches than pool workers would allow without a cap
+        store.search("skgateway routing", limit=3)
+    t0 = time.monotonic()
+    assert store.search("skgateway routing", limit=3)
+    assert time.monotonic() - t0 < 1.0
+
+
+def test_month_day_question_is_time_intent():
+    assert has_time_intent("what did we decide june 5")
+    assert not has_time_intent("June 5 notes")

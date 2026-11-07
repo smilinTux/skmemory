@@ -46,7 +46,12 @@ class _Cur:
 
     def execute(self, sql, params=None):
         self.db.sql.append((sql, params))
-        if sql.startswith("SELECT"):
+        if sql.startswith("SELECT") and "ANY(" in sql:
+            agent, ids = params
+            self._rows = sorted(
+                r for r in self.db.rows if r[0] in ids and self.db.agents[r[0]] == agent
+            )
+        elif sql.startswith("SELECT"):
             agent, last, n = params
             rows = [r for r in self.db.rows if r[0] > last and self.db.agents[r[0]] == agent]
             self._rows = sorted(rows)[:n]
@@ -181,3 +186,25 @@ def test_cli_without_apply_is_a_dry_run_and_needs_a_dsn(monkeypatch, capsys):
     assert "SKMEMORY_PG_DSN" in capsys.readouterr().err
     with pytest.raises(SystemExit):
         rb.main([])  # no default agent
+
+
+def test_failed_rows_are_retried_on_resume_not_skipped(tmp_path):
+    state = tmp_path / "s.json"
+    conn = _db()
+    flaky = {"id05"}
+
+    def embed(text):
+        if "title 5" in text and flaky:
+            raise RuntimeError("endpoint down")
+        return [1.0]
+
+    first = rb.reembed(conn, "lumina", embed, apply=True, state_path=state, rows_per_sec=0)
+    assert first["failed"] == 1 and first["failed_ids"] == ["id05"]
+    assert "id05" not in conn.embeddings and json.loads(state.read_text())["failed_ids"] == [
+        "id05"
+    ]
+    flaky.clear()  # the endpoint recovers
+    second = rb.reembed(conn, "lumina", embed, apply=True, state_path=state, rows_per_sec=0)
+    assert "id05" in conn.embeddings
+    assert second["failed"] == 0 and second["failed_ids"] == []
+    assert json.loads(state.read_text())["failed_ids"] == []

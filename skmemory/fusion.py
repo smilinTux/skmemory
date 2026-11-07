@@ -159,6 +159,9 @@ class FusionResult:
     arms: list[ArmOutcome] = field(default_factory=list)
     #: doc id -> {arm name: rank within that arm}
     provenance: dict[str, dict[str, int]] = field(default_factory=dict)
+    #: wall-clock the arms took and the deadline they were given (0 when unknown)
+    elapsed_s: float = 0.0
+    deadline_s: float = 0.0
 
     @property
     def contributing_arms(self) -> list[str]:
@@ -171,6 +174,12 @@ class FusionResult:
     @property
     def timed_out_arms(self) -> list[str]:
         return [a.name for a in self.arms if a.status == "timeout"]
+
+    @property
+    def all_attempted_timed_out(self) -> bool:
+        """Every arm that was supposed to run timed out (none answered, none failed)."""
+        attempted = [a for a in self.arms if a.status not in ("disabled", "unavailable")]
+        return bool(attempted) and all(a.status == "timeout" for a in attempted)
 
     @property
     def disabled_arms(self) -> list[str]:
@@ -305,12 +314,71 @@ def pinned_rrf(
     return [(d, by_id[d][0], by_id[d][1]) for d in ordered]
 
 
+class ArmGuard:
+    """Keeps one hung backend from consuming the shared worker pool.
+
+    * At most ``max_inflight`` calls of one arm may be running at once. Python
+      cannot kill a thread, so a hung arm keeps its worker until the backend
+      gives up; without a cap every search would park another one.
+    * After a timeout the arm is "cooling down" for ``cooldown_s``: it is not
+      called, and is reported as ``timeout`` saying so, so searches stay fast
+      while the backend is down. A call that finishes normally clears it.
+    """
+
+    def __init__(self, max_inflight: int | None = None, cooldown_s: float | None = None):
+        self.max_inflight = (
+            max_inflight if max_inflight is not None else _env_int("SKMEMORY_ARM_MAX_INFLIGHT", 2)
+        )
+        self.cooldown_s = (
+            cooldown_s if cooldown_s is not None else _env_float("SKMEMORY_ARM_COOLDOWN_S", 10.0)
+        )
+        self._lock = threading.Lock()
+        self._inflight: dict[str, int] = {}
+        self._down_until: dict[str, float] = {}
+
+    def admit(self, name: str) -> str | None:
+        """None to run, else the reason the arm is being skipped."""
+        with self._lock:
+            left = self._down_until.get(name, 0.0) - time.monotonic()
+            if left > 0:
+                return f"cooling down after a timeout ({left:.1f}s left)"
+            if self._inflight.get(name, 0) >= self.max_inflight:
+                return f"{self._inflight[name]} earlier call(s) still running (cap {self.max_inflight})"
+            self._inflight[name] = self._inflight.get(name, 0) + 1
+            return None
+
+    def finished(self, name: str, *, completed: bool = True) -> None:
+        with self._lock:
+            self._inflight[name] = max(0, self._inflight.get(name, 0) - 1)
+            if completed:
+                self._down_until.pop(name, None)
+
+    def timed_out(self, name: str) -> None:
+        with self._lock:
+            self._down_until[name] = time.monotonic() + self.cooldown_s
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.environ.get(name, "").strip() or default))
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return max(0.0, float(os.environ.get(name, "").strip() or default))
+    except ValueError:
+        return default
+
+
 def run_arms_concurrent(
     specs: Sequence[tuple[str, Callable[[], Sequence[str]] | None, str | None]],
     *,
     deadline_s: float,
     cap: int = DEFAULT_ARM_CAP,
     executor: ThreadPoolExecutor,
+    guard: ArmGuard | None = None,
 ) -> list[ArmOutcome]:
     """Run every arm at once and wait at most ``deadline_s`` TOTAL.
 
@@ -328,14 +396,32 @@ def run_arms_concurrent(
         if disabled is not None or fn is None:
             outcomes[name] = run_arm(name, fn, cap=cap, disabled=disabled)
             continue
-        futures[name] = executor.submit(run_arm, name, fn, cap=cap)
+        if guard is not None:
+            refused = guard.admit(name)
+            if refused is not None:
+                outcomes[name] = ArmOutcome(name=name, status="timeout", detail=refused)
+                continue
+
+            def call(name=name, fn=fn):
+                try:
+                    return run_arm(name, fn, cap=cap)
+                finally:
+                    guard.finished(name)
+
+            futures[name] = executor.submit(call)
+        else:
+            futures[name] = executor.submit(run_arm, name, fn, cap=cap)
     if futures:
         wait(list(futures.values()), timeout=deadline_s)
     for name, fut in futures.items():
         if fut.done():
             outcomes[name] = fut.result()
         else:
-            fut.cancel()
+            was_queued = fut.cancel()  # True: it never started, so it will never release
+            if guard is not None:
+                if was_queued:
+                    guard.finished(name, completed=False)
+                guard.timed_out(name)
             outcomes[name] = ArmOutcome(
                 name=name,
                 status="timeout",
@@ -608,6 +694,19 @@ _DATE_CUE_RE = re.compile(
 )
 
 
+# "what did we decide june 5": no preposition, but a question word plus a month
+# with a day number is unmistakably a date question. A title like "June 5 notes"
+# has no question word and stays a title.
+_QUESTION_RE = re.compile(
+    r"\b(?:what|when|which|who|how|why|did|do|does|was|were|is|are|show|list|find|recall|"
+    r"remind|tell)\b"
+)
+_MONTH_NAMES = "|".join(sorted(_MONTHS, key=len, reverse=True))
+_MONTH_DAY_RE = re.compile(
+    rf"\b(?:(?:{_MONTH_NAMES})\s+\d{{1,2}}(?:st|nd|rd|th)?|\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_MONTH_NAMES}))\b"
+)
+
+
 def has_time_intent(query: str, *, now: datetime | None = None) -> bool:
     """True when *query* asks about a time rather than merely containing a date token."""
     return parse_time_window(query, now=now, strict=True) is not None
@@ -664,7 +763,11 @@ def parse_time_window(
     today = now.date()
 
     # Calendar forms need a cue under strict; relative phrases never do.
-    dated_ok = not strict or _DATE_CUE_RE.search(text) is not None
+    dated_ok = (
+        not strict
+        or _DATE_CUE_RE.search(text) is not None
+        or (_QUESTION_RE.search(text) is not None and _MONTH_DAY_RE.search(text) is not None)
+    )
 
     iso_day = _ISO_DATE_RE.search(text) if dated_ok else None
     if iso_day:
