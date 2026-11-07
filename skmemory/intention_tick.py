@@ -50,6 +50,7 @@ ALERT_GROUP = "intentions"
 ALERT_CMD_ENV = "SKMEMORY_ALERT_CMD"
 TICK_HOST_ENV = "SKMEMORY_TICK_HOST"
 _MAX_TITLE = 200
+DEFAULT_MAX_PER_TICK = 5
 
 Deliver = Callable[[str], bool]
 
@@ -61,6 +62,7 @@ class TickResult:
     skipped: str | None = None
     fired: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
+    remaining: int = 0  # due but not delivered this tick (cap hit or stopped on failure)
 
 
 def _clean(text: str, limit: int = _MAX_TITLE) -> str:
@@ -76,7 +78,7 @@ def alert_text(i: Intention) -> str:
     return f"Intention due: {_clean(i.title)} (origin: {_clean(origin, 128)}). Resolve: skmemory intentions done {i.id}"
 
 
-def sk_alert_deliver(text: str, *, timeout: float = 60.0) -> bool:
+def sk_alert_deliver(text: str, *, timeout: float = 30.0) -> bool:
     """Run ``sk-alert -g intentions ... TEXT``; True only on exit 0."""
     argv = shlex.split(os.environ.get(ALERT_CMD_ENV) or "sk-alert")
     argv += ["-g", ALERT_GROUP, "--title", "skmemory intention due", text]
@@ -116,7 +118,7 @@ def due_intentions(store: IntentionStore, now: datetime) -> list[Intention]:
 
 
 def _short_host() -> str:
-    return socket.gethostname().split(".")[0]
+    return socket.gethostname().split(".")[0].casefold()
 
 
 @contextlib.contextmanager
@@ -153,14 +155,15 @@ def run_tick(
     tick_host: str | None = None,
     any_host: bool = False,
     hostname: str | None = None,
+    max_per_tick: int = DEFAULT_MAX_PER_TICK,
 ) -> TickResult:
     """Fire every due time intention once. See the module docstring for the rules."""
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     deliver = deliver or sk_alert_deliver
-    host = (hostname or _short_host()).split(".")[0]
-    want = (tick_host or os.environ.get(TICK_HOST_ENV) or "").strip().split(".")[0]
+    host = (hostname or _short_host()).strip().split(".")[0].casefold()
+    want = (tick_host or os.environ.get(TICK_HOST_ENV) or "").strip().split(".")[0].casefold()
     if want:
         if want != host:
             return TickResult(
@@ -177,15 +180,23 @@ def run_tick(
             res.skipped = "another tick is running on this host"
             return res
         store.reindex()  # merge synced replicas before judging what is due
-        for i in due_intentions(store, now):
+        due = due_intentions(store, now)  # oldest due first
+        batch, rest = due[: max(1, max_per_tick)], due[max(1, max_per_tick) :]
+        for i in batch:
             if not deliver(alert_text(i)):
-                logger.warning("intention %s: alert not delivered, stays %s", i.id, i.state)
+                # Stop on the first failure: sk-alert is down, retrying every item
+                # would take N x timeout and overlap the next run.
+                logger.warning("intention %s: alert not delivered, stopping tick", i.id)
                 res.failed.append(i.id)
-                continue
+                res.remaining = len(due) - len(res.fired)
+                return res
             after = store.apply(i.id, "fire", now=now)  # only after delivery succeeded
             if after is None:
                 logger.warning("intention %s delivered but could not be recorded", i.id)
                 res.failed.append(i.id)
             else:
                 res.fired.append(i.id)
+        res.remaining = len(rest)
+        if rest and not deliver(f"{len(rest)} more due"):
+            logger.warning("summary alert for %d more due not delivered", len(rest))
     return res

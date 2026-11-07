@@ -3949,21 +3949,28 @@ def _intention_store(base: str | None):
     "--tick-host", default=None, help="Only this host runs the tick (env SKMEMORY_TICK_HOST)"
 )
 @click.option("--any-host", is_flag=True, help="Run without a tick host (single-host nodes only)")
-def intentions_tick(base: str | None, tick_host: str | None, any_host: bool) -> None:
+@click.option(
+    "--max-per-tick", type=int, default=5, show_default=True, help="Alerts per tick, oldest first"
+)
+def intentions_tick(
+    base: str | None, tick_host: str | None, any_host: bool, max_per_tick: int
+) -> None:
     """Fire due time intentions through sk-alert (run from sk-cron-run every 5 minutes)."""
     from .intention_tick import run_tick
 
     store = _intention_store(base)
     try:
-        res = run_tick(store, tick_host=tick_host, any_host=any_host)
+        res = run_tick(store, tick_host=tick_host, any_host=any_host, max_per_tick=max_per_tick)
     finally:
         store.close()
     if res.skipped:
-        click.echo(f"tick skipped: {res.skipped}")
+        click.echo(f"tick skipped: {res.skipped}", err=True)
         if res.skipped.startswith("no tick host"):
             raise SystemExit(2)
         return
-    click.echo(f"fired {len(res.fired)}, delivery failed {len(res.failed)}")
+    click.echo(
+        f"fired {len(res.fired)}, delivery failed {len(res.failed)}, remaining {res.remaining}"
+    )
     for iid in res.fired:
         click.echo(f"  fired {iid}")
     for iid in res.failed:

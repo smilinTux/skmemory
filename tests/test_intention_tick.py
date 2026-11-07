@@ -210,3 +210,52 @@ def test_cli_tick_and_done(store, tmp_path, monkeypatch):
     monkeypatch.setenv("SKMEMORY_ALERT_CMD", str(tmp_path / "nope"))
     r = CliRunner().invoke(cli, ["intentions", "tick", "--base", base, "--any-host"])
     assert r.exit_code == 0  # nothing due any more
+
+
+def _many(store, n):
+    for k in range(n):
+        store.save(
+            Intention(
+                id=f"od-{k:02d}",
+                kind="time",
+                title=f"t{k}",
+                due_at=datetime(2026, 10, 1, k + 1, tzinfo=timezone.utc),
+            )
+        )
+
+
+def test_cap_oldest_first_summary_and_drain(store):
+    _many(store, 12)  # plus int-002 = 13 due
+    sent: list[str] = []
+    res = _tick(store, lambda t: sent.append(t) or True)
+    assert len(res.fired) == 5 and res.remaining == 8
+    assert res.fired == [f"od-{k:02d}" for k in range(5)]
+    assert sent[-1] == "8 more due" and len(sent) == 6
+    sent.clear()
+    _tick(store, lambda t: sent.append(t) or True)
+    _tick(store, lambda t: sent.append(t) or True)
+    assert sum(1 for t in sent if t.startswith("Intention due")) == 8
+    assert store.get("int-002").fires == 1
+
+
+def test_stops_on_first_failure(store):
+    _many(store, 6)
+    calls = []
+    res = _tick(store, lambda t: calls.append(t) or False)
+    assert len(calls) == 1 and res.failed == ["od-00"] and res.fired == []
+
+
+def test_host_compare_case_and_fqdn(store):
+    r = run_tick(
+        store, now=NOW, deliver=lambda t: True, tick_host="Noroc2027", hostname="noroc2027.lan"
+    )
+    assert r.fired == ["int-002"]
+    r = run_tick(
+        store, now=NOW, deliver=lambda t: True, tick_host="NOROC2027.x", hostname="NoRoC2027"
+    )
+    assert not r.skipped
+
+
+def test_skip_notice_names_both(store):
+    r = run_tick(store, now=NOW, deliver=lambda t: True, tick_host="a1", hostname="b2")
+    assert "'b2'" in r.skipped and "'a1'" in r.skipped
