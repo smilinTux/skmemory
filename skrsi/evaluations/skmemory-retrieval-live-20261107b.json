@@ -1,0 +1,132 @@
+{
+  "baseline": {
+    "id": "2eee38dc/live-live_self_retrieval-seed20261106",
+    "sample_size": 398,
+    "window_end": "1970-01-01T00:00:00Z",
+    "window_start": "1970-01-01T00:00:00Z"
+  },
+  "evaluation_id": "eval-skmemory-retrieval-40c489430b27",
+  "evidence_class": "live_self_retrieval",
+  "evidence_sha256": "40c489430b2768f6d9d380ee147951d77b33bee278d060b55694f434c435d68a",
+  "guardrails": [
+    {
+      "name": "independent_evaluator",
+      "passed": true
+    },
+    {
+      "name": "invariant:a live measurement writes nothing to the store it measures",
+      "passed": true
+    },
+    {
+      "name": "stop_rule:latency-regression",
+      "passed": true
+    }
+  ],
+  "instrument": {
+    "baselines_named": [
+      "bm25_only",
+      "vector_only",
+      "sqlite_like",
+      "lexical_local",
+      "graph_only",
+      "fallback_chain"
+    ],
+    "dead_arms_reported": true,
+    "runs_production_code": true,
+    "sabotage_tested": false
+  },
+  "metrics": [
+    {
+      "baseline": 0.601,
+      "direction": "higher",
+      "name": "live_recall_at_5_all",
+      "noise": 0.02,
+      "tolerance": 0.02,
+      "treatment": 0.8531645569620253,
+      "unit": "ratio",
+      "verdict": "improved"
+    },
+    {
+      "baseline": 0.455,
+      "direction": "higher",
+      "name": "live_recall_at_5_title",
+      "noise": 0.02,
+      "tolerance": 0.02,
+      "treatment": 0.864321608040201,
+      "unit": "ratio",
+      "verdict": "improved"
+    },
+    {
+      "baseline": 0.747,
+      "direction": "higher",
+      "name": "live_recall_at_5_rare_token",
+      "noise": 0.02,
+      "tolerance": 0.02,
+      "treatment": 0.8418367346938775,
+      "unit": "ratio",
+      "verdict": "improved"
+    },
+    {
+      "baseline": 0.419,
+      "direction": "higher",
+      "name": "live_mrr_all",
+      "noise": 0.02,
+      "tolerance": 0.02,
+      "treatment": 0.7643188667872212,
+      "unit": "ratio",
+      "verdict": "improved"
+    },
+    {
+      "baseline": 4952,
+      "direction": "lower",
+      "name": "live_p95_ms",
+      "noise": 300.0,
+      "tolerance": 0.2,
+      "treatment": 1313.2,
+      "unit": "ms",
+      "verdict": "improved"
+    },
+    {
+      "baseline": null,
+      "direction": "unknown",
+      "name": "class_recall_at_5_per_class",
+      "treatment": null,
+      "unit": "unknown",
+      "verdict": "missing"
+    },
+    {
+      "baseline": null,
+      "direction": "unknown",
+      "name": "leak_count",
+      "treatment": null,
+      "unit": "unknown",
+      "verdict": "missing"
+    }
+  ],
+  "missingness": [
+    "baseline ran under load average about 20, this run under 3 to 7; latency comparison is not like for like",
+    "paraphrase set (182 queries) on 765528b to d609dd0: fused 0.187 to 0.192 vs vector_only 0.198, inside the 0.02 noise floor; recorded separately",
+    "small agent jarvis on this head: fused 0.890 vs best single arm 0.892, 0 semantic timeouts, p95 667 ms",
+    "noise floors are estimated from cross-run spread, not a controlled repeat",
+    "class_recall_at_5_per_class: absent from baseline, so no base rules apply",
+    "leak_count: absent from baseline, so no base rules apply",
+    "invariant not asserted by the bench: leak_count stays 0 for a declared non-owner reader",
+    "invariant not asserted by the bench: no gated class falls below its recorded floor in regression_gate",
+    "invariant not asserted by the bench: evaluator differs from producer",
+    "invariant not asserted by the bench: a missing or dead arm is reported as missing, never as zero or success",
+    "cap: instrument has no demonstrated sabotage failure"
+  ],
+  "outcome": "inconclusive",
+  "participants": [
+    "skmemory-lane-workers",
+    "lumina-orchestrator"
+  ],
+  "schema": "skrsi.evaluation.v4",
+  "target_ref": "skmemory-retrieval@1",
+  "treatment": {
+    "id": "6366da8/live-live_self_retrieval-seed20261106",
+    "sample_size": 395,
+    "window_end": "1970-01-01T00:00:00Z",
+    "window_start": "1970-01-01T00:00:00Z"
+  }
+}

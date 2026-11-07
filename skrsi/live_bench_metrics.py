@@ -64,12 +64,27 @@ def _invariants(raw: dict) -> dict:
     return {WROTE_NOTHING: all(v == "write refused" for v in guards.values())}
 
 
+# Run-to-run spread of the live bench on this store (2026-11-07, seed 20261106, 182 to 398
+# queries): recall and MRR moved by up to about 0.02 between runs of equivalent code, and p95 by
+# about 300 ms with box load between 3 and 12. One query is 1/N (0.0025 to 0.0055). A delta
+# inside these is "flat" in SKRSI (skrsi PR 8). Estimated from cross-run spread, not from a
+# controlled repeat of one commit: replace with measured values when one is run.
+NOISE_RATIO = 0.02
+NOISE_P95_MS = 300.0
+
+
 def flatten(raw: dict) -> dict:
     is_base = raw.get("schema") == "skmemory.skrsi.baseline.v1"
     recall, mrr, p95, n, cohort = (_from_baseline if is_base else _from_rows)(raw)
 
     def ratio(v):
-        return {"value": v, "unit": "ratio", "direction": "higher", "tolerance": 0.02}
+        return {
+            "value": v,
+            "unit": "ratio",
+            "direction": "higher",
+            "tolerance": 0.02,
+            "noise": NOISE_RATIO,
+        }
 
     return {
         "cohort": {
@@ -95,6 +110,7 @@ def flatten(raw: dict) -> dict:
                 "unit": "ms",
                 "direction": "lower",
                 "tolerance": 0.2,
+                "noise": NOISE_P95_MS,
                 "stop_rule": "latency-regression",
             },
         },
