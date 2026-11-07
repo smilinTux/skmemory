@@ -85,7 +85,7 @@ def drop(conn: sqlite3.Connection) -> None:
             logger.warning("fts_local: VACUUM after drop skipped: %s", e)
 
 
-def sanitize_match(query: str) -> str | None:
+def sanitize_match(query: str, joiner: str = " OR ") -> str | None:
     """Turn free text into a MATCH expression that cannot raise a syntax error.
 
     Each whitespace-separated chunk is split into its word characters and
@@ -101,7 +101,7 @@ def sanitize_match(query: str) -> str | None:
             terms.append('"' + " ".join(parts) + '"')
         if len(terms) >= _MAX_TERMS:
             break
-    return " OR ".join(terms) if terms else None
+    return joiner.join(terms) if terms else None
 
 
 def _row_values(memory) -> tuple[str, str, str, str]:
@@ -221,11 +221,11 @@ def search_rows(
     ``tags`` is AND. ``context_tag`` is an exact tag or an any-of list, and an
     empty list matches nothing (fails closed). ``None`` means no filter.
     """
-    match = sanitize_match(query)
-    if match is None or limit <= 0:
+    match_or = sanitize_match(query)
+    if match_or is None or limit <= 0:
         return []
     where = ["memory_fts MATCH ?"]
-    params: list = [match]
+    params: list = [None]
     if layer is not None:
         where.append("m.layer = ?")
         params.append(str(getattr(layer, "value", layer)))
@@ -242,11 +242,17 @@ def search_rows(
         where.append(f"f.context_tag IN ({','.join('?' * len(allowed))})")
         params.extend(allowed)
     params.append(limit)
-    return conn.execute(
+    sql = (
         "SELECT m.* FROM memory_fts "
         "JOIN fts_meta f ON f.rowid = memory_fts.rowid "
         "JOIN memories m ON m.id = f.id "
         f"WHERE {' AND '.join(where)} "
-        f"ORDER BY bm25(memory_fts, {_BM25_WEIGHTS}) LIMIT ?",
-        params,
-    ).fetchall()
+        f"ORDER BY bm25(memory_fts, {_BM25_WEIGHTS}) LIMIT ?"
+    )
+    # All terms first (precise, like the LIKE path's AND), any term as fallback.
+    for match in (sanitize_match(query, " AND "), match_or):
+        params[0] = match
+        rows = conn.execute(sql, params).fetchall()
+        if rows or match == match_or:
+            return rows
+    return []
