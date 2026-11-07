@@ -1,0 +1,1 @@
+Added `skmemory.eval.arm_diff`, a read-only live diagnostic that traces each vector_only top-5 hit through the semantic arm, fusion, rerank, supersession demotion, tier cap and the final page by memory id (SKMEM-P1-10), plus a hermetic repro (`tests/test_fusion_vector_pin_page.py`) of the stages that move pinned vector hits out of the top 5.
