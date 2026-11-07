@@ -46,6 +46,7 @@ from mcp.types import TextContent, Tool
 from .audience import READER_ENV, resolve_reader
 from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
 from .models import MemoryLayer
+from .procedures import index_title
 from .store import MemoryStore
 from .tiers import tier_for_explicit_store
 from .validity import superseded_by_map
@@ -1020,7 +1021,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         all_results.append(
                             {
                                 "id": m.id,
-                                "title": m.title,
+                                "title": index_title(m),
                                 "summary": m.summary or m.content[:200],
                                 "layer": m.layer.value,
                                 "intensity": m.emotional.intensity,

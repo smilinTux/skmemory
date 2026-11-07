@@ -54,6 +54,7 @@ from .models import (
     SeedMemory,
     SourceTier,
 )
+from .procedures import order_procedures
 from .query_sanitizer import sanitize_query
 from .rerank import NoopReranker, RareTermReranker
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
@@ -1222,6 +1223,9 @@ class MemoryStore:
             )
         by_id = {m.id: m for m in rows}
         kept = [by_id[i] for i in apply_tier_cap([m.id for m in rows], by_id, limit)]
+        # Last step, on reader-filtered and tier-capped hits: a failure procedure
+        # never outranks a successful one for a how-to query.
+        kept = order_procedures(kept, query)
         if record_access:
             self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         return kept
