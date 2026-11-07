@@ -1315,6 +1315,30 @@ def routing_probe() -> None:
     click.echo("\nProbe complete.")
 
 
+@cli.command("fts-backfill")
+@click.option("--max-rows", type=int, default=None, help="Stop after this many rows.")
+@click.pass_context
+def fts_backfill(ctx: click.Context, max_rows: int | None) -> None:
+    """Index full text of existing memories into the local FTS5 arm.
+
+    New saves are indexed automatically and searches backfill a small slice
+    each call; run this once on a large existing index.db to finish at once.
+    """
+    store: MemoryStore = ctx.obj["store"]
+    primary = store.primary
+    if not hasattr(primary, "fts_backfill"):
+        click.echo("Primary backend has no FTS arm.", err=True)
+        sys.exit(1)
+    out = primary.fts_backfill(max_rows=max_rows)
+    if not out.get("enabled"):
+        click.echo("FTS arm is disabled for this backend (encrypted store or no FTS5).")
+        return
+    click.echo(
+        f"Indexed {out['indexed']} memories ({out['unloadable']} unloadable); "
+        f"complete={out['complete']}."
+    )
+
+
 @cli.command()
 @click.option(
     "--vector", is_flag=True, help="Also sync flat-file memories into the ChromaDB vector index."

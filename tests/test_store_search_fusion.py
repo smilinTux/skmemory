@@ -236,7 +236,8 @@ def test_lexical_arm_prefers_the_backends_dedicated_engine(store):
     store.vector = vec
     results = store.search_fused("prb-6f069c5e", limit=5)
     assert vec.lexical_calls, "the dedicated lexical engine was not used"
-    assert [m.id for m in results] == ["bm25-hit"]
+    # The always-on local FTS arm votes too (SKMEM-P5-03); both hits surface.
+    assert "bm25-hit" in [m.id for m in results]
 
 
 def test_lexical_arm_pushes_filters_into_the_dedicated_engine(store):

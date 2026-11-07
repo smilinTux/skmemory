@@ -59,6 +59,9 @@ class VaultedSQLiteBackend(SQLiteBackend):
         r = store.recall(m.id)  # decrypted on the fly
     """
 
+    #: Full text must not land in plaintext in index.db (see fts_local).
+    fts_enabled = False
+
     def __init__(self, passphrase: str, base_path: str = DEFAULT_BASE_PATH) -> None:
         self._vault = MemoryVault(passphrase)
         super().__init__(base_path=base_path)

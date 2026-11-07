@@ -28,11 +28,13 @@ import contextlib
 import functools
 import json
 import logging
+import os
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .. import fts_local
 from ..atomic_io import atomic_write_text
 from ..config import SKMEMORY_HOME
 from ..invalid_records import require_memory_id
@@ -191,6 +193,11 @@ class SQLiteBackend(BaseBackend):
     Args:
         base_path: Root directory for memory storage and index.
     """
+
+    #: Whether the full-text FTS5 arm may hold this store's text. Backends that
+    #: encrypt flat files at rest set this False so no plaintext reaches index.db.
+    fts_enabled: bool = True
+    _fts_ok: bool = False
 
     def __init__(self, base_path: str = DEFAULT_BASE_PATH) -> None:
         if base_path == DEFAULT_BASE_PATH:
@@ -359,6 +366,12 @@ class SQLiteBackend(BaseBackend):
         conn.executescript(_SCHEMA)
         conn.commit()
 
+        if self.fts_enabled:
+            self._fts_ok = fts_local.ensure_schema(conn)
+        else:
+            self._fts_ok = False
+            fts_local.drop(conn)
+
     def _file_path(self, memory: Memory) -> Path:
         """Get the file path for a memory.
 
@@ -420,6 +433,7 @@ class SQLiteBackend(BaseBackend):
             bool: True if the index was updated, False if it degraded.
         """
         content_preview = memory.content[:CONTENT_PREVIEW_LENGTH]
+        content_hash = memory.content_hash()
         try:
             conn = self._get_conn()
             conn.execute(
@@ -481,7 +495,7 @@ class SQLiteBackend(BaseBackend):
                     memory.created_at,
                     memory.updated_at,
                     str(file_path),
-                    memory.content_hash(),
+                    content_hash,
                     memory.kind,
                     memory.outcome,
                     memory.event_at,
@@ -492,6 +506,14 @@ class SQLiteBackend(BaseBackend):
                     memory.schema_version,
                 ),
             )
+            if self._fts_ok:
+                try:
+                    fts_local.index_memory(conn, memory, content_hash)
+                except sqlite3.Error as fts_err:
+                    # The FTS arm is derived; never fail the index write for it.
+                    logger.warning(
+                        "sqlite_backend: fts index failed for %s: %s", memory.id, fts_err
+                    )
             conn.commit()
             return True
         except sqlite3.Error as e:
@@ -1078,6 +1100,87 @@ class SQLiteBackend(BaseBackend):
             if mem is not None:
                 results.append(mem)
         return results
+
+    @_resilient_read(list)
+    def search_lexical_local(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        layer: str | None = None,
+        tags: list[str] | None = None,
+        source: str | None = None,
+        context_tag: str | list[str] | None = None,
+    ) -> list[Memory]:
+        """bm25-ranked full-text search over title, content, summary and tags.
+
+        Same filters as the pg arms (``tags`` AND, ``context_tag`` exact or
+        any-of with ``[]`` failing closed). Returns [] when FTS is disabled
+        (encrypted backend, or SQLite without FTS5). Rows not yet backfilled
+        are not searchable; each call indexes a small time-bounded slice of
+        them so an existing index.db converges without blocking open.
+        """
+        if not self._fts_ok:
+            return []
+        conn = self._get_conn()
+        self._lazy_fts_backfill(conn)
+        rows = fts_local.search_rows(
+            conn, query, limit, layer=layer, tags=tags, source=source, context_tag=context_tag
+        )
+        results = []
+        for row in rows:
+            mem = self._row_to_memory(row)
+            if mem is not None:
+                results.append(mem)
+        return results
+
+    #: Seconds between anti-join rechecks once the index is fully backfilled.
+    _FTS_RECHECK_S = 60.0
+    #: Lock wait for the lazy backfill; it skips rather than stalling a search.
+    _FTS_LAZY_LOCK_MS = 100
+
+    def _lazy_fts_backfill(self, conn: sqlite3.Connection) -> None:
+        import time
+
+        now = time.monotonic()
+        done_at = getattr(self, "_fts_complete_at", None)
+        if done_at is not None and now - done_at < self._FTS_RECHECK_S:
+            return
+        try:
+            budget = float(os.environ.get("SKMEMORY_FTS_LAZY_BACKFILL_S", "0.15"))
+        except ValueError:
+            budget = 0.15
+        if budget <= 0:
+            return
+        try:
+            conn.execute(f"PRAGMA busy_timeout={self._FTS_LAZY_LOCK_MS}")
+            out = fts_local.backfill(conn, self._row_to_memory, budget_s=budget)
+            self._fts_complete_at = now if out["complete"] else None
+        except sqlite3.Error as e:
+            # Another writer holds the lock (or the write failed): skip, the
+            # search proceeds on whatever is already indexed.
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+            logger.debug("sqlite_backend: lazy fts backfill skipped: %s", e)
+        finally:
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute(f"PRAGMA busy_timeout={int(_BUSY_TIMEOUT_S * 1000)}")
+
+    def fts_backfill(self, max_rows: int | None = None, budget_s: float | None = None) -> dict:
+        """Explicitly index memories that have no FTS entry yet."""
+        if not self._fts_ok:
+            return {"enabled": False, "indexed": 0, "unloadable": 0, "complete": False}
+        out = fts_local.backfill(
+            self._get_conn(), self._row_to_memory, max_rows=max_rows, budget_s=budget_s
+        )
+        self._fts_complete_at = None
+        return {"enabled": True, **out}
+
+    def fts_status(self) -> dict:
+        """FTS arm state: enabled flag plus indexed/total coverage."""
+        if not self._fts_ok:
+            return {"enabled": False}
+        return {"enabled": True, **fts_local.coverage(self._get_conn())}
 
     @_resilient_read(list)
     def get_related(self, memory_id: str, depth: int = 1) -> list[dict]:
@@ -1821,6 +1924,7 @@ class SQLiteBackend(BaseBackend):
                 "total_memories": s["total"],
                 "by_layer": s["by_layer"],
                 "index_size_bytes": s["index_size_bytes"],
+                "fts": self.fts_status(),
                 "sync": {
                     "in_sync": drift["in_sync"],
                     "sqlite_only": drift["sqlite_only"],
