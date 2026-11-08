@@ -166,9 +166,14 @@ def test_full_rotation_against_throwaway_container(tmp_path):
             "create extension vector; create extension pg_search; create extension age;"
             "create table memories(id int); insert into memories values (1),(2);"
         )
-        assert docker("exec", name, "psql", "-U", "postgres", "-d", "skmemory", "-c", sql).returncode == 0
+        assert (
+            docker("exec", name, "psql", "-U", "postgres", "-d", "skmemory", "-c", sql).returncode
+            == 0
+        )
         env = tmp_path / "pg.env"
-        env.write_text(f"SKMEMORY_PG_DSN=postgresql://postgres:{OLD_PW}@127.0.0.1:{port}/skmemory\n")
+        env.write_text(
+            f"SKMEMORY_PG_DSN=postgresql://postgres:{OLD_PW}@127.0.0.1:{port}/skmemory\n"
+        )
         env.chmod(0o600)
         backup = tmp_path / "bk"
         r = _run([
@@ -185,12 +190,21 @@ def test_full_rotation_against_throwaway_container(tmp_path):
             assert stat.S_IMODE(f.stat().st_mode) == 0o600
         ports = docker("port", name).stdout
         assert "127.0.0.1" in ports and "0.0.0.0" not in ports
-        old_names = docker("ps", "-a", "--filter", f"name={name}-old-", "--format", "{{.Names}}").stdout.split()
+        old_names = docker(
+            "ps", "-a", "--filter", f"name={name}-old-", "--format", "{{.Names}}"
+        ).stdout.split()
         assert len(old_names) == 1
         assert _run(["--remove-old", old_names[0]]).returncode == 0
-        assert docker("ps", "-a", "--filter", f"name={name}-old-", "--format", "{{.Names}}").stdout.strip() == ""
+        assert (
+            docker(
+                "ps", "-a", "--filter", f"name={name}-old-", "--format", "{{.Names}}"
+            ).stdout.strip()
+            == ""
+        )
     finally:
-        names = docker("ps", "-a", "--filter", f"name={name}", "--format", "{{.Names}}").stdout.split()
+        names = docker(
+            "ps", "-a", "--filter", f"name={name}", "--format", "{{.Names}}"
+        ).stdout.split()
         if names:
             docker("rm", "-f", *names)
         docker("volume", "rm", "-f", vol)
