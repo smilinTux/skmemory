@@ -72,6 +72,7 @@ dev = [
 skmemory = "skmemory.cli:main"
 skmemory-mcp = "skmemory.mcp_server:main"
 skmemory-post-install = "skmemory.post_install:main"
+skmemory-shadow-report = "skmemory.shadow:main"
 
 [project.urls]
 Homepage = "https://github.com/smilinTux/skmemory"
