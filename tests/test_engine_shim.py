@@ -145,3 +145,21 @@ def test_rust_reader_ceiling_hides_private_memory(rust_store, monkeypatch):
     assert rust_store.search("ceiling probe") == []
     assert rust_store.history(m.id) == []
     assert not rust_store.reader_can_see(m.id)
+
+
+def test_rust_writes_stay_visible_after_python_connections_close(rust_store):
+    """Two bundled SQLites in one process: closing Python's last connection must not
+    delete the -wal under the Rust engine (the shim keeps one connection open)."""
+    import sqlite3
+
+    base = rust_store.primary.base_path
+    rust_store.snapshot("first", "rust writes one")
+    rust_store.primary._get_conn().close()
+    rust_store.primary._conn = None
+    for i in range(3):
+        rust_store.snapshot(f"w{i}", f"rust writes number {i} unique{i}")
+    conn = sqlite3.connect(str(base / "index.db"))
+    try:
+        assert conn.execute("select count(*) from memories").fetchone()[0] == 4
+    finally:
+        conn.close()

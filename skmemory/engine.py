@@ -107,6 +107,16 @@ def ceiling() -> str:
     return os.environ.get("SKMEMORY_READER", "")
 
 
+def _index_identity(memory_dir: str | Path) -> tuple[int, int] | None:
+    """(device, inode) of ``index.db``: a recreated index must not reuse an engine
+    still holding the old, unlinked file."""
+    try:
+        st = os.stat(Path(memory_dir) / "index.db")
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 class RustEngines:
     """One lazily opened ``skmem_core.Engine`` per (memory dir, ceiling, pg, audience config).
 
@@ -114,21 +124,47 @@ class RustEngines:
     own SQLite, and POSIX advisory locks are per process, so closing the Rust
     connection (a dropped Engine) releases locks the Python connection to the same
     index.db holds, which surfaces as ``disk I/O error``. An engine therefore lives
-    as long as the process.
+    as long as the process (one whose index.db was replaced on disk is kept alive,
+    unused, and a fresh one is opened for the new file).
 
     A process under a reader ceiling opens its engine read-only, so the cache
     key includes the ceiling: changing ``SKMEMORY_READER`` reopens rather than
     reusing an owner engine.
     """
 
-    _engines: dict[tuple[str, str, bool, str], Any] = {}
+    _engines: dict[tuple, Any] = {}
     _lock = threading.Lock()
+
+    _keepers: dict[str, Any] = {}
+
+    @classmethod
+    def _keep_python_sqlite_open(cls, memory_dir: str | Path) -> None:
+        """Hold one Python sqlite3 connection to ``index.db`` for the life of the process.
+
+        Python's sqlite3 and the Rust engine each bundle a SQLite, and POSIX locks do
+        not conflict inside one process. When the LAST Python connection closes,
+        Python's SQLite believes it is alone, checkpoints and DELETES the -wal and
+        -shm files while the Rust connection still writes to them: every later Rust
+        write is invisible to any new reader. A connection that never closes keeps
+        Python's SQLite from ever being the last one out.
+        """
+        import sqlite3
+
+        db = str(Path(memory_dir) / "index.db")
+        if db in cls._keepers or not os.path.exists(db):
+            return
+        try:
+            conn = sqlite3.connect(db, check_same_thread=False, timeout=30)
+            conn.execute("PRAGMA journal_mode=WAL")
+            cls._keepers[db] = conn
+        except sqlite3.Error:
+            pass
 
     def get(self, memory_dir: str | Path, *, pg: bool = False) -> Any:
         mod = rust_module()
         ensure_audience_config()
         cfg = str(packaged_audience_config())
-        key = (str(memory_dir), ceiling(), pg, cfg)
+        key = (str(memory_dir), ceiling(), pg, cfg, _index_identity(memory_dir))
         with self._lock:
             eng = self._engines.get(key)
             if eng is None:
@@ -136,4 +172,5 @@ class RustEngines:
                 # env one: give both the same file so neither can disagree with Python.
                 eng = mod.Engine(str(memory_dir), cfg, pg=pg)
                 self._engines[key] = eng
+                self._keep_python_sqlite_open(memory_dir)
         return eng
