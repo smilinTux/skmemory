@@ -233,7 +233,8 @@ def cli(
     # The operator facet (explain/observe/act) is store-free and must stay
     # hermetic: never build a MemoryStore (backends, embeddings) just to print
     # the operator contract or read fail-safe health probes.
-    if ctx.invoked_subcommand in ("operator", "hook", "hooks", "intentions"):
+    # "import" builds its own store, and only when it will write (dry runs never open one).
+    if ctx.invoked_subcommand in ("operator", "hook", "hooks", "intentions", "import"):
         ctx.obj["ai"] = None
         return
     if "store" not in ctx.obj:
@@ -2162,6 +2163,44 @@ def steelman_truth_score(ctx: click.Context, memory_id: str) -> None:
 # ═══════════════════════════════════════════════════════════
 # Telegram / Chat Import commands
 # ═══════════════════════════════════════════════════════════
+
+
+@cli.group("import")
+def import_group() -> None:
+    """Import external memory sources."""
+
+
+@import_group.command("harness-memory")
+@click.argument("dirs", nargs=-1, required=True, type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--dry-run", is_flag=True, help="Print counts only. Opens no store and writes nothing."
+)
+@click.pass_context
+def import_harness_memory_cmd(ctx: click.Context, dirs: tuple[str, ...], dry_run: bool) -> None:
+    """Import Claude Code harness memory dirs (one-fact markdown files).
+
+    \b
+    Examples:
+        skmemory import harness-memory ~/.claude/projects/-home-me/memory --dry-run
+        skmemory import harness-memory DIR1 DIR2
+    """
+    from .importers.harness_memory import (
+        build_plan,
+        format_report,
+        import_harness_memory,
+    )
+
+    if dry_run:
+        click.echo(format_report(build_plan(list(dirs)).report()))
+        click.echo("\nDRY RUN: no store was opened, nothing written.")
+        return
+    store: MemoryStore = ctx.obj.get("store") or _get_store()
+    stats = import_harness_memory(store, list(dirs))
+    click.echo(
+        f"Imported {stats['imported']} memories "
+        f"({stats['superseded_variants']} superseded variants); "
+        f"{stats['skipped_existing']} already present."
+    )
 
 
 @cli.command("import-telegram")

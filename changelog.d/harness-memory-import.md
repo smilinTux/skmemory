@@ -1,0 +1,1 @@
+feat(import): "skmemory import harness-memory DIR... [--dry-run]" turns Claude Code harness memory dirs (one-fact markdown files with frontmatter) into user-stated, owner-only memories (feedback to rule, project and reference to fact, user to preference), with index-section tags, overlap handling by supersession, and idempotent re-runs. SKMEM-W-03.
