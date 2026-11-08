@@ -9,7 +9,7 @@ commit convention, the test gate, and the review path. It complements the
 ## Ground rules
 
 - **Flat files are the source of truth.** SQLite, pgvector, and the graph
-  are derived projections — never introduce a change that makes an index the master.
+  are derived projections. Never introduce a change that makes an index the master.
 - **Additive + safe for LIVE.** The cross-node memory/sync paths run on live boxes
   (.158/.41). New behaviour must be **gated** (flag/config) and must not break
   existing flat-file, SQLite, or vector paths.
@@ -32,14 +32,16 @@ commit convention, the test gate, and the review path. It complements the
 
 - Conventional-style subject (`feat:`, `fix:`, `docs:`, `test:`, `chore:`,
   `security:`).
-- End every commit message with the trailer:
+- A `Co-Authored-By` trailer names the agent that actually did the work, or is
+  left out. Never add one you cannot evidence: a co-author line is a factual
+  claim about authorship, so a missing one costs nothing and a wrong one
+  corrupts the record. For example, work done by Claude Opus 5.5 ends with:
 
   ```
-  Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+  Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
   ```
 
-  (Match the actual author model; the SK ecosystem standardises this trailer so
-  agent-authored work is attributable.)
+  and work by any other agent or model names that agent instead.
 
 ---
 
