@@ -48,6 +48,8 @@ def env(monkeypatch, tmp_path):
     FakeEngine.release = threading.Event()
     mod = types.ModuleType("skmem_core")
     mod.Engine = FakeEngine
+    mod.RELEASES_GIL = True
+    monkeypatch.setattr(shadow, "_disabled", False)
     monkeypatch.setitem(sys.modules, "skmem_core", mod)
     monkeypatch.delenv(engine.ENV, raising=False)
     monkeypatch.setenv(shadow.ENV, "rust")
@@ -167,3 +169,30 @@ def test_overlap_edges():
     assert shadow.overlap([], []) == 1.0
     assert shadow.overlap(["a"], []) == 0.0
     assert shadow.overlap(list("abcdef"), list("abcdeg")) == 1.0
+
+
+def test_module_that_holds_the_gil_is_refused_once(env, monkeypatch):
+    store, m, log = env
+    sys.modules["skmem_core"].RELEASES_GIL = False
+    assert [x.id for x in store.search(SECRET)] == [m.id]
+    (row,) = rows(log)
+    assert row["error"] == "skmem_core_holds_gil" and FakeEngine.calls == []
+    assert not shadow.enabled()
+    store.search(SECRET)
+    time.sleep(0.3)
+    assert len(rows(log)) == 1
+
+
+def test_open_time_is_not_in_rs_ms(env, monkeypatch):
+    store, m, log = env
+    FakeEngine.ids = [m.id]
+    orig = FakeEngine.__init__
+
+    def slow(self, *a, **k):
+        time.sleep(0.4)
+        orig(self, *a, **k)
+
+    monkeypatch.setattr(FakeEngine, "__init__", slow)
+    store.search(SECRET)
+    (row,) = rows(log)
+    assert row["rs_open_ms"] >= 400 and row["rs_ms"] < 200

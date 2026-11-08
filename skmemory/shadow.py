@@ -11,6 +11,10 @@ for both engines. The row holds no query text and no memory content, only a
 The shadow can never change or fail the served result:
 
 * the Rust call runs on a daemon thread; the caller only pays for starting it;
+* a skmem_core without ``RELEASES_GIL = True`` (a build that holds the GIL for the
+  whole search, which would stall the served Python search and the watchdog below)
+  is refused: one row with ``error: skmem_core_holds_gil``, then the shadow is off
+  for the process;
 * a watchdog timer (``SKMEMORY_SHADOW_TIMEOUT_S``, default 5) writes the row and
   gives up on a Rust call that has not returned;
 * every Rust error, a missing ``skmem_core`` included, is a row with an ``error``
@@ -48,11 +52,16 @@ MAX_INFLIGHT = 4
 TOP_K = 5
 
 _inflight = threading.BoundedSemaphore(MAX_INFLIGHT)
+_disabled = False  # set once skmem_core is found to hold the GIL
+
+
+class _HoldsGil(Exception):
+    """skmem_core predates GIL release: a shadow thread would stall the served search."""
 
 
 def enabled() -> bool:
     """Shadow runs only for ``SKMEMORY_SHADOW=rust`` while the served engine is python."""
-    if os.environ.get(ENV, "").strip().lower() != "rust":
+    if _disabled or os.environ.get(ENV, "").strip().lower() != "rust":
         return False
     try:
         return _engine.selected() == _engine.PYTHON
@@ -85,6 +94,8 @@ class _Engines:
     @classmethod
     def get(cls, memory_dir: str | Path, pg: bool) -> Any:
         mod = _engine.rust_module()
+        if getattr(mod, "RELEASES_GIL", False) is not True:
+            raise _HoldsGil
         os.environ.setdefault(_engine.AUDIENCE_ENV, str(_engine.packaged_audience_config()))
         cfg = str(_engine.packaged_audience_config())
         key = (str(memory_dir), _engine.ceiling(), pg, _engine._index_identity(memory_dir))
@@ -153,6 +164,7 @@ class _Run:
             "rs_ids": (rs or {}).get("ids", [])[:TOP_K],
             "py_ms": round((py or {}).get("ms", 0.0), 1) if py else None,
             "rs_ms": round(rs["ms"], 1) if rs and rs.get("ms") is not None else None,
+            "rs_open_ms": round(rs["open_ms"], 1) if rs and rs.get("open_ms") else None,
             "py_arms": (py or {}).get("arms"),
             "rs_arms": (rs or {}).get("arms"),
         }
@@ -171,10 +183,13 @@ class _Run:
 
 def _rust_worker(run: _Run, store: Any, query: str, limit: int, kw: dict) -> None:
     started = time.perf_counter()
-    result: dict[str, Any] = {"ids": [], "ms": None, "arms": None}
+    result: dict[str, Any] = {"ids": [], "ms": None, "arms": None, "open_ms": None}
     try:
         base = getattr(store.primary, "base_path", None)
         eng = _Engines.get(base, pg=store.vector is not None)
+        # engine open (first query only) is reported apart so it never pads rs_ms
+        result["open_ms"] = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
         ctx = kw.get("context_tag")
         ctxs = set(ctx) if isinstance(ctx, (list, tuple, set)) else None
         layer = kw.get("layer")
@@ -194,6 +209,10 @@ def _rust_worker(run: _Run, store: Any, query: str, limit: int, kw: dict) -> Non
             rows = [r for r in rows if r.get("context_tag") in ctxs]
         result["ids"] = [r["id"] for r in rows]
         result["arms"] = {a["name"]: a["status"] for a in out["report"].get("arms", [])}
+    except _HoldsGil:
+        global _disabled
+        _disabled = True  # one error row (this one), then the shadow is off for the process
+        result["error"] = "skmem_core_holds_gil"
     except BaseException as exc:  # noqa: BLE001 - swallowed and logged, whatever it is
         # type name only: an exception message can quote query text
         result["error"] = (

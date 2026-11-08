@@ -10,7 +10,7 @@ Gate for the Rust engine cutover: run both engines on every real search for 7 da
 | `SKMEMORY_SHADOW=rust` | Also run the Rust engine (`skmem_core`) on every `MemoryStore.search`. Any other value, or unset, is off. |
 | `SKMEMORY_SHADOW_TIMEOUT_S` | Seconds before a Rust call that has not returned is abandoned and logged as `error: timeout` (default 5). |
 
-Needs the `skmem_core` wheel (from `smilinTux/skmemory-rs`, maturin) importable by the same interpreter. Without it every search still works and logs `error: skmem_core_missing`.
+Needs the `skmem_core` wheel (from `smilinTux/skmemory-rs`, maturin) importable by the same interpreter, built with the GIL release (skmemory-rs PR 19, `skmem_core.RELEASES_GIL is True`). A build without it would freeze the served Python search and the watchdog while Rust runs, so it is refused: one row with `error: skmem_core_holds_gil`, then the shadow is off for the process. Without it every search still works and logs `error: skmem_core_missing`.
 
 ## Guarantees
 
@@ -31,7 +31,7 @@ Needs the `skmem_core` wheel (from `smilinTux/skmemory-rs`, maturin) importable 
  "overlap":1.0}
 ```
 
-`overlap` is `|top5(py) & top5(rs)| / max(len)`, 1.0 when both are empty. On failure the row carries `error` (`timeout`, `busy`, `skmem_core_missing`, or the exception type name) and `overlap: null`; errors are excluded from the mean and counted separately.
+`rs_ms` times the search only; the first query's engine open is in `rs_open_ms`. `overlap` is `|top5(py) & top5(rs)| / max(len)`, 1.0 when both are empty. On failure the row carries `error` (`timeout`, `busy`, `skmem_core_missing`, `skmem_core_holds_gil`, or the exception type name) and `overlap: null`; errors are excluded from the mean and counted separately.
 
 ## The 7-day report
 
