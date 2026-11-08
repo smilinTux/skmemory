@@ -27,7 +27,7 @@
 #   SKMEM_PG_PASSWORD        superuser password (ephemeral; default: a throwaway)
 #   SKMEM_RESTORE_SCHEMA     path to schema DDL to pre-load BEFORE data, used ONLY
 #                            when the dump is data-only (default: auto = repo
-#                            deploy/skmem-pg/schema.sql, applied only if needed)
+#                            skmemory/pg/schema.sql, applied only if needed)
 #   SKMEM_RESTORE_KEEP       "1" to leave the container running for inspection
 #                            (default: 0 = tear down container + volume at end)
 #   SKMEM_RESTORE_READY_TIMEOUT  seconds to wait for pg_isready (default: 120)
@@ -49,7 +49,7 @@ ALLOW_LIVE="${SKMEM_RESTORE_ALLOW_LIVE:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SCHEMA="${SKMEM_RESTORE_SCHEMA:-$REPO_ROOT/deploy/skmem-pg/schema.sql}"
+SCHEMA="${SKMEM_RESTORE_SCHEMA:-$REPO_ROOT/skmemory/pg/schema.sql}"
 
 log() { echo "$(date -u +%FT%TZ) $*"; }
 die() { echo "$(date -u +%FT%TZ) ERROR: $*" >&2; exit 1; }

@@ -15,7 +15,7 @@ import yaml
 REPO = Path(__file__).resolve().parent.parent
 COMPOSE = REPO / "docker-compose.yml"
 WRAPPER = REPO / "deploy" / "skmem-pg" / "initdb" / "00-run-init.sh"
-MANIFEST = REPO / "deploy" / "skmem-pg" / "migrations.txt"
+MANIFEST = REPO / "skmemory" / "pg" / "migrations.txt"
 
 
 def _service() -> dict:
@@ -39,7 +39,7 @@ def test_init_wrapper_mounted_into_initdb_dir():
 def test_source_dir_mounted_readonly_for_wrapper():
     vols = _service()["volumes"]
     assert any(v.endswith(":/skmem-initdb-src:ro") for v in vols), (
-        "deploy/skmem-pg must be mounted read-only as the wrapper's source"
+        "skmemory/pg must be mounted read-only as the wrapper's source"
     )
 
 

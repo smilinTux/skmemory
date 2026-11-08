@@ -1,7 +1,7 @@
 """Structural tests for the skbrain ops-namespace migration (card SB0.3, epic
 b29656b3).
 
-`deploy/skmem-pg/03-ops-namespace.sql` adds a dedicated `ops` Postgres schema +
+`skmemory/pg/03-ops-namespace.sql` adds a dedicated `ops` Postgres schema +
 `ops_brain` AGE graph to the existing skmem-pg instance for the skbrain operations
 corpus, cloning the proven public `docs` shapes with a REVOKE-from-PUBLIC privacy
 wall (spec 2026-07-31-skbrain-ops-wiki-itil-cmdb-architecture.md sections 4.3, 4.4,
@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-MIGRATION = Path(__file__).resolve().parent.parent / "deploy" / "skmem-pg" / "03-ops-namespace.sql"
+MIGRATION = Path(__file__).resolve().parent.parent / "skmemory" / "pg" / "03-ops-namespace.sql"
 
 
 def _sql() -> str:

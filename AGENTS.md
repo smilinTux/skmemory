@@ -65,7 +65,7 @@ Ruff config is in `pyproject.toml` (line length 99, rules `E,F,W,I,UP,B,SIM`, `E
 - **Attribution:** a `Co-Authored-By` trailer names the agent that actually did the work, or is left
   out. Never one you cannot evidence.
 - **Migrations:** a new migration is `deploy/skmem-pg/NN-name.sql` plus one line in
-  `deploy/skmem-pg/migrations.txt`, the single list read by both the compose init wrapper and
+  `skmemory/pg/migrations.txt`, the single list read by both the compose init wrapper and
   `skmemory pg migrate`. Never add `02-enable-bm25-age.sql` or `03-cutover-mxbai.sql` to it: both
   are baked into `schema.sql`, and `03` is not idempotent. CI never applies migrations.
 - **Lint gotchas:** `B904` (`raise ... from exc` inside `except`), `UP045` (`X | None`, not
@@ -86,7 +86,7 @@ doc text is on review.
 - **Structural vs live tests:** `tests/test_compose_initdb_wiring.py`, `tests/test_pg_migrate.py` and
   `tests/test_ops_namespace_migration.py` check the out-of-the-box wiring with no DB or docker. Live
   DB validation is the operator verify step (`skmemory health`, `skmemory operator observe`,
-  `deploy/skmem-pg/verify-ops.sql`), deliberately not automated. Green CI does not mean a node works.
+  `skmemory/pg/verify-ops.sql`), deliberately not automated. Green CI does not mean a node works.
 - **`vector_ok: null` means the probe did not run**, not that vectors are fine; a `-template`
   base path means a scaffold store. See sk-standards `SKMEMORY_NODE_CONFIG_STANDARD`.
 - **MCP entries must not set `SKMEMORY_PG_DSN`**; a stale DSN in an MCP `env` block silently drops

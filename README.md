@@ -64,7 +64,7 @@ docker compose up -d --build
 The compose init wrapper (`deploy/skmem-pg/initdb/00-run-init.sh`) runs once at first
 boot and applies, in order: `schema.sql` (the live post-cutover snapshot: extensions +
 tables + `hybrid_search_docs/memories` + all HNSW/BM25 indexes) then **every forward
-migration in `deploy/skmem-pg/migrations.txt`** (currently `03-ops-namespace.sql`: the
+migration in `skmemory/pg/migrations.txt`** (currently `03-ops-namespace.sql`: the
 skbrain `ops` schema + `ops_brain` graph + privacy wall). The two historical, superseded
 migrations (`02-enable-bm25-age.sql`, `03-cutover-mxbai.sql`) are deliberately excluded
 from the manifest: they are already baked into `schema.sql`, and `03-cutover-mxbai.sql` is
@@ -130,7 +130,7 @@ across the mesh or cross-collection recall breaks.
 docker exec skmem-pg psql -U postgres -d skmemory -c "SELECT extname FROM pg_extension ORDER BY 1;"
 
 # Full ops-namespace verify (schema=1, tables=3, hnsw=1, bm25=1, fn=1, graph=1, public_can_use_ops=f):
-docker exec -i skmem-pg psql -U postgres -d skmemory < deploy/skmem-pg/verify-ops.sql
+docker exec -i skmem-pg psql -U postgres -d skmemory < skmemory/pg/verify-ops.sql
 
 # App-level health (store health + sync block) and operator observability probe:
 skmemory health
@@ -434,7 +434,7 @@ Every memory carries a `context_tag`; a reader is the audience a result is for. 
 
 - **`as_of` and supersession.** `--as-of` keeps only memories valid at that instant (`valid_from` or `created_at` up to it, `valid_to` unset or later) in every arm. Without it nothing is hidden, but a closed record with a known superseder ranks below its open head and results carry `superseded` and `superseded_by`. `skmemory history <id>` prints the chain.
 - **Source tiers and the cap.** `source_tier` is `user-stated`, `tool-output`, `web` or `self-generated`. When higher-tier hits exist, `web` and `self-generated` hits take at most 40 percent of the slots. It is an occupancy limit, never a filter. Legacy v1 rows are not capped. `SKMEMORY_TIER_CAP=off` disables it.
-- **Schema v2 and lenient enums.** `kind`, `outcome`, `event_at`, `valid_from`, `valid_to`, `supersedes_id`, `source_tier`, `schema_version`. v1 files load unchanged and are never rewritten on load. An unknown `kind`, `outcome` or `source_tier` in a stored file falls back to the default and the raw value is kept in `metadata["schema_v2_unknown"]`, so a newer node's file is never dropped. skmem-pg gets typed columns from `deploy/skmem-pg/06-memory-schema-v2.sql` (`skmemory pg migrate`); an unmigrated node keeps working.
+- **Schema v2 and lenient enums.** `kind`, `outcome`, `event_at`, `valid_from`, `valid_to`, `supersedes_id`, `source_tier`, `schema_version`. v1 files load unchanged and are never rewritten on load. An unknown `kind`, `outcome` or `source_tier` in a stored file falls back to the default and the raw value is kept in `metadata["schema_v2_unknown"]`, so a newer node's file is never dropped. skmem-pg gets typed columns from `skmemory/pg/06-memory-schema-v2.sql` (`skmemory pg migrate`); an unmigrated node keeps working.
 
 ## Prospective memory (intentions)
 

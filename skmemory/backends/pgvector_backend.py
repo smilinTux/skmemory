@@ -404,7 +404,7 @@ def _probe_embed_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-#: Typed columns added by deploy/skmem-pg/06-memory-schema-v2.sql.
+#: Typed columns added by skmemory/pg/06-memory-schema-v2.sql.
 _V2_PG_COLUMNS = (
     "kind",
     "outcome",

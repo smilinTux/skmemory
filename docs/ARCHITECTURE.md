@@ -125,7 +125,7 @@ SQLite journal, not the write-audit log described under "Write safety" below.)
   dropped. Building a `Memory` directly with a bad value still raises. Unknown extra
   fields survive a load and re-save.
 - SQLite gains the columns by `ALTER` on open; the AGE `Memory` node mirrors them; skmem-pg
-  gets nullable typed columns from `deploy/skmem-pg/06-memory-schema-v2.sql`
+  gets nullable typed columns from `skmemory/pg/06-memory-schema-v2.sql`
   (`skmemory pg migrate`). An unmigrated node keeps working because `memory_json` carries
   every field.
 - **Write-time conflict verdict.** `snapshot(kind=fact|rule|preference, ...)` compares the

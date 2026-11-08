@@ -4,7 +4,7 @@ Applies the numbered, additive, idempotent skmem-pg forward migrations to an
 ALREADY-RUNNING instance. This is the interface the skos provisioner (OPS1.2)
 and existing live nodes call; a FRESH `docker compose up` instead auto-applies
 the same migrations at first boot via ``deploy/skmem-pg/initdb/00-run-init.sh``.
-Both read the SAME ordered manifest (``deploy/skmem-pg/migrations.txt``), so the
+Both read the SAME ordered manifest (``skmemory/pg/migrations.txt``), so the
 fresh-boot and live-node paths can never drift.
 
 Design notes:
@@ -29,16 +29,21 @@ Design notes:
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 # --------------------------------------------------------------------------- #
 # Locations                                                                    #
 # --------------------------------------------------------------------------- #
 
-DEPLOY_DIR = Path(__file__).resolve().parent.parent / "deploy" / "skmem-pg"
+# The SQL lives INSIDE the package (package data) so a wheel install has it; the
+# compose initdb wrapper mounts this same directory. One copy, no drift.
+DEPLOY_DIR = Path(__file__).resolve().parent / "pg"
 MANIFEST = DEPLOY_DIR / "migrations.txt"
 
 # Login-role -> group-role binding + the env var each password is read from.
@@ -63,10 +68,11 @@ class Migration:
 
     name: str
     verify: str | None = None
+    path_override: Path | None = None
 
     @property
     def path(self) -> Path:
-        return DEPLOY_DIR / self.name
+        return self.path_override or (DEPLOY_DIR / self.name)
 
     @property
     def verify_path(self) -> Path | None:
@@ -98,24 +104,31 @@ def load_manifest(manifest: Path = MANIFEST) -> list[Migration]:
 def resolve_migration(script: str, manifest: Path = MANIFEST) -> Migration:
     """Resolve a user-supplied SCRIPT (a manifest name or a path) to a Migration.
 
-    Matches by exact manifest name first (so the verify script is carried along),
-    then by basename, and finally accepts an on-disk path outside the manifest
-    (verify inferred from ``verify-<stem-suffix>.sql`` only if it exists).
+    A bare manifest name matches the manifest (so the verify script is carried
+    along). Anything that is an existing file is used AS GIVEN, directory and
+    all; a path never gets silently re-resolved by basename.
     """
     entries = load_manifest(manifest)
     for m in entries:
         if m.name == script:
             return m
     base = os.path.basename(script)
-    for m in entries:
-        if m.name == base:
-            return m
-    # Path outside the manifest: allow, but it must exist on disk.
-    p = Path(script)
-    candidate = p if p.is_absolute() else (DEPLOY_DIR / base)
+    if base == script:  # bare name only; a real path must not hit a same-named manifest entry
+        pass
+    elif not Path(script).expanduser().is_file():
+        for m in entries:
+            if m.name == base:
+                return m
+    # An existing filesystem path is honoured as given (directory included).
+    p = Path(script).expanduser()
+    if p.is_file():
+        return Migration(name=p.name, path_override=p.resolve())
+    # Otherwise a bare name may still be a file next to the manifest.
+    candidate = DEPLOY_DIR / base
     if not candidate.exists():
         raise FileNotFoundError(
-            f"migration {script!r} is not in {manifest.name} and no file found at {candidate}"
+            f"migration {script!r} is not in {manifest.name} and no file found at {p} "
+            f"or {candidate}"
         )
     return Migration(name=base)
 
@@ -123,6 +136,72 @@ def resolve_migration(script: str, manifest: Path = MANIFEST) -> Migration:
 # --------------------------------------------------------------------------- #
 # Transport                                                                    #
 # --------------------------------------------------------------------------- #
+
+
+_KV_PASSWORD = re.compile(r"(?i)(\bpassword\s*=\s*)(?:'(?:[^'\\]|\\.)*'|\S+)")
+
+
+def split_dsn(dsn: str) -> tuple[str, str | None]:
+    """Return ``(dsn_without_password, password_or_None)`` for a libpq DSN.
+
+    Handles URL form (``postgresql://user:pw@host/db``, ``?password=``) and
+    keyword form (``host=.. password=..``). The password is meant for PGPASSWORD.
+    """
+    if "://" in dsn:
+        parts = urlsplit(dsn)
+        pw = unquote(parts.password) if parts.password is not None else None
+        netloc = parts.netloc
+        if "@" in netloc:
+            userinfo, hostpart = netloc.rsplit("@", 1)
+            netloc = (userinfo.split(":", 1)[0] + "@" + hostpart) if userinfo else hostpart
+        query = parts.query
+        if query:
+            keep = []
+            for kv in query.split("&"):
+                if kv.lower().startswith("password="):
+                    pw = pw or unquote(kv.split("=", 1)[1])
+                else:
+                    keep.append(kv)
+            query = "&".join(keep)
+        return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment)), pw
+    m = _KV_PASSWORD.search(dsn)
+    if not m:
+        return dsn, None
+    raw = m.group(0).split("=", 1)[1].strip()
+    if raw.startswith("'"):
+        raw = re.sub(r"\\(.)", r"\1", raw[1:-1])
+    return _KV_PASSWORD.sub("", dsn).strip(), raw
+
+
+def redact_dsn(dsn: str) -> str:
+    """Display form of a DSN: user@host:port/db with any password shown as ***."""
+    if "://" in dsn:
+        parts = urlsplit(dsn)
+        netloc = parts.netloc
+        if "@" in netloc:
+            userinfo, hostpart = netloc.rsplit("@", 1)
+            if ":" in userinfo:
+                netloc = userinfo.split(":", 1)[0] + ":***@" + hostpart
+        query = "&".join(
+            "password=***" if kv.lower().startswith("password=") else kv
+            for kv in parts.query.split("&")
+            if kv
+        )
+        return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+    return _KV_PASSWORD.sub(lambda m: re.sub(r"=.*", "=***", m.group(1)), dsn)
+
+
+def scrub(text: str, dsn: str | None = None, secret: str | None = None) -> str:
+    """Remove DSN passwords (and the password of ``dsn``) from arbitrary text."""
+    text = re.sub(r"(://[^:/@\s]*:)[^@\s]*@", r"\1***@", text)
+    text = _KV_PASSWORD.sub(lambda m: re.sub(r"=.*", "=***", m.group(1)), text)
+    if secret:
+        text = text.replace(secret, "***")
+    if dsn:
+        pw = split_dsn(dsn)[1]
+        if pw:
+            text = text.replace(pw, "***").replace(quote(pw, safe=""), "***")
+    return text
 
 
 @dataclass
@@ -143,10 +222,24 @@ class Target:
     def uses_dsn(self) -> bool:
         return bool(self.dsn)
 
+    @property
+    def clean_dsn(self) -> str:
+        """The DSN with its password removed (safe for argv)."""
+        return split_dsn(self.dsn or "")[0]
+
+    @property
+    def display_dsn(self) -> str:
+        return redact_dsn(self.dsn or "")
+
+    def env(self) -> dict[str, str]:
+        """Extra environment for the child: PGPASSWORD, never argv."""
+        pw = split_dsn(self.dsn)[1] if self.dsn else None
+        return {"PGPASSWORD": pw} if pw else {}
+
     def psql_argv(self) -> list[str]:
         """psql argv, reading SQL from STDIN, ON_ERROR_STOP set."""
         if self.uses_dsn:
-            return ["psql", self.dsn or "", "-v", "ON_ERROR_STOP=1"]
+            return ["psql", self.clean_dsn, "-v", "ON_ERROR_STOP=1"]
         return [
             "docker",
             "exec",
@@ -164,7 +257,7 @@ class Target:
     def pg_dump_argv(self) -> list[str]:
         """pg_dump -Fc argv (custom format, for pre-apply insurance)."""
         if self.uses_dsn:
-            return ["pg_dump", "-Fc", "-d", self.dsn or ""]
+            return ["pg_dump", "-Fc", "-d", self.clean_dsn]
         return ["docker", "exec", self.container, "pg_dump", "-U", self.user, "-Fc", self.db]
 
 
@@ -193,9 +286,12 @@ class Step:
     stdout_path: Path | None = None
     secret: bool = False
     fatal: bool = True
+    env: dict[str, str] = field(default_factory=dict)
 
     def describe(self) -> str:
-        cmd = " ".join(self.argv)
+        cmd = scrub(" ".join(self.argv))
+        if self.env:
+            cmd = "PGPASSWORD=*** " + cmd
         redir = ""
         if self.stdin_path:
             redir = f"  < {self.stdin_path}"
@@ -245,6 +341,7 @@ def build_migrate_plan(
                 argv=target.pg_dump_argv(),
                 label="pre-dump (rollback insurance)",
                 stdout_path=dump_file,
+                env=target.env(),
             )
         )
 
@@ -253,14 +350,18 @@ def build_migrate_plan(
         if target.uses_dsn:
             # DSN transport reads the file directly (-f); no stdin.
             argv = argv + ["-f", str(m.path)]
-            plan.steps.append(Step(argv=argv, label=f"apply {m.name}"))
+            plan.steps.append(Step(argv=argv, label=f"apply {m.name}", env=target.env()))
         else:
-            plan.steps.append(Step(argv=argv, label=f"apply {m.name}", stdin_path=m.path))
+            plan.steps.append(
+                Step(argv=argv, label=f"apply {m.name}", stdin_path=m.path, env=target.env())
+            )
         if verify and m.verify_path and m.verify_path.exists():
             vargv = target.psql_argv()
             if target.uses_dsn:
                 vargv = vargv + ["-f", str(m.verify_path)]
-                plan.steps.append(Step(argv=vargv, label=f"verify {m.verify}", fatal=False))
+                plan.steps.append(
+                    Step(argv=vargv, label=f"verify {m.verify}", fatal=False, env=target.env())
+                )
             else:
                 plan.steps.append(
                     Step(
@@ -268,6 +369,7 @@ def build_migrate_plan(
                         label=f"verify {m.verify}",
                         stdin_path=m.verify_path,
                         fatal=False,
+                        env=target.env(),
                     )
                 )
     return plan
@@ -328,6 +430,7 @@ def build_roles_plan(
                 label=f"bind login role {login} -> {spec['group']}",
                 stdin_text=_role_ddl(login, spec["group"], pw),
                 secret=True,
+                env=target.env(),
             )
         )
     return plan
@@ -362,11 +465,10 @@ def run_plan(plan: Plan, *, runner=subprocess.run, echo=print) -> list[dict]:
         if step.stdout_path is not None:
             step.stdout_path.parent.mkdir(parents=True, exist_ok=True)
 
-        proc = runner(
-            step.argv,
-            input=stdin_data,
-            capture_output=True,
-        )
+        kwargs: dict = {"input": stdin_data, "capture_output": True}
+        if step.env:  # only then, so simple runner fakes keep working
+            kwargs["env"] = {**os.environ, **step.env}
+        proc = runner(step.argv, **kwargs)
         rc = getattr(proc, "returncode", 0)
         stdout = getattr(proc, "stdout", b"") or b""
         stderr = getattr(proc, "stderr", b"") or b""
@@ -382,9 +484,12 @@ def run_plan(plan: Plan, *, runner=subprocess.run, echo=print) -> list[dict]:
             "label": step.label,
             "returncode": rc,
             "stdout": "" if step.stdout_path is not None else stdout.decode("utf-8", "replace"),
-            "stderr": _redact(stderr.decode("utf-8", "replace"))
-            if step.secret
-            else stderr.decode("utf-8", "replace"),
+            "stderr": scrub(
+                _redact(stderr.decode("utf-8", "replace"))
+                if step.secret
+                else stderr.decode("utf-8", "replace"),
+                secret=step.env.get("PGPASSWORD"),
+            ),
         }
         results.append(result)
 
@@ -402,6 +507,54 @@ def run_plan(plan: Plan, *, runner=subprocess.run, echo=print) -> list[dict]:
 
 def _redact(text: str) -> str:
     # Best-effort: role DDL failures should not leak the literal password.
-    import re
-
     return re.sub(r"PASSWORD '(?:[^']|'')*'", f"PASSWORD '{_REDACTED}'", text)
+
+
+def prepare_target(
+    target: Target,
+    *,
+    need_dump: bool,
+    which=shutil.which,
+    container_running=None,
+    echo=print,
+) -> Target:
+    """Make a DSN target runnable, falling back to docker exec when it must.
+
+    With a DSN, host ``psql`` (and ``pg_dump`` when a pre-dump is wanted) are
+    required. If they are missing and the container exists, switch to docker
+    exec mode with a clear message; otherwise raise MigrationError naming what
+    is missing. Non-DSN targets are returned unchanged.
+    """
+    if not target.uses_dsn:
+        return target
+    missing = [b for b in (["psql"] + (["pg_dump"] if need_dump else [])) if not which(b)]
+    if not missing:
+        return target
+    if container_running is None:
+
+        def container_running(name: str) -> bool:
+            if not which("docker"):
+                return False
+            r = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", name],
+                capture_output=True,
+                text=True,
+            )
+            return r.returncode == 0 and r.stdout.strip() == "true"
+
+    if container_running(target.container):
+        echo(
+            f"note: {', '.join(missing)} not found on this host; using docker exec "
+            f"against container {target.container!r} instead of the DSN."
+        )
+        db, user = target.db, target.user
+        parts = urlsplit(target.clean_dsn) if "://" in (target.dsn or "") else None
+        if parts is not None:
+            db = parts.path.lstrip("/") or db
+            user = parts.username or user
+        return Target(container=target.container, dsn=None, db=db, user=user)
+    raise MigrationError(
+        f"{', '.join(missing)} not found on this host and docker container "
+        f"{target.container!r} is not running; install the postgres client tools "
+        f"or run with --container."
+    )
