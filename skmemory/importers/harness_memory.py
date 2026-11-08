@@ -334,29 +334,58 @@ def _one_file_one_memory(store: Any) -> Iterator[None]:
             os.environ["SKMEMORY_WRITE_TRIAGE"] = saved[2]
 
 
-def _existing(store: Any) -> tuple[set[str], set[str]]:
-    paths: set[str] = set()
-    shas: set[str] = set()
+def _existing(store: Any) -> dict[str, Any]:
+    """Map every known path and content hash to the existing memory."""
+    known: dict[str, Any] = {}
     for m in store.list_memories(tags=[TAG], limit=_NO_LIMIT):
-        paths.add(m.source_ref)
-        paths.update(m.metadata.get("harness_paths") or [])
+        for key in [m.source_ref, *(m.metadata.get("harness_paths") or [])]:
+            known.setdefault(key, m)
         if m.metadata.get("harness_sha"):
-            shas.add(m.metadata["harness_sha"])
-    return paths, shas
+            known.setdefault(m.metadata["harness_sha"], m)
+    return known
+
+
+def _close_open_older(store: Any, mems: list[Any]) -> int:
+    """``mems`` is oldest first. Close any open version that a newer one replaced."""
+    from .. import write_triage
+
+    closed = 0
+    for i, old in enumerate(mems[:-1]):
+        if old is None or old.valid_to is not None:
+            continue
+        newer = next((m for m in mems[i + 1 :] if m is not None), None)
+        if newer is not None and write_triage.close_superseded(store, old.id, newer):
+            closed += 1
+    return closed
 
 
 def import_harness_memory(store: Any, dirs: list[str | Path]) -> dict[str, Any]:
-    """Write the memories for ``dirs`` into ``store``. Returns counters."""
+    """Write the memories for ``dirs`` into ``store``. Returns counters.
+
+    A version already present (by path or content hash) is skipped but still
+    anchors the supersession chain, and an older variant left open beside a
+    newer one (an interrupted earlier run) is closed, so a rerun converges.
+    """
     plan = build_plan(dirs)
-    known_paths, known_shas = _existing(store)
-    stats = {"imported": 0, "skipped_existing": 0, "superseded_variants": 0}
+    known = _existing(store)
+    stats = {
+        "imported": 0,
+        "skipped_existing": 0,
+        "deduped": 0,
+        "superseded_variants": 0,
+        "repaired": 0,
+    }
     with _one_file_one_memory(store):
         for slug, versions in plan.slugs.items():
             previous_id: str | None = None
-            for i in range(len(versions) - 1, -1, -1):  # oldest first, newest last
+            chain: list[Any] = []  # oldest first
+            for i in range(len(versions) - 1, -1, -1):
                 v = versions[i]
-                if v.sha in known_shas or any(p in known_paths for p in v.paths):
+                found = known.get(v.sha) or next((known[p] for p in v.paths if p in known), None)
+                if found is not None:
                     stats["skipped_existing"] += 1
+                    previous_id = found.id
+                    chain.append(found)
                     continue
                 f = v.lead
                 superseded = i > 0
@@ -382,8 +411,15 @@ def import_harness_memory(store: Any, dirs: list[str | Path]) -> dict[str, Any]:
                     supersedes_id=previous_id,
                 )
                 previous_id = mem.id
+                chain.append(mem)
+                if mem.source_ref != f.path:  # the store returned an existing record
+                    stats["deduped"] += 1
+                    continue
                 stats["imported"] += 1
                 stats["superseded_variants"] += int(superseded)
+            stats["repaired"] += _close_open_older(
+                store, [store.primary.load(m.id) for m in chain]
+            )
     return stats
 
 

@@ -2199,7 +2199,8 @@ def import_harness_memory_cmd(ctx: click.Context, dirs: tuple[str, ...], dry_run
     click.echo(
         f"Imported {stats['imported']} memories "
         f"({stats['superseded_variants']} superseded variants); "
-        f"{stats['skipped_existing']} already present."
+        f"{stats['skipped_existing']} already present, {stats['deduped']} deduped, "
+        f"{stats['repaired']} repaired."
     )
 
 

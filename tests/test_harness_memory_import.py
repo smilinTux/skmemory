@@ -165,3 +165,61 @@ def test_cli_import_writes_to_injected_store(dirs, tmp_path):
     )
     assert res.exit_code == 0, res.output
     assert _all(store)
+
+
+def _moved_dirs(tmp_path):
+    a, b = tmp_path / "a" / "memory", tmp_path / "b" / "memory"
+    _fact(a, "moved", "project", "Old version.", mtime=1_700_000_000)
+    _fact(b, "moved", "project", "New version.", mtime=1_800_000_000)
+    return [a, b]
+
+
+def _open_moved(store):
+    return [m for m in _all(store) if m.metadata["harness_slug"] == "moved" and m.valid_to is None]
+
+
+def test_resume_after_interrupt_between_variants(tmp_path):
+    dirs = _moved_dirs(tmp_path)
+    store = _store(tmp_path)
+    real = store.snapshot
+    calls = []
+
+    def flaky(*a, **k):
+        calls.append(1)
+        if len(calls) == 2:
+            raise KeyboardInterrupt
+        return real(*a, **k)
+
+    store.snapshot = flaky
+    with pytest.raises(KeyboardInterrupt):
+        import_harness_memory(store, dirs)
+    store.snapshot = real
+    assert len(_all(store)) == 1
+    stats = import_harness_memory(store, dirs)
+    assert stats["imported"] == 1
+    open_ = _open_moved(store)
+    assert len(open_) == 1 and open_[0].content == "New version."
+    assert open_[0].supersedes_id is not None
+
+
+def test_rerun_repairs_already_broken_store(tmp_path):
+    dirs = _moved_dirs(tmp_path)
+    store = _store(tmp_path)
+    import_harness_memory(store, dirs)
+    old = next(m for m in _all(store) if "superseded-variant" in m.tags)
+    old.valid_to = None  # reopen: both variants open, as the interrupted run left it
+    store.primary.save(old)
+    assert len(_open_moved(store)) == 2
+    stats = import_harness_memory(store, dirs)
+    assert stats["imported"] == 0 and stats["repaired"] == 1
+    assert len(_open_moved(store)) == 1
+    assert import_harness_memory(store, dirs)["repaired"] == 0
+
+
+def test_content_hash_dedupe_counts_as_deduped(tmp_path):
+    d = tmp_path / "m"
+    _fact(d, "dup", "project", "Same words.")
+    store = _store(tmp_path)
+    store.snapshot(title="pre", content="Same words.", tags=["x"])
+    stats = import_harness_memory(store, [d])
+    assert stats["imported"] == 0 and stats["deduped"] == 1
