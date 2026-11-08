@@ -21,17 +21,23 @@
 # Usage:
 #   rotate-password.sh [--dry-run] [--bind-loopback] [--env-file PATH] [--container NAME]
 #                      [--port N] [--user NAME] [--db NAME] [--backup-dir DIR]
-#                      [--restart-units] [--no-propagate]
+#                      [--restart-units] [--propagate [--canonical-env-file PATH]]
 #   rotate-password.sh --remove-old NAME     (step 8, after the soak)
 #
 # Defaults: env file ~/.config/skmemory/pg.env, container skmem-pg, port 5432, role
 # postgres, db skmemory, backups under ~/.local/state/skmem-pg-rotate/<UTC stamp>.
 # Without --bind-loopback the container is NOT recreated (password change only).
 # Without --restart-units nothing is restarted (candidates are only printed).
-# --no-propagate skips step 6 (use it for throwaway containers and tests: step 6 writes the DSN
-# into the live systemd user manager and dbus activation environment).
+# Step 6 is OPT-IN (--propagate): it writes the DSN into the live systemd user manager and the
+# dbus activation environment, so it refuses unless --env-file resolves to the canonical env
+# file (default ~/.config/skmemory/pg.env, or the path given by --canonical-env-file).
+# --no-propagate is accepted and does nothing (propagation is already off by default).
+# Never run under bash -x: the script refuses.
 # This script never prints a password or a DSN.
 
+# Never run under xtrace: it would print the passwords. Must stay the first statement.
+case "$-" in *x*) set +x; echo "[rotate] ERROR: refusing to run under xtrace (bash -x / set -x), it would print secrets" >&2; exit 2 ;; esac
+if [ -n "${BASH_XTRACEFD:-}" ]; then echo "[rotate] ERROR: refusing to run with BASH_XTRACEFD set" >&2; exit 2; fi
 set -euo pipefail
 umask 077
 shopt -u patsub_replacement 2>/dev/null || true
@@ -45,7 +51,8 @@ BACKUP_DIR=""
 DRY_RUN=0
 BIND_LOOPBACK=0
 RESTART_UNITS=0
-PROPAGATE=1
+PROPAGATE=0
+CANONICAL_ENV="${HOME}/.config/skmemory/pg.env"
 REMOVE_OLD=""
 
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
@@ -58,7 +65,9 @@ while [ "$#" -gt 0 ]; do
     --dry-run) DRY_RUN=1 ;;
     --bind-loopback) BIND_LOOPBACK=1 ;;
     --restart-units) RESTART_UNITS=1 ;;
-    --no-propagate) PROPAGATE=0 ;;
+    --propagate) PROPAGATE=1 ;;
+    --no-propagate) PROPAGATE=0 ;;   # no-op alias: propagation is off unless --propagate
+    --canonical-env-file) need_val "$@"; CANONICAL_ENV="$2"; shift ;;
     --env-file) need_val "$@"; ENV_FILE="$2"; shift ;;
     --container) need_val "$@"; CONTAINER="$2"; shift ;;
     --port) need_val "$@"; PORT="$2"; shift ;;
@@ -93,6 +102,9 @@ fi
 [ "$(id -u)" -ne 0 ] || die "run as the node owner, not root"
 [ -f "$ENV_FILE" ] || die "env file not found: $ENV_FILE"
 ENV_FILE="$(readlink -f "$ENV_FILE")"
+if [ "$PROPAGATE" = 1 ] && [ "$ENV_FILE" != "$(readlink -f "$CANONICAL_ENV" 2>/dev/null || true)" ]; then
+  die "--propagate refused: --env-file is not the canonical env file ($CANONICAL_ENV). Name it with --canonical-env-file if this node really uses another path"
+fi
 
 # ---- parse the DSN line (secret stays in shell variables only) ---------------------------
 dsn_line=""
@@ -133,7 +145,7 @@ if [ "$DRY_RUN" = 1 ]; then
   fi
   log "  5 verify      : pg_isready, docker port, extensions, row count, new login, old refused"
   if [ "$PROPAGATE" = 1 ]; then log "  6 environment : systemctl --user import-environment + dbus-update-activation-environment"
-  else log "  6 environment : skipped (--no-propagate)"; fi
+  else log "  6 environment : skipped (pass --propagate to push the DSN to the user manager)"; fi
   if [ "$RESTART_UNITS" = 1 ]; then log "  7 consumers   : candidate SK units WOULD be restarted"
   else log "  7 consumers   : candidate units printed only (no --restart-units)"; fi
   log "  8 cleanup     : later, rotate-password.sh --remove-old $OLD_NAME"
@@ -179,7 +191,8 @@ if command -v openssl >/dev/null; then NEW_PW="$(openssl rand -hex 24)"
 else NEW_PW="$(head -c 256 /dev/urandom | od -An -tx1 | tr -d ' \n' | cut -c1-48)"; fi
 [ "${#NEW_PW}" -ge 32 ] || die "password generation failed"
 ( umask 077; printf '%s\n' "$NEW_PW" > "$NEW_PW_FILE" ); chmod 600 "$NEW_PW_FILE"
-printf "ALTER USER %s PASSWORD '%s';\n" "$PGUSER_NAME" "$NEW_PW" | psql_in >/dev/null
+# log_statement=none for this session so ALTER ... PASSWORD does not reach the server log
+printf "SET log_statement = 'none';\nALTER USER %s PASSWORD '%s';\n" "$PGUSER_NAME" "$NEW_PW" | psql_in >/dev/null
 
 # ---- 3 rewrite only the password slot of the DSN -----------------------------------------
 log "3/8 updating the DSN password slot in $ENV_FILE"
@@ -227,9 +240,33 @@ if [ "$BIND_LOOPBACK" = 1 ]; then
     docker tag "$image_id" "$image_ref"
   fi
 
+  # Preserve the old container's custom env (not image defaults) EXCEPT POSTGRES_PASSWORD: the data
+  # directory is already initialised, so the entrypoint never reads it, and passing it would
+  # persist the new secret in `docker inspect` Config.Env.
+  declare -A img_env=() img_lbl=()
+  while IFS= read -r e; do [ -n "$e" ] && img_env["$e"]=1; done \
+    < <(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image_id")
+  while IFS= read -r e; do [ -n "$e" ] && img_lbl["$e"]=1; done \
+    < <(docker image inspect --format '{{range $k,$v := .Config.Labels}}{{$k}}={{$v}}{{"\n"}}{{end}}' "$image_id")
   tmp_env="$(mktemp "$BACKUP_DIR/run-env.XXXXXX")"
   TMP_ENVFILE="$tmp_env"
-  printf 'POSTGRES_DB=%s\nPOSTGRES_PASSWORD=%s\n' "$PGDB_NAME" "$NEW_PW" > "$tmp_env"
+  : > "$tmp_env"
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    case "$e" in POSTGRES_PASSWORD=*) continue ;; esac
+    [ -z "${img_env[$e]:-}" ] || continue
+    printf '%s\n' "$e" >> "$tmp_env"
+  done < <(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$CONTAINER")
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    [ -z "${img_lbl[$e]:-}" ] || continue
+    run_args+=(--label "$e")
+  done < <(docker inspect --format '{{range $k,$v := .Config.Labels}}{{$k}}={{$v}}{{"\n"}}{{end}}' "$CONTAINER")
+  nets=()
+  while IFS= read -r n; do
+    [ -n "$n" ] && [ "$n" != bridge ] && nets+=("$n")
+  done < <(docker inspect --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' "$CONTAINER")
+  [ "${#nets[@]}" -eq 0 ] || run_args+=(--network "${nets[0]}")
 
   docker stop "$CONTAINER" >/dev/null
   docker rename "$CONTAINER" "$OLD_NAME"
@@ -238,9 +275,12 @@ if [ "$BIND_LOOPBACK" = 1 ]; then
         -p "127.0.0.1:${PORT}:5432" "${run_args[@]}" "$image_ref" "${cmd_args[@]}" >/dev/null; then
     log "docker run failed; rolling back to the old container"
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-    docker rename "$OLD_NAME" "$CONTAINER"; docker start "$CONTAINER" >/dev/null || true
-    die "recreate failed; old container restored (password already changed, see $NEW_PW_FILE)"
+    docker rename "$OLD_NAME" "$CONTAINER"
+    docker update --restart="$restart_pol" "$CONTAINER" >/dev/null || true
+    docker start "$CONTAINER" >/dev/null || true
+    die "recreate failed; old container restored and started (password already changed, see $NEW_PW_FILE)"
   fi
+  for n in "${nets[@]:1}"; do docker network connect "$n" "$CONTAINER" >/dev/null 2>&1 || log "    could not join network $n"; done
   rm -f "$tmp_env"; TMP_ENVFILE=""
   log "    old container kept stopped as $OLD_NAME for the soak"
 else
@@ -263,7 +303,10 @@ else log "    published ports are loopback only"; fi
 exts="$(psql_val "select string_agg(extname, ',' order by extname) from pg_extension where extname in ('vector','pg_search','age');")"
 [ "$exts" = "age,pg_search,vector" ] || die "extensions missing (got: ${exts:-none})"
 log "    extensions: $exts"
-rows="$(psql_val "select case when to_regclass('public.memories') is null then 'n/a' else (select count(*)::text from public.memories) end;")"
+rows="n/a"
+if [ "$(psql_val "select to_regclass('public.memories') is not null;" 2>/dev/null || true)" = "t" ]; then
+  rows="$(psql_val "select count(*) from public.memories;" 2>/dev/null || true)"; [ -n "$rows" ] || rows="n/a"
+fi
 log "    memories rows: $rows"
 tcp_login "$NEW_PW" || die "new password does not log in"
 log "    new password logs in"
@@ -274,7 +317,7 @@ log "    old password refused"
 # LESSON: 'systemctl --user daemon-reload' does NOT re-read environment.d. The manager keeps the
 # environment it started with until it is told otherwise.
 if [ "$PROPAGATE" = 0 ]; then
-  log "6/8 skipped (--no-propagate)"
+  log "6/8 skipped (no --propagate); push the DSN yourself, see the runbook"
 else
 log "6/8 pushing SKMEMORY_PG_DSN into the systemd user manager"
 set -a

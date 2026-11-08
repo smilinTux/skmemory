@@ -128,8 +128,10 @@ deploy/skmem-pg/rotate-password.sh --remove-old <name>-old-<stamp>    # after th
 ```
 
 Parameters: `--env-file` (default `~/.config/skmemory/pg.env`), `--container` (default
-`skmem-pg`), `--port`, `--user`, `--db`, `--backup-dir`, `--no-propagate`. Run it as the
-node owner, not root.
+`skmem-pg`), `--port`, `--user`, `--db`, `--backup-dir`, `--propagate`, `--canonical-env-file`. Run it
+as the node owner, not root. It refuses to run under `bash -x`, which would print the
+passwords. Propagation (step 6) is opt-in and refused unless `--env-file` is the canonical
+env file.
 
 ### The procedure
 
@@ -137,28 +139,40 @@ node owner, not root.
    `pg_dump -Fc`, and `pg_dumpall --globals-only`.
 2. **New password** generated into a 600 file. `ALTER USER ... PASSWORD ...` goes to
    `docker exec -i ... psql` on stdin, never on a command line (argv is world-readable
-   in `ps`).
+   in `ps`). The same session first runs `SET log_statement = 'none'`, because with
+   `log_statement` set to `ddl` or `all` the ALTER, password included, would otherwise land
+   in the server log. Check `log_min_duration_statement` and any log shipping too.
 3. **Env file**: only the `:<password>@` slot of `SKMEMORY_PG_DSN` is replaced, matched
    exactly against the old value, and the script asserts the old value is gone and the
    new one present before it swaps the file in.
 4. **Recreate (with `--bind-loopback`)**: stop, rename the old container to
    `<name>-old-<stamp>`, set its restart policy to `no`, then `docker run` with the same
-   volume, shm size and command (`-c shared_preload_libraries=pg_search,age`) and
-   `-p 127.0.0.1:PORT:5432`. Secrets reach the new container through a temporary
-   `--env-file` that is deleted afterwards. If `docker run` fails, the old container is
-   renamed back and started.
+   volume, shm size, command (`-c shared_preload_libraries=pg_search,age`), custom env,
+   labels and network, and `-p 127.0.0.1:PORT:5432`. `POSTGRES_PASSWORD` is deliberately NOT
+   passed: the data directory is already initialised, so the image entrypoint never reads
+   it (verified on a throwaway container: it starts and accepts the rotated password
+   without it), and passing it would store the new secret in `docker inspect` of the new
+   container. The remaining custom env goes through a temporary `--env-file` that is
+   deleted afterwards. If `docker run` fails, the old container is renamed back, its
+   restart policy restored and it is started. Note that the backup directory's
+   `docker-inspect.json` is of the OLD container and does hold the old password: keep it
+   at mode 600 and delete it once the soak is over.
 5. **Verify**: `pg_isready`, loopback-only `docker port`, extensions `vector`, `pg_search`
    and `age`, the `memories` row count, the new password logs in, and the OLD password is
    refused. A login test that only proves the new password works would pass even if the
    rotation had changed nothing.
-6. **Propagate** the new DSN to the systemd user manager and the dbus activation
-   environment (see the first lesson below).
+6. **Propagate (opt-in, `--propagate`)** the new DSN to the systemd user manager and the
+   dbus activation environment (see the first lesson below). It refuses unless `--env-file`
+   resolves to the canonical env file, because it writes into the live manager. Without the
+   flag, do it yourself from the canonical file.
 7. **Consumers**: the script lists user processes whose environment still holds the old
    DSN, maps them to units, and prints the SK service candidates. It restarts them only
    with `--restart-units`. Desktop session services are never restarted, and interactive
    agent sessions started before the rotation keep the old DSN: their owner restarts them.
-8. **Soak, then remove**: keep the old container stopped for a while (it holds the old
-   volume contents' last state and is the fast rollback), then `--remove-old`.
+8. **Soak, then remove**: keep the old container stopped for a while, then `--remove-old`.
+   Both containers share ONE data volume, so the old container is a rollback for the
+   container configuration (ports, env, flags) only, not for data. Never start both at
+   once. The data rollback is the `pg_dump -Fc` backup.
 
 ### Lessons
 
@@ -175,16 +189,16 @@ node owner, not root.
 - **Running processes keep their environment.** Find them by reading
   `/proc/<pid>/environ`, restart the SK services among them, and leave desktop and
   interactive sessions to their owners.
-- **Testing the script touches the manager too.** Step 6 writes into the live user
-  manager. Throwaway-container tests must pass `--no-propagate`.
+- **Testing must not touch the live manager.** Step 6 is off by default. Any test or manual
+  run that uses `--propagate` must put stub `systemctl` and
+  `dbus-update-activation-environment` first on `PATH`.
 - **Compose drift.** Check `docker port skmem-pg` after any recreate. Only `127.0.0.1`
   should appear.
 
-Rollback: the password lives in the data volume, so the old container (same volume) also
-has the NEW password. To return to the old password, stop the new container, rename the old
-one back, `docker start` it, run `ALTER USER` with the old value (kept in the backed-up env
-file copy), and restore that env file copy. To return to a pre-rotation database state, use
-the `pg_dump -Fc` backup.
+Rollback of the container configuration: stop the new container, rename the old one back,
+`docker start` it. The password is stored in the shared volume, so it is already the NEW
+password; to go back to the old one run `ALTER USER` with the value from the backed-up env
+file copy and restore that copy. Rolling back data means restoring the `pg_dump -Fc` backup.
 
 ## Where each piece lives
 

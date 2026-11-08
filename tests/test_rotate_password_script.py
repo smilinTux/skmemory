@@ -11,6 +11,7 @@ import os
 import socket
 import stat
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -41,6 +42,19 @@ def stub(tmp_path):
     docker.write_text(f'#!/usr/bin/env bash\necho "$*" >> "{log}"\nexit 0\n')
     docker.chmod(0o755)
     return bindir, log
+
+
+def _sys_stubs(tmp_path):
+    """PATH-prepended systemctl and dbus stubs that only record their calls (never touch the
+    live user manager). Returns (bindir, calls_file)."""
+    bindir = tmp_path / "sysbin"
+    bindir.mkdir()
+    calls = tmp_path / "sys.log"
+    for n in ("systemctl", "dbus-update-activation-environment"):
+        f = bindir / n
+        f.write_text(f'#!/usr/bin/env bash\necho "{n} $*" >> "{calls}"\nexit 0\n')
+        f.chmod(0o755)
+    return bindir, calls
 
 
 @pytest.fixture
@@ -110,6 +124,33 @@ def test_dry_run_changes_nothing_and_never_echoes_secret(tmp_path, stub, envfile
         assert "postgresql://" not in stream
 
 
+def test_xtrace_refused_and_prints_no_secret(tmp_path, stub, envfile):
+    env = dict(os.environ, PATH=f"{stub[0]}{os.pathsep}{os.environ['PATH']}")
+    r = subprocess.run(
+        ["bash", "-x", str(SCRIPT), "--dry-run", "--env-file", str(envfile)],
+        capture_output=True, text=True, env=env,
+    )  # fmt: skip
+    assert r.returncode != 0
+    assert "xtrace" in r.stderr
+    assert OLD_PW not in r.stdout + r.stderr
+    env2 = dict(env, BASH_XTRACEFD="2")
+    r = subprocess.run(
+        ["bash", str(SCRIPT), "--dry-run", "--env-file", str(envfile)],
+        capture_output=True, text=True, env=env2,
+    )  # fmt: skip
+    assert r.returncode != 0
+
+
+def test_propagate_refused_for_non_canonical_env_file(tmp_path, stub, envfile):
+    r = _run(
+        ["--propagate", "--dry-run", "--env-file", str(envfile),
+         "--canonical-env-file", str(tmp_path / "other.env")],
+        path_prefix=str(stub[0]),
+    )  # fmt: skip
+    assert r.returncode != 0
+    assert "canonical" in r.stderr
+
+
 def test_remove_old_refuses_running_container(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -152,8 +193,6 @@ def test_full_rotation_against_throwaway_container(tmp_path):
             IMAGE, "postgres", "-c", "shared_preload_libraries=pg_search,age",
         )  # fmt: skip
         assert r.returncode == 0, r.stderr
-        import time
-
         ok = False
         for _ in range(60):
             if docker("exec", name, "pg_isready", "-q", "-U", "postgres").returncode == 0:
@@ -175,12 +214,16 @@ def test_full_rotation_against_throwaway_container(tmp_path):
             f"SKMEMORY_PG_DSN=postgresql://postgres:{OLD_PW}@127.0.0.1:{port}/skmemory\n"
         )
         env.chmod(0o600)
+        sysbin, syscalls = _sys_stubs(tmp_path)
+        pre = str(sysbin)
         backup = tmp_path / "bk"
         r = _run([
-            "--bind-loopback", "--no-propagate", "--env-file", str(env), "--container", name,
+            "--bind-loopback", "--env-file", str(env), "--container", name,
             "--port", str(port), "--backup-dir", str(backup),
-        ])  # fmt: skip
+        ], path_prefix=pre)  # fmt: skip
         assert r.returncode == 0, r.stdout + r.stderr
+        # default run: propagation is off, the user manager and dbus are never called
+        assert not syscalls.exists()
         new_pw = (backup / "new-password").read_text().strip()
         assert new_pw and new_pw != OLD_PW
         assert OLD_PW not in env.read_text() and new_pw in env.read_text()
@@ -190,6 +233,23 @@ def test_full_rotation_against_throwaway_container(tmp_path):
             assert stat.S_IMODE(f.stat().st_mode) == 0o600
         ports = docker("port", name).stdout
         assert "127.0.0.1" in ports and "0.0.0.0" not in ports
+        # the new password must not persist in the recreated container's config
+        insp = docker("inspect", name).stdout
+        assert new_pw not in insp and "POSTGRES_PASSWORD" not in insp
+        # second rotation, now with --propagate against stubs and a named canonical file
+        time.sleep(1.1)
+        backup2 = tmp_path / "bk2"
+        r = _run([
+            "--propagate", "--canonical-env-file", str(env), "--env-file", str(env),
+            "--container", name, "--port", str(port), "--backup-dir", str(backup2),
+        ], path_prefix=pre)  # fmt: skip
+        assert r.returncode == 0, r.stdout + r.stderr
+        calls = syscalls.read_text()
+        assert "systemctl --user import-environment SKMEMORY_PG_DSN" in calls
+        assert "dbus-update-activation-environment --systemd SKMEMORY_PG_DSN" in calls
+        new_pw2 = (backup2 / "new-password").read_text().strip()
+        assert new_pw2 not in calls and new_pw2 not in r.stdout + r.stderr
+        assert new_pw not in env.read_text() and new_pw2 in env.read_text()
         old_names = docker(
             "ps", "-a", "--filter", f"name={name}-old-", "--format", "{{.Names}}"
         ).stdout.split()
