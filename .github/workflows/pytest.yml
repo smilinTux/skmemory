@@ -36,12 +36,22 @@ on:
 
 jobs:
   pytest:
-    name: pytest (py${{ matrix.python-version }})
+    name: pytest (py${{ matrix.python-version }}${{ matrix.engine == 'rust' && ', rust engine' || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
+        engine: ["python"]
+        include:
+          # SKMEM-R-08: the whole suite again with SKMEMORY_ENGINE=rust against the
+          # skmem_core wheel built from skmemory-rs pinned at 02ece4f (bump the SHA deliberately). Tests that legitimately
+          # differ are listed (with a reason each) in tests/engine_allowed_diff.txt;
+          # the goal is an empty list before cutover (SKMEM-R-12).
+          - python-version: "3.12"
+            engine: "rust"
+    env:
+      SKMEMORY_ENGINE: ${{ matrix.engine }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,6 +71,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Build skmem_core from skmemory-rs (pinned)
+        if: matrix.engine == 'rust'
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          git clone https://github.com/smilinTux/skmemory-rs.git "$RUNNER_TEMP/skmemory-rs"
+          git -C "$RUNNER_TEMP/skmemory-rs" checkout --detach 02ece4f472588afb3f5df15748b1b24905adba38
+          git -C "$RUNNER_TEMP/skmemory-rs" log -1 --format='skmemory-rs %H'
+          python -m pip install "maturin>=1.5,<2.0"
+          maturin build --release --locked \
+            --manifest-path "$RUNNER_TEMP/skmemory-rs/Cargo.toml" \
+            -o "$RUNNER_TEMP/wheels"
+          pip install "$RUNNER_TEMP"/wheels/skmem_core-*.whl
+          python -c "import skmem_core; print('skmem_core', skmem_core.version())"
 
       - name: Run unit test suite (pgpy-sharing excluded)
         run: |

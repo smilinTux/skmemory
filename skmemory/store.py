@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import decay as _decay
+from . import engine as _engine
 from . import retrieval_log, write_triage
 from .agents import get_agent_paths
 from .audience import ReaderScope, resolve_reader
@@ -270,6 +271,7 @@ class MemoryStore:
         # Caps in-flight calls per arm and cools a timed-out arm down, so one hung
         # backend cannot eat the shared worker pool (see fusion.ArmGuard).
         self._arm_guard = ArmGuard()
+        self._rust = _engine.RustEngines()
         self._search_tls = threading.local()
         # Backends that were CONFIGURED but failed to construct, by role
         # ("vector"/"graph") -> the real error text. health() reports these as
@@ -335,6 +337,127 @@ class MemoryStore:
                 / "write_log.jsonl"
             )
         self._wal = WriteAheadLog(wal_path)
+
+    # ── SKMEMORY_ENGINE=rust shim (see engine.py) ────────────────────────
+
+    def _rust_engine(self):
+        """The ``skmem_core.Engine`` serving this store, or None to use Python.
+
+        None when SKMEMORY_ENGINE is python (the default), or when the primary is
+        not a SQLite index rooted in a real directory (Rust has nothing to open).
+        An invalid value or a missing ``skmem_core`` raises, never falls back.
+        A store whose arms Python owns (injected vector/graph objects) stays on Python.
+        """
+        if not _engine.is_rust():
+            return None
+        _engine.rust_module()  # fail fast when the wheel is missing, whatever the store
+        base = getattr(self.primary, "base_path", None)
+        # Rust reads the plain SQLite index only: a subclass (vaulted, a test double) or
+        # another primary is Python's. Likewise a vector or graph backend that is not
+        # one of the shipped pg ones is an arm only Python can call, so it stays Python.
+        if type(self.primary) is not SQLiteBackend or base is None:
+            return None
+        for derived in (self.vector, self.graph):
+            if derived is not None and not type(derived).__module__.startswith(
+                "skmemory.backends."
+            ):
+                return None
+        return self._rust.get(base, pg=self.vector is not None)
+
+    @staticmethod
+    def _from_rust(row: dict) -> Memory:
+        """A Memory from a Rust row (``Memory.to_value()`` plus search-only keys)."""
+        data = {k: v for k, v in row.items() if k not in ("superseded", "superseded_by")}
+        return Memory(**data)
+
+    def _rust_write_eligible(self, kind, supersedes_id) -> bool:
+        """The plain write path Rust reproduces; anything else stays in Python."""
+        return (
+            kind is None
+            and not supersedes_id
+            and not self.skseed_auto_validate
+            and len(self.pre_write_hooks) == 1
+            and self.pre_write_hooks[0] is default_pre_write_hooks()[0]
+        )
+
+    def _post_write_index(self, memory: Memory) -> None:
+        """Derived-store side effects after the primary write (Python, exactly once)."""
+        # Vector indexing (resilient)
+        if self.vector:
+            try:
+                self.vector.save(memory)
+                if isinstance(self.primary, SQLiteBackend):
+                    self.primary.clear_sync_failure(memory.id, "vector")
+                    self.primary.clear_sync_failure(memory.id, "skvector")  # legacy key
+            except Exception as e:
+                logger.warning("Vector save failed for %s: %s", memory.id, e)
+                if isinstance(self.primary, SQLiteBackend):
+                    self.primary.record_sync_failure(memory.id, "vector", str(e))
+
+        # Graph indexing (resilient)
+        if self.graph:
+            try:
+                self.graph.index_memory(memory)
+                if isinstance(self.primary, SQLiteBackend):
+                    self.primary.clear_sync_failure(memory.id, "graph")
+                    self.primary.clear_sync_failure(memory.id, "skgraph")  # legacy key
+            except Exception as e:
+                logger.warning("Graph index failed for %s: %s", memory.id, e)
+                if isinstance(self.primary, SQLiteBackend):
+                    self.primary.record_sync_failure(memory.id, "graph", str(e))
+
+        # Reweave backward pass (opt-in, bounded): re-link older neighbours.
+        if self.reweave:
+            try:
+                self._reweave_backward(memory)
+            except Exception as exc:
+                logger.warning("reweave backward pass failed for %s: %s", memory.id, exc)
+
+    def _rust_snapshot(self, eng, memory: Memory, layer: MemoryLayer) -> Memory | None:
+        """Write ``memory`` through ``Engine.snapshot``, then run the delegated side effects.
+
+        Rust does dedup, tier, authority tier, valence, seal, schema validation, flat
+        file and index row. The WAL entry and the vector, graph and reweave steps are
+        the shim's, performed here exactly once. Returns None (nothing written) when
+        Rust refuses with NotImplementedError, so the caller continues on the Python path.
+        """
+        fields = {
+            "id": memory.id,
+            "layer": layer.value,
+            "role": memory.role.value if hasattr(memory.role, "value") else memory.role,
+            "tags": list(memory.tags),
+            "emotional": memory.emotional.model_dump(),
+            "created_at": memory.created_at,
+            "updated_at": memory.updated_at,
+            "valid_from": memory.valid_from,
+            "source": memory.source,
+            "source_tier": memory.source_tier.value
+            if hasattr(memory.source_tier, "value")
+            else memory.source_tier,
+            "source_ref": memory.source_ref,
+            "related_ids": list(memory.related_ids),
+            "metadata": memory.metadata,
+        }
+        if memory.outcome:
+            fields["outcome"] = (
+                memory.outcome.value if hasattr(memory.outcome, "value") else memory.outcome
+            )
+        if memory.event_at:
+            fields["event_at"] = memory.event_at
+        self._wal.log_pending("snapshot", memory.id, memory.title, layer.value)
+        try:
+            row = eng.snapshot(memory.title, memory.content, **fields)
+        except NotImplementedError:
+            self._wal.log_failed("snapshot", memory.id, "routed to the python path")
+            return None
+        except Exception as exc:
+            logger.warning("store.py: %s", exc)
+            self._wal.log_failed("snapshot", memory.id, str(exc))
+            raise
+        self._wal.log_done("snapshot", memory.id)
+        written = self._from_rust(row)
+        self._post_write_index(written)
+        return written
 
     def _probe_backend(self, role: str, backend: BaseBackend | None) -> dict:
         """Probe one derived backend and return an always-populated block.
@@ -561,6 +684,20 @@ class MemoryStore:
             **({"event_at": event_at} if event_at else {}),
         )
 
+        # A write with a reader (per call or ceiling) stays on Python: its dedup is
+        # reader-scoped and Engine.snapshot dedups with owner scope, which would hand a
+        # hidden memory's id back to a narrower writer.
+        if (
+            reader is None
+            and not _engine.ceiling()
+            and self._rust_write_eligible(kind, supersedes_id)
+        ):
+            eng = self._rust_engine()
+            if eng is not None:
+                written = self._rust_snapshot(eng, memory, layer)
+                if written is not None:
+                    return written
+
         # Write-time conflict verdict (card SKMEM-P3-02): fact/rule/preference only.
         if supersedes_id:
             decision = write_triage.explicit(self, supersedes_id, reader)
@@ -655,36 +792,7 @@ class MemoryStore:
             except Exception as exc:  # noqa: BLE001 - the new memory is already saved
                 logger.warning("could not close superseded %s: %s", decision.target.id, exc)
 
-        # Vector indexing (resilient)
-        if self.vector:
-            try:
-                self.vector.save(memory)
-                if isinstance(self.primary, SQLiteBackend):
-                    self.primary.clear_sync_failure(memory.id, "vector")
-                    self.primary.clear_sync_failure(memory.id, "skvector")  # legacy key
-            except Exception as e:
-                logger.warning("Vector save failed for %s: %s", memory.id, e)
-                if isinstance(self.primary, SQLiteBackend):
-                    self.primary.record_sync_failure(memory.id, "vector", str(e))
-
-        # Graph indexing (resilient)
-        if self.graph:
-            try:
-                self.graph.index_memory(memory)
-                if isinstance(self.primary, SQLiteBackend):
-                    self.primary.clear_sync_failure(memory.id, "graph")
-                    self.primary.clear_sync_failure(memory.id, "skgraph")  # legacy key
-            except Exception as e:
-                logger.warning("Graph index failed for %s: %s", memory.id, e)
-                if isinstance(self.primary, SQLiteBackend):
-                    self.primary.record_sync_failure(memory.id, "graph", str(e))
-
-        # Reweave backward pass (opt-in, bounded) — re-link older neighbours.
-        if self.reweave:
-            try:
-                self._reweave_backward(memory)
-            except Exception as exc:
-                logger.warning("reweave backward pass failed for %s: %s", memory.id, exc)
+        self._post_write_index(memory)
 
         return memory
 
@@ -1103,6 +1211,15 @@ class MemoryStore:
         Returns:
             Optional[Memory]: The memory if found.
         """
+        eng = self._rust_engine()
+        if eng is not None:
+            row = eng.recall(memory_id, _engine.rust_reader(reader))
+            if row is None:
+                return None
+            if not resolve_reader(reader).unrestricted:
+                # Rust reinforces for the owner only; Python reinforces for any reader.
+                self._reinforce([memory_id])
+            return self._from_rust(row)
         memory = self.primary.load(memory_id)
         if memory is None:
             return None
@@ -1213,6 +1330,20 @@ class MemoryStore:
             list[Memory]: Matching memories ranked by relevance.
         """
         as_of = normalize_as_of(as_of)
+        eng = self._rust_engine()
+        if eng is not None:
+            return self._rust_search(
+                eng,
+                query,
+                limit,
+                tags=tags,
+                layer=layer,
+                source=source,
+                context_tag=context_tag,
+                record_access=record_access,
+                reader=reader,
+                as_of=as_of,
+            )
         scope = resolve_reader(reader)
         # Over-fetch a pool so the tier cap has higher-tier hits to promote, then
         # cap ONCE here: every path (fused, degraded, fallback, legacy) and every
@@ -1249,6 +1380,82 @@ class MemoryStore:
         if record_access:
             self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         return kept
+
+    def _rust_search(
+        self, eng, query, limit, *, tags, layer, source, context_tag, record_access, reader, as_of
+    ) -> list[Memory]:
+        """``search`` through ``Engine.search_report``; the retrieval log stays here."""
+        if isinstance(context_tag, (list, tuple, set)):
+            # Rust takes one context_tag; a list is any-of, so filter the page after.
+            ctxs = set(context_tag)
+            ctx = None
+        else:
+            ctxs, ctx = None, context_tag
+        out = eng.search_report(
+            query,
+            limit,
+            tags=tags,
+            layer=getattr(layer, "value", layer),
+            source=source,
+            context_tag=ctx,
+            # Reinforcement stays Python's (same debounced bump, same readers) so the
+            # access counters mean the same on both engines.
+            record_access=False,
+            reader=_engine.rust_reader(reader),
+            as_of=as_of,
+        )
+        report = out["report"]
+        rows = out["results"]
+        if ctxs is not None:
+            rows = [r for r in rows if r.get("context_tag") in ctxs]
+        kept = [self._from_rust(r) for r in rows]
+        if record_access:
+            self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
+        self._search_tls.degraded = report.get("degraded")
+        if report.get("path") != "empty" or kept:
+            self._log_rust_retrieval(query, report, kept)
+        return kept
+
+    def _log_rust_retrieval(self, query: str, report: dict, kept: list[Memory]) -> None:
+        """Queue one retrieval record in the Python shape, from a Rust search report."""
+        from .fusion import RRF_K
+
+        try:
+            ranks: dict[str, list[int]] = {}
+            for arm in report.get("arms", []):
+                for rank, mid in enumerate(arm.get("ids", []), start=1):
+                    ranks.setdefault(mid, []).append(rank)
+            scores = sorted(
+                (sum(1.0 / (RRF_K + r) for r in ranks.get(m.id, [])) for m in kept),
+                reverse=True,
+            )
+            dist = None
+            if scores:
+                dist = {
+                    "n": len(scores),
+                    "max": round(scores[0], 5),
+                    "median": round(scores[len(scores) // 2], 5),
+                    "min": round(scores[-1], 5),
+                }
+            rec = {
+                "ts": round(time.time(), 3),
+                "q": retrieval_log.query_hash(query),
+                "qlen": len((query or "").split()),
+                "results": len(kept),
+                "elapsed_ms": round(float(report.get("elapsed_ms", 0.0)), 1),
+                "arms": {
+                    a["name"]: {
+                        "status": a["status"],
+                        "hits": a.get("hits", len(a.get("ids", []))),
+                        "ms": round(float(a.get("ms", 0.0)), 1),
+                    }
+                    for a in report.get("arms", [])
+                },
+                "fused": dist,
+            }
+            retrieval_log.record(self._retrieval_log_dir(), rec)
+        except Exception as exc:  # noqa: BLE001 - best effort, never blocks a search
+            logger.debug("retrieval log skipped: %s", exc)
 
     def _search_unscoped(
         self, query, limit, *, tags, layer, source, context_tag, record_access=False, as_of=None
@@ -2381,6 +2588,18 @@ class MemoryStore:
         Returns:
             list[Memory]: Matching memories sorted newest first.
         """
+        eng = self._rust_engine()
+        if eng is not None:
+            rows = eng.list(
+                layer=getattr(layer, "value", layer),
+                tags=tags,
+                limit=limit,
+                created_after=created_after,
+                created_before=created_before,
+                source=source,
+                reader=_engine.rust_reader(reader),
+            )
+            return [self._from_rust(r) for r in rows]
         scope = resolve_reader(reader)
         if not scope.unrestricted:
             return self._list_as_reader(
@@ -2424,6 +2643,9 @@ class MemoryStore:
         ``supersedes_id`` / ``superseded_by`` links on returned rows are kept
         only when they point at a row that is also returned.
         """
+        eng = self._rust_engine()
+        if eng is not None:
+            return eng.history(memory_id, _engine.rust_reader(reader))
         scope = resolve_reader(reader)
 
         def visible(m: Memory | None) -> bool:
@@ -2576,6 +2798,9 @@ class MemoryStore:
 
     def reader_can_see(self, memory_id: str, reader: str | None = None) -> bool:
         """Whether the reader may see this memory. An unknown id is not visible."""
+        eng = self._rust_engine()
+        if eng is not None:
+            return bool(eng.reader_can_see(memory_id, _engine.rust_reader(reader)))
         scope = resolve_reader(reader)
         if scope.unrestricted:
             return True
@@ -3348,6 +3573,20 @@ class MemoryStore:
         return report
 
     def health(self, reader: str | None = None) -> dict:
+        """Check health of all backends (see ``_health_report``).
+
+        Under ``SKMEMORY_ENGINE=rust`` the Rust engine's own report (SQLite primary:
+        sync drift, WAL, FTS coverage) is added as ``engine``. Rust has no pg, vector
+        or graph probes yet, so the Python report stays the base; for a declared
+        reader only the verdict flags are returned, as before.
+        """
+        report = self._health_report(reader)
+        eng = self._rust_engine()
+        if eng is not None and resolve_reader(reader).unrestricted:
+            report["engine"] = eng.health(_engine.rust_reader(reader))
+        return report
+
+    def _health_report(self, reader: str | None = None) -> dict:
         """Check health of all backends.
 
         Surfaces flat-vs-index drift as an explicit top-level ``status``
