@@ -189,3 +189,92 @@ def test_write_baseline_roundtrip(tmp_path):
     assert "metrics" in doc and doc["leak_count"] == 0
     # A freshly-written baseline must immediately pass the gate.
     assert gate.main(["--baseline", str(p)]) == 0
+
+
+# --- markdown report (SKMEM-P1-06B) -------------------------------------------
+
+
+def _report_fixture():
+    base = {
+        "metrics": {
+            "class_bench.candidate.semantic.recall@5": 0.8,
+            "class_bench.candidate.entity.recall@5": 1.0,
+            "class_bench.candidate.q.q-entity-01.recall@5": 1.0,
+            "fusion_bench.interleave_rerank.semantic.recall@5": 0.9,
+            "groundedness.score": 0.75,
+        }
+    }
+    cur = {
+        "metrics": {
+            "class_bench.candidate.semantic.recall@5": 0.6,
+            "class_bench.candidate.entity.recall@5": 1.0,
+            "class_bench.candidate.q.q-entity-01.recall@5": 1.0,
+            "fusion_bench.interleave_rerank.semantic.recall@5": 0.9,
+            "groundedness.score": 0.75,
+        },
+        "leak_count": 0,
+    }
+    return cur, base
+
+
+def test_report_marker_first_and_table_content():
+    from skmemory.eval import gate_report
+
+    cur, base = _report_fixture()
+    md = gate_report.render_markdown(cur, base, gate.compare(cur, base))
+    assert md.startswith(gate_report.MARKER)
+    assert md.count(gate_report.MARKER) == 1
+    assert "gate: FAIL" in md
+    assert "| semantic | class_bench.recall@5 | 0.800 | 0.600 | -0.200 | REGRESSED |" in md
+    assert "| entity | class_bench.recall@5 | 1.000 | 1.000 | 0 | ok |" in md
+    assert "| groundedness.score | 0.750 | 0.750 | 0 | ok |" in md
+    assert "Per-query floors checked: 1" in md
+    assert "#### Regressions" in md
+
+
+def test_report_pass_has_no_regression_section_and_is_stable():
+    from skmemory.eval import gate_report
+
+    cur, base = _report_fixture()
+    cur["metrics"]["class_bench.candidate.semantic.recall@5"] = 0.8
+    md = gate_report.render_markdown(cur, base, [])
+    assert "gate: PASS" in md
+    assert "#### Regressions" not in md
+    rev = {"metrics": dict(reversed(list(cur["metrics"].items()))), "leak_count": 0}
+    rbase = {"metrics": dict(reversed(list(base["metrics"].items())))}
+    assert gate_report.render_markdown(rev, rbase, []) == md
+    rows = [ln.split("|")[1].strip() for ln in md.splitlines() if ln.startswith("| ")]
+    assert rows.index("entity") < rows.index("semantic")
+
+
+def test_report_missing_metric_flagged():
+    from skmemory.eval import gate_report
+
+    cur, base = _report_fixture()
+    del cur["metrics"]["class_bench.candidate.entity.recall@5"]
+    md = gate_report.render_markdown(cur, base, gate.compare(cur, base))
+    assert "| entity | class_bench.recall@5 | 1.000 | - | - | MISSING |" in md
+
+
+def test_main_writes_report_even_when_gate_fails(tmp_path, monkeypatch):
+    out = tmp_path / "r.md"
+    summary = tmp_path / "s.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    cur = gate.collect_metrics()
+    bad = {"metrics": {k: v + 1.0 for k, v in cur["metrics"].items()}, "leak_count": 0}
+    bp = tmp_path / "b.json"
+    gate.write_json(bad, bp)
+    assert gate.main(["--baseline", str(bp), "--report-md", str(out)]) == 1
+    assert "gate: FAIL" in out.read_text()
+    assert "gate: FAIL" in summary.read_text()
+
+
+def test_ci_never_regenerates_baseline():
+    """Baseline regeneration is explicit-only: no workflow may pass --write-baseline."""
+    import pathlib
+
+    wf = pathlib.Path(__file__).resolve().parent.parent / ".github" / "workflows"
+    for f in wf.glob("*.yml"):
+        for ln in f.read_text().splitlines():
+            if "write-baseline" in ln:
+                assert ln.lstrip().startswith("#"), f"{f.name}: {ln}"
