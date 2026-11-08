@@ -223,3 +223,29 @@ def test_content_hash_dedupe_counts_as_deduped(tmp_path):
     store.snapshot(title="pre", content="Same words.", tags=["x"])
     stats = import_harness_memory(store, [d])
     assert stats["imported"] == 0 and stats["deduped"] == 1
+
+
+def test_unrelated_memory_with_same_body_is_never_closed(tmp_path):
+    dirs = _moved_dirs(tmp_path)
+    store = _store(tmp_path)
+    mine = store.snapshot(title="mine", content="Old version.", tags=["mine"])
+    for _ in range(3):  # across reruns too
+        import_harness_memory(store, dirs)
+        got = store.recall(mine.id)
+        assert got.valid_to is None and "superseded_by" not in got.metadata
+        assert got.tags == ["mine"]
+    new = [m for m in _all(store) if m.content == "New version."]
+    assert len(new) == 1 and new[0].supersedes_id is None
+
+
+def test_import_honours_no_vector(dirs, monkeypatch, tmp_path):
+    seen = {}
+
+    def fake(**kw):
+        seen.update(kw)
+        return _store(tmp_path)
+
+    monkeypatch.setattr("skmemory.cli._get_store", fake)
+    res = CliRunner().invoke(cli, ["--no-vector", "import", "harness-memory", *map(str, dirs)])
+    assert res.exit_code == 0, res.output
+    assert seen["no_vector"] is True

@@ -236,6 +236,7 @@ def cli(
     # "import" builds its own store, and only when it will write (dry runs never open one).
     if ctx.invoked_subcommand in ("operator", "hook", "hooks", "intentions", "import"):
         ctx.obj["ai"] = None
+        ctx.obj["no_vector"] = no_vector
         return
     if "store" not in ctx.obj:
         try:
@@ -2194,7 +2195,9 @@ def import_harness_memory_cmd(ctx: click.Context, dirs: tuple[str, ...], dry_run
         click.echo(format_report(build_plan(list(dirs)).report()))
         click.echo("\nDRY RUN: no store was opened, nothing written.")
         return
-    store: MemoryStore = ctx.obj.get("store") or _get_store()
+    store: MemoryStore = ctx.obj.get("store") or _get_store(
+        no_vector=ctx.obj.get("no_vector", False)
+    )
     stats = import_harness_memory(store, list(dirs))
     click.echo(
         f"Imported {stats['imported']} memories "

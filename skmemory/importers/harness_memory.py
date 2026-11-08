@@ -345,6 +345,11 @@ def _existing(store: Any) -> dict[str, Any]:
     return known
 
 
+def _is_variant(mem: Any, slug: str) -> bool:
+    """True only for a harness-memory import of this very slug."""
+    return TAG in mem.tags and mem.metadata.get("harness_slug") == slug
+
+
 def _close_open_older(store: Any, mems: list[Any]) -> int:
     """``mems`` is oldest first. Close any open version that a newer one replaced."""
     from .. import write_triage
@@ -384,8 +389,9 @@ def import_harness_memory(store: Any, dirs: list[str | Path]) -> dict[str, Any]:
                 found = known.get(v.sha) or next((known[p] for p in v.paths if p in known), None)
                 if found is not None:
                     stats["skipped_existing"] += 1
-                    previous_id = found.id
-                    chain.append(found)
+                    if _is_variant(found, slug):
+                        previous_id = found.id
+                        chain.append(found)
                     continue
                 f = v.lead
                 superseded = i > 0
@@ -410,11 +416,14 @@ def import_harness_memory(store: Any, dirs: list[str | Path]) -> dict[str, Any]:
                     event_at=f.event_at,
                     supersedes_id=previous_id,
                 )
-                previous_id = mem.id
-                chain.append(mem)
                 if mem.source_ref != f.path:  # the store returned an existing record
                     stats["deduped"] += 1
-                    continue
+                    if _is_variant(mem, slug):
+                        previous_id = mem.id
+                        chain.append(mem)
+                    continue  # an unrelated memory is never linked, superseded or closed
+                previous_id = mem.id
+                chain.append(mem)
                 stats["imported"] += 1
                 stats["superseded_variants"] += int(superseded)
             stats["repaired"] += _close_open_older(
