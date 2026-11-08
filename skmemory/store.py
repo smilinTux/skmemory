@@ -24,6 +24,7 @@ from typing import Any
 from . import decay as _decay
 from . import engine as _engine
 from . import retrieval_log, write_triage
+from . import shadow as _shadow
 from .agents import get_agent_paths
 from .audience import ReaderScope, resolve_reader
 from .backends.base import BaseBackend
@@ -1344,6 +1345,18 @@ class MemoryStore:
                 reader=reader,
                 as_of=as_of,
             )
+        shadow = _shadow.begin(
+            self,
+            query,
+            limit,
+            tags=tags,
+            layer=layer,
+            source=source,
+            context_tag=context_tag,
+            reader=reader,
+            as_of=as_of,
+        )
+        shadow_t0 = time.perf_counter()
         scope = resolve_reader(reader)
         # Over-fetch a pool so the tier cap has higher-tier hits to promote, then
         # cap ONCE here: every path (fused, degraded, fallback, legacy) and every
@@ -1379,6 +1392,7 @@ class MemoryStore:
         kept = order_procedures(kept, query)
         if record_access:
             self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
+        _shadow.python_done(shadow, self, kept, shadow_t0)
         return kept
 
     def _rust_search(
@@ -1687,9 +1701,9 @@ class MemoryStore:
     def _log_retrieval(self, query: str, report) -> None:
         """Queue one retrieval record. Best effort: never raises, never blocks."""
         try:
-            retrieval_log.record(
-                self._retrieval_log_dir(), retrieval_log.build_record(query, report)
-            )
+            rec = retrieval_log.build_record(query, report)
+            self._search_tls.arms = {n: a["status"] for n, a in rec["arms"].items()}
+            retrieval_log.record(self._retrieval_log_dir(), rec)
         except Exception as exc:  # noqa: BLE001
             logger.debug("retrieval log skipped: %s", exc)
 
