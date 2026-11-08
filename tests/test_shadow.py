@@ -80,7 +80,7 @@ def test_off_by_default(env, monkeypatch):
 def test_matching_engines_log_overlap_without_content(env):
     store, m, log = env
     FakeEngine.ids = [m.id]
-    served = store.search(SECRET, reader="@public", tags=None)
+    served = store.search(SECRET)
     (row,) = rows(log)
     assert row["overlap"] == 1.0 and row["py_ids"] == row["rs_ids"] == [m.id]
     assert row["py_ms"] is not None and row["rs_ms"] is not None
