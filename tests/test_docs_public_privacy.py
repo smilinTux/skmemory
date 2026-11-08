@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 
 DEPLOY_SQL = (
-    Path(__file__).resolve().parent.parent / "deploy" / "skmem-pg" / "03-cutover-mxbai.sql"
+    Path(__file__).resolve().parent.parent / "skmemory" / "pg" / "03-cutover-mxbai.sql"
 )
 
 # Isolated scratch scope so the test never touches real corpus rows.

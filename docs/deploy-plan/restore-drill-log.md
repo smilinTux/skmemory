@@ -18,7 +18,7 @@ Ceremony and scripts:
 - Host: local dev box (Docker 29.1.3)
 - Image: `skmem-pg:pg17-bm25-age` (already built locally; no image build time in this run)
 - Method: `scripts/skmem-pg-restore-drill.sh` - stands up a throwaway SOURCE
-  container, loads the vendored `deploy/skmem-pg/schema.sql`, seeds 25 synthetic
+  container, loads the vendored `skmemory/pg/schema.sql`, seeds 25 synthetic
   memories + a 1-graph AGE graph (`drilltest_knowledge`, 2 vertices + 1 edge),
   dumps it with `pg_dump -Fc` (exactly like `skmem-pg-backup.sh`), then hands the
   dump to `scripts/skmem-pg-restore.sh` which restores into a SECOND throwaway

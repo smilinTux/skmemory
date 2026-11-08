@@ -1,4 +1,4 @@
-"""`deploy/skmem-pg/schema.sql` must be able to build a database from nothing.
+"""`skmemory/pg/schema.sql` must be able to build a database from nothing.
 
 The file is a pg_dump, and the dump's `CREATE SCHEMA paradedb` /
 `CREATE SCHEMA ag_catalog` statements were stripped from it (the extensions
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-SCHEMA_SQL = Path(__file__).resolve().parent.parent / "deploy" / "skmem-pg" / "schema.sql"
+SCHEMA_SQL = Path(__file__).resolve().parent.parent / "skmemory" / "pg" / "schema.sql"
 
 #: Extensions that create their own schema, so naming one is both redundant
 #: and a fresh-bootstrap failure.

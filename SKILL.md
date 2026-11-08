@@ -270,7 +270,7 @@ A memory has `kind` (`episode`, `fact`, `procedure`, `preference`, `rule`), `out
   falls back to the default and the raw value is kept in
   `metadata["schema_v2_unknown"]`, so a file written by a newer node never vanishes.
   Constructing a `Memory` directly stays strict. Unknown extra fields survive a re-save.
-- skmem-pg gets the typed columns from `deploy/skmem-pg/06-memory-schema-v2.sql`
+- skmem-pg gets the typed columns from `skmemory/pg/06-memory-schema-v2.sql`
   via `skmemory pg migrate`; an unmigrated node keeps working because `memory_json`
   carries every field.
 - Write-time conflict verdict: `store.snapshot(kind=fact|rule|preference, ...)`

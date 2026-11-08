@@ -317,3 +317,162 @@ def test_idempotent_plan_is_deterministic():
     assert [(s.argv, s.stdin_path, s.label) for s in p1.steps] == [
         (s.argv, s.stdin_path, s.label) for s in p2.steps
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Packaging, path honouring, DSN redaction, transport fallback                #
+# --------------------------------------------------------------------------- #
+
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+import zipfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from skmemory import pg_migrate as _pm  # noqa: E402
+
+_REPO = Path(__file__).resolve().parent.parent
+_PW = "s3cr3t-Pw!x"
+_DSN = f"postgresql://postgres:{_PW}@127.0.0.1:5432/skmemory"
+
+
+def test_sql_lives_inside_the_package():
+    assert Path(_pm.__file__).resolve().parent / "pg" == _pm.DEPLOY_DIR
+    assert load_manifest(), "manifest must be non-empty from the package location"
+    for m in load_manifest():
+        assert m.path.is_file(), m.path
+        if m.verify:
+            assert m.verify_path.is_file(), m.verify_path
+
+
+def test_wheel_contains_manifest_and_every_listed_sql(tmp_path):
+    out = tmp_path / "wheel"
+    out.mkdir()
+    r = subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--no-isolation", "-o", str(out), str(_REPO)],
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),
+    )
+    if r.returncode != 0 and "No module named build" in (r.stderr + r.stdout):
+        pytest.skip("python -m build unavailable")
+    assert r.returncode == 0, r.stderr[-2000:]
+    wheel = next(out.glob("*.whl"))
+    names = set(zipfile.ZipFile(wheel).namelist())
+    assert "skmemory/pg/migrations.txt" in names
+    assert "skmemory/pg/schema.sql" in names
+    entries = load_manifest()
+    assert entries
+    for m in entries:
+        assert f"skmemory/pg/{m.name}" in names
+        if m.verify:
+            assert f"skmemory/pg/{m.verify}" in names
+    # Read the manifest as an installed copy would see it.
+    z = zipfile.ZipFile(wheel)
+    ext = tmp_path / "ext"
+    z.extractall(ext)
+    listed = load_manifest(ext / "skmemory" / "pg" / "migrations.txt")
+    assert [m.name for m in listed] == [m.name for m in entries]
+
+
+def test_resolve_migration_honours_path_as_given(tmp_path):
+    d = tmp_path / "elsewhere"
+    d.mkdir()
+    f = d / "03-ops-namespace.sql"  # same basename as a manifest entry, different dir
+    f.write_text("select 1;\n")
+    m = resolve_migration(str(f))
+    assert m.path == f.resolve()
+    assert m.path != DEPLOY_DIR / "03-ops-namespace.sql"
+
+
+def test_resolve_migration_bare_name_still_uses_manifest():
+    assert resolve_migration("03-ops-namespace.sql").path == DEPLOY_DIR / "03-ops-namespace.sql"
+
+
+def test_resolve_migration_missing_path_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        resolve_migration(str(tmp_path / "nope" / "zz-missing.sql"))
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        _DSN,
+        f"postgresql://postgres:{_PW}@127.0.0.1:5432/skmemory?sslmode=disable",
+        f"host=127.0.0.1 port=5432 dbname=skmemory user=postgres password='{_PW}'",
+        f"postgresql://postgres@127.0.0.1:5432/skmemory?password={_PW}",
+    ],
+)
+def test_dsn_password_never_in_argv_or_description(dsn):
+    t = Target(dsn=dsn)
+    plan = build_migrate_plan(load_manifest()[:1], t, pre_dump=True, dump_dir=Path("/x"))
+    for step in plan.steps:
+        assert _PW not in " ".join(step.argv)
+        assert step.env == {"PGPASSWORD": _PW}
+    assert _PW not in plan.describe()
+    assert _PW not in t.display_dsn
+    assert "***" in t.display_dsn or "password" not in dsn
+
+
+def test_redact_dsn_url_form():
+    assert _pm.redact_dsn(_DSN) == "postgresql://postgres:***@127.0.0.1:5432/skmemory"
+
+
+def test_run_plan_passes_password_via_env_and_scrubs_errors():
+    t = Target(dsn=_DSN)
+    plan = build_migrate_plan(load_manifest()[:1], t, pre_dump=False, verify=False)
+    seen = {}
+
+    def runner(argv, **kw):
+        seen["argv"], seen["env"] = argv, kw.get("env")
+        return subprocess.CompletedProcess(argv, 1, b"", f"bad {_DSN} {_PW}".encode())
+
+    out = []
+    with pytest.raises(_pm.MigrationError) as ei:
+        run_plan(plan, runner=runner, echo=out.append)
+    assert seen["env"]["PGPASSWORD"] == _PW
+    assert _PW not in " ".join(seen["argv"])
+    assert _PW not in str(ei.value)
+    assert _PW not in "\n".join(out)
+
+
+def test_cli_dry_run_never_prints_dsn_password(monkeypatch):
+    from click.testing import CliRunner
+
+    from skmemory.cli import cli
+
+    monkeypatch.setenv("SKMEMORY_PG_DSN", _DSN)
+    monkeypatch.setattr(_pm.shutil, "which", lambda b: f"/usr/bin/{b}")
+    res = CliRunner().invoke(cli, ["pg", "migrate", "--dry-run"])
+    assert res.exit_code == 0, res.output
+    assert _PW not in res.output
+    assert "***" in res.output
+
+
+def test_prepare_target_falls_back_to_docker_when_client_tools_missing():
+    msgs: list[str] = []
+    t = _pm.prepare_target(
+        Target(dsn=_DSN),
+        need_dump=True,
+        which=lambda b: None,
+        container_running=lambda n: True,
+        echo=msgs.append,
+    )
+    assert not t.uses_dsn
+    assert t.db == "skmemory" and t.user == "postgres"
+    assert msgs and "docker exec" in msgs[0] and _PW not in msgs[0]
+
+
+def test_prepare_target_errors_clearly_without_tools_or_container():
+    with pytest.raises(_pm.MigrationError) as ei:
+        _pm.prepare_target(
+            Target(dsn=_DSN),
+            need_dump=True,
+            which=lambda b: None,
+            container_running=lambda n: False,
+        )
+    assert "pg_dump" in str(ei.value) and _PW not in str(ei.value)
+
+
+def test_prepare_target_keeps_dsn_when_tools_present():
+    t = Target(dsn=_DSN)
+    assert _pm.prepare_target(t, need_dump=True, which=lambda b: "/bin/" + b) is t

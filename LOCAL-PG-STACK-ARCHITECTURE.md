@@ -58,11 +58,11 @@ them.
 `deploy/skmem-pg/Dockerfile`: `pgvector/pgvector:pg17` plus ParadeDB `pg_search` (real
 BM25) plus Apache AGE. The server runs with `shared_preload_libraries=pg_search,age`.
 
-**Schema.** `deploy/skmem-pg/schema.sql` is a post-cutover snapshot. Forward migrations
-are listed in `deploy/skmem-pg/migrations.txt` and apply on top of it, in order, both on a
+**Schema.** `skmemory/pg/schema.sql` is a post-cutover snapshot. Forward migrations
+are listed in `skmemory/pg/migrations.txt` and apply on top of it, in order, both on a
 fresh `docker compose up` (through `deploy/skmem-pg/initdb/00-run-init.sh`) and on a live
 node (`skmemory pg migrate`). The two read the same manifest, so they cannot drift.
-`deploy/skmem-pg/06-memory-schema-v2.sql` adds the typed memory-v2 columns; a node that
+`skmemory/pg/06-memory-schema-v2.sql` adds the typed memory-v2 columns; a node that
 has not run it keeps working because `memory_json` carries every field.
 
 **Embeddings.** `mxbai-embed-large`, 1024 dimensions, from the endpoint named by

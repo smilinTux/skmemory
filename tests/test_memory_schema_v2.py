@@ -251,7 +251,7 @@ def test_sqlite_alter_tolerates_concurrent_opener(tmp_path, monkeypatch):
 
 # --- skmem-pg migration (live throwaway DB; skipped when unreachable) -------
 
-MIGRATION = Path(__file__).resolve().parent.parent / "deploy" / "skmem-pg"
+MIGRATION = Path(__file__).resolve().parent.parent / "skmemory" / "pg"
 
 
 def _live_conn():

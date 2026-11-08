@@ -21,7 +21,7 @@ set -euo pipefail
 IMAGE="${SKMEM_PG_IMAGE:-skmem-pg:pg17-bm25-age}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-SCHEMA="$REPO_ROOT/deploy/skmem-pg/schema.sql"
+SCHEMA="$REPO_ROOT/skmemory/pg/schema.sql"
 
 SRC="skmem-pg-drill-src"
 DUMP_DIR="$(mktemp -d)"

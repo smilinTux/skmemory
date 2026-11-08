@@ -6,6 +6,8 @@ git repo (DR gap, coord card a4b414c9).
 
 ## Contents
 
+> The SQL files below (`schema.sql`, `migrations.txt`, `NN-*.sql`, `verify-*.sql`) now live in `skmemory/pg/` so they ship inside the wheel. Compose mounts that directory as the init source. Edit them there.
+
 | File | Purpose |
 | --- | --- |
 | `Dockerfile` | `pgvector/pgvector:pg17` + ParadeDB `pg_search` 0.24.0 (real BM25) + Apache AGE PG17/v1.7.0-rc0 (built from source). Produces `skmem-pg:pg17-bm25-age`. |
@@ -104,7 +106,7 @@ transaction, so a re-run is a safe no-op and a partial apply cannot occur.
 - No credentials are committed anywhere in this directory; the password is
   env-parametrized (`SKMEM_PG_PASSWORD`) with no default.
 - To refresh the snapshot after schema changes on the live DB:
-  `docker exec skmem-pg pg_dump --schema-only --no-owner --no-privileges -U postgres skmemory > deploy/skmem-pg/schema.sql`
+  `docker exec skmem-pg pg_dump --schema-only --no-owner --no-privileges -U postgres skmemory > skmemory/pg/schema.sql`
   then re-apply the two CREATE SCHEMA deletions above.
 
 ## Reconcile prune guardrail + cold-boot ordering (card 6b8b3ced)
@@ -195,7 +197,7 @@ docker exec skmem-pg pg_dump -U postgres -Fc skmemory \
 
 ```sh
 docker exec -i skmem-pg psql -U postgres -d skmemory -v ON_ERROR_STOP=1 \
-  < deploy/skmem-pg/03-ops-namespace.sql
+  < skmemory/pg/03-ops-namespace.sql
 ```
 
 The whole migration is one `BEGIN; ... COMMIT;` with `ON_ERROR_STOP`; any error

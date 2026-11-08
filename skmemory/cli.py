@@ -3279,7 +3279,7 @@ def pg() -> None:
     """skmem-pg schema migrations (card OPS1.3).
 
     Apply the numbered, additive, idempotent forward migrations
-    (deploy/skmem-pg/migrations.txt) to an ALREADY-RUNNING skmem-pg instance,
+    (skmemory/pg/migrations.txt) to an ALREADY-RUNNING skmem-pg instance,
     and bind the ops LOGIN roles. A FRESH `docker compose up` auto-applies the
     same migrations at first boot (initdb/00-run-init.sh); this group is for
     existing live nodes and the skos provisioner (OPS1.2).
@@ -3343,9 +3343,11 @@ def pg_migrate(
     import os as _os
 
     from .pg_migrate import (
+        MigrationError,
         Target,
         build_migrate_plan,
         load_manifest,
+        prepare_target,
         resolve_migration,
         run_plan,
     )
@@ -3357,11 +3359,21 @@ def pg_migrate(
         user=user or "postgres",
     )
 
-    migrations = [resolve_migration(script)] if script else load_manifest()
+    try:
+        migrations = [resolve_migration(script)] if script else load_manifest()
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from None
 
     if not migrations:
         click.echo("No forward migrations to apply (migrations.txt is empty).")
         return
+
+    try:
+        target = prepare_target(target, need_dump=pre_dump, echo=lambda m: click.echo(m))
+    except MigrationError as exc:
+        if not dry_run:
+            raise click.ClickException(str(exc)) from None
+        click.echo(f"warning: {exc}")
 
     plan = build_migrate_plan(
         migrations,
@@ -3371,7 +3383,7 @@ def pg_migrate(
         dump_dir=Path(dump_dir) if dump_dir else None,
     )
 
-    transport = f"dsn={target.dsn}" if target.uses_dsn else f"container={target.container}"
+    transport = f"dsn={target.display_dsn}" if target.uses_dsn else f"container={target.container}"
     click.echo(
         f"skmem-pg migrate plan ({transport}, db={target.db}): {len(migrations)} migration(s)"
     )
@@ -3427,7 +3439,7 @@ def pg_roles(
     """
     import os as _os
 
-    from .pg_migrate import Target, build_roles_plan, run_plan
+    from .pg_migrate import MigrationError, Target, build_roles_plan, prepare_target, run_plan
 
     target = Target(
         container=container or _os.environ.get("SKMEM_PG_CONTAINER", "skmem-pg"),
@@ -3435,6 +3447,13 @@ def pg_roles(
         db=db or _os.environ.get("SKMEM_PG_DB", "skmemory"),
         user=user or "postgres",
     )
+
+    try:
+        target = prepare_target(target, need_dump=False, echo=lambda m: click.echo(m))
+    except MigrationError as exc:
+        if not dry_run:
+            raise click.ClickException(str(exc)) from None
+        click.echo(f"warning: {exc}")
 
     try:
         plan = build_roles_plan(target, skip_missing=skip_missing)
