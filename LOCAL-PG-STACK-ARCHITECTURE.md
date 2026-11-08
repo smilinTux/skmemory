@@ -112,6 +112,94 @@ default) is never a failure. Run the sync timers (`systemd/README.md`) so the sh
 tracks the flat files. Backup and restore are drilled in
 [`docs/RUNBOOK-restore.md`](./docs/RUNBOOK-restore.md).
 
+## Rotating the skmem-pg password
+
+Use `deploy/skmem-pg/rotate-password.sh` (try `--dry-run` first). It rotates the postgres
+superuser password and, with `--bind-loopback`, recreates the container bound to
+`127.0.0.1` only. That second part matters: a container can drift to `0.0.0.0:5432` while
+`docker-compose.yml` and the node configuration standard both say loopback, and a
+rotation is the natural moment to fix it. The script never prints a password or a DSN.
+
+```bash
+deploy/skmem-pg/rotate-password.sh --dry-run --bind-loopback          # read-only plan
+deploy/skmem-pg/rotate-password.sh --bind-loopback                    # do it, restart nothing
+deploy/skmem-pg/rotate-password.sh --bind-loopback --restart-units    # also restart SK services
+deploy/skmem-pg/rotate-password.sh --remove-old <name>-old-<stamp>    # after the soak
+```
+
+Parameters: `--env-file` (default `~/.config/skmemory/pg.env`), `--container` (default
+`skmem-pg`), `--port`, `--user`, `--db`, `--backup-dir`, `--propagate`, `--canonical-env-file`. Run it
+as the node owner, not root. It refuses to run under `bash -x`, which would print the
+passwords. Propagation (step 6) is opt-in and refused unless `--env-file` is the canonical
+env file.
+
+### The procedure
+
+1. **Backups**, all mode 600 in a 700 directory: a copy of the env file, `docker inspect`,
+   `pg_dump -Fc`, and `pg_dumpall --globals-only`.
+2. **New password** generated into a 600 file. `ALTER USER ... PASSWORD ...` goes to
+   `docker exec -i ... psql` on stdin, never on a command line (argv is world-readable
+   in `ps`). The same session first runs `SET log_statement = 'none'`, because with
+   `log_statement` set to `ddl` or `all` the ALTER, password included, would otherwise land
+   in the server log. Check `log_min_duration_statement` and any log shipping too.
+3. **Env file**: only the `:<password>@` slot of `SKMEMORY_PG_DSN` is replaced, matched
+   exactly against the old value, and the script asserts the old value is gone and the
+   new one present before it swaps the file in.
+4. **Recreate (with `--bind-loopback`)**: stop, rename the old container to
+   `<name>-old-<stamp>`, set its restart policy to `no`, then `docker run` with the same
+   volume, shm size, command (`-c shared_preload_libraries=pg_search,age`), custom env,
+   labels and network, and `-p 127.0.0.1:PORT:5432`. `POSTGRES_PASSWORD` is deliberately NOT
+   passed: the data directory is already initialised, so the image entrypoint never reads
+   it (verified on a throwaway container: it starts and accepts the rotated password
+   without it), and passing it would store the new secret in `docker inspect` of the new
+   container. The remaining custom env goes through a temporary `--env-file` that is
+   deleted afterwards. If `docker run` fails, the old container is renamed back, its
+   restart policy restored and it is started. Note that the backup directory's
+   `docker-inspect.json` is of the OLD container and does hold the old password: keep it
+   at mode 600 and delete it once the soak is over.
+5. **Verify**: `pg_isready`, loopback-only `docker port`, extensions `vector`, `pg_search`
+   and `age`, the `memories` row count, the new password logs in, and the OLD password is
+   refused. A login test that only proves the new password works would pass even if the
+   rotation had changed nothing.
+6. **Propagate (opt-in, `--propagate`)** the new DSN to the systemd user manager and the
+   dbus activation environment (see the first lesson below). It refuses unless `--env-file`
+   resolves to the canonical env file, because it writes into the live manager. Without the
+   flag, do it yourself from the canonical file.
+7. **Consumers**: the script lists user processes whose environment still holds the old
+   DSN, maps them to units, and prints the SK service candidates. It restarts them only
+   with `--restart-units`. Desktop session services are never restarted, and interactive
+   agent sessions started before the rotation keep the old DSN: their owner restarts them.
+8. **Soak, then remove**: keep the old container stopped for a while, then `--remove-old`.
+   Both containers share ONE data volume, so the old container is a rollback for the
+   container configuration (ports, env, flags) only, not for data. Never start both at
+   once. The data rollback is the `pg_dump -Fc` backup.
+
+### Lessons
+
+- **`systemctl --user daemon-reload` does not re-read `environment.d`.** The user manager
+  keeps the environment it started with. After changing `SKMEMORY_PG_DSN`, export the new
+  value in a shell and run `systemctl --user import-environment SKMEMORY_PG_DSN` (the
+  name only, so the value stays off argv), plus
+  `dbus-update-activation-environment --systemd SKMEMORY_PG_DSN`. Then restart the
+  services. Without this, units restarted after the rotation come back with the old
+  password and run keyword-only with no error.
+- **The image tag can be missing locally while the old container runs.** Do not rely on
+  the tag: read the old container's image ID (`docker inspect --format '{{.Image}}'`) and
+  re-tag it before `docker run`. The script does this.
+- **Running processes keep their environment.** Find them by reading
+  `/proc/<pid>/environ`, restart the SK services among them, and leave desktop and
+  interactive sessions to their owners.
+- **Testing must not touch the live manager.** Step 6 is off by default. Any test or manual
+  run that uses `--propagate` must put stub `systemctl` and
+  `dbus-update-activation-environment` first on `PATH`.
+- **Compose drift.** Check `docker port skmem-pg` after any recreate. Only `127.0.0.1`
+  should appear.
+
+Rollback of the container configuration: stop the new container, rename the old one back,
+`docker start` it. The password is stored in the shared volume, so it is already the NEW
+password; to go back to the old one run `ALTER USER` with the value from the backed-up env
+file copy and restore that copy. Rolling back data means restoring the `pg_dump -Fc` backup.
+
 ## Where each piece lives
 
 | Concern | File |
@@ -124,3 +212,4 @@ tracks the flat files. Backup and restore are drilled in
 | Fusion and routing | `skmemory/fusion.py`, `skmemory/store.py` |
 | Flat-to-pg reconcile | `skmemory/reconcile.py` |
 | Image, schema, migrations | `deploy/skmem-pg/` |
+| Password rotation, loopback rebind | `deploy/skmem-pg/rotate-password.sh` |

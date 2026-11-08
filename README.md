@@ -699,7 +699,7 @@ backends_enabled:
 
 ### Environment variables
 
-**Where these live on a node.** Set them once, in files, never pasted: the stack keys (`SKMEMORY_VECTOR_BACKEND`, `SKMEMORY_PG_DSN`, `SKMEMORY_EMBED_*`) in `~/.config/skmemory/pg.env` (dir 700, file 600) with `~/.config/environment.d/skmemory.conf` as a symlink to it, and the agent selectors plus `SK_DEFAULT_AGENT` in `~/.config/environment.d/10-skagent.conf`. Shells derive both. A password rotation also requires restarting every long-lived consumer. Full rules, verification commands and diagrams: [SKMEMORY_NODE_CONFIG_STANDARD](https://github.com/smilinTux/sk-standards/blob/main/standards/SKMEMORY_NODE_CONFIG_STANDARD.md).
+**Where these live on a node.** Set them once, in files, never pasted: the stack keys (`SKMEMORY_VECTOR_BACKEND`, `SKMEMORY_PG_DSN`, `SKMEMORY_EMBED_*`) in `~/.config/skmemory/pg.env` (dir 700, file 600) with `~/.config/environment.d/skmemory.conf` as a symlink to it, and the agent selectors plus `SK_DEFAULT_AGENT` in `~/.config/environment.d/10-skagent.conf`. Shells derive both. A password rotation also requires pushing the new value into the systemd user manager (`systemctl --user import-environment SKMEMORY_PG_DSN`; `daemon-reload` does not re-read `environment.d`) and restarting every long-lived consumer: use `deploy/skmem-pg/rotate-password.sh`. Full rules, verification commands and diagrams: [SKMEMORY_NODE_CONFIG_STANDARD](https://github.com/smilinTux/sk-standards/blob/main/standards/SKMEMORY_NODE_CONFIG_STANDARD.md).
 
 | Variable | Description |
 |----------|-------------|
