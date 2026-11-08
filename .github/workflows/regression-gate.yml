@@ -43,6 +43,11 @@ on:
       - ".github/workflows/regression-gate.yml"
   workflow_dispatch:
 
+# Top level stays read-only. Only the `comment` job below widens to
+# pull-requests: write, and it never checks out or runs PR code.
+permissions:
+  contents: read
+
 jobs:
   regression-gate:
     name: eval regression gate (offline)
@@ -67,11 +72,64 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]" || { pip install -e . && pip install pytest; }
 
+      # Baseline regeneration is explicit-only (--write-baseline, run by a
+      # human and committed). CI never passes it; tests/test_regression_gate.py
+      # asserts no workflow does.
       - name: Run eval regression gate vs committed baseline
         run: |
-          python -m skmemory.eval.regression_gate
+          python -m skmemory.eval.regression_gate --report-md "$RUNNER_TEMP/gate-report.md"
+
+      # Hand the table to the comment job. always() so a FAILED gate is still
+      # reported; the gate step above keeps its own exit code.
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gate-report
+          path: ${{ runner.temp }}/gate-report.md
+          if-no-files-found: ignore
 
       - name: Run gate unit tests
         run: |
           python -m pytest tests/test_regression_gate.py \
             --import-mode=importlib -v --tb=short
+
+  # Posts the per-class table as ONE PR comment, updated in place on later
+  # pushes (found by the hidden marker). Separate job: the only place with
+  # pull-requests: write, no checkout, no PR code. Runs even when the gate
+  # fails; its own failure never changes the gate job's result.
+  comment:
+    name: post eval table to PR
+    needs: regression-gate
+    if: >-
+      always() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Download gate report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: gate-report
+          path: report
+
+      - name: Create or update the PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          MARKER: "<!-- skmemory-regression-gate -->"
+        run: |
+          set -euo pipefail
+          test -s report/gate-report.md || { echo "no report, nothing to post"; exit 0; }
+          grep -qF "$MARKER" report/gate-report.md
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                 --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@report/gate-report.md
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@report/gate-report.md
+          fi

@@ -35,6 +35,8 @@ Gate semantics
 Run:
     python -m skmemory.eval.regression_gate                 # gate vs baseline
     python -m skmemory.eval.regression_gate --write-baseline # (re)generate floor
+                                                             # (explicit only; CI never passes it)
+    python -m skmemory.eval.regression_gate --report-md gate.md  # PR-comment table
     python -m skmemory.eval.regression_gate --output cur.json --no-compare
 Import:
     from skmemory.eval.regression_gate import (
@@ -51,7 +53,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
-from skmemory.eval import class_bench, sacred_bench
+from skmemory.eval import class_bench, gate_report, sacred_bench
 from skmemory.eval.fusion_bench import run_benchmark as run_fusion_benchmark
 from skmemory.eval.groundedness_scorer import (
     lexical_overlap_judge,
@@ -331,6 +333,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Also write the current run's metrics JSON to this path.",
     )
     parser.add_argument(
+        "--report-md",
+        default=None,
+        help="Write the per-class markdown table here (also appended to "
+        "$GITHUB_STEP_SUMMARY when set). Written whether the gate passes or fails.",
+    )
+    parser.add_argument(
         "--no-compare",
         action="store_true",
         help="Collect + print (and optionally --output) but do not gate.",
@@ -389,6 +397,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.strict:
             regressions.append("--strict: expected_fail queries passing: " + ", ".join(passing))
+    if args.report_md or os.environ.get("GITHUB_STEP_SUMMARY"):
+        gate_report.write_report(
+            gate_report.render_markdown(current, baseline, regressions, epsilon=args.epsilon),
+            args.report_md,
+        )
     if regressions:
         print(f"REGRESSION GATE: FAIL ({len(regressions)} regression(s))")
         for line in regressions:

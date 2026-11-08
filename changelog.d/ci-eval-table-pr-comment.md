@@ -1,0 +1,1 @@
+ci: the eval regression gate now posts its per-class table as one PR comment (updated in place via a hidden marker) and to the job summary, via `--report-md` and `skmemory.eval.gate_report` (SKMEM-P1-06B). Gate pass/fail is unchanged; the comment job is the only one with pull-requests: write and skips fork PRs.
