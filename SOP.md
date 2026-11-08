@@ -307,6 +307,10 @@ node, per [SKMEMORY_NODE_CONFIG_STANDARD](https://github.com/smilinTux/sk-standa
   consumer**: a running process keeps the environment it started with. A rotation that
   skips the restart leaves processes on the old secret with `vector_ok: null` and
   keyword-only search, with no error.
+  `systemctl --user daemon-reload` does NOT re-read `environment.d`; push the new value with
+  `systemctl --user import-environment SKMEMORY_PG_DSN` first. The whole procedure is
+  scripted in `deploy/skmem-pg/rotate-password.sh` and documented in
+  [LOCAL-PG-STACK-ARCHITECTURE.md](./LOCAL-PG-STACK-ARCHITECTURE.md).
 
 An earlier revision of this SOP said skmemory "reads no `pg.env`, and the file carries no
 DSN". That described a node before the standard; on a conforming node `pg.env` is the
