@@ -32,9 +32,15 @@
 # dbus activation environment, so it refuses unless --env-file resolves to the canonical env
 # file (default ~/.config/skmemory/pg.env, or the path given by --canonical-env-file).
 # --no-propagate is accepted and does nothing (propagation is already off by default).
-# Never run under bash -x: the script refuses.
+# Never run under bash -x or sourced: the script refuses. A hostile environment (a BASH_ENV
+# DEBUG trap, for example) is out of scope.
 # This script never prints a password or a DSN.
 
+# Refuse to be sourced: `exit` would close the caller's shell. Must stay the first statement.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  echo "[rotate] ERROR: execute this script, do not source it" >&2
+  return 1 2>/dev/null || exit 1
+fi
 # Never run under xtrace: it would print the passwords. Must stay the first statement.
 case "$-" in *x*) set +x; echo "[rotate] ERROR: refusing to run under xtrace (bash -x / set -x), it would print secrets" >&2; exit 2 ;; esac
 if [ -n "${BASH_XTRACEFD:-}" ]; then echo "[rotate] ERROR: refusing to run with BASH_XTRACEFD set" >&2; exit 2; fi

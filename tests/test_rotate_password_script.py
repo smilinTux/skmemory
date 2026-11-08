@@ -141,6 +141,15 @@ def test_xtrace_refused_and_prints_no_secret(tmp_path, stub, envfile):
     assert r.returncode != 0
 
 
+def test_sourcing_is_refused_without_killing_the_caller(tmp_path):
+    r = subprocess.run(
+        ["bash", "-c", f'source "{SCRIPT}" --dry-run; echo caller-still-alive rc=$?'],
+        capture_output=True, text=True,
+    )  # fmt: skip
+    assert "caller-still-alive rc=1" in r.stdout
+    assert "do not source" in r.stderr
+
+
 def test_propagate_refused_for_non_canonical_env_file(tmp_path, stub, envfile):
     r = _run(
         ["--propagate", "--dry-run", "--env-file", str(envfile),
