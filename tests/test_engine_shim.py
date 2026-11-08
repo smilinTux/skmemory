@@ -9,7 +9,7 @@ import pytest
 
 from skmemory import engine
 from skmemory.backends.sqlite_backend import SQLiteBackend
-from skmemory.models import MemoryLayer
+from skmemory.models import Memory, MemoryLayer
 from skmemory.store import MemoryStore
 
 
@@ -85,28 +85,88 @@ def rust_store(monkeypatch, tmp_path):
     return store
 
 
-def test_rust_round_trip_and_side_effects_once(rust_store):
-    calls = {"vector": 0, "graph": 0}
+class _Counting:
+    """Wraps a skmem_core.Engine and counts calls, so a test can prove Rust served them."""
 
-    class Vec:
-        def save(self, memory):
-            calls["vector"] += 1
+    def __init__(self, eng):
+        self._eng = eng
+        self.calls: dict[str, int] = {}
 
-    class Graph:
-        def index_memory(self, memory):
-            calls["graph"] += 1
+    def __getattr__(self, name):
+        fn = getattr(self._eng, name)
+        if not callable(fn):
+            return fn
 
-    rust_store.vector, rust_store.graph = Vec(), Graph()
+        def call(*a, **kw):
+            self.calls[name] = self.calls.get(name, 0) + 1
+            return fn(*a, **kw)
+
+        return call
+
+
+class _Vec:
+    __module__ = (
+        "skmemory.backends.test_double"  # a shipped-style backend: Rust still serves reads
+    )
+
+    def __init__(self):
+        self.saved = []
+
+    def save(self, memory):
+        self.saved.append(memory.id)
+
+
+class _Graph:
+    __module__ = "skmemory.backends.test_double"
+
+    def __init__(self):
+        self.indexed = []
+
+    def index_memory(self, memory):
+        self.indexed.append(memory.id)
+
+
+def test_rust_round_trip_routes_through_engine_and_side_effects_fire_once(rust_store):
+    counting = _Counting(rust_store._rust.get(rust_store.primary.base_path, pg=True))
+    rust_store._rust_engine = lambda: counting
+    vec, graph = _Vec(), _Graph()
+    rust_store.vector, rust_store.graph = vec, graph
     m = rust_store.snapshot("rust title", "a rust engine memory about pelicans", tags=["bird"])
-    assert calls == {"vector": 1, "graph": 1}
+    assert counting.calls.get("snapshot") == 1
+    assert vec.saved == [m.id] and graph.indexed == [m.id]
     assert m.integrity_hash and m.verify_integrity()
     assert rust_store.recall(m.id).title == "rust title"
     assert [x.id for x in rust_store.search("pelicans")] == [m.id]
     assert [x.id for x in rust_store.list_memories(layer=MemoryLayer.SHORT)] == [m.id]
     assert rust_store.history(m.id)[0]["id"] == m.id
     assert rust_store.reader_can_see(m.id)
+    for name in ("recall", "search_report", "list", "history", "reader_can_see"):
+        assert counting.calls.get(name, 0) >= 1, (name, counting.calls)
+    assert vec.saved == [m.id] and graph.indexed == [m.id]  # reads never re-index
     wal = (rust_store.primary.base_path / "wal" / "write_log.jsonl").read_text().splitlines()
     assert [json.loads(x)["status"] for x in wal if m.id in x] == ["pending", "done"]
+
+
+def test_reader_write_never_touches_a_hidden_duplicate(rust_store):
+    """A per-call reader keeps the write on Python: no hidden id back, nothing re-indexed."""
+    counting = _Counting(rust_store._rust.get(rust_store.primary.base_path, pg=True))
+    rust_store._rust_engine = lambda: counting
+    vec, graph = _Vec(), _Graph()
+    private = rust_store.snapshot("private", "identical text a public writer also stores")
+    assert private.context_tag == "@chef-only"
+    rust_store.vector, rust_store.graph = vec, graph
+    before = counting.calls.get("snapshot", 0)
+    pub = rust_store.snapshot(
+        "public copy", "identical text a public writer also stores", reader="@public"
+    )
+    assert pub.id != private.id and pub.title == "public copy"
+    assert counting.calls.get("snapshot", 0) == before, "reader write must stay on Python"
+    assert private.id not in vec.saved + graph.indexed
+    assert vec.saved == [pub.id] and graph.indexed == [pub.id]
+    wal = (rust_store.primary.base_path / "wal" / "write_log.jsonl").read_text()
+    assert private.id not in "".join(
+        x for x in wal.splitlines() if '"done"' in x and "public" in x
+    )
 
 
 def test_rust_duplicate_content_writes_nothing_twice(rust_store):
@@ -171,3 +231,74 @@ def test_allowed_diff_list_is_well_formed_and_every_entry_has_a_reason():
     for node, reason in engine_allowed_diff().items():
         assert node.startswith("tests/") and "::" in node, node
         assert reason and reason != "differs under the rust engine", node
+
+
+def test_ceiling_write_never_touches_a_hidden_duplicate(rust_store, monkeypatch):
+    private = rust_store.snapshot("private", "ceiling duplicate content")
+    monkeypatch.setenv("SKMEMORY_READER", "@public")
+    pub = rust_store.snapshot("public copy", "ceiling duplicate content")
+    assert pub.id != private.id
+
+
+def test_recreated_index_db_is_served_by_a_fresh_engine(rust_store):
+    import sqlite3
+
+    base = rust_store.primary.base_path
+    rust_store.snapshot("old", "first life of the index")
+    for name in ("index.db", "index.db-wal", "index.db-shm"):
+        (base / name).unlink(missing_ok=True)
+    fresh = MemoryStore(primary=SQLiteBackend(str(base)), use_sqlite=True)
+    for i in range(3):
+        fresh.snapshot(f"n{i}", f"second life number {i} marker{i}")
+    conn = sqlite3.connect(str(base / "index.db"))
+    try:
+        assert conn.execute("select count(*) from memories").fetchone()[0] == 3
+    finally:
+        conn.close()
+    assert [m.title for m in fresh.search("marker1")] == ["n1"]
+
+
+def test_operator_audience_config_is_the_one_both_engines_resolve(monkeypatch, tmp_path):
+    cfg = tmp_path / "aud.json"
+    cfg.write_text(json.dumps({"channels": {}, "people": {}}))
+    monkeypatch.setenv(engine.AUDIENCE_ENV, str(cfg))
+    monkeypatch.setattr(engine, "_set_by_shim", None)
+    monkeypatch.setattr(
+        "skmemory.audience._DEFAULT_CONFIG_PATH", engine.packaged_audience_config()
+    )
+    engine.ensure_audience_config()
+    from skmemory import audience
+
+    assert os.environ[engine.AUDIENCE_ENV] == str(cfg)  # operator value untouched
+    assert str(audience._DEFAULT_CONFIG_PATH) == str(cfg)  # python resolver follows it
+    assert str(engine.packaged_audience_config()) == str(cfg)  # Engine(audience_config=) too
+
+
+# -- reinforcement parity: runs on whichever engine the leg selects --------------------
+
+
+@pytest.fixture
+def any_store(monkeypatch, tmp_path):
+    monkeypatch.delenv("SKMEMORY_PG_DSN", raising=False)
+    monkeypatch.delenv("SKMEMORY_READER", raising=False)
+    if engine.is_rust():
+        pytest.importorskip("skmem_core")
+    return MemoryStore(primary=SQLiteBackend(str(tmp_path / "memory")), use_sqlite=True)
+
+
+def _access(store, mid):
+    return (
+        store.primary._get_conn()
+        .execute("select access_count from memories where id=?", (mid,))
+        .fetchone()[0]
+    )
+
+
+def test_recall_reinforces_exactly_once_for_owner_and_for_a_reader(any_store):
+    m = Memory(title="t", content="reinforcement parity content", context_tag="@public")
+    any_store.primary.save(m)
+    assert _access(any_store, m.id) == 0
+    any_store.recall(m.id)
+    assert _access(any_store, m.id) == 1  # owner: once, no double bump
+    any_store.recall(m.id, reader="@public")
+    assert _access(any_store, m.id) == 2  # reader: Python reinforces for any reader

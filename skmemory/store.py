@@ -406,7 +406,7 @@ class MemoryStore:
                 if isinstance(self.primary, SQLiteBackend):
                     self.primary.record_sync_failure(memory.id, "graph", str(e))
 
-        # Reweave backward pass (opt-in, bounded) — re-link older neighbours.
+        # Reweave backward pass (opt-in, bounded): re-link older neighbours.
         if self.reweave:
             try:
                 self._reweave_backward(memory)
@@ -684,7 +684,14 @@ class MemoryStore:
             **({"event_at": event_at} if event_at else {}),
         )
 
-        if self._rust_write_eligible(kind, supersedes_id) and not _engine.ceiling():
+        # A write with a reader (per call or ceiling) stays on Python: its dedup is
+        # reader-scoped and Engine.snapshot dedups with owner scope, which would hand a
+        # hidden memory's id back to a narrower writer.
+        if (
+            reader is None
+            and not _engine.ceiling()
+            and self._rust_write_eligible(kind, supersedes_id)
+        ):
             eng = self._rust_engine()
             if eng is not None:
                 written = self._rust_snapshot(eng, memory, layer)
@@ -1207,7 +1214,12 @@ class MemoryStore:
         eng = self._rust_engine()
         if eng is not None:
             row = eng.recall(memory_id, _engine.rust_reader(reader))
-            return None if row is None else self._from_rust(row)
+            if row is None:
+                return None
+            if not resolve_reader(reader).unrestricted:
+                # Rust reinforces for the owner only; Python reinforces for any reader.
+                self._reinforce([memory_id])
+            return self._from_rust(row)
         memory = self.primary.load(memory_id)
         if memory is None:
             return None

@@ -79,16 +79,21 @@ _set_by_shim: str | None = None
 
 
 def ensure_audience_config() -> None:
-    """Point Rust at the audience config Python uses, unless the operator chose one.
+    """Make Rust's ceiling, Rust's per-call reader and Python's resolver read ONE file.
 
-    A value the operator exported is never touched. A value this shim set earlier is
-    refreshed, so Rust follows Python if the default path changes.
+    No operator value: point SKMEMORY_AUDIENCE_CONFIG at Python's default (refreshed
+    if that default changes). An operator-exported value is never overwritten; Python's
+    resolver default is pointed at it instead, so both engines resolve the same file.
     """
     global _set_by_shim
+    from . import audience
+
     cur = os.environ.get(AUDIENCE_ENV)
     if not cur or cur == _set_by_shim:
         _set_by_shim = str(packaged_audience_config())
         os.environ[AUDIENCE_ENV] = _set_by_shim
+    elif str(audience._DEFAULT_CONFIG_PATH) != cur:
+        audience._DEFAULT_CONFIG_PATH = Path(cur)
 
 
 def rust_reader(reader: Any) -> str | None:
@@ -135,7 +140,7 @@ class RustEngines:
     _engines: dict[tuple, Any] = {}
     _lock = threading.Lock()
 
-    _keepers: dict[str, Any] = {}
+    _keepers: dict[tuple, Any] = {}
 
     @classmethod
     def _keep_python_sqlite_open(cls, memory_dir: str | Path) -> None:
@@ -151,12 +156,15 @@ class RustEngines:
         import sqlite3
 
         db = str(Path(memory_dir) / "index.db")
-        if db in cls._keepers or not os.path.exists(db):
+        ident = _index_identity(memory_dir)
+        if ident is None or (db, ident) in cls._keepers:
             return
         try:
             conn = sqlite3.connect(db, check_same_thread=False, timeout=30)
             conn.execute("PRAGMA journal_mode=WAL")
-            cls._keepers[db] = conn
+            # keyed by inode: a recreated index.db gets its own keeper, the old one is
+            # kept (never closed) so nothing is released under a live connection
+            cls._keepers[(db, ident)] = conn
         except sqlite3.Error:
             pass
 
