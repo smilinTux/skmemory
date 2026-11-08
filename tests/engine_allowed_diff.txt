@@ -1,0 +1,4 @@
+# Tests that legitimately differ under SKMEMORY_ENGINE=rust (SKMEM-R-08).
+# One per line:  <pytest node id> | <one-line reason>
+# They are skipped on the rust leg only and still run on the python leg.
+# Goal: empty before SKMEM-R-12. It is empty as of this card.

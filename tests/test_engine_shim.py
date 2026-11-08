@@ -163,3 +163,11 @@ def test_rust_writes_stay_visible_after_python_connections_close(rust_store):
         assert conn.execute("select count(*) from memories").fetchone()[0] == 4
     finally:
         conn.close()
+
+
+def test_allowed_diff_list_is_well_formed_and_every_entry_has_a_reason():
+    from tests.conftest import engine_allowed_diff
+
+    for node, reason in engine_allowed_diff().items():
+        assert node.startswith("tests/") and "::" in node, node
+        assert reason and reason != "differs under the rust engine", node
