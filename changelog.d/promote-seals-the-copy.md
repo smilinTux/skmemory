@@ -1,0 +1,1 @@
+Fixed: a promoted copy now gets its own integrity hash. `Memory.promote` minted a new id but kept the source's hash, and the hash covers the id, so every promoted copy failed `fortress verify` as "tampered" (1181 on lumina, 2026-11-09). Existing copies keep their stale hash until resealed.

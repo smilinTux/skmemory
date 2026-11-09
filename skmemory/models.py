@@ -470,7 +470,11 @@ class Memory(BaseModel):
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         if summary:
             data["summary"] = summary
-        return Memory(**data)
+        # The hash covers the id, and the copy has a new one: sealing it here
+        # keeps an inherited hash from reading as tampering on every copy.
+        promoted = Memory(**data)
+        promoted.seal()
+        return promoted
 
 
 class SeedMemory(BaseModel):
