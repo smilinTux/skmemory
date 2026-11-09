@@ -45,6 +45,7 @@ from .fusion import (
     search_deadline_s,
 )
 from .hooks.sensitivity import is_sensitive, register_sql, sql_not_sensitive
+from .promoted_pairs import collapse_promoted_pairs
 from .models import (
     PARENT_RELATION_KEY,
     RELATION_CHUNK_OF,
@@ -1385,6 +1386,9 @@ class MemoryStore:
                 record_access=False,
                 as_of=as_of,
             )
+        # One slot per promotion chain: the original and its promoted copy are
+        # the same memory in two layers (promotion copies, never moves).
+        rows = collapse_promoted_pairs(rows)
         by_id = {m.id: m for m in rows}
         kept = [by_id[i] for i in apply_tier_cap([m.id for m in rows], by_id, limit)]
         # Last step, on reader-filtered and tier-capped hits: a failure procedure
@@ -1422,7 +1426,7 @@ class MemoryStore:
         rows = out["results"]
         if ctxs is not None:
             rows = [r for r in rows if r.get("context_tag") in ctxs]
-        kept = [self._from_rust(r) for r in rows]
+        kept = collapse_promoted_pairs([self._from_rust(r) for r in rows])
         if record_access:
             self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         self._search_tls.degraded = report.get("degraded")
