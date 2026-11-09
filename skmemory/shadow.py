@@ -37,10 +37,12 @@ import os
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from . import engine as _engine
 from . import retrieval_log
+from .promoted_pairs import finish_page
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +197,7 @@ def _rust_worker(run: _Run, store: Any, query: str, limit: int, kw: dict) -> Non
         layer = kw.get("layer")
         out = eng.search_report(
             query,
-            limit,
+            max(limit, limit * 3),
             tags=kw.get("tags"),
             layer=getattr(layer, "value", layer),
             source=kw.get("source"),
@@ -207,7 +209,10 @@ def _rust_worker(run: _Run, store: Any, query: str, limit: int, kw: dict) -> Non
         rows = out["results"]
         if ctxs is not None:
             rows = [r for r in rows if r.get("context_tag") in ctxs]
-        result["ids"] = [r["id"] for r in rows]
+        # The same final step the served page takes (promotion-pair collapse and
+        # tier cap), or every collapsed pair would read as a divergence.
+        hits = [SimpleNamespace(**r) for r in rows]  # attribute reads only, no validation
+        result["ids"] = [m.id for m in finish_page(hits, limit)]
         result["arms"] = {a["name"]: a["status"] for a in out["report"].get("arms", [])}
     except _HoldsGil:
         global _disabled
