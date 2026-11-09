@@ -470,10 +470,18 @@ class Memory(BaseModel):
         data["updated_at"] = datetime.now(timezone.utc).isoformat()
         if summary:
             data["summary"] = summary
-        # The hash covers the id, and the copy has a new one: sealing it here
-        # keeps an inherited hash from reading as tampering on every copy.
         promoted = Memory(**data)
-        promoted.seal()
+        # The hash covers the id, and the copy has a new one, so a sound source
+        # gets a copy sealed under that id (an inherited hash read as tampering
+        # on every copy). A source that fails its own check is never laundered:
+        # its copy keeps the failing hash, so fortress verify still flags it.
+        if self.verify_integrity():
+            promoted.seal()
+        else:
+            promoted.metadata["integrity_warning"] = (
+                f"Promoted from {self.id}, which failed its integrity check at "
+                f"{datetime.now(timezone.utc).isoformat()}."
+            )
         return promoted
 
 
