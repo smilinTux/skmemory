@@ -45,7 +45,6 @@ from .fusion import (
     search_deadline_s,
 )
 from .hooks.sensitivity import is_sensitive, register_sql, sql_not_sensitive
-from .promoted_pairs import collapse_promoted_pairs
 from .models import (
     PARENT_RELATION_KEY,
     RELATION_CHUNK_OF,
@@ -61,11 +60,12 @@ from .models import (
     SourceTier,
 )
 from .procedures import order_procedures
+from .promoted_pairs import finish_page
 from .query_sanitizer import sanitize_query
 from .rerank import NoopReranker, RareTermReranker
 from .retrieval import authority_weight, novelty_score, prepare_metadata, summarize_authorities
 from .skseed_validation import annotate_truth_score, resolve_auto_validate
-from .tiers import apply_tier_cap, tier_for_source
+from .tiers import tier_for_source
 from .tombstones import write_tombstone
 from .validation import (
     PreWriteHook,
@@ -1386,11 +1386,9 @@ class MemoryStore:
                 record_access=False,
                 as_of=as_of,
             )
-        # One slot per promotion chain: the original and its promoted copy are
-        # the same memory in two layers (promotion copies, never moves).
-        rows = collapse_promoted_pairs(rows)
-        by_id = {m.id: m for m in rows}
-        kept = [by_id[i] for i in apply_tier_cap([m.id for m in rows], by_id, limit)]
+        # One slot per promotion chain (promotion copies, never moves), then the
+        # tier cap: the same final step as the Rust path and the shadow.
+        kept = finish_page(rows, limit)
         # Last step, on reader-filtered and tier-capped hits: a failure procedure
         # never outranks a successful one for a how-to query.
         kept = order_procedures(kept, query)
@@ -1409,9 +1407,11 @@ class MemoryStore:
             ctx = None
         else:
             ctxs, ctx = None, context_tag
+        # Over-fetch like the Python path, so collapsing promotion pairs and the
+        # tier cap in finish_page() still fill the page to ``limit``.
         out = eng.search_report(
             query,
-            limit,
+            max(limit, limit * 3),
             tags=tags,
             layer=getattr(layer, "value", layer),
             source=source,
@@ -1426,7 +1426,7 @@ class MemoryStore:
         rows = out["results"]
         if ctxs is not None:
             rows = [r for r in rows if r.get("context_tag") in ctxs]
-        kept = collapse_promoted_pairs([self._from_rust(r) for r in rows])
+        kept = finish_page([self._from_rust(r) for r in rows], limit)
         if record_access:
             self._reinforce([m.id for m in kept], debounce_s=SEARCH_HIT_DEBOUNCE_S)
         self._search_tls.degraded = report.get("degraded")

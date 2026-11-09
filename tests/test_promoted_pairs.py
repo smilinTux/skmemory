@@ -7,7 +7,7 @@ import pytest
 from skmemory.audience import READER_ENV
 from skmemory.backends.file_backend import FileBackend
 from skmemory.models import Memory, MemoryLayer
-from skmemory.promoted_pairs import collapse_promoted_pairs
+from skmemory.promoted_pairs import collapse_promoted_pairs, finish_page
 from skmemory.store import MemoryStore
 
 
@@ -41,11 +41,87 @@ def test_source_without_its_copy_on_the_page_is_kept():
     assert [x.id for x in collapse_promoted_pairs([orphan_copy, o])] == ["m", "o"]
 
 
-def test_a_plain_parent_link_is_not_a_promotion():
-    """Chunks and other children carry parent_id too; only promoted_from pairs."""
+def test_a_chunk_is_not_a_promotion():
+    """Chunks carry parent_id too; the project's resolver tells them apart."""
     parent = _mem("p")
-    chunk = Memory(id="c1", title="c1", content="c", parent_id="p", metadata={})
+    chunk = Memory(
+        id="c1",
+        title="c1",
+        content="c",
+        parent_id="p",
+        metadata={"decomposition": {"parent_id": "p"}},
+    )
     assert collapse_promoted_pairs([parent, chunk]) == [parent, chunk]
+
+
+def test_legacy_copy_with_a_bare_parent_id_still_collapses():
+    """Files from before parent_relation existed carry only parent_id."""
+    src = _mem("s")
+    legacy = Memory(id="m", title="m", content="c", layer=MemoryLayer.MID, parent_id="s")
+    assert [x.id for x in collapse_promoted_pairs([src, legacy])] == ["m"]
+
+
+def test_a_source_promoted_twice_shows_its_highest_copy():
+    s = _mem("s")
+    mid = _mem("m", MemoryLayer.MID, parent="s")
+    lng = _mem("l", MemoryLayer.LONG, parent="s")
+    assert [x.id for x in collapse_promoted_pairs([s, lng, mid])] == ["l"]
+    assert [x.id for x in collapse_promoted_pairs([s, mid, lng])] == ["l"]
+
+
+def test_a_closed_copy_never_stands_in_for_an_open_source():
+    s = _mem("s")
+    closed = _mem("m", MemoryLayer.MID, parent="s")
+    closed.valid_to = "2026-11-01T00:00:00+00:00"
+    assert collapse_promoted_pairs([s, closed]) == [s, closed]
+
+
+def test_dict_shaped_rust_rows_collapse_too():
+    """The shadow compares raw Rust rows: layer is a string, metadata a dict."""
+    from types import SimpleNamespace
+
+    rows = [
+        SimpleNamespace(id="s", layer="short-term", parent_id=None, metadata={}),
+        SimpleNamespace(
+            id="m",
+            layer="mid-term",
+            parent_id="s",
+            metadata={"parent_relation": "promoted_from"},
+        ),
+    ]
+    assert [x.id for x in finish_page(rows, 5)] == ["m"]
+
+
+def test_rust_path_overfetches_so_a_collapsed_pair_keeps_the_page_full(tmp_path, monkeypatch):
+    from skmemory.backends.sqlite_backend import SQLiteBackend
+
+    monkeypatch.setenv("SKCAPSTONE_HOME", str(tmp_path))
+    store = MemoryStore(primary=SQLiteBackend(str(tmp_path / "mem")), use_sqlite=True)
+    ranked = [_mem("s"), _mem("m", MemoryLayer.MID, parent="s"), _mem("o"), _mem("p")]
+    calls = []
+
+    class _Eng:
+        def search_report(self, query, limit, **kw):
+            calls.append(limit)
+            return {
+                "results": [m.model_dump(mode="json") for m in ranked[:limit]],
+                "report": {"path": "fused", "arms": []},
+            }
+
+    hits = store._rust_search(
+        _Eng(),
+        "q",
+        2,
+        tags=None,
+        layer=None,
+        source=None,
+        context_tag=None,
+        record_access=False,
+        reader=None,
+        as_of=None,
+    )
+    assert calls == [6]
+    assert [h.id for h in hits] == ["m", "o"]
 
 
 def test_store_search_returns_one_hit_for_a_promoted_memory(tmp_path, monkeypatch):
