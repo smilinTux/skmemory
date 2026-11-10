@@ -976,6 +976,15 @@ class MemoryStore:
             chunk_target=chunk_target,
             chunk_overlap=chunk_overlap,
         )
+        existing_parent = self._find_duplicate_document(decomposition.chunks)
+        if existing_parent is not None:
+            logger.info(
+                "Duplicate document detected for title '%s', returning existing parent %s",
+                title,
+                existing_parent.id,
+            )
+            return existing_parent
+
         base_tags = list(tags or [])
         all_related = list(related_ids or [])
         child_ids: list[str] = []
@@ -1093,6 +1102,41 @@ class MemoryStore:
             except Exception as exc:
                 logger.warning("Graph indexing failed for document %s: %s", parent.id, exc)
 
+        return parent
+
+    def _find_duplicate_document(self, chunks: list) -> Memory | None:
+        """Return the stored parent when every chunk of a document is already stored.
+
+        The snapshot dedup guard hashes the full content, but a long document's
+        parent keeps only a truncated preview, so that hash never matches and a
+        re-import of the same document writes a full second set of chunks. This
+        check runs per chunk instead: when every chunk already exists and all of
+        them belong to one parent, that parent is the same document.
+
+        It is conservative on purpose. Any missing chunk, a chunk with no parent,
+        or chunks spread over several parents means a new write, as before.
+
+        Args:
+            chunks: The decomposed chunks of the incoming document.
+
+        Returns:
+            Memory | None: The existing parent, or None when the document is new or
+            the parent is hidden from the declared reader.
+        """
+        if not chunks or not isinstance(self.primary, SQLiteBackend):
+            return None
+        parent_ids: set[str] = set()
+        for chunk in chunks:
+            digest = hashlib.sha256(chunk.text.encode()).hexdigest()[:16]
+            existing = self.primary.find_by_content_hash(digest)
+            if existing is None or not existing.parent_id:
+                return None
+            parent_ids.add(existing.parent_id)
+            if len(parent_ids) > 1:
+                return None
+        parent = self.primary.load(parent_ids.pop())
+        if parent is None or not resolve_reader(None).allows(parent.context_tag, parent.tags):
+            return None
         return parent
 
     def _snapshot_split(
