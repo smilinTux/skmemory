@@ -1381,8 +1381,14 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
         except Exception as e:  # noqa: BLE001
             logger.warning("cli.py: sync-failure reconcile skipped: %s", e)
 
+    # A refused resurrection: an index row for a memory a tombstone says was
+    # deliberately forgotten. On a peer whose index still holds the row this
+    # repeats every cycle, which is the point: the stale row is a finding.
+    # .get() because an older store returns no such key.
+    tombstoned = orphan_stats.get("tombstoned", 0) or 0
     changed = (
         orphan_stats["exported"] > 0
+        or tombstoned > 0
         or (
             pg_stats
             and (
@@ -1407,7 +1413,8 @@ def sync_cmd(ctx: click.Context, quiet: bool, vector: bool, graph: bool, refresh
     click.echo(
         f"sync[{agent}]: exported={orphan_stats['exported']} "
         f"sqlite_total={indexed} "
-        f"orphan_errors={orphan_stats['errors']}"
+        f"orphan_errors={orphan_stats['errors']} "
+        f"tombstoned={tombstoned}"
         + (
             f" pg_backfilled={pg_stats.get('backfilled')} "
             f"pg_pruned={pg_stats.get('pruned')} "

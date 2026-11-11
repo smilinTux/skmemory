@@ -1,0 +1,1 @@
+`skmemory sync` now prints `tombstoned=N` beside `orphan_errors=` in its summary line, the count of orphans `export_orphans_to_flat()` refused to write back because a tombstone marks them deliberately forgotten. A nonzero count also makes `sync --quiet` speak, so a peer index trying to resurrect a deleted memory shows up in the timer log instead of only in the stats dict.
