@@ -29,11 +29,12 @@ password or memory content: credentials stay in files you point at by path.
 | Postgres dump | `deploy/ops/skmem-pg-backup.sh` (`pg_dump -Fc`, whole `skmemory` DB) | memories + embeddings, docs, BM25 and HNSW indexes, ALL agents' AGE graphs |
 | SQLite index | derived | rebuilt from the flat files, never restored |
 
-WARNING, found by this drill: the nightly tarball from
-`~/.skcapstone/agents/lumina/scripts/memory-backup.sh` does NOT contain
-`memory/tombstones/` or `memory/archive/`. Restoring from that tarball alone can
-resurrect forgotten memories on the next reconcile. This runbook copies tombstones
-explicitly. Fix the tarball script before relying on it as the only flat backup.
+Found by this drill and since fixed: the nightly tarball from
+`scripts/memory-backup.sh` used to leave out `memory/tombstones/` and
+`memory/archive/`, so restoring it alone could resurrect forgotten memories on the
+next reconcile. The script now includes both and fails if either is missing. This
+runbook still copies tombstones explicitly. What is backed up, how often and for
+how long is the standard in [BACKUP_SOP.md](BACKUP_SOP.md).
 
 ## 0. Variables and preflight
 

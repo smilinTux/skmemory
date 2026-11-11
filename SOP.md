@@ -238,6 +238,11 @@ daily cron entries / systemd timers per node, per agent. Full env contract, secr
 note, and an example crontab live in
 [`deploy/ops/README.md`](./deploy/ops/README.md).
 
+Backups follow [`docs/BACKUP_SOP.md`](./docs/BACKUP_SOP.md): flat files are the
+thing backed up and must reach an off-site restic repository with 7 daily, 4
+weekly and 12 monthly kept; the SQLite index never is backed up; the pg dump is
+one local copy, replaced nightly, because it is derived. Restores follow [`docs/RUNBOOK-restore.md`](./docs/RUNBOOK-restore.md).
+
 | Script | Purpose | Env contract (key vars) | Schedule |
 |---|---|---|---|
 | `skmemory/reconcile.py` (canonical; `deploy/skmem-pg/skmem_reconcile.py` and `scripts/skmem_reconcile.py` are thin shims into it) | Idempotent flat↔pg reconcile: backfill missing memories (embed + upsert, with a stub/shrink guard and the shared-id convergence fix), prune pg rows whose flat file is gone (guarded), re-embed NULL-vector rows. Rebuilds the derived `memories` cache from the Syncthing-synced flat JSON source of truth. `--dry-run` reports every count with zero writes. Invariant covered by `tests/test_reconcile_invariant.py`, `tests/test_reconcile_stub_and_shared_id_guard.py`, `tests/test_reconcile_dry_run.py`. | `SKAGENT`/argv[1] (`lumina`), `--dry-run`, `--force-stubs`, `EMBED_URL`, `EMBED_MODEL` (`mxbai-embed-large`) | daily |
@@ -462,6 +467,8 @@ checks:
     run: grep -qxF 'dynamic = ["version"]' pyproject.toml && grep -qxF 'tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)$"' pyproject.toml && ! grep -qE '^version *=' pyproject.toml
   - name: systemd base ExecStart matches the command documented in section 5
     run: grep -qxF 'ExecStart=%h/.skenv/bin/skmemory sync --quiet --vector --graph' systemd/skmemory-sync@.service && grep -qxF 'ExecStart=%h/clawd/skcapstone-repos/skmemory/scripts/fortress-verify.sh' systemd/skmemory-fortress-verify@.service
+  - name: the flat backup still carries tombstones and archive (docs/BACKUP_SOP.md section 1)
+    run: grep -qF 'memory/tombstones' scripts/memory-backup.sh && grep -qF 'memory/archive' scripts/memory-backup.sh
   - name: skmemory health self-report command still exists
     run: grep -qE '^def health\(ctx' skmemory/cli.py
   - name: mxbai-embed-large at 1024 dims is still the documented embed default
