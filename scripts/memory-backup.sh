@@ -16,8 +16,11 @@
 #
 # Env (all optional):
 #   AGENT_DIR        agent home        (default: ~/.skcapstone/agents/lumina)
-#   BACKUP_BASE      destination root  (default: ~/.skcapstone/backups/lumina-memory)
-#   CLAWD_DIR        workspace for SOUL/MEMORY/IDENTITY/USER.md (default: ~/clawd)
+#   BACKUP_BASE      destination root  (default: ~/.skcapstone/backups/<agent>-memory)
+#                    Tarballs are named <agent>-memory-*, <agent> being the
+#                    basename of AGENT_DIR.
+#   CLAWD_DIR        workspace for SOUL/MEMORY/IDENTITY/USER.md (default: ~/clawd);
+#                    "none" skips it (for agents that do not own that workspace)
 #   BACKUP_RECIPIENT GPG recipient     (default: lumina@skworld.io)
 #   MIN_FREE_MB      free space that must remain after the backup (default: 2048)
 #   MEMORY_BACKUP_RESTIC_ENV  path to a restic env file (RESTIC_REPOSITORY,
@@ -26,6 +29,9 @@
 #                    snapshotted off-site and the run FAILS if that fails.
 #                    Unset: local tarball only (not the standard, see SOP).
 #   MEMORY_BACKUP_RESTIC_TAG  snapshot tag (default: skmem-flat-<agent dir name>)
+#   MEMORY_BACKUP_RESTIC_PRUNE  1 (default) runs `forget --prune` for this tag;
+#                    0 runs `forget` only, so a caller backing up several agents
+#                    can prune the shared repo once (memory-backup-all.sh)
 #   KEEP_DAILY / KEEP_WEEKLY / KEEP_MONTHLY  retention, local and off-site
 #                    (defaults: 7 / 4 / 12)
 # Exit non-zero on any failure; never falls back to a plaintext archive.
@@ -34,12 +40,14 @@
 set -euo pipefail
 
 AGENT_DIR="${AGENT_DIR:-$HOME/.skcapstone/agents/lumina}"
-BACKUP_BASE="${BACKUP_BASE:-$HOME/.skcapstone/backups/lumina-memory}"
+AGENT_NAME="$(basename "$AGENT_DIR")"
+BACKUP_BASE="${BACKUP_BASE:-$HOME/.skcapstone/backups/$AGENT_NAME-memory}"
 CLAWD_DIR="${CLAWD_DIR:-$HOME/clawd}"
 RECIPIENT="${BACKUP_RECIPIENT:-lumina@skworld.io}"
 MIN_FREE_MB="${MIN_FREE_MB:-2048}"
 RESTIC_ENV="${MEMORY_BACKUP_RESTIC_ENV:-}"
-RESTIC_TAG="${MEMORY_BACKUP_RESTIC_TAG:-skmem-flat-$(basename "$AGENT_DIR")}"
+RESTIC_TAG="${MEMORY_BACKUP_RESTIC_TAG:-skmem-flat-$AGENT_NAME}"
+RESTIC_PRUNE="${MEMORY_BACKUP_RESTIC_PRUNE:-1}"
 KEEP_DAILY="${KEEP_DAILY:-7}"
 KEEP_WEEKLY="${KEEP_WEEKLY:-4}"
 KEEP_MONTHLY="${KEEP_MONTHLY:-12}"
@@ -70,9 +78,11 @@ for f in "$AGENT_DIR"/memory/*.json; do
   [ -f "$f" ] && AGENT_PATHS+=("memory/$(basename "$f")")
 done
 CLAWD_PATHS=()
-for f in SOUL.md MEMORY.md IDENTITY.md USER.md; do
-  [ -f "$CLAWD_DIR/$f" ] && CLAWD_PATHS+=("$f")
-done
+if [ "$CLAWD_DIR" != none ]; then
+  for f in SOUL.md MEMORY.md IDENTITY.md USER.md; do
+    [ -f "$CLAWD_DIR/$f" ] && CLAWD_PATHS+=("$f")
+  done
+fi
 
 # Required content must be present when it exists: a backup without the
 # tombstones or archive of an agent that has them is a failed backup.
@@ -101,7 +111,7 @@ for t in tombstones archive; do
   [ -d "$AGENT_DIR/memory/$t" ] && log "memory/$t: $(find "$AGENT_DIR/memory/$t" -type f | wc -l) files"
 done
 
-DAILY_FILE="$BACKUP_BASE/daily/lumina-memory-${TIMESTAMP}.tar.gz.gpg"
+DAILY_FILE="$BACKUP_BASE/daily/$AGENT_NAME-memory-${TIMESTAMP}.tar.gz.gpg"
 PARTIAL="$DAILY_FILE.partial"
 trap 'rm -f "$PARTIAL"' EXIT
 
@@ -122,10 +132,10 @@ mv "$PARTIAL" "$DAILY_FILE"
 log "Daily backup: $DAILY_FILE ($(du -sh "$DAILY_FILE" | cut -f1), encrypted to $RECIPIENT)"
 
 if [ "$DOW" = "7" ]; then
-  cp "$DAILY_FILE" "$BACKUP_BASE/weekly/lumina-memory-week-${DATE}.tar.gz.gpg"
+  cp "$DAILY_FILE" "$BACKUP_BASE/weekly/$AGENT_NAME-memory-week-${DATE}.tar.gz.gpg"
 fi
 if [ "$DOM" = "01" ]; then
-  cp "$DAILY_FILE" "$BACKUP_BASE/monthly/lumina-memory-month-${DATE}.tar.gz.gpg"
+  cp "$DAILY_FILE" "$BACKUP_BASE/monthly/$AGENT_NAME-memory-month-${DATE}.tar.gz.gpg"
 fi
 
 # Rotation. The globs end in .tar.gz* so pre-encryption plaintext tarballs age
@@ -133,9 +143,9 @@ fi
 prune() { # dir prefix keep
   (cd "$1" && ls -t "$2"*.tar.gz* 2>/dev/null | tail -n +"$(($3 + 1))" | xargs -r rm -f) || true
 }
-prune "$BACKUP_BASE/daily" lumina-memory- "$KEEP_DAILY"
-prune "$BACKUP_BASE/weekly" lumina-memory-week- "$KEEP_WEEKLY"
-prune "$BACKUP_BASE/monthly" lumina-memory-month- "$KEEP_MONTHLY"
+prune "$BACKUP_BASE/daily" "$AGENT_NAME-memory-" "$KEEP_DAILY"
+prune "$BACKUP_BASE/weekly" "$AGENT_NAME-memory-week-" "$KEEP_WEEKLY"
+prune "$BACKUP_BASE/monthly" "$AGENT_NAME-memory-month-" "$KEEP_MONTHLY"
 
 log "Rotation complete. Total backup space: $(du -sh "$BACKUP_BASE" | cut -f1)"
 # Off-site: restic straight from the source directories, not from the tarball.
@@ -161,9 +171,11 @@ if [ -n "$RESTIC_ENV" ]; then
     restic backup --quiet --tag "$RESTIC_TAG" --host "$(hostname)" "${RESTIC_PATHS[@]}" || exit 1
     # A failed forget leaves MORE history, the safe direction, so it warns and
     # does not fail a run whose snapshot already landed.
+    PRUNE_ARG=()
+    [ "$RESTIC_PRUNE" = 0 ] || PRUNE_ARG=(--prune)
     restic forget --quiet --tag "$RESTIC_TAG" --host "$(hostname)" \
       --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" \
-      --keep-monthly "$KEEP_MONTHLY" --prune >/dev/null 2>&1 \
+      --keep-monthly "$KEEP_MONTHLY" "${PRUNE_ARG[@]}" >/dev/null 2>&1 \
       || echo "WARNING: restic forget/prune skipped" >&2
   ) || die "off-site restic snapshot failed (tag $RESTIC_TAG)"
   log "Off-site snapshot OK: restic tag $RESTIC_TAG, ${#RESTIC_PATHS[@]} paths"

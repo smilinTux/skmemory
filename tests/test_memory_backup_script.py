@@ -62,6 +62,8 @@ def test_encrypted_and_contains_tombstones_and_archive(env):
     assert r.returncode == 0, r.stdout + r.stderr
     files = list(Path(env["BACKUP_BASE"], "daily").iterdir())
     assert [f.name.endswith(".tar.gz.gpg") for f in files] == [True]
+    # Named after the agent dir ("agent"), never a hardcoded "lumina".
+    assert files[0].name.startswith("agent-memory-")
     raw = files[0].read_bytes()
     assert not raw.startswith(b"\x1f\x8b"), "archive is plain gzip"
     plain = subprocess.run(
@@ -147,6 +149,7 @@ def test_offsite_snapshot_carries_source_and_gfs_retention(restic_env):
     assert "/memory/worship-sessions" in backup
     assert "index.db" not in backup
     assert "--keep-daily 7 --keep-weekly 4 --keep-monthly 12" in forget
+    assert "--prune" in forget
     # worship-sessions is off-site only, never in the nightly tarball.
     assert not [n for n in _names(e) if "worship-sessions" in n]
 
@@ -162,3 +165,20 @@ def test_offsite_failure_fails_the_run_but_keeps_the_local_tarball(restic_env):
 def test_unreadable_restic_env_fails(env):
     r = run(env, MEMORY_BACKUP_RESTIC_ENV="/nonexistent/restic.env")
     assert r.returncode != 0 and "restic env not readable" in r.stdout + r.stderr
+
+
+def test_prune_can_be_left_to_the_caller(restic_env):
+    e, log = restic_env
+    r = run(e, MEMORY_BACKUP_RESTIC_PRUNE="0")
+    assert r.returncode == 0, r.stdout + r.stderr
+    forget = next(c for c in log.read_text().splitlines() if c.startswith("forget"))
+    assert "--prune" not in forget
+
+
+def test_clawd_none_leaves_the_workspace_out(env, tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "SOUL.md").write_text("soul")
+    r = run(env, CLAWD_DIR="none")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "SOUL.md" not in _names(env)
