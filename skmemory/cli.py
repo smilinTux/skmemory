@@ -234,7 +234,9 @@ def cli(
     # hermetic: never build a MemoryStore (backends, embeddings) just to print
     # the operator contract or read fail-safe health probes.
     # "import" builds its own store, and only when it will write (dry runs never open one).
-    if ctx.invoked_subcommand in ("operator", "hook", "hooks", "intentions", "import"):
+    # "pg" targets the database itself (migrate, roles), not an agent's memory
+    # profile, and must work on a fresh node before any agent is registered.
+    if ctx.invoked_subcommand in ("operator", "hook", "hooks", "intentions", "import", "pg"):
         ctx.obj["ai"] = None
         ctx.obj["no_vector"] = no_vector
         return
