@@ -60,7 +60,7 @@ At least three copies, on two different media, one of them off-site.
 
 | Artifact | Local (this disk) | Off-box (another nor node) | Off-site (B2, restic) |
 | --- | --- | --- | --- |
-| Flat source | `scripts/memory-backup.sh`, GPG tarball | GFS state tarball pushed to .41 | **required**: restic snapshot of the source dirs (`MEMORY_BACKUP_RESTIC_ENV`) |
+| Flat source | `scripts/memory-backup-all.sh` (runs `memory-backup.sh` for every agent), GPG tarball per agent | GFS state tarball pushed to .41 | **required**: restic snapshot of the source dirs (`MEMORY_BACKUP_RESTIC_ENV`) |
 | skmem-pg dump | `deploy/ops/skmem-pg-backup.sh`, one copy | no | no (derived) |
 | SQLite index | none | none | none |
 
@@ -84,7 +84,7 @@ nobody knows about. nor runs, in this order:
 | --- | --- | --- |
 | 02:45 | GFS state backup | whole `~/.skcapstone` minus derived and secrets, pushed to .41 |
 | 03:15 | `skmem-pg-backup` | one local pg dump, replacing the previous one |
-| 03:40 | `memory-backup` | flat source tarball, then restic snapshot to B2 |
+| 03:40 | `memory-backup` | every agent on the node: flat source tarball, then restic snapshot to B2 (tag `skmem-flat-<agent>`), one repo prune at the end |
 
 Keep the flat job after the pg job: they compete for disk and IO, and the flat
 job is the one that must not fail.
@@ -134,9 +134,14 @@ Still open: the chi estate has not been brought to this standard.
 ## 8. Adding a node or an agent
 
 1. Install skmemory into `~/.skenv` and confirm `skmemory health` reads ok.
-2. Install `memory-backup.sh` per agent with `MEMORY_BACKUP_RESTIC_ENV` set, and
-   `skmem-pg-backup.sh` once per node in single-copy mode, both via
-   `sk-cron-run` and declared in that estate's skos `jobs.yaml`.
+2. Install `memory-backup.sh` and `memory-backup-all.sh` side by side, run
+   `memory-backup-all.sh` once per node with `MEMORY_BACKUP_RESTIC_ENV` set,
+   and `skmem-pg-backup.sh` once per node in single-copy mode, both via
+   `sk-cron-run` and declared in that estate's skos `jobs.yaml`. The loop
+   picks up every agent home under `~/.skcapstone/agents` that holds memory,
+   so a new agent needs no new job; it is skipped only by name in
+   `MEMORY_BACKUP_SKIP`. Only `MEMORY_BACKUP_WORKSPACE_AGENT` (default lumina)
+   carries the `~/clawd` workspace md files.
 3. Create the agent's GPG key if missing, and the estate's restic env file.
 4. Run each job once by hand, then restore it into scratch with the runbook
    before trusting it.
