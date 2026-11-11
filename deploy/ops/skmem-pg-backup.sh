@@ -51,6 +51,16 @@
 #                            Preferred for anything sensitive.
 #                        If UNSET: the run still succeeds but prints a loud WARNING
 #                        that DR shipping is not configured (backward compatible).
+#                        "none": local only ON PURPOSE (docs/BACKUP_SOP.md: the
+#                        dump is derived and rebuildable from the flat files,
+#                        which are what goes off-site). No warning, no shipping.
+#
+#   One local copy, replaced nightly (the BACKUP_SOP default for pg):
+#     SKMEM_BACKUP_RETAIN=1 SKMEM_BACKUP_WEEKLY_RETAIN=0 \
+#     SKMEM_BACKUP_MONTHLY_RETAIN=0 SKMEM_BACKUP_OFFBOX=none
+#   A tier with retain 0 is not promoted into at all, and the dump is written
+#   under a .partial name and renamed only when complete, so the previous good
+#   copy is never pruned for a half-written one.
 #                        If SET: every target MUST receive the dump or the whole
 #                        run FAILS non-zero (fail loudly - the whole reason DR
 #                        exists is that the box protecting the dump can die).
@@ -88,10 +98,13 @@ OUT="$DST/$BASENAME"
 # --- 1. Local dump (unchanged behavior) ---
 # pg_dump -Fc is a full custom-format dump (schema + data + functions), the exact
 # artifact scripts/skmem-pg-restore.sh consumes.
-docker exec "$CONTAINER" pg_dump -U "$PGUSER" -d "$PGDB" -Fc > "$OUT"
-if [ ! -s "$OUT" ]; then
+PARTIAL="$OUT.partial"
+trap 'rm -f "$PARTIAL"' EXIT
+docker exec "$CONTAINER" pg_dump -U "$PGUSER" -d "$PGDB" -Fc > "$PARTIAL"
+if [ ! -s "$PARTIAL" ]; then
   die "local dump is empty or missing: $OUT (is container '$CONTAINER' up?)"
 fi
+mv -f "$PARTIAL" "$OUT"
 log "dumped $(du -h "$OUT" | cut -f1) -> $OUT"
 
 # retain the newest $RETAIN daily dumps locally; drop the rest
@@ -102,6 +115,7 @@ ls -1t "$DST/${CONTAINER}-${PGDB}"-*.dump 2>/dev/null | tail -n +$((RETAIN + 1))
 # This is what lets a future recovery reach back months, not just 14 days.
 promote_tier() {
   local tier_dir="$1" retain="$2"
+  [ "$retain" -gt 0 ] || return 0
   mkdir -p "$tier_dir"
   cp -f "$OUT" "$tier_dir/$BASENAME"
   ls -1t "$tier_dir/${CONTAINER}-${PGDB}"-*.dump 2>/dev/null | tail -n +$((retain + 1)) | xargs -r rm -f
@@ -206,7 +220,9 @@ ship_one() {
   return 0
 }
 
-if [ -z "$OFFBOX_RAW" ]; then
+if [ "$OFFBOX_RAW" = "none" ]; then
+  log "off-box: none by configuration (local copy only, see docs/BACKUP_SOP.md)"
+elif [ -z "$OFFBOX_RAW" ]; then
   warn "SKMEM_BACKUP_OFFBOX is not set - the dump stays on THIS box only."
   warn "That is NOT disaster recovery. Set SKMEM_BACKUP_OFFBOX to a synced dir"
   warn "and/or a remote host (e.g. '/path/to/synced-tree user@192.168.0.41:/backups/skmem')."
