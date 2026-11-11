@@ -116,15 +116,20 @@ stub markers from the flat files, never from the SQLite index.
 
 ## 7. Current state on nor (2026-11-11)
 
-| Item | Standard | nor today | Gap |
-| --- | --- | --- | --- |
-| Flat local retention | 7 / 4 / 12 | 7 / 4 / 12 | none |
-| Flat contents | section 1 | misses `intentions/`, `ledger/`, `songs/`, `anchors/`, `rituals/`, `wal/`; includes `index.db` | fixed by the `feat/backup-offsite` script change |
-| Flat off-site | restic to B2 | **none**. Only off-box to .41 via the GFS state push | **the main gap**: the source of truth never leaves the LAN |
-| pg local | one copy | 7 / 8 / 12, 8.6 GB | move to one copy |
-| pg off-site | none | restic to B2, 7 / 8 / 12 | stop shipping; existing B2 snapshots kept until Chef decides |
-| Declared in skos | every job | `memory-backup` is not | declare it |
-| Free space | backups never starved | flat backup failed 2026-11-10 with 1 GB free | pg dumps hold 8.6 GB locally |
+Brought to this standard on 2026-11-11, and proven by running both jobs from
+their crontab lines and restoring `long-term/` and `tombstones/` from B2 into
+scratch: 0 differences from live, every file parsed.
+
+| Item | Standard | nor |
+| --- | --- | --- |
+| Flat local retention | 7 / 4 / 12 | 7 / 4 / 12 |
+| Flat contents | section 1 | full source, no `index.db` |
+| Flat off-site | restic to B2, 7 / 4 / 12 | restic tag `skmem-flat-lumina`, about 1.9 GB restore size, file counts equal to live |
+| pg local | one copy | one copy (about 0.9 GB, was 8.6 GB over 13 dumps) |
+| pg off-site | none | none (`SKMEM_BACKUP_OFFBOX=none`). Older `skmem-pg` snapshots remain on B2 until Chef decides |
+| Declared in skos | every job | both, skos `deploy/schedule/jobs.yaml` |
+
+Still open: the chi estate has not been brought to this standard.
 
 ## 8. Adding a node or an agent
 
