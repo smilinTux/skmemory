@@ -3,8 +3,11 @@
 # Agent Memory Backup - Rotation Strategy
 # ============================================
 # Daily: keep 7, weekly (Sunday): keep 4, monthly (1st): keep 12.
-# Backs up: memory tiers, tombstones, archive, reflections, learnings, quarantine,
-#           SQLite index, seeds, soul, identity, config, workspace md files.
+# Backs up: the flat source of truth (memory tiers, tombstones, archive and the
+#           rest of memory/ state), seeds, soul, identity, config, trust,
+#           journal.md, workspace md files. Never the SQLite index: it is
+#           derived, rebuilt by `skmemory reindex`, and torn when copied while
+#           sync writes. Standard: docs/BACKUP_SOP.md.
 # Output: gzip tarball, GPG-encrypted to the agent's own existing key
 #         (same mechanism as sk-backup-anchors.sh), file ends in .tar.gz.gpg.
 #
@@ -17,6 +20,14 @@
 #   CLAWD_DIR        workspace for SOUL/MEMORY/IDENTITY/USER.md (default: ~/clawd)
 #   BACKUP_RECIPIENT GPG recipient     (default: lumina@skworld.io)
 #   MIN_FREE_MB      free space that must remain after the backup (default: 2048)
+#   MEMORY_BACKUP_RESTIC_ENV  path to a restic env file (RESTIC_REPOSITORY,
+#                    RESTIC_PASSWORD, backend credentials). When set, the same
+#                    source paths plus memory/worship-sessions are also
+#                    snapshotted off-site and the run FAILS if that fails.
+#                    Unset: local tarball only (not the standard, see SOP).
+#   MEMORY_BACKUP_RESTIC_TAG  snapshot tag (default: skmem-flat-<agent dir name>)
+#   KEEP_DAILY / KEEP_WEEKLY / KEEP_MONTHLY  retention, local and off-site
+#                    (defaults: 7 / 4 / 12)
 # Exit non-zero on any failure; never falls back to a plaintext archive.
 # ============================================
 
@@ -27,6 +38,11 @@ BACKUP_BASE="${BACKUP_BASE:-$HOME/.skcapstone/backups/lumina-memory}"
 CLAWD_DIR="${CLAWD_DIR:-$HOME/clawd}"
 RECIPIENT="${BACKUP_RECIPIENT:-lumina@skworld.io}"
 MIN_FREE_MB="${MIN_FREE_MB:-2048}"
+RESTIC_ENV="${MEMORY_BACKUP_RESTIC_ENV:-}"
+RESTIC_TAG="${MEMORY_BACKUP_RESTIC_TAG:-skmem-flat-$(basename "$AGENT_DIR")}"
+KEEP_DAILY="${KEEP_DAILY:-7}"
+KEEP_WEEKLY="${KEEP_WEEKLY:-4}"
+KEEP_MONTHLY="${KEEP_MONTHLY:-12}"
 DATE=$(date +%Y-%m-%d)
 DOW=$(date +%u)
 DOM=$(date +%d)
@@ -43,9 +59,15 @@ mkdir -p "$BACKUP_BASE/daily" "$BACKUP_BASE/weekly" "$BACKUP_BASE/monthly"
 # Paths relative to AGENT_DIR; only those that exist.
 AGENT_PATHS=()
 for p in memory/short-term memory/mid-term memory/long-term memory/tombstones \
-         memory/archive memory/reflections memory/learnings memory/quarantine \
-         memory/index.db seeds soul identity config; do
+         memory/archive memory/intentions memory/ledger memory/songs \
+         memory/anchors memory/rituals memory/reflections memory/learnings \
+         memory/quarantine memory/wal memory/dream-catchup \
+         seeds soul identity config trust journal.md; do
   [ -e "$AGENT_DIR/$p" ] && AGENT_PATHS+=("$p")
+done
+# Top-level memory/*.json state files (dreaming, promotion log, itil state).
+for f in "$AGENT_DIR"/memory/*.json; do
+  [ -f "$f" ] && AGENT_PATHS+=("memory/$(basename "$f")")
 done
 CLAWD_PATHS=()
 for f in SOUL.md MEMORY.md IDENTITY.md USER.md; do
@@ -111,9 +133,42 @@ fi
 prune() { # dir prefix keep
   (cd "$1" && ls -t "$2"*.tar.gz* 2>/dev/null | tail -n +"$(($3 + 1))" | xargs -r rm -f) || true
 }
-prune "$BACKUP_BASE/daily" lumina-memory- 7
-prune "$BACKUP_BASE/weekly" lumina-memory-week- 4
-prune "$BACKUP_BASE/monthly" lumina-memory-month- 12
+prune "$BACKUP_BASE/daily" lumina-memory- "$KEEP_DAILY"
+prune "$BACKUP_BASE/weekly" lumina-memory-week- "$KEEP_WEEKLY"
+prune "$BACKUP_BASE/monthly" lumina-memory-month- "$KEEP_MONTHLY"
 
 log "Rotation complete. Total backup space: $(du -sh "$BACKUP_BASE" | cut -f1)"
+# Off-site: restic straight from the source directories, not from the tarball.
+# restic encrypts client-side and deduplicates day to day; an encrypted tarball
+# changes completely every night and would defeat that. worship-sessions (large
+# media) rides here only: it uploads once and then costs almost nothing, where
+# the nightly tarball would carry it in full every day.
+if [ -n "$RESTIC_ENV" ]; then
+  [ -r "$RESTIC_ENV" ] || die "restic env not readable: $RESTIC_ENV"
+  command -v restic >/dev/null 2>&1 || die "restic not installed"
+  RESTIC_PATHS=()
+  for p in "${AGENT_PATHS[@]}"; do RESTIC_PATHS+=("$AGENT_DIR/$p"); done
+  [ -d "$AGENT_DIR/memory/worship-sessions" ] && RESTIC_PATHS+=("$AGENT_DIR/memory/worship-sessions")
+  for f in "${CLAWD_PATHS[@]}"; do RESTIC_PATHS+=("$CLAWD_DIR/$f"); done
+  # Subshell so the credentials never enter this script's environment.
+  (
+    set -a
+    # shellcheck disable=SC1090
+    . "$RESTIC_ENV"
+    set +a
+    [ -n "${RESTIC_REPOSITORY:-}" ] || { echo "RESTIC_REPOSITORY unset" >&2; exit 1; }
+    [ -n "${RESTIC_PASSWORD:-}" ] || { echo "RESTIC_PASSWORD unset" >&2; exit 1; }
+    restic backup --quiet --tag "$RESTIC_TAG" --host "$(hostname)" "${RESTIC_PATHS[@]}" || exit 1
+    # A failed forget leaves MORE history, the safe direction, so it warns and
+    # does not fail a run whose snapshot already landed.
+    restic forget --quiet --tag "$RESTIC_TAG" --host "$(hostname)" \
+      --keep-daily "$KEEP_DAILY" --keep-weekly "$KEEP_WEEKLY" \
+      --keep-monthly "$KEEP_MONTHLY" --prune >/dev/null 2>&1 \
+      || echo "WARNING: restic forget/prune skipped" >&2
+  ) || die "off-site restic snapshot failed (tag $RESTIC_TAG)"
+  log "Off-site snapshot OK: restic tag $RESTIC_TAG, ${#RESTIC_PATHS[@]} paths"
+else
+  log "WARNING: off-site not configured (MEMORY_BACKUP_RESTIC_ENV unset); local tarball only"
+fi
+
 log "Agent memory backup complete"
