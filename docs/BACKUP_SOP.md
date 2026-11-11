@@ -20,7 +20,7 @@ lose something the flat files do not hold.
 | agent profile: `soul/`, `seeds/`, `identity/`, `config/`, `trust/febs/`, `journal.md` | source | yes | who the agent is |
 | `memory/index.db*` (SQLite) | derived | **never** | rebuilt from the flat files by `skmemory reindex` in minutes. A copy taken while sync writes is torn anyway |
 | `memory/chroma*`, `memory/chromadb/` | retired | never | ChromaDB is gone |
-| skmem-pg (vectors, BM25, AGE graph, skingest `docs`) | derived | yes, as a dump | rebuildable, but a re-embed takes hours and the dump is the only fast copy of the AGE graph and the skingest `docs` table |
+| skmem-pg (vectors, BM25, AGE graph, skingest `docs`) | derived | **one local copy only** | rebuildable from the flat files (`skmemory sync --vector --graph`) and skingest's sources. The nightly dump is only a shortcut that skips hours of re-embedding, so one copy is enough and none goes off-site |
 
 Syncthing is replication, not backup. It copies a deletion or a corruption to
 every node within minutes; that is exactly how one node's lossy rescue reached
@@ -28,7 +28,7 @@ the whole fleet in October 2026. Never count a Syncthing peer as a backup copy.
 
 ## 2. Retention: grandfather-father-son
 
-Every backup tier keeps:
+Every flat-source tier keeps:
 
 | Tier | Taken | Keep | Reaches back |
 | --- | --- | --- | --- |
@@ -42,6 +42,13 @@ tarball. Seven dailies alone would have been useless. Four weeklies cover the
 "noticed it this month" case, twelve monthlies cover "it has been wrong since
 spring".
 
+The skmem-pg dump is the exception: one local copy, replaced nightly
+(`SKMEM_BACKUP_RETAIN=1`, weekly and monthly 0, `SKMEM_BACKUP_OFFBOX=none`).
+History is worth keeping only for data you cannot rebuild, and the flat history
+above already reaches back a year. The new dump is written under a `.partial`
+name and only replaces the old one when complete, so a failed run never leaves
+zero copies.
+
 Off-site, restic applies the same policy with
 `restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 12 --prune`.
 Because restic deduplicates, the off-site history costs little more than one
@@ -53,11 +60,11 @@ At least three copies, on two different media, one of them off-site.
 
 | Artifact | Local (this disk) | Off-box (another nor node) | Off-site (B2, restic) |
 | --- | --- | --- | --- |
-| Flat source | `scripts/memory-backup.sh`, GPG tarball | GFS state tarball pushed to .41 | **required**: restic snapshot of the source dirs |
-| skmem-pg dump | `deploy/ops/skmem-pg-backup.sh` | optional | **required**: restic, already shipped by the script |
+| Flat source | `scripts/memory-backup.sh`, GPG tarball | GFS state tarball pushed to .41 | **required**: restic snapshot of the source dirs (`MEMORY_BACKUP_RESTIC_ENV`) |
+| skmem-pg dump | `deploy/ops/skmem-pg-backup.sh`, one copy | no | no (derived) |
 | SQLite index | none | none | none |
 
-Off-site uses restic straight from the source directories, not from the GPG
+So the 3-2-1 rule applies to the flat source. Off-site uses restic straight from the source directories, not from the GPG
 tarball. restic encrypts on the client, and backing up the directories lets it
 deduplicate day to day; an encrypted tarball changes completely every night and
 defeats that.
@@ -76,8 +83,8 @@ nobody knows about. nor runs, in this order:
 | Time | Job | What |
 | --- | --- | --- |
 | 02:45 | GFS state backup | whole `~/.skcapstone` minus derived and secrets, pushed to .41 |
-| 03:15 | `skmem-pg-backup` | pg dump, then restic to B2 |
-| 03:40 | `memory-backup` | flat source tarball (and restic, see section 7) |
+| 03:15 | `skmem-pg-backup` | one local pg dump, replacing the previous one |
+| 03:40 | `memory-backup` | flat source tarball, then restic snapshot to B2 |
 
 Keep the flat job after the pg job: they compete for disk and IO, and the flat
 job is the one that must not fail.
@@ -112,18 +119,19 @@ stub markers from the flat files, never from the SQLite index.
 | Item | Standard | nor today | Gap |
 | --- | --- | --- | --- |
 | Flat local retention | 7 / 4 / 12 | 7 / 4 / 12 | none |
-| Flat contents | section 1 | misses `intentions/`, `ledger/`, `songs/`, `anchors/`, `rituals/`, `wal/`; includes `index.db` | fix the script |
+| Flat contents | section 1 | misses `intentions/`, `ledger/`, `songs/`, `anchors/`, `rituals/`, `wal/`; includes `index.db` | fixed by the `feat/backup-offsite` script change |
 | Flat off-site | restic to B2 | **none**. Only off-box to .41 via the GFS state push | **the main gap**: the source of truth never leaves the LAN |
-| pg local retention | 7 / 4 / 12 | 7 / 8 / 12 (set 2026-11-10) | align weekly to 4, or keep 8 by choice |
-| pg off-site | restic to B2 | yes, same GFS policy | none |
+| pg local | one copy | 7 / 8 / 12, 8.6 GB | move to one copy |
+| pg off-site | none | restic to B2, 7 / 8 / 12 | stop shipping; existing B2 snapshots kept until Chef decides |
 | Declared in skos | every job | `memory-backup` is not | declare it |
 | Free space | backups never starved | flat backup failed 2026-11-10 with 1 GB free | pg dumps hold 8.6 GB locally |
 
 ## 8. Adding a node or an agent
 
 1. Install skmemory into `~/.skenv` and confirm `skmemory health` reads ok.
-2. Install `memory-backup.sh` per agent, `skmem-pg-backup.sh` once per node, both
-   via `sk-cron-run` and declared in that estate's skos `jobs.yaml`.
+2. Install `memory-backup.sh` per agent with `MEMORY_BACKUP_RESTIC_ENV` set, and
+   `skmem-pg-backup.sh` once per node in single-copy mode, both via
+   `sk-cron-run` and declared in that estate's skos `jobs.yaml`.
 3. Create the agent's GPG key if missing, and the estate's restic env file.
 4. Run each job once by hand, then restore it into scratch with the runbook
    before trusting it.

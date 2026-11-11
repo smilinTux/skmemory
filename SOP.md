@@ -239,9 +239,9 @@ note, and an example crontab live in
 [`deploy/ops/README.md`](./deploy/ops/README.md).
 
 Backups follow [`docs/BACKUP_SOP.md`](./docs/BACKUP_SOP.md): flat files are the
-thing backed up, the SQLite index never is, every tier keeps 7 daily, 4 weekly
-and 12 monthly, and both the flat source and the pg dump must reach an off-site
-restic repository. Restores follow [`docs/RUNBOOK-restore.md`](./docs/RUNBOOK-restore.md).
+thing backed up and must reach an off-site restic repository with 7 daily, 4
+weekly and 12 monthly kept; the SQLite index never is backed up; the pg dump is
+one local copy, replaced nightly, because it is derived. Restores follow [`docs/RUNBOOK-restore.md`](./docs/RUNBOOK-restore.md).
 
 | Script | Purpose | Env contract (key vars) | Schedule |
 |---|---|---|---|
