@@ -1,6 +1,6 @@
 # Postmortem: 23,525 SQLite-only memory orphans on the .41 laptop (Lumina)
 
-- **Status:** final
+- **Status:** final 2026-10-17, amended 2026-11-11 (see §7)
 - **Severity:** SEV-1 (six months of unsynced, undetected, partially unrecoverable memory loss)
 - **Detected:** 2026-10-16, during unrelated `skmemory` install/triage work on the .41 laptop
 - **Window of harm:** approximately 2026-04 through 2026-10-16 (confirmed by `created_at`
@@ -9,6 +9,12 @@
 - **Scope of this document:** root cause, detection failure, recovery mechanics, and the
   permanent fixes. This document does not restate or duplicate data-recovery results; that
   work is tracked separately and is still in progress as of this writing.
+
+> **Amended 2026-11-11.** This document frames the stub-ification as a local rescue bug on
+> the laptop. Later work showed it was also a fleet-wide replication problem, that part of
+> the recovery below had silently regressed by 2026-10-21, and that more lost content was
+> still sitting in old backups. See [§7 Amendment (2026-11-11)](#7-amendment-2026-11-11).
+> The original text is unchanged.
 
 ## 1. Summary
 
@@ -508,3 +514,91 @@ sync timer for existing agents with real memory content (`architect`, `ava`, `gr
 triggered a handful of real, one-time `skmemory sync` runs on non-`lumina` agents; these are
 the exact idempotent, non-destructive operation this fix exists to run regularly, and none
 touched `lumina`'s data (the agent under separate, concurrent recovery).
+
+## 7. Amendment (2026-11-11)
+
+Added after the document was marked final. Sections 1 to 6 are left exactly as written; this
+section records what was learned later and corrects the framing where it was incomplete.
+
+### 7.1 The spread was replication, not only a local rescue bug
+
+The stub flat files from §1 step 1 were written on the laptop, but flat files are exactly
+what Syncthing replicates. Every peer sharing the agent's `~/.skcapstone` received the
+150-character stubs as ordinary flat files within minutes, and from then on each node's own
+sync and reconcile treated them as the source of truth. So one node's lossy local rescue
+became every node's copy. Syncthing has no notion of a "better" version of a memory: it
+carries the newest write, and here the newest write was the worst one. This is why
+`docs/BACKUP_SOP.md` now says outright that a Syncthing peer is never a backup copy.
+
+### 7.2 The cross-node resurrection loop
+
+A second, related hazard came out of a bulk fixture delete on 2026-11-06 (7,675 deleted,
+2,387 came back). skmem-pg is per-node and derived; it is not replicated. The flat layer is
+replicated. That asymmetry lets a per-node pg resurrect anything the replicated layer deletes:
+
+1. A flat file is deleted on one node, and Syncthing propagates the deletion.
+2. A peer's `index.db` still holds the row, so on the peer the memory is now an orphan.
+3. The peer's next sync re-exports it from the peer's own local skmem-pg.
+4. The re-exported file syncs back, and looks like a resurrection on the deleting node.
+
+The loop is self-sustaining, and no care taken on the deleting node helps, because the
+re-export runs on another machine. `forget_cascade()` already wrote tombstones and its
+docstring said they stop resurrection, but `export_orphans_to_flat()` never read them.
+
+Fixed by the tombstone guard in `export_orphans_to_flat()`, PR
+[#107](https://github.com/smilinTux/skmemory/pull/107) (`e5768e4`), first released in
+skmemory 0.11.90. Tombstones live under the memory dir, so they replicate like memories and
+the fix applied retroactively without a coordinated multi-node delete. Verified by
+re-deleting the 2,387 with the sync timer left running, forcing a sync on both nodes and
+waiting out two natural cycles: 0 of 7,896 deleted ids came back. PR
+[#166](https://github.com/smilinTux/skmemory/pull/166) (`8ce1d81`) prints the `tombstoned`
+count in the `skmemory sync` report line, so a refused resurrection is visible in the timer
+log. A node running an older skmemory does not have the guard and will still re-export
+deleted memories; check the version on every node before trusting a bulk delete.
+
+Related, in the same function: PR [#100](https://github.com/smilinTux/skmemory/pull/100)
+(`69da6ba`, skmemory 0.11.88) stopped a successful pg recovery from replacing the record's
+metadata (it dropped `body`, `type`, `urgency`, `access_count` and `soul_context` and reset
+`importance`), and made the lossy preview-stub fallback opt-in (`allow_preview_stubs`
+defaults to False; only `export-flat` opts in).
+
+### 7.3 Part of this recovery regressed, and nothing noticed
+
+5,038 of Lumina's memories held real content in the 2026-10-18 GFS weekly tarball, after the
+rescue in §1, and were lossy stubs again by 2026-10-21. Nothing alerted, and it went unnoticed
+for 16 days. It was re-restored on 2026-11-06: 5,040 memories in total (5,038 from the
+2026-10-18 weekly, 1 from the 2026-08-01 monthly, 1 from the node's own `memory/archive/`).
+The restore was surgical: the live record was kept so tier and promotion state survived, and
+`content` plus the lost metadata came from the backup, with provenance keys
+`restored_from_backup` and `restored_from_backup_at`. The exact writer of the regression was
+not pinned down at the time.
+
+After that restore, 1,045 records still carry the stub flag. They are not a further loss: 898
+are `source=skwhisper` or `dreaming-engine` digests (the 903 superseded digests in §1), and
+the remainder match the approximately 180 genuinely unrecoverable items in §1.
+
+### 7.4 More lost content was still in old backups
+
+On 2026-11-11, before deleting old backups, each one was checked against every agent's flat
+files. The 13 off-site skmem-pg dumps held nothing lost. The 2026-07-06 pg dump and the older
+one-off exports (2026-03-16, 2026-05-10) and flat tarball (2026-07-02) did. 257 memory records
+were restored across Lumina and Opus: 186 stubs filled with their full text (134 from the
+2026-07-06 dump, 133 of them Opus's, and 52 from the older one-offs) and 71 records recreated
+that no longer existed anywhere live (18 from the dump, 53 from the older one-offs), plus 3
+reflection documents. Every record was sealed and verified stable across loads, and none is
+a stub. 17 stubs remain unrecoverable because the 2026-07-06 row was itself a stub. Only after
+that were those backups deleted.
+
+### 7.5 What the original document missed
+
+The recovery in §1 was correct on each node individually. It still converged the fleet on the
+worst copy, because replication carried the lossy result everywhere and per-node derived
+stores kept re-introducing state the replicated layer had dropped. The original document did
+not say so, and its `Status: final` let a regression sit unnoticed for 16 days.
+
+The backup consequence is `docs/BACKUP_SOP.md` (PR
+[#175](https://github.com/smilinTux/skmemory/pull/175)): the flat JSON is the backed-up source
+(never the SQLite index), with tombstones and archive included, kept 7 daily, 4 weekly and 12
+monthly locally and off-site with restic, while skmem-pg keeps one local dump because it can
+be rebuilt from the flat files. The 2026-11-11 recovery only worked because one-off backups
+nobody had scheduled happened to survive; under the SOP that history is kept on purpose.
