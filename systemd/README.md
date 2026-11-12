@@ -5,7 +5,7 @@ memory-integrity state coherent without manual intervention.
 
 | Template | Purpose | Cadence |
 |---|---|---|
-| `skmemory-sync@.{service,timer}` | SQLite ↔ flat-file + skmem-pg (pgvector) + AGE graph reconciliation | every 6h |
+| `skmemory-sync@.{service,timer}` | SQLite ↔ flat-file + skmem-pg (pgvector) + AGE graph reconciliation | hourly |
 | `skmemory-fortress-verify@.{service,timer}` | SHA-256 integrity verify of all memories; alert on tamper | daily 03:00 |
 | `skmemory-sweep@.{service,timer}` | Promotion sweep (short -> mid -> long) via `skmemory sweep` | every 6h |
 
@@ -40,7 +40,7 @@ systemctl --user daemon-reload
 ## Enable per agent
 
 ```bash
-# Sync (every 6h)
+# Sync (hourly)
 systemctl --user enable --now skmemory-sync@lumina.timer
 
 # Fortress verify (daily 03:00 with ±5min jitter)

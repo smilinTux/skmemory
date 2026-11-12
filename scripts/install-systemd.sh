@@ -57,7 +57,7 @@ if [[ "$NON_INTERACTIVE" == "no" ]]; then
   echo
   read -r -p "Which agents? (comma-separated, e.g. lumina,opus,jarvis): " AGENTS
   if [[ -z "$AGENTS" ]]; then echo "No agents given. Aborting." >&2; exit 1; fi
-  ask_yn "Install bidirectional sync timer (skmemory-sync@, every 6h)?" "y" && DO_SYNC=yes || DO_SYNC=no
+  ask_yn "Install bidirectional sync timer (skmemory-sync@, hourly)?" "y" && DO_SYNC=yes || DO_SYNC=no
   ask_yn "Install fortress-verify timer (skmemory-fortress-verify@, daily 3 AM)?" "y" && DO_FORTRESS=yes || DO_FORTRESS=no
   if [[ "$DO_FORTRESS" == "yes" ]]; then
     ask_yn "Wire the sample Telegram alert hook (uses ~/.hermes/.env bot token)?" "n" && DO_TELEGRAM_HOOK=yes || DO_TELEGRAM_HOOK=no

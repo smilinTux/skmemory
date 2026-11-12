@@ -11,3 +11,13 @@ Environment=PATH=%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.skenv/bin/skmemory sync --quiet --vector --graph
 StandardOutput=append:%h/.skcapstone/agents/%i/logs/skmemory-sync.log
 StandardError=append:%h/.skcapstone/agents/%i/logs/skmemory-sync.log
+# Background job: never compete with interactive work. IOSchedulingClass=idle
+# only takes effect under the bfq IO scheduler (skcapstone's install.sh sets bfq
+# on spinning disks); IOWeight covers the cgroup io controller. The heavy SQL
+# runs inside the skmem-pg container, outside this cgroup.
+Nice=19
+IOSchedulingClass=idle
+IOWeight=10
+CPUQuota=50%
+# A hung run (seen twice in the fleet) must not block every later tick forever.
+TimeoutStartSec=3h

@@ -418,7 +418,7 @@ Embeddings come from the configured embed endpoint (`SKMEMORY_EMBED_URL`, model 
 
 ### Vector backfill
 
-Backfill skmem-pg from the flat files with `skmemory sync --vector` (or wait for the next `skmemory-sync@<agent>` timer fire, every 6h). Finish FTS5 indexing of an existing large `index.db` at once with `skmemory fts-backfill`.
+Backfill skmem-pg from the flat files with `skmemory sync --vector` (or wait for the next `skmemory-sync@<agent>` timer fire, hourly). Finish FTS5 indexing of an existing large `index.db` at once with `skmemory fts-backfill`.
 
 ---
 
@@ -488,7 +488,7 @@ SKAGENT=opus skmemory sync --graph         # AGE graph only
 SKAGENT=opus skmemory sync --vector --graph # both pgvector and the AGE graph
 ```
 
-The per-agent `skmemory-sync@<agent>.timer` runs `sync --quiet --vector --graph` every 6h, so all three layers (SQLite, pgvector, AGE) stay in lockstep automatically.
+The per-agent `skmemory-sync@<agent>.timer` runs `sync --quiet --vector --graph` hourly, so all three layers (SQLite, pgvector, AGE) stay in lockstep automatically.
 
 ## Sync & drift
 
@@ -510,7 +510,7 @@ scripts/install-systemd.sh --agents lumina,opus,jarvis --sync --fortress --teleg
 
 This installs two per-agent timers:
 
-- **`skmemory-sync@<agent>.timer`** - bidirectional reconciliation (SQLite ↔ flat ↔ pgvector ↔ AGE), every 6 h. Logs at `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log`.
+- **`skmemory-sync@<agent>.timer`** - bidirectional reconciliation (SQLite ↔ flat ↔ pgvector ↔ AGE), hourly, at idle IO priority. Logs at `~/.skcapstone/agents/<agent>/logs/skmemory-sync.log`.
 - **`skmemory-fortress-verify@<agent>.timer`** - daily SHA-256 integrity verify across all stored memories at 03:00 (±5min jitter). On tamper or failure, fires an optional alert hook (sample Telegram hook included). See [`docs/FORTRESS_SOP.md`](docs/FORTRESS_SOP.md) for full procedures and the tamper-response playbook.
 
 Manual install path and per-template details are documented in [`systemd/README.md`](systemd/README.md).

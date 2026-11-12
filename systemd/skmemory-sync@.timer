@@ -1,12 +1,16 @@
 [Unit]
-Description=Run skmemory sync for %i every 6h
+Description=Run skmemory sync for %i every hour
 
 [Timer]
-# First run 5 min after boot, then every 6 hours
+# First run 5 min after boot, then hourly. Was 15 min on some nodes, where a
+# run on a spinning disk took 12-15 min, so it ran back to back and kept the
+# disk saturated (noroc2027, 2026-11-12). Hourly is the default; a node that
+# needs fresher indexes overrides it with a drop-in.
 OnBootSec=5min
-OnUnitActiveSec=6h
-# If the system was off when a tick was due, run on next boot
-Persistent=true
+OnUnitActiveSec=1h
+# Spread agents on the same node so their syncs don't start in the same second.
+RandomizedDelaySec=10min
+AccuracySec=1min
 Unit=skmemory-sync@%i.service
 
 [Install]
