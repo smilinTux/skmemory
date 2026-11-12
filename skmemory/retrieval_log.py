@@ -113,9 +113,16 @@ def build_record(query: str, report) -> dict:
         },
         "fused": dist,
     }
+    # embed_ep: index of the embed endpoint that ANSWERED the semantic arm.
+    # embed_ep_inflight: index of the endpoint still being tried when the semantic
+    # arm timed out. Both are indexes into the configured list, never a URL. A late
+    # arm can carry a timeout status AND embed_ep (it answered after the deadline).
     ep = getattr(report, "embed_ep", None)
     if ep is not None:
         rec["embed_ep"] = int(ep)
+    inflight = getattr(report, "embed_ep_inflight", None)
+    if inflight is not None:
+        rec["embed_ep_inflight"] = int(inflight)
     return rec
 
 

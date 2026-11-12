@@ -247,3 +247,24 @@ def test_build_record_carries_embed_endpoint_index_never_a_url():
 def test_build_record_omits_embed_ep_when_unknown():
     report = FusionResult(ids=[], arms=[])
     assert "embed_ep" not in rl.build_record("q", report)
+
+
+def test_build_record_carries_embed_ep_inflight_as_its_own_field():
+    report = FusionResult(
+        ids=[], arms=[ArmOutcome(name="semantic", status="timeout", ids=[], elapsed_s=4.0)]
+    )
+    report.embed_ep_inflight = 0
+    rec = rl.build_record("q", report)
+    assert rec["embed_ep_inflight"] == 0
+    assert "embed_ep" not in rec
+
+
+def test_build_record_late_arm_can_carry_both_status_and_embed_ep():
+    report = FusionResult(
+        ids=[], arms=[ArmOutcome(name="semantic", status="timeout", ids=[], elapsed_s=4.0)]
+    )
+    report.embed_ep = 1
+    report.embed_ep_inflight = 1
+    rec = rl.build_record("q", report)
+    assert rec["arms"]["semantic"]["status"] == "timeout"
+    assert rec["embed_ep"] == 1 and rec["embed_ep_inflight"] == 1

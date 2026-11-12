@@ -398,6 +398,8 @@ class FusionResult:
     route: str | None = None
     #: index of the embed endpoint that answered the semantic arm (never its URL)
     embed_ep: int | None = None
+    #: index of the embed endpoint in flight when the semantic arm timed out
+    embed_ep_inflight: int | None = None
 
     @property
     def contributing_arms(self) -> list[str]:
