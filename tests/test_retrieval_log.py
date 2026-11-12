@@ -232,3 +232,18 @@ def test_live_bench_candidate_and_arm_diff_write_no_records(tmp_path, monkeypatc
     arms = lb.build_arms(None, None, None, st, {})
     arms[next(k for k in arms if k.startswith("candidate_"))]("zebra")
     assert _lines(tmp_path) == []
+
+
+def test_build_record_carries_embed_endpoint_index_never_a_url():
+    report = FusionResult(
+        ids=[], arms=[ArmOutcome(name="semantic", status="ok", ids=[], elapsed_s=0.1)]
+    )
+    report.embed_ep = 1
+    rec = rl.build_record("q", report)
+    assert rec["embed_ep"] == 1
+    assert "http" not in json.dumps(rec)
+
+
+def test_build_record_omits_embed_ep_when_unknown():
+    report = FusionResult(ids=[], arms=[])
+    assert "embed_ep" not in rl.build_record("q", report)

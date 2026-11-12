@@ -97,7 +97,7 @@ def build_record(query: str, report) -> dict:
             "median": round(scores[len(scores) // 2], 5),
             "min": round(scores[-1], 5),
         }
-    return {
+    rec = {
         "ts": round(time.time(), 3),
         "q": query_hash(query),
         "qlen": len((query or "").split()),
@@ -113,6 +113,10 @@ def build_record(query: str, report) -> dict:
         },
         "fused": dist,
     }
+    ep = getattr(report, "embed_ep", None)
+    if ep is not None:
+        rec["embed_ep"] = int(ep)
+    return rec
 
 
 def _rotate(path: Path) -> None:

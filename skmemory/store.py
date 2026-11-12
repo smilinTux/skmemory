@@ -1851,22 +1851,31 @@ class MemoryStore:
         # top-`limit` slice from each arm leaves fusion nothing to reorder.
         arm_limit = max(limit * 3, DEFAULT_ARM_CAP)
 
+        embed_ep: dict[str, int] = {}
+
         def _semantic() -> list[str]:
             backend = self.vector
             search_semantic = getattr(backend, "search_semantic", None)
             if search_semantic is None:
                 return []
-            return _collect(
-                search_semantic(
-                    query,
-                    limit=arm_limit,
-                    layer=layer,
-                    tags=tags,
-                    context_tag=context_tag,
-                    source=source,
-                    **asof_kw(search_semantic),
+            try:
+                return _collect(
+                    search_semantic(
+                        query,
+                        limit=arm_limit,
+                        layer=layer,
+                        tags=tags,
+                        context_tag=context_tag,
+                        source=source,
+                        **asof_kw(search_semantic),
+                    )
                 )
-            )
+            finally:
+                # Same worker thread as the embed call: read its endpoint index.
+                last = getattr(backend, "last_embed_index", None)
+                idx = last() if callable(last) else None
+                if isinstance(idx, int):
+                    embed_ep["i"] = idx
 
         def _lexical() -> list[str]:
             # Prefer the strongest lexical engine the attached backends offer.
@@ -2031,6 +2040,7 @@ class MemoryStore:
         )
         report.elapsed_s = time.monotonic() - started_at
         report.deadline_s = search_deadline_s()
+        report.embed_ep = embed_ep.get("i")
 
         if report.ids:
             pool_texts = [
