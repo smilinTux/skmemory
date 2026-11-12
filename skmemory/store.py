@@ -1851,22 +1851,35 @@ class MemoryStore:
         # top-`limit` slice from each arm leaves fusion nothing to reorder.
         arm_limit = max(limit * 3, DEFAULT_ARM_CAP)
 
+        embed_ep: dict[str, int] = {}
+        semantic_tid: dict[str, int] = {}
+
         def _semantic() -> list[str]:
             backend = self.vector
             search_semantic = getattr(backend, "search_semantic", None)
             if search_semantic is None:
                 return []
-            return _collect(
-                search_semantic(
-                    query,
-                    limit=arm_limit,
-                    layer=layer,
-                    tags=tags,
-                    context_tag=context_tag,
-                    source=source,
-                    **asof_kw(search_semantic),
+            # Remember which pooled thread runs the embed call, so a timeout can
+            # read the endpoint that thread has in flight (see the report below).
+            semantic_tid["t"] = threading.get_ident()
+            try:
+                return _collect(
+                    search_semantic(
+                        query,
+                        limit=arm_limit,
+                        layer=layer,
+                        tags=tags,
+                        context_tag=context_tag,
+                        source=source,
+                        **asof_kw(search_semantic),
+                    )
                 )
-            )
+            finally:
+                # Same worker thread as the embed call: read its endpoint index.
+                last = getattr(backend, "last_embed_index", None)
+                idx = last() if callable(last) else None
+                if isinstance(idx, int):
+                    embed_ep["i"] = idx
 
         def _lexical() -> list[str]:
             # Prefer the strongest lexical engine the attached backends offer.
@@ -2031,6 +2044,16 @@ class MemoryStore:
         )
         report.elapsed_s = time.monotonic() - started_at
         report.deadline_s = search_deadline_s()
+        report.embed_ep = embed_ep.get("i")
+        if any(a.name == "semantic" and a.status == "timeout" for a in report.arms):
+            # embed_ep is only set when the call returns, so a timed-out arm never
+            # has it. Attribute the wedge to the endpoint still in flight instead.
+            inflight = getattr(self.vector, "embed_inflight_index", None)
+            tid = semantic_tid.get("t")
+            if callable(inflight) and tid is not None:
+                idx = inflight(tid)
+                if isinstance(idx, int):
+                    report.embed_ep_inflight = idx
 
         if report.ids:
             pool_texts = [

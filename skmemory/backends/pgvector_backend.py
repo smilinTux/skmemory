@@ -291,6 +291,15 @@ DEFAULT_EMBED_CONNECT_TIMEOUT = _parse_float_env(
 )
 
 
+#: How long a failed embed endpoint is tried last (seconds, in-process state only).
+_EMBED_DEMOTE_S = 60.0
+#: Share of the REMAINING search deadline a non-final endpoint may spend on the
+#: read path (the last endpoint gets all that remains). 0.6 of 4 s is 2.4 s for the
+#: primary, above the measured healthy p99 (2.15 s) so a slow but healthy primary
+#: is not cut off and demoted.
+_EMBED_SLICE_FRACTION = 0.6
+
+
 def _parse_embed_urls(raw: str | None, primary: str) -> list[str]:
     """Build the ordered embed-endpoint list from a comma-separated string.
 
@@ -511,6 +520,12 @@ class PGVectorBackend(BaseBackend):
         self._owner_thread = threading.get_ident()
         self._owns_conn = False
         self._tls = threading.local()
+        # In-process embed endpoint health: index -> monotonic time until which
+        # the endpoint is tried last. No probe, no extra request: it only
+        # remembers what real calls already learned (card cd4ac109).
+        self._embed_bad_until: dict[int, float] = {}
+        #: thread ident -> embed endpoint index currently being tried (in-process only)
+        self._embed_inflight: dict[int, int] = {}
 
     # --- infra ---------------------------------------------------------------
     def _connect(self):
@@ -691,13 +706,67 @@ class PGVectorBackend(BaseBackend):
         # still stored in content/memory_json and BM25-searchable, so recall is intact.
         text = (text or "")[:1400]
         vec: list[float] = []
-        for url in self.embed_urls:
-            vec = self._embed_one(url, text)
-            if vec:
-                break  # first endpoint that yields a vector wins
+        self._tls.embed_ep = None
+        order = self._embed_order()
+        # A search has ONE total deadline for every arm. A primary that accepts
+        # the connection and never answers would otherwise burn the whole
+        # deadline on its read timeout (15 s) before failover is reached, so on
+        # the read path every endpoint but the last gets a slice of the deadline.
+        # The last endpoint, and every write (required=True), keeps the full one.
+        started = time.monotonic()
+        tid = threading.get_ident()
+        try:
+            for pos, idx in enumerate(order):
+                last = pos == len(order) - 1
+                timeout_s = None if required else self._embed_slice_s(started, last)
+                # Publish the endpoint about to be tried so a search that times out
+                # on this (pooled) thread can say which one was in flight. A plain
+                # dict store: no I/O, atomic under the GIL, keyed per thread.
+                self._embed_inflight[tid] = idx
+                vec = self._embed_one(self.embed_urls[idx], text, timeout_s=timeout_s)
+                if vec:
+                    self._embed_bad_until.pop(idx, None)
+                    self._tls.embed_ep = idx
+                    break  # first endpoint that yields a vector wins
+                self._mark_embed_bad(idx)
+        finally:
+            self._embed_inflight.pop(tid, None)
         return self._finalize_embedding(vec, required)
 
-    def _embed_one(self, url: str, text: str) -> list[float]:
+    def embed_inflight_index(self, thread_ident: int) -> int | None:
+        """Index in ``embed_urls`` of the endpoint thread ``thread_ident`` is trying
+        right now (never the URL), or None when that thread is not in ``_embed``.
+        Readable from any thread, so a timed-out search can attribute the wedge."""
+        return self._embed_inflight.get(thread_ident)
+
+    def last_embed_index(self) -> int | None:
+        """Index in ``embed_urls`` of the endpoint that answered this thread's last
+        ``_embed`` (never the URL), or None when none did or an ``embed_fn`` was used."""
+        return getattr(self._tls, "embed_ep", None)
+
+    def _mark_embed_bad(self, idx: int) -> None:
+        self._embed_bad_until[idx] = time.monotonic() + _EMBED_DEMOTE_S
+
+    def _embed_order(self) -> list[int]:
+        """Endpoint indexes in configured order, recently failed ones moved last.
+
+        Demotes only, never removes, so a lone endpoint is still tried."""
+        now = time.monotonic()
+        idxs = list(range(len(self.embed_urls)))
+        bad = {i for i in idxs if self._embed_bad_until.get(i, 0.0) > now}
+        return [i for i in idxs if i not in bad] + [i for i in idxs if i in bad]
+
+    def _embed_slice_s(self, started: float, last: bool) -> float:
+        """Read budget for the endpoint about to be tried, from what REMAINS of the
+        search deadline (deadline minus elapsed): a non-last endpoint gets 60 percent
+        of it, the last one all of it. Floor 0.25 s so a late call still gets a real try."""
+        from ..fusion import search_deadline_s
+
+        remaining = search_deadline_s() - (time.monotonic() - started)
+        share = remaining if last else remaining * _EMBED_SLICE_FRACTION
+        return max(0.25, min(self.embed_timeout, share))
+
+    def _embed_one(self, url: str, text: str, timeout_s: float | None = None) -> list[float]:
         """Embed via a SINGLE endpoint. Returns ``[]`` on transient failure
         (connection/timeout/non-200) so the caller can fail over to the next URL;
         raises ``EmbeddingModelMismatch`` on a pinned-model mismatch (a config
@@ -707,8 +776,16 @@ class PGVectorBackend(BaseBackend):
 
         # Bound each phase: read/write/pool at embed_timeout, connect even shorter,
         # so a wedged or unroutable endpoint is dropped fast and failover proceeds.
-        timeout = httpx.Timeout(self.embed_timeout, connect=self.embed_connect_timeout)
+        read_s = self.embed_timeout if timeout_s is None else min(self.embed_timeout, timeout_s)
+        # A sliced call is bounded as a whole: over-context retries share the slice
+        # instead of each getting a fresh read timeout.
+        end = None if timeout_s is None else time.monotonic() + read_s
         while text:
+            if end is not None:
+                read_s = min(read_s, end - time.monotonic())
+                if read_s <= 0:
+                    return []
+            timeout = httpx.Timeout(read_s, connect=min(self.embed_connect_timeout, read_s))
             try:
                 r = httpx.post(
                     url,
