@@ -8,6 +8,7 @@ secondary never happened in time. These tests use fake endpoints only.
 
 from __future__ import annotations
 
+import contextlib
 import time
 
 import httpx
@@ -183,10 +184,8 @@ def test_in_flight_index_visible_from_another_thread_while_wedged(monkeypatch):
 
     def work():
         tid["t"] = threading.get_ident()
-        try:
+        with contextlib.suppress(Exception):
             be._embed("q")
-        except Exception:
-            pass
 
     th = threading.Thread(target=work)
     th.start()
