@@ -210,7 +210,7 @@ Service deploy (per-agent maintenance timers, units in `systemd/`):
 
 | Unit | Timer | Base `ExecStart` in this repo | **Effective** `ExecStart` on a fleet node |
 |---|---|---|---|
-| `skmemory-sync@<agent>.service` | `OnBootSec=5min`, then `OnUnitActiveSec=6h` | `%h/.skenv/bin/skmemory sync --quiet --vector --graph` | the same command, wrapped by the node's `sk-cron-run` script |
+| `skmemory-sync@<agent>.service` | `OnBootSec=5min`, then `OnUnitActiveSec=1h` | `%h/.skenv/bin/skmemory sync --quiet --vector --graph` | the same command, wrapped by the node's `sk-cron-run` script |
 | `skmemory-fortress-verify@<agent>.service` | `OnCalendar=*-*-* 03:00:00`, `RandomizedDelaySec=5min` | `scripts/fortress-verify.sh` from the checkout | the same command, wrapped by the node's `sk-cron-run` script |
 | intentions tick (example units in `deploy/systemd/`, not installed for you) | every 5 minutes | `skmemory intentions tick` | the same command, wrapped; set `SKMEMORY_TICK_HOST` so exactly one host delivers |
 
