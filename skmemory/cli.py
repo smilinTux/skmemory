@@ -2642,16 +2642,22 @@ def fortress_seal(ctx: click.Context, dry_run: bool, limit: int, as_json: bool) 
     help="Actually re-seal. Without it this is a dry run that only lists what would change.",
 )
 @click.option("--id", "ids", multiple=True, help="Limit to this memory id (repeatable)")
+@click.option("--all", "all_ids", is_flag=True, help="With --write: re-seal every provable victim")
 @click.option("--limit", type=int, default=0, help="Cap how many to re-seal (0 = no cap)")
 @click.option("--json", "as_json", is_flag=True, help="Output result as JSON")
 @click.pass_context
 def fortress_reseal(
-    ctx: click.Context, write: bool, ids: tuple[str, ...], limit: int, as_json: bool
+    ctx: click.Context,
+    write: bool,
+    ids: tuple[str, ...],
+    all_ids: bool,
+    limit: int,
+    as_json: bool,
 ) -> None:
     """Re-seal memories proven to be victims of a FIXED sealing bug.
 
     DRY RUN BY DEFAULT: lists each id, the reason and the proof, and changes
-    nothing. ``--write`` re-seals, re-proving every memory at write time and
+    nothing. ``--write`` (with ``--id <id>`` or ``--all``) re-seals, re-proving every memory at write time and
     logging each one (``SKMEMORY_RESEAL_LOG`` or ``<home>/logs/fortress-reseal.jsonl``,
     plus the fortress audit chain).
 
@@ -2665,6 +2671,11 @@ def fortress_reseal(
     from .fortress import AuditLog
     from .reseal import default_log_path, find_victims, reseal, victim_dicts
 
+    if write and bool(ids) == all_ids:
+        raise click.UsageError(
+            "--write needs exactly one of --id <id> (repeatable) or --all; "
+            "run without --write first to see what would change"
+        )
     store = ctx.obj.get("store")
     victims = find_victims(store.primary.base_path, only=set(ids) or None)
     target = victims if limit <= 0 else victims[:limit]
@@ -2707,7 +2718,7 @@ def fortress_reseal(
             )
             click.echo(f"  Log: {default_log_path()}")
         elif victims:
-            click.echo("\nDry run. Re-run with --write to re-seal these.")
+            click.echo("\nDry run. Re-run with --write --id <id> (or --all) to re-seal.")
         else:
             click.echo("\nNothing to re-seal.")
     if result is not None and result.failed:

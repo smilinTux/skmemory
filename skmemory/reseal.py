@@ -14,8 +14,11 @@ any tampering, and each leaves a proof in the file itself:
 ``promoted-copy``
     ``Memory.promote`` minted a new id but kept the source's hash (fixed in #173).
     Proof: the copy's stored hash is its parent's hash, the parent verifies today,
-    and the copy's title, content and emotional signature equal the parent's.
+    the copy's title, content and emotional signature equal the parent's, the parent
+    names the copy back (``metadata.promoted_id``, written by the promotion sweep) and
+    was not created after it. Metadata on the copy alone is never enough.
 
+Both refuse a memory that should carry a signature sidecar and does not.
 Anything else (content edited, title changed, a different hash, a failing parent,
 a signature sidecar next to the file) is NOT a victim and is never touched. This
 module reads flat files only; writing goes through the store and is re-proved per
@@ -33,6 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import sealing
 from .models import (
     RELATION_PROMOTED_FROM,
     Memory,
@@ -109,6 +113,30 @@ def _has_sidecar(path: Path) -> bool:
     return Path(str(path) + ".sig").exists() or Path(str(path) + ".seal").exists()
 
 
+def _sidecar_expected(*donors: Path | None) -> bool:
+    """True when a signature sidecar should sit next to a memory file.
+
+    Either PQC signing is active on this node, or a donor the memory was copied
+    from is signed (a copy written through the same backend would be too). A
+    memory that should be signed but is not has not been through the API, so it
+    is not ours to re-seal.
+    """
+    if any(d is not None and _has_sidecar(d) for d in donors):
+        return True
+    try:
+        return bool(sealing.seal_status().get("active_is_post_quantum"))
+    except Exception:  # noqa: BLE001 - unknown config: be conservative
+        return True
+
+
+def _created(value: str) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def _promoted_parent_with_same_seal(
     base: Path, m: Memory, stored: str, _depth: int = 0, _seen: frozenset[str] = frozenset()
 ) -> str:
@@ -134,6 +162,16 @@ def _promoted_parent_with_same_seal(
         or parent.emotional.signature() != m.emotional.signature()
     ):
         return ""
+    # Metadata on the victim alone proves nothing: a file edit can set parent_id to a
+    # verified donor and copy its fields. PromotionEngine marks the SOURCE with the
+    # copy's id after copying, so the donor must name this memory back, and it must
+    # not post-date the copy (promote inherits created_at, so genuine pairs are equal).
+    # (Donor file mtime is not usable: promotion re-saves the source after the copy.)
+    if (parent.metadata or {}).get("promoted_id") != m.id:
+        return ""
+    donor_born, copy_born = _created(parent.created_at), _created(m.created_at)
+    if donor_born is None or copy_born is None or donor_born > copy_born:
+        return ""
     if parent.verify_integrity():
         return parent.id
     if _has_sidecar(parent_path):
@@ -151,6 +189,9 @@ def classify(base: Path, path: Path) -> Victim | None:
     stored = m.integrity_hash
     if not stored or m.verify_integrity() or _has_sidecar(path):
         return None
+    donor_path = _find_flat(base, m.parent_id) if m.parent_id else None
+    if _sidecar_expected(donor_path):
+        return None  # should be signed and is not: never re-seal an unsigned stand-in
     new_hash = m.compute_integrity_hash()
     sig = m.emotional.signature()
     title = m.title.strip()

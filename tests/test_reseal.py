@@ -45,6 +45,13 @@ def _unstripped_title_victim(backend, title="Observation: x ", suffix=" ") -> Me
     return m
 
 
+def _mark_promoted(backend, source_id: str, copy_id: str) -> None:
+    """What PromotionEngine does after copying: the source records its copy's id."""
+    src = backend.load(source_id)
+    src.metadata = {**src.metadata, "promoted_id": copy_id, "promoted_to": "mid-term"}
+    backend.save(src)
+
+
 def _promoted_copy_victim(backend) -> tuple[Memory, Memory]:
     """A copy made by the old Memory.promote: new id, the source's hash inherited."""
     src = Memory(
@@ -58,6 +65,7 @@ def _promoted_copy_victim(backend) -> tuple[Memory, Memory]:
     copy = src.promote(MemoryLayer.MID)
     copy.integrity_hash = src.integrity_hash  # what promote did before #173
     backend.save(copy)
+    _mark_promoted(backend, src.id, copy.id)
     assert not backend.load(copy.id).verify_integrity()
     return src, copy
 
@@ -140,6 +148,68 @@ class TestFindVictims:
         assert {p: p.read_bytes() for p in backend.base_path.rglob("*.json")} == before
 
 
+class TestForgedPromotedCopy:
+    """A file edit can set parent_id to a verified donor and copy its fields."""
+
+    def _forge(self, backend, **donor_meta):
+        donor = Memory(title="donor", content="donor body", layer=MemoryLayer.SHORT)
+        donor.seal()
+        donor.metadata = dict(donor_meta)
+        backend.save(donor)
+        forged = Memory(title="donor", content="donor body", layer=MemoryLayer.MID)
+        forged.parent_id = donor.id
+        forged.metadata = {"parent_relation": "promoted_from"}
+        forged.integrity_hash = donor.integrity_hash
+        backend.save(forged)
+        return donor, forged
+
+    def test_forgery_without_a_donor_backlink_is_refused(self, backend):
+        self._forge(backend)
+        assert find_victims(backend.base_path) == []
+
+    def test_backlink_to_another_memory_is_refused(self, backend):
+        self._forge(backend, promoted_id="someone-else")
+        assert find_victims(backend.base_path) == []
+
+    def test_genuine_backlink_is_accepted(self, backend):
+        donor, forged = self._forge(backend)
+        _mark_promoted(backend, donor.id, forged.id)
+        assert [v.memory_id for v in find_victims(backend.base_path)] == [forged.id]
+
+    def test_donor_created_after_the_copy_is_refused(self, backend):
+        donor, forged = self._forge(backend)
+        _mark_promoted(backend, donor.id, forged.id)
+        tamper_on_disk(backend, donor.id, created_at="2999-01-01T00:00:00+00:00")
+        assert find_victims(backend.base_path) == []
+
+    def test_missing_donor_is_refused(self, backend):
+        donor, forged = self._forge(backend)
+        _mark_promoted(backend, donor.id, forged.id)
+        backend._find_file(donor.id).unlink()
+        assert find_victims(backend.base_path) == []
+
+    def test_failing_donor_is_refused(self, backend):
+        donor, forged = self._forge(backend)
+        _mark_promoted(backend, donor.id, forged.id)
+        tamper_on_disk(backend, donor.id, content="donor edited behind the store's back")
+        assert find_victims(backend.base_path) == []
+
+
+class TestSidecarExpectation:
+    def test_donor_signed_but_copy_has_no_sidecar_is_refused(self, backend):
+        src, copy = _promoted_copy_victim(backend)
+        Path(str(backend._find_file(src.id)) + ".sig").write_text("sig")
+        assert find_victims(backend.base_path) == []
+
+    def test_title_victim_is_refused_when_pqc_signing_is_active(self, backend, monkeypatch):
+        _unstripped_title_victim(backend)
+        monkeypatch.setattr(
+            "skmemory.reseal.sealing.seal_status",
+            lambda *a, **k: {"active_is_post_quantum": True},
+        )
+        assert find_victims(backend.base_path) == []
+
+
 class TestLegacyPromotedCopies:
     def test_copy_written_before_parent_relation_existed_is_found(self, backend):
         _, copy = _promoted_copy_victim(backend)
@@ -166,6 +236,7 @@ class TestPromotionChains:
         long = mid.promote(MemoryLayer.LONG)
         long.integrity_hash = root.integrity_hash
         backend.save(long)
+        _mark_promoted(backend, mid.id, long.id)
         return root, mid, long
 
     def test_every_copy_in_a_chain_is_found(self, backend):
@@ -243,10 +314,36 @@ class TestCli:
     def test_write_flag_reseals(self, backend, tmp_path, monkeypatch):
         monkeypatch.setenv("SKMEMORY_RESEAL_LOG", str(tmp_path / "reseal.jsonl"))
         m = _unstripped_title_victim(backend)
-        res = self._run(backend, "--write")
+        res = self._run(backend, "--write", "--all")
         assert res.exit_code == 0, res.output
         assert backend.load(m.id).verify_integrity()
         assert (tmp_path / "reseal.jsonl").exists()
+
+    def test_write_with_id_reseals_only_that_id(self, backend, tmp_path, monkeypatch):
+        monkeypatch.setenv("SKMEMORY_RESEAL_LOG", str(tmp_path / "reseal.jsonl"))
+        a = _unstripped_title_victim(backend)
+        b = Memory(title="t2", content="c2")
+        b.integrity_hash = _seal_over(b, "t2 ")
+        backend.save(b)
+        res = self._run(backend, "--write", "--id", a.id)
+        assert res.exit_code == 0, res.output
+        assert backend.load(a.id).verify_integrity()
+        assert not backend.load(b.id).verify_integrity()
+
+    def test_write_without_id_or_all_is_refused(self, backend, tmp_path, monkeypatch):
+        monkeypatch.setenv("SKMEMORY_RESEAL_LOG", str(tmp_path / "reseal.jsonl"))
+        m = _unstripped_title_victim(backend)
+        res = self._run(backend, "--write")
+        assert res.exit_code != 0
+        assert "--id" in res.output and "--all" in res.output
+        assert not backend.load(m.id).verify_integrity()
+        assert not (tmp_path / "reseal.jsonl").exists()
+
+    def test_all_and_id_together_are_refused(self, backend):
+        m = _unstripped_title_victim(backend)
+        res = self._run(backend, "--write", "--all", "--id", m.id)
+        assert res.exit_code != 0
+        assert not backend.load(m.id).verify_integrity()
 
     def test_json_output(self, backend):
         m = _unstripped_title_victim(backend)
