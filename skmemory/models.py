@@ -408,7 +408,10 @@ class Memory(BaseModel):
         Returns:
             str: Full 64-char hex SHA-256 digest.
         """
-        payload = f"{self.id}:{self.title}:{self.content}:{self.emotional.signature()}"
+        # The title validator strips on build and on load, but plain assignment
+        # (``memory.title = ...``) skips it. Hash the value every later load will
+        # see, or a seal taken over "x " never matches the "x" that comes back.
+        payload = f"{self.id}:{self.title.strip()}:{self.content}:{self.emotional.signature()}"
         return hashlib.sha256(payload.encode()).hexdigest()
 
     def seal(self) -> None:
