@@ -34,10 +34,10 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
-    PARENT_RELATION_KEY,
     RELATION_PROMOTED_FROM,
     Memory,
     MemoryLayer,
+    parent_relation_of,
 )
 
 logger = logging.getLogger("skmemory.reseal")
@@ -120,7 +120,7 @@ def _promoted_parent_with_same_seal(
     """
     if _depth > 12 or m.id in _seen or not m.parent_id:
         return ""
-    if (m.metadata or {}).get(PARENT_RELATION_KEY) != RELATION_PROMOTED_FROM:
+    if parent_relation_of(m.parent_id, m.metadata) != RELATION_PROMOTED_FROM:
         return ""
     parent_path = _find_flat(base, m.parent_id)
     read = _read(parent_path) if parent_path else None

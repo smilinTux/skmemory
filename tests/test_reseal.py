@@ -140,6 +140,25 @@ class TestFindVictims:
         assert {p: p.read_bytes() for p in backend.base_path.rglob("*.json")} == before
 
 
+class TestLegacyPromotedCopies:
+    def test_copy_written_before_parent_relation_existed_is_found(self, backend):
+        _, copy = _promoted_copy_victim(backend)
+        data = backend.load(copy.id).model_dump()
+        data["metadata"].pop("parent_relation")  # files from before the key existed
+        data["metadata"]["promoted_from"] = "short-term"
+        path = backend._find_file(copy.id)
+        path.write_text(json.dumps(data, default=str))
+        assert [v.memory_id for v in find_victims(backend.base_path)] == [copy.id]
+
+    def test_a_decomposed_chunk_is_not_a_promoted_copy(self, backend):
+        _, copy = _promoted_copy_victim(backend)
+        data = backend.load(copy.id).model_dump()
+        data["metadata"].pop("parent_relation")
+        data["metadata"]["decomposition"] = {"parent_id": data["parent_id"]}
+        backend._find_file(copy.id).write_text(json.dumps(data, default=str))
+        assert find_victims(backend.base_path) == []
+
+
 class TestPromotionChains:
     def _chain(self, backend):
         """short -> mid -> long, every copy carrying the root's hash (the old promote)."""
