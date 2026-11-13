@@ -60,6 +60,7 @@ class Victim:
     proof: str
     old_hash: str
     new_hash: str
+    parent_id: str = ""
 
 
 @dataclass
@@ -108,6 +109,39 @@ def _has_sidecar(path: Path) -> bool:
     return Path(str(path) + ".sig").exists() or Path(str(path) + ".seal").exists()
 
 
+def _promoted_parent_with_same_seal(
+    base: Path, m: Memory, stored: str, _depth: int = 0, _seen: frozenset[str] = frozenset()
+) -> str:
+    """Parent id when *m* is a promoted copy whose *stored* hash is its source's seal.
+
+    The parent must hold that exact hash and the same title, content and emotional
+    signature. It must either verify today, or be a promoted copy of the same kind
+    itself (a short to mid to long chain), ending at a source that verifies.
+    """
+    if _depth > 12 or m.id in _seen or not m.parent_id:
+        return ""
+    if (m.metadata or {}).get(PARENT_RELATION_KEY) != RELATION_PROMOTED_FROM:
+        return ""
+    parent_path = _find_flat(base, m.parent_id)
+    read = _read(parent_path) if parent_path else None
+    if read is None:
+        return ""
+    parent = read[1]
+    if (
+        parent.integrity_hash != stored
+        or parent.title.strip() != m.title.strip()
+        or parent.content != m.content
+        or parent.emotional.signature() != m.emotional.signature()
+    ):
+        return ""
+    if parent.verify_integrity():
+        return parent.id
+    if _has_sidecar(parent_path):
+        return ""
+    up = _promoted_parent_with_same_seal(base, parent, stored, _depth + 1, _seen | {m.id})
+    return parent.id if up else ""
+
+
 def classify(base: Path, path: Path) -> Victim | None:
     """The :class:`Victim` record for *path*, or None when it is not provably one."""
     read = _read(path)
@@ -138,31 +172,23 @@ def classify(base: Path, path: Path) -> Victim | None:
                     new_hash=new_hash,
                 )
 
-    if m.parent_id and (m.metadata or {}).get(PARENT_RELATION_KEY) == RELATION_PROMOTED_FROM:
-        parent_path = _find_flat(base, m.parent_id)
-        parent_read = _read(parent_path) if parent_path else None
-        if parent_read is not None:
-            parent = parent_read[1]
-            if (
-                parent.integrity_hash == stored
-                and parent.verify_integrity()
-                and parent.title.strip() == title
-                and parent.content == m.content
-                and parent.emotional.signature() == sig
-            ):
-                return Victim(
-                    memory_id=m.id,
-                    path=str(path),
-                    layer=m.layer.value,
-                    reason=REASON_PROMOTED_COPY,
-                    proof=(
-                        f"stored hash is the hash of parent {parent.id}, which verifies; title, "
-                        f"content and emotional signature equal the parent's (Memory.promote "
-                        f"kept the source hash under a new id)"
-                    ),
-                    old_hash=stored,
-                    new_hash=new_hash,
-                )
+    parent_id = _promoted_parent_with_same_seal(base, m, stored)
+    if parent_id:
+        return Victim(
+            memory_id=m.id,
+            path=str(path),
+            layer=m.layer.value,
+            reason=REASON_PROMOTED_COPY,
+            proof=(
+                f"stored hash is the hash of its promotion source {parent_id} (a copy of the "
+                f"same sealed fields, up a chain of promoted_from links to a source that "
+                f"verifies today); title, content and emotional signature equal the source's "
+                f"(Memory.promote kept the source hash under a new id)"
+            ),
+            old_hash=stored,
+            new_hash=new_hash,
+            parent_id=parent_id,
+        )
     return None
 
 
@@ -205,7 +231,17 @@ def reseal(
     base = Path(store.primary.base_path)
     log_path = log_path or default_log_path()
     result = ResealResult()
-    for v in victims:
+    # Deepest copy first: a child's proof is "my hash is my source's hash", which stops
+    # holding the moment the source is re-sealed. Children go before their sources.
+    by_id = {v.memory_id: v for v in victims}
+
+    def depth(v: Victim) -> int:
+        n, cur = 0, v
+        while cur.parent_id in by_id and n < 64:
+            n, cur = n + 1, by_id[cur.parent_id]
+        return n
+
+    for v in sorted(victims, key=depth, reverse=True):
         again = classify(base, Path(v.path))
         if again is None or again.reason != v.reason or again.old_hash != v.old_hash:
             result.skipped += 1

@@ -140,6 +140,38 @@ class TestFindVictims:
         assert {p: p.read_bytes() for p in backend.base_path.rglob("*.json")} == before
 
 
+class TestPromotionChains:
+    def _chain(self, backend):
+        """short -> mid -> long, every copy carrying the root's hash (the old promote)."""
+        root, mid = _promoted_copy_victim(backend)
+        long = mid.promote(MemoryLayer.LONG)
+        long.integrity_hash = root.integrity_hash
+        backend.save(long)
+        return root, mid, long
+
+    def test_every_copy_in_a_chain_is_found(self, backend):
+        _, mid, long = self._chain(backend)
+        assert {v.memory_id for v in find_victims(backend.base_path)} == {mid.id, long.id}
+
+    def test_chain_is_resealed_whatever_the_order(self, backend, tmp_path):
+        _, mid, long = self._chain(backend)
+        victims = find_victims(backend.base_path)
+        out = reseal(MemoryStore(primary=backend), victims, log_path=tmp_path / "l")
+        assert out.resealed == 2 and out.skipped == 0 and out.failed == 0
+        assert backend.load(mid.id).verify_integrity()
+        assert backend.load(long.id).verify_integrity()
+
+    def test_chain_through_a_failing_root_is_not_found(self, backend):
+        root, mid, long = self._chain(backend)
+        tamper_on_disk(backend, root.id, content="root edited behind the store's back")
+        assert find_victims(backend.base_path) == []
+
+    def test_chain_with_a_changed_link_is_not_found(self, backend):
+        root, mid, long = self._chain(backend)
+        tamper_on_disk(backend, mid.id, content="middle copy edited")
+        assert find_victims(backend.base_path) == []
+
+
 class TestReseal:
     def test_reseal_verifies_and_logs(self, backend, tmp_path):
         m = _unstripped_title_victim(backend)
