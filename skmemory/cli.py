@@ -2635,6 +2635,85 @@ def fortress_seal(ctx: click.Context, dry_run: bool, limit: int, as_json: bool) 
         click.echo("\nAll targeted memories sealed.")
 
 
+@fortress_group.command("reseal")
+@click.option(
+    "--write",
+    is_flag=True,
+    help="Actually re-seal. Without it this is a dry run that only lists what would change.",
+)
+@click.option("--id", "ids", multiple=True, help="Limit to this memory id (repeatable)")
+@click.option("--limit", type=int, default=0, help="Cap how many to re-seal (0 = no cap)")
+@click.option("--json", "as_json", is_flag=True, help="Output result as JSON")
+@click.pass_context
+def fortress_reseal(
+    ctx: click.Context, write: bool, ids: tuple[str, ...], limit: int, as_json: bool
+) -> None:
+    """Re-seal memories proven to be victims of a FIXED sealing bug.
+
+    DRY RUN BY DEFAULT: lists each id, the reason and the proof, and changes
+    nothing. ``--write`` re-seals, re-proving every memory at write time and
+    logging each one (``SKMEMORY_RESEAL_LOG`` or ``<home>/logs/fortress-reseal.jsonl``,
+    plus the fortress audit chain).
+
+    A memory is a victim only when its own file proves it: a seal taken over a
+    title with whitespace that Memory strips on load, or a promoted copy that kept
+    its source's hash. Edited content, changed titles, foreign hashes, failing
+    parents and signed files are never touched.
+    """
+    from .audience import resolve_reader
+    from .config import SKMEMORY_HOME
+    from .fortress import AuditLog
+    from .reseal import default_log_path, find_victims, reseal, victim_dicts
+
+    store = ctx.obj.get("store")
+    victims = find_victims(store.primary.base_path, only=set(ids) or None)
+    target = victims if limit <= 0 else victims[:limit]
+
+    result = None
+    if write:
+        if not resolve_reader(None).unrestricted:
+            raise click.ClickException("reseal is owner-only: a declared reader may not write")
+        result = reseal(
+            store,
+            target,
+            log_path=default_log_path(),
+            audit=AuditLog(path=SKMEMORY_HOME / "audit.jsonl"),
+        )
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "dry_run": not write,
+                    "found": len(victims),
+                    "victims": victim_dicts(target),
+                    "resealed": result.resealed if result else 0,
+                    "skipped": result.skipped if result else 0,
+                    "failed": result.failed if result else 0,
+                },
+                indent=2,
+            )
+        )
+    else:
+        click.echo("Fortress Reseal" + ("" if write else " (dry-run: nothing is written)"))
+        click.echo(f"  Provable victims : {len(victims)}")
+        for v in target:
+            click.echo(f"  {v.memory_id}  [{v.layer}]  {v.reason}")
+            click.echo(f"      old {v.old_hash[:16]}  ->  new {v.new_hash[:16]}")
+            click.echo(f"      proof: {v.proof}")
+        if write and result is not None:
+            click.echo(
+                f"  Re-sealed {result.resealed}, skipped {result.skipped}, failed {result.failed}"
+            )
+            click.echo(f"  Log: {default_log_path()}")
+        elif victims:
+            click.echo("\nDry run. Re-run with --write to re-seal these.")
+        else:
+            click.echo("\nNothing to re-seal.")
+    if result is not None and result.failed:
+        sys.exit(1)
+
+
 @fortress_group.command("verify-chain")
 @click.option("--json", "as_json", is_flag=True, help="Output as JSON")
 def fortress_verify_chain(as_json: bool) -> None:
