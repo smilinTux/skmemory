@@ -23,6 +23,7 @@ except ImportError:
     CRYPTO_AVAILABLE = False
 
 from skmemory.vault import VAULT_HEADER
+from tests.tamper import tamper_on_disk
 
 pytestmark = pytest.mark.skipif(
     not CRYPTO_AVAILABLE,
@@ -289,10 +290,7 @@ class TestFortifiedMemoryStoreVault:
         mem = fortress_vaulted.snapshot("Tamper Me", "Original")
 
         # Directly corrupt the stored file (bypass encryption by writing junk)
-        raw = fortress_vaulted.primary.load(mem.id)
-        raw.content = "TAMPERED"
-        raw.integrity_hash = mem.integrity_hash  # old hash
-        fortress_vaulted.primary.save(raw)
+        tamper_on_disk(fortress_vaulted.primary, mem.id, content="TAMPERED")
 
         recalled = fortress_vaulted.recall(mem.id)
         assert recalled is not None

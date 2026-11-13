@@ -11,6 +11,7 @@ import json
 import pytest
 
 from skmemory.fortress import AuditLog, FortifiedMemoryStore, TamperAlert
+from tests.tamper import tamper_on_disk
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -156,13 +157,8 @@ class TestFortifiedMemoryStore:
         # Tamper: directly modify the stored memory file
         # We need to find and corrupt the JSON
 
-        backend = fortress.primary
-        # Load raw, mutate, save back bypassing seal
-        raw = backend.load(mem.id)
-        assert raw is not None
-        raw.content = "TAMPERED CONTENT"
-        raw.integrity_hash = mem.integrity_hash  # keep old hash
-        backend.save(raw)  # save tampered version with original hash
+        # Rewrite the stored file behind the store's back (save() would re-seal).
+        tamper_on_disk(fortress.primary, mem.id, content="TAMPERED CONTENT")
 
         # Now recall — should trigger tamper alert
         recalled = fortress.recall(mem.id)
@@ -206,10 +202,7 @@ class TestFortifiedMemoryStore:
         mem = fortress.snapshot("Good memory", "Original")
 
         # Tamper via backend
-        raw = fortress.primary.load(mem.id)
-        raw.content = "CORRUPTED"
-        raw.integrity_hash = mem.integrity_hash
-        fortress.primary.save(raw)
+        tamper_on_disk(fortress.primary, mem.id, content="CORRUPTED")
 
         result = fortress.verify_all()
         assert mem.id in result["tampered"]
@@ -234,10 +227,7 @@ class TestFortifiedMemoryStore:
         fortress.register_alert_callback(c2.append)
 
         mem = fortress.snapshot("Multi", "content")
-        raw = fortress.primary.load(mem.id)
-        raw.content = "bad"
-        raw.integrity_hash = mem.integrity_hash
-        fortress.primary.save(raw)
+        tamper_on_disk(fortress.primary, mem.id, content="bad")
 
         fortress.recall(mem.id)
         assert len(c1) == 1
