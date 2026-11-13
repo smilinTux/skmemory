@@ -29,7 +29,7 @@ from ..invalid_records import require_memory_id
 from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_write_allowed
 from ..sealing import SealVerdict
-from .base import BaseBackend
+from .base import BaseBackend, reseal_api_edit
 
 DEFAULT_BASE_PATH = str(SKMEMORY_HOME / "memory")
 
@@ -177,6 +177,7 @@ class FileBackend(BaseBackend):
                 home with no isolation/override (card: skmemory
                 pytest-writes-to-real-fleet).
         """
+        reseal_api_edit(self, memory)
         path = self._file_path(memory)
         assert_write_allowed(path)
         atomic_write_text(path, json.dumps(memory.model_dump(), indent=2, default=str))

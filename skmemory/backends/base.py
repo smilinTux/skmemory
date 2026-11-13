@@ -7,9 +7,65 @@ delegates to whichever backend(s) are configured.
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 
 from ..models import Memory, MemoryLayer
+
+logger = logging.getLogger(__name__)
+
+
+def reseal_api_edit(backend: BaseBackend, memory: Memory) -> bool:
+    """Keep the seal true when a writer edits a sealed field and saves.
+
+    The seal covers id, title, content and the emotional signature. A writer that
+    loads a memory, changes one of those and calls ``save`` without ``seal()`` would
+    leave a hash no load can verify, and the nightly ``fortress verify`` reports it
+    as tampered. This runs inside ``save`` and re-seals only when ALL of these hold:
+
+    * the memory carries a hash that no longer matches its own sealed fields;
+    * the same id is stored, and that stored copy verifies;
+    * the hash on the memory is the stored copy's hash.
+
+    That is exactly "a descendant of the verified on-disk record that had a sealed
+    field edited in process". It never launders: a new memory, an unsealed one, an
+    already failing predecessor (the file was edited outside the API) or a
+    replacement carrying a different hash is saved exactly as given, so
+    ``verify_integrity`` keeps reporting it. Edits made to the file itself never
+    pass through ``save`` and stay detectable.
+
+    Returns:
+        bool: True when the memory was re-sealed.
+    """
+    if not memory.integrity_hash or memory.verify_integrity():
+        return False
+    try:
+        stored = backend.load(memory.id)
+    except Exception:  # noqa: BLE001 - an unreadable predecessor is "do not launder"
+        return False
+    if (
+        stored is None
+        or not stored.integrity_hash
+        or stored.integrity_hash != memory.integrity_hash
+        or not stored.verify_integrity()
+    ):
+        return False
+    changed = [
+        name
+        for name, now, before in (
+            ("title", memory.title.strip(), stored.title.strip()),
+            ("content", memory.content, stored.content),
+            ("emotional", memory.emotional.signature(), stored.emotional.signature()),
+        )
+        if now != before
+    ]
+    memory.seal()
+    logger.warning(
+        "re-sealed %s: a writer changed sealed field(s) %s without sealing",
+        memory.id,
+        ", ".join(changed) or "(none visible)",
+    )
+    return True
 
 
 class BaseBackend(ABC):

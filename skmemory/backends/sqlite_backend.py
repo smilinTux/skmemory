@@ -45,7 +45,7 @@ from ..pytest_guard import assert_write_allowed
 from ..stub_markers import STUB_METADATA_KEY, TRUNCATED_PREVIEW_SUFFIX
 from ..tombstones import load_tombstones
 from ..validity import normalize_as_of
-from .base import BaseBackend
+from .base import BaseBackend, reseal_api_edit
 from .file_backend import is_hidden_conflict_copy, scan_conflict_copies
 
 logger = logging.getLogger("skmemory.sqlite_backend")
@@ -923,6 +923,7 @@ class SQLiteBackend(BaseBackend):
             OSError: If the flat file could not be durably written. The
                 memory is NOT indexed in this case.
         """
+        reseal_api_edit(self, memory)
         path = self._file_path(memory)
         assert_write_allowed(path)
         atomic_write_text(
