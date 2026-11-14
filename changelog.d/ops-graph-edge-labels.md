@@ -1,0 +1,1 @@
+skmem-pg migration `07-ops-graph-edge-labels.sql` creates the `ops_brain` edge labels `HOSTS`, `DOCUMENTS`, `ABOUT` and `PROMOTED`. 05 created only six of the nine edge types the skbrain page schema allows, so a canon with skrsi lessons (edge type `about`) failed every sync with "permission denied for schema ops_brain". Apply with `skmemory pg migrate`.

@@ -26,3 +26,4 @@
 04-task-queue.sql | verify-task-queue.sql
 05-ops-graph-grants.sql | verify-ops-graph-grants.sql
 06-memory-schema-v2.sql | verify-memory-schema-v2.sql
+07-ops-graph-edge-labels.sql | verify-ops-graph-edge-labels.sql
