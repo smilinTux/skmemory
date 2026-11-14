@@ -790,7 +790,8 @@ def _build_observation(key: str, members: Sequence[Memory]) -> Observation:
 
 def _payload(observation: Observation, key: str, tag: str) -> dict[str, Any]:
     return {
-        "title": f"Observation: {observation.statement[:80]}",
+        # strip: the cut at 80 can land on a space, and Memory.title is stored stripped.
+        "title": f"Observation: {observation.statement[:80]}".strip(),
         "content": render_observation_text(observation),
         "context_tag": tag,
         "observation": {

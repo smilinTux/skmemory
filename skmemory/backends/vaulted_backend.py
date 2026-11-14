@@ -31,6 +31,7 @@ from ..atomic_io import atomic_write_bytes
 from ..models import Memory, MemoryLayer
 from ..pytest_guard import assert_write_allowed
 from ..vault import VAULT_HEADER, MemoryVault
+from .base import reseal_api_edit
 from .sqlite_backend import DEFAULT_BASE_PATH, SQLiteBackend
 
 logger = logging.getLogger("skmemory.backends.vaulted")
@@ -87,6 +88,7 @@ class VaultedSQLiteBackend(SQLiteBackend):
                 completed. The memory is NOT indexed in this case (card:
                 sqlite-only orphans, 2026-10-16).
         """
+        reseal_api_edit(self, memory)
         path = self._file_path(memory)
         assert_write_allowed(path)
         json_bytes = json.dumps(memory.model_dump(), indent=2, default=str).encode("utf-8")
