@@ -306,6 +306,23 @@ def cli(
     default=False,
     help="Decompose long-form content into chunk memories",
 )
+@click.option("--source-ref", default="", help="Where exactly it came from (run id, file, URL)")
+@click.option(
+    "--source-tier",
+    type=click.Choice(["user-stated", "tool-output", "web", "self-generated"]),
+    default=None,
+    help="Provenance tier (default: decided by the store from the reader)",
+)
+@click.option(
+    "--kind",
+    type=click.Choice(["episode", "fact", "procedure", "preference", "rule"]),
+    default=None,
+)
+@click.option("--outcome", type=click.Choice(["success", "failure", "lesson"]), default=None)
+@click.option("--metadata-json", default=None, help="A JSON object merged into the metadata")
+@click.option(
+    "--json", "as_json", is_flag=True, help="Print {id, layer, kind, outcome, source_tier} as JSON"
+)
 @click.pass_context
 def snapshot(
     ctx: click.Context,
@@ -320,8 +337,24 @@ def snapshot(
     resonance: str,
     source: str,
     decompose: bool,
+    source_ref: str,
+    source_tier: str | None,
+    kind: str | None,
+    outcome: str | None,
+    metadata_json: str | None,
+    as_json: bool,
 ) -> None:
     """Take a polaroid -- capture a moment as a memory."""
+    metadata = None
+    if metadata_json is not None:
+        try:
+            metadata = json.loads(metadata_json)
+        except ValueError as exc:
+            raise click.BadParameter(
+                f"not valid JSON: {exc}", param_hint="--metadata-json"
+            ) from exc
+        if not isinstance(metadata, dict):
+            raise click.BadParameter("must be a JSON object", param_hint="--metadata-json")
     store: MemoryStore = ctx.obj["store"]
 
     emotional = EmotionalSnapshot(
@@ -340,8 +373,26 @@ def snapshot(
         emotional=emotional,
         source=source,
         decompose=decompose,
+        source_ref=source_ref,
+        source_tier=source_tier,
+        kind=kind,
+        outcome=outcome,
+        metadata=metadata,
     )
 
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "id": memory.id,
+                    "layer": memory.layer.value,
+                    "kind": memory.kind,
+                    "outcome": memory.outcome,
+                    "source_tier": memory.source_tier,
+                }
+            )
+        )
+        return
     click.echo(f"Snapshot saved: {memory.id}")
     click.echo(f"  Layer: {memory.layer.value}")
     click.echo(f"  Emotional: {memory.emotional.signature()}")
@@ -394,14 +445,21 @@ def ingest_file(
 
 @cli.command()
 @click.argument("memory_id")
+@click.option(
+    "--reader",
+    default=None,
+    help="Audience the result is for (@public, channel:<id>, ...). Omit for the owner. "
+    "Narrows a SKMEMORY_READER ceiling, never widens it; a hidden id reads as not found.",
+)
+@click.option("--exact", is_flag=True, help="Exact id only: no prefix match")
 @click.pass_context
-def recall(ctx: click.Context, memory_id: str) -> None:
-    """Retrieve a specific memory by ID (supports partial ID prefix)."""
+def recall(ctx: click.Context, memory_id: str, reader: str | None, exact: bool) -> None:
+    """Retrieve a specific memory by ID (supports partial ID prefix unless --exact)."""
     store: MemoryStore = ctx.obj["store"]
-    memory = store.recall(memory_id)
+    memory = store.recall(memory_id, reader=reader)
 
     # If exact match failed, try prefix matching across memory tier dirs
-    if memory is None and len(memory_id) >= 6:
+    if memory is None and not exact and len(memory_id) >= 6:
         from pathlib import Path
 
         from .agents import get_active_agent
@@ -420,7 +478,7 @@ def recall(ctx: click.Context, memory_id: str) -> None:
             if not tier_dir.is_dir():
                 continue
             for f in tier_dir.glob(f"{memory_id}*.json"):
-                memory = store.recall(f.stem)
+                memory = store.recall(f.stem, reader=reader)
                 if memory:
                     break
             if memory:

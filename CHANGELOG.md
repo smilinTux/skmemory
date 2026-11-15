@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- **CLI `snapshot` carries provenance; `recall` is exact and reader-aware on request.**
+  `snapshot` gains `--source-tier`, `--source-ref`, `--kind`, `--outcome`,
+  `--metadata-json` and `--json` (prints the stored id and its kind, outcome and tier),
+  so a caller outside the skmemory venv (Hermes's curator) can store a lesson with full
+  provenance through the CLI. `recall` gains `--reader` (narrows a `SKMEMORY_READER`
+  ceiling; a hidden id reads as not found) and `--exact` (no prefix match). The prefix
+  fallback now applies the reader too. Defaults are unchanged.
+
 ### Changed
 
 - **Docs: agent default and node configuration corrected.** README, SOP, CLAUDE.md and MISSION.md
