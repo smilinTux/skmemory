@@ -43,6 +43,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from ._version import __version__
 from .audience import READER_ENV, resolve_reader
 from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
 from .disclosure import (
@@ -55,7 +56,6 @@ from .disclosure import (
 from .hooks.sensitivity import is_sensitive
 from .models import MemoryLayer
 from .procedures import index_title
-from ._version import __version__
 from .store import MemoryStore
 from .tiers import tier_for_explicit_store
 from .validity import superseded_by_map
