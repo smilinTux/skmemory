@@ -43,6 +43,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from ._version import __version__
 from .audience import READER_ENV, resolve_reader
 from .backend_select import BackendInitError, requested_vector_backend, resolve_pg_dsn
 from .disclosure import (
@@ -61,7 +62,9 @@ from .validity import superseded_by_map
 
 logger = logging.getLogger("skmemory.mcp")
 
-server = Server("skmemory")
+# Report skmemory's own version in serverInfo (the default is the mcp library's),
+# so clients such as hermes-skmemory can check which skmemory they are talking to.
+server = Server("skmemory", version=__version__)
 
 # ---------------------------------------------------------------------------
 # Shared store instance
