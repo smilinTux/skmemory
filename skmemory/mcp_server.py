@@ -55,13 +55,16 @@ from .disclosure import (
 from .hooks.sensitivity import is_sensitive
 from .models import MemoryLayer
 from .procedures import index_title
+from ._version import __version__
 from .store import MemoryStore
 from .tiers import tier_for_explicit_store
 from .validity import superseded_by_map
 
 logger = logging.getLogger("skmemory.mcp")
 
-server = Server("skmemory")
+# Report skmemory's own version in serverInfo (the default is the mcp library's),
+# so clients such as hermes-skmemory can check which skmemory they are talking to.
+server = Server("skmemory", version=__version__)
 
 # ---------------------------------------------------------------------------
 # Shared store instance
